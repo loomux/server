@@ -132,6 +132,13 @@ Conceptual schema:
   (running/awaiting-input/human-takeover/completed/failed), timestamps,
   the chat conversation it belongs to
 
+**Entity IDs are strings (UUIDs), not backend-native autoincrement
+integers** — ratified during LOOM-3's implementation. Keeps IDs stable and
+collision-free across a future second storage backend, whose native
+autoincrement semantics would otherwise differ from the first backend's.
+Every backend implementation must generate IDs this way to stay conformant
+with the shared test suite (§12).
+
 Workspaces are either **fixed** (pre-registered, e.g. mirroring today's
 theWyseKube/jetone-infra/scds-infra/command-center split) or **dynamic**
 (provisioned on demand — e.g. cloning a new repo — via a `shell`-kind pane
