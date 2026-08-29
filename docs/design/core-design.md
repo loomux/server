@@ -108,7 +108,7 @@ yet.
 **Credentials on remote targets:** OAuth-authenticated agent CLIs (Claude
 Code, etc.) are expected to already be logged in locally on machines you
 own — Loomux doesn't push those sessions over SSH. API-key-style secrets are
-injected as env vars via the SSH exec at launch time (see §6, Credential
+injected as env vars via the SSH exec at launch time (see §7, Credential
 Model).
 
 ### 2. Workspace registry
