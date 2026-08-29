@@ -1,0 +1,12 @@
+# Go build artifacts
+/bin/
+*.test
+*.out
+coverage.out
+
+# SQLite test/dev databases
+*.db
+*.db-journal
+
+# Local Claude settings
+.claude/settings.local.json
