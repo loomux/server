@@ -1,0 +1,211 @@
+package orchestrator
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
+)
+
+// Launch creates a new task and starts its tmux session. command is
+// assumed to already be a complete, resolved launch command (credential
+// injection and agent-type→command-template resolution are separate
+// concerns, not this package's job). agentType is only stored for
+// TaskKindAgent.
+//
+// Launch always returns a non-nil *registry.Task once its row has been
+// created, even if starting the session subsequently fails (in which
+// case the returned task is already Failed and the error describes why)
+// — the row stays visible/auditable rather than vanishing on failure.
+func (o *Orchestrator) Launch(ctx context.Context, workspaceID, conversationID string, kind registry.TaskKind, agentType, command string) (*registry.Task, error) {
+	ws, err := o.store.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: launch: %w", err)
+	}
+	target, err := o.store.GetTarget(ctx, ws.TargetID)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: launch: %w", err)
+	}
+	exec, err := o.newExecutor(target)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: launch: %w", err)
+	}
+
+	now := time.Now().UTC()
+	task := &registry.Task{
+		ID:             uuid.NewString(),
+		WorkspaceID:    workspaceID,
+		Kind:           kind,
+		TmuxSession:    "loomux-" + uuid.NewString(),
+		Status:         registry.TaskStatusRunning,
+		ConversationID: conversationID,
+		StartedAt:      &now,
+	}
+	if kind == registry.TaskKindAgent {
+		task.AgentType = agentType
+	}
+
+	if err := o.store.CreateTask(ctx, task); err != nil {
+		return nil, fmt.Errorf("orchestrator: launch: %w", err)
+	}
+
+	if err := exec.NewSession(ctx, task.TmuxSession, ws.Path, command); err != nil {
+		_ = o.failTask(ctx, task) // best-effort; original err is what matters to the caller
+		return task, fmt.Errorf("orchestrator: launch: %w", err)
+	}
+
+	ws.Status = registry.WorkspaceStatusActive
+	ws.LastUsedAt = &now
+	if err := o.store.UpdateWorkspace(ctx, ws); err != nil {
+		return task, fmt.Errorf("orchestrator: launch: %w", err)
+	}
+
+	return task, nil
+}
+
+// SendMessage sends message as the next turn's input into a running
+// task. Refuses if the task is under human takeover or is no longer
+// active.
+func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) error {
+	task, err := o.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: send message: %w", err)
+	}
+
+	switch task.Status {
+	case registry.TaskStatusHumanTakeover:
+		return ErrHumanTakeover
+	case registry.TaskStatusCompleted, registry.TaskStatusFailed:
+		return ErrTaskInactive
+	}
+
+	exec, err := o.executorFor(ctx, task)
+	if err != nil {
+		return fmt.Errorf("orchestrator: send message: %w", err)
+	}
+
+	if err := exec.SendKeys(ctx, task.TmuxSession, message, true); err != nil {
+		_ = o.failTask(ctx, task)
+		return fmt.Errorf("orchestrator: send message: %w", err)
+	}
+
+	task.Status = registry.TaskStatusRunning
+	if err := o.store.UpdateTask(ctx, task); err != nil {
+		return fmt.Errorf("orchestrator: send message: %w", err)
+	}
+	return nil
+}
+
+// WaitForCompletion blocks until the CompletionDetector reports the
+// task's current turn is done, or ctx is done. On success the task
+// transitions to AwaitingInput ("turn done, ready for the next
+// message"). A context/detector error is returned as-is without any
+// status transition — the wait giving up doesn't mean the task itself
+// failed.
+func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) error {
+	task, err := o.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: wait for completion: %w", err)
+	}
+
+	if err := o.detector.Wait(ctx, task); err != nil {
+		return err
+	}
+
+	task.Status = registry.TaskStatusAwaitingInput
+	if err := o.store.UpdateTask(ctx, task); err != nil {
+		return fmt.Errorf("orchestrator: wait for completion: %w", err)
+	}
+	return nil
+}
+
+// Complete tears the task's session down and marks it finished. summary
+// is applied to the workspace's rolling summary verbatim — Complete
+// never generates or condenses it itself (that's the router's job).
+func (o *Orchestrator) Complete(ctx context.Context, taskID, summary string) error {
+	task, err := o.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: complete: %w", err)
+	}
+	exec, err := o.executorFor(ctx, task)
+	if err != nil {
+		return fmt.Errorf("orchestrator: complete: %w", err)
+	}
+
+	if err := exec.KillSession(ctx, task.TmuxSession); err != nil {
+		return fmt.Errorf("orchestrator: complete: %w", err)
+	}
+
+	now := time.Now().UTC()
+	task.Status = registry.TaskStatusCompleted
+	task.CompletedAt = &now
+	if err := o.store.UpdateTask(ctx, task); err != nil {
+		return fmt.Errorf("orchestrator: complete: %w", err)
+	}
+
+	if err := o.store.SetWorkspaceRollingSummary(ctx, task.WorkspaceID, summary); err != nil {
+		return fmt.Errorf("orchestrator: complete: %w", err)
+	}
+
+	ws, err := o.store.GetWorkspace(ctx, task.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: complete: %w", err)
+	}
+	ws.Status = registry.WorkspaceStatusIdle
+	if err := o.store.UpdateWorkspace(ctx, ws); err != nil {
+		return fmt.Errorf("orchestrator: complete: %w", err)
+	}
+	return nil
+}
+
+// Fail marks a task failed without tearing down its session — the spec
+// leaves a failed pane alive for inspection via attach, since teardown
+// is for successful/explicit completion, not silent cleanup of something
+// that went wrong. reason is accepted for API stability (e.g. a future
+// idle-timeout failure from the real completion detector) but isn't
+// persisted yet: registry.Task has no failure-reason field in the
+// current schema.
+func (o *Orchestrator) Fail(ctx context.Context, taskID, reason string) error {
+	task, err := o.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: fail: %w", err)
+	}
+	return o.failTask(ctx, task)
+}
+
+// executorFor resolves the TargetExecutor for the target a task's
+// workspace runs on.
+func (o *Orchestrator) executorFor(ctx context.Context, task *registry.Task) (targets.TargetExecutor, error) {
+	ws, err := o.store.GetWorkspace(ctx, task.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	target, err := o.store.GetTarget(ctx, ws.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	return o.newExecutor(target)
+}
+
+// failTask transitions task to Failed and its workspace back to Idle.
+// Shared by the public Fail and by Launch/SendMessage's internal
+// auto-fail-on-executor-error path.
+func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task) error {
+	now := time.Now().UTC()
+	task.Status = registry.TaskStatusFailed
+	task.CompletedAt = &now
+	if err := o.store.UpdateTask(ctx, task); err != nil {
+		return err
+	}
+
+	ws, err := o.store.GetWorkspace(ctx, task.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	ws.Status = registry.WorkspaceStatusIdle
+	return o.store.UpdateWorkspace(ctx, ws)
+}

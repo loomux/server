@@ -1,0 +1,115 @@
+package orchestrator_test
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/Loomux/server/orchestrator"
+	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
+)
+
+// fakeSession records what was done to a session created by fakeExecutor,
+// for test assertions.
+type fakeSession struct {
+	dir     string
+	command string
+	alive   bool
+	keys    []string
+}
+
+// fakeExecutor is an in-memory targets.TargetExecutor for orchestrator's
+// fast unit tests — no real tmux involved. When unreachable is true,
+// every operation returns targets.ErrUnreachable, simulating a target
+// that can't be reached.
+type fakeExecutor struct {
+	mu          sync.Mutex
+	sessions    map[string]*fakeSession
+	unreachable bool
+}
+
+func newFakeExecutor() *fakeExecutor {
+	return &fakeExecutor{sessions: make(map[string]*fakeSession)}
+}
+
+// factory returns an orchestrator.ExecutorFactory that always hands back
+// this same fakeExecutor instance, regardless of target — mirrors
+// production reality closely enough: a real RemoteExecutor's state lives
+// at the OS level (its ControlPath), not in the Go struct, so a fresh
+// instance per call still shares state; here that's simulated by sharing
+// the one fake instance directly.
+func (e *fakeExecutor) factory() orchestrator.ExecutorFactory {
+	return func(*registry.Target) (targets.TargetExecutor, error) {
+		return e, nil
+	}
+}
+
+func (e *fakeExecutor) sessionFor(name string) *fakeSession {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sessions[name]
+}
+
+func (e *fakeExecutor) NewSession(ctx context.Context, session, dir, command string) error {
+	if e.unreachable {
+		return targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sessions[session] = &fakeSession{dir: dir, command: command, alive: true}
+	return nil
+}
+
+func (e *fakeExecutor) HasSession(ctx context.Context, session string) (bool, error) {
+	if e.unreachable {
+		return false, targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.sessions[session]
+	return ok && s.alive, nil
+}
+
+func (e *fakeExecutor) SendKeys(ctx context.Context, target, keys string, enter bool) error {
+	if e.unreachable {
+		return targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.sessions[target]
+	if !ok || !s.alive {
+		return fmt.Errorf("fakeExecutor: no such session %q", target)
+	}
+	s.keys = append(s.keys, keys)
+	return nil
+}
+
+func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, error) {
+	if e.unreachable {
+		return "", targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.sessions[target]
+	if !ok {
+		return "", fmt.Errorf("fakeExecutor: no such session %q", target)
+	}
+	return fmt.Sprintf("%v", s.keys), nil
+}
+
+func (e *fakeExecutor) KillSession(ctx context.Context, session string) error {
+	if e.unreachable {
+		return targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.sessions[session]
+	if !ok {
+		return fmt.Errorf("fakeExecutor: no such session %q", session)
+	}
+	s.alive = false
+	return nil
+}
+
+func (e *fakeExecutor) Close() error { return nil }
