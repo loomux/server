@@ -1,0 +1,78 @@
+package router
+
+import "context"
+
+// DecisionAction identifies what a RoutingModel decided to do with an
+// incoming message.
+type DecisionAction string
+
+const (
+	// ActionAnswerDirectly means no dispatch is needed at all.
+	ActionAnswerDirectly DecisionAction = "answer_directly"
+	// ActionUseWorkspace dispatches into an existing workspace.
+	ActionUseWorkspace DecisionAction = "use_workspace"
+	// ActionProvisionWorkspace creates a new workspace before dispatching.
+	ActionProvisionWorkspace DecisionAction = "provision_workspace"
+)
+
+// WorkspaceSnapshot is the compact workspace projection design spec §6
+// says routing calls should see — tags/description/capabilities, not
+// full history — keeping a routing call's context small and cheap
+// regardless of how many workspaces exist.
+type WorkspaceSnapshot struct {
+	ID           string
+	Name         string
+	Description  string
+	Tags         []string
+	Capabilities []string
+}
+
+// ProvisionSpec describes a new dynamic workspace to create and set up
+// (design spec §2: workspaces are "provisioned on demand... via a
+// shell-kind pane that runs the provisioning script").
+type ProvisionSpec struct {
+	Name        string
+	Path        string
+	TargetID    string
+	GitRemote   string
+	Description string
+	Tags        []string
+	// ProvisionCommand is run via a shell-kind orchestrator.Launch to
+	// set the workspace up (e.g. cloning a repo).
+	ProvisionCommand string
+}
+
+// Decision is what a RoutingModel returns for an incoming message.
+type Decision struct {
+	Action DecisionAction
+
+	// DirectAnswer is set when Action == ActionAnswerDirectly.
+	DirectAnswer string
+
+	// WorkspaceID is set when Action == ActionUseWorkspace.
+	WorkspaceID string
+
+	// NewWorkspace is set when Action == ActionProvisionWorkspace.
+	NewWorkspace ProvisionSpec
+
+	// AgentType is set when Action == ActionUseWorkspace or
+	// ActionProvisionWorkspace — which registered agent-type to
+	// dispatch to.
+	AgentType string
+}
+
+// RoutingModel is the swappable "router model" seam (design spec §6) —
+// a real LLM call in production. No implementation of this interface
+// beyond a deterministic test stand-in (router/routertest) is built in
+// this package; choosing a model vendor and integrating it is separate,
+// later work.
+type RoutingModel interface {
+	// Decide returns a routing decision for an incoming chat message,
+	// given a compact snapshot of the existing workspace registry.
+	Decide(ctx context.Context, message string, workspaces []WorkspaceSnapshot) (Decision, error)
+
+	// Relay condenses captured agent output into a single string used
+	// as both the chat-appropriate reply and the workspace's new
+	// rolling summary.
+	Relay(ctx context.Context, capturedOutput string) (string, error)
+}
