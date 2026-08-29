@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/pressly/goose/v3 v3.27.3
+	golang.org/x/crypto v0.55.0
 	modernc.org/sqlite v1.57.0
 )
 
