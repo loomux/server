@@ -113,34 +113,83 @@ func (e *RemoteExecutor) baseArgs() []string {
 	return args
 }
 
+// sshExec runs a raw (already shell-quoted) remote command string over
+// SSH with this executor's standard flags (BatchMode/ConnectTimeout/
+// ControlMaster/etc). err is non-nil only for a genuine SSH-level
+// failure — exit 255 (ssh's own signal for a connection-level failure)
+// maps to ErrUnreachable, or ssh itself failing to start. Otherwise
+// callers interpret exitCode themselves: run() treats non-zero as a
+// tmux-command failure, FileExists treats test's own 0/1 convention as
+// true/false, RemoveFile treats non-zero as an unexpected rm -f
+// failure. Shared by run() and the file-existence/cleanup methods so
+// none of them duplicate this SSH-invocation boilerplate.
+func (e *RemoteExecutor) sshExec(ctx context.Context, remoteCmd string) (stdout, stderr string, exitCode int, err error) {
+	if mkErr := os.MkdirAll(filepath.Dir(e.controlPath), 0o700); mkErr != nil {
+		return "", "", -1, fmt.Errorf("targets: create control path dir: %w", mkErr)
+	}
+
+	sshArgs := append(e.baseArgs(), e.destination(), remoteCmd)
+
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	runErr := cmd.Run()
+	stdout, stderr = outBuf.String(), errBuf.String()
+
+	if runErr == nil {
+		return stdout, stderr, 0, nil
+	}
+	if exitErr, ok := runErr.(*exec.ExitError); ok {
+		if exitErr.ExitCode() == 255 {
+			return stdout, stderr, 255, fmt.Errorf("%w: %s", ErrUnreachable, firstNonEmpty(stderr, runErr.Error()))
+		}
+		return stdout, stderr, exitErr.ExitCode(), nil
+	}
+	return "", "", -1, fmt.Errorf("targets: ssh: %w", runErr)
+}
+
 // run executes a tmux command remotely: args is shell-quoted per-argument
 // and joined into the single command string ssh hands to the remote
 // shell (ssh concatenates trailing arguments itself, so without quoting,
 // shell metacharacters in e.g. send-keys content would be interpreted
 // remotely).
 func (e *RemoteExecutor) run(ctx context.Context, args ...string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(e.controlPath), 0o700); err != nil {
-		return "", fmt.Errorf("targets: create control path dir: %w", err)
-	}
-
 	remoteCmd := shellQuoteJoin(append([]string{"tmux"}, args...))
-	sshArgs := append(e.baseArgs(), e.destination(), remoteCmd)
-
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+	stdout, stderr, exitCode, err := e.sshExec(ctx, remoteCmd)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if exitErr.ExitCode() == 255 {
-				return "", fmt.Errorf("%w: %s", ErrUnreachable, firstNonEmpty(stderr.String(), err.Error()))
-			}
-			return "", fmt.Errorf("targets: remote tmux %s: %s", args[0], firstNonEmpty(stderr.String(), err.Error()))
-		}
-		return "", fmt.Errorf("targets: ssh: %w", err)
+		return "", err
 	}
-	return stdout.String(), nil
+	if exitCode != 0 {
+		return "", fmt.Errorf("targets: remote tmux %s: %s", args[0], firstNonEmpty(stderr, fmt.Sprintf("exit status %d", exitCode)))
+	}
+	return stdout, nil
+}
+
+// FileExists reports whether path exists on the target's filesystem, via
+// `test -e` (exit 0 = exists, non-zero = doesn't — a normal negative
+// result, not a Go-level error, same convention as HasSession).
+func (e *RemoteExecutor) FileExists(ctx context.Context, path string) (bool, error) {
+	remoteCmd := shellQuoteJoin([]string{"test", "-e", path})
+	_, _, exitCode, err := e.sshExec(ctx, remoteCmd)
+	if err != nil {
+		return false, err
+	}
+	return exitCode == 0, nil
+}
+
+// RemoveFile best-effort removes path from the target's filesystem via
+// `rm -f`, which itself doesn't error on a missing file.
+func (e *RemoteExecutor) RemoveFile(ctx context.Context, path string) error {
+	remoteCmd := shellQuoteJoin([]string{"rm", "-f", path})
+	_, stderr, exitCode, err := e.sshExec(ctx, remoteCmd)
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("targets: remove file: %s", firstNonEmpty(stderr, fmt.Sprintf("exit status %d", exitCode)))
+	}
+	return nil
 }
 
 func (e *RemoteExecutor) NewSession(ctx context.Context, session, dir, command string) error {

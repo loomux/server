@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,44 @@ import (
 // for the executor's own cleanup (e.g. via t.Cleanup).
 func Run(t *testing.T, newExecutor func(t *testing.T) targets.TargetExecutor) {
 	t.Run("SessionLifecycle", func(t *testing.T) { testSessionLifecycle(t, newExecutor(t)) })
+	t.Run("FileExistsLifecycle", func(t *testing.T) { testFileExistsLifecycle(t, newExecutor(t)) })
+}
+
+func testFileExistsLifecycle(t *testing.T, exec targets.TargetExecutor) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "marker-"+uniqueSessionName(t))
+
+	exists, err := exec.FileExists(ctx, path)
+	if err != nil {
+		t.Fatalf("FileExists (before create): %v", err)
+	}
+	if exists {
+		t.Fatalf("FileExists = true before the file was ever created")
+	}
+
+	if err := os.WriteFile(path, []byte("marker"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	exists, err = exec.FileExists(ctx, path)
+	if err != nil {
+		t.Fatalf("FileExists (after create): %v", err)
+	}
+	if !exists {
+		t.Fatalf("FileExists = false after the file was created")
+	}
+
+	if err := exec.RemoveFile(ctx, path); err != nil {
+		t.Fatalf("RemoveFile: %v", err)
+	}
+
+	exists, err = exec.FileExists(ctx, path)
+	if err != nil {
+		t.Fatalf("FileExists (after remove): %v", err)
+	}
+	if exists {
+		t.Fatalf("FileExists = true after RemoveFile succeeded")
+	}
 }
 
 func testSessionLifecycle(t *testing.T, exec targets.TargetExecutor) {

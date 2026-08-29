@@ -33,6 +33,11 @@ func (e *scriptedExecutor) SendKeys(context.Context, string, string, bool) error
 func (e *scriptedExecutor) KillSession(context.Context, string) error                { return nil }
 func (e *scriptedExecutor) Close() error                                             { return nil }
 
+// FileExists/RemoveFile aren't exercised by IdleWatcher's tests (they're
+// tier-3 specific); trivial stubs satisfy the interface.
+func (e *scriptedExecutor) FileExists(context.Context, string) (bool, error) { return false, nil }
+func (e *scriptedExecutor) RemoveFile(context.Context, string) error         { return nil }
+
 func (e *scriptedExecutor) CapturePane(context.Context, string) (string, error) {
 	e.mu.Lock()
 	i := e.calls

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 )
 
@@ -74,6 +75,25 @@ func (e *LocalExecutor) KillSession(ctx context.Context, session string) error {
 }
 
 func (e *LocalExecutor) Close() error {
+	return nil
+}
+
+func (e *LocalExecutor) FileExists(ctx context.Context, path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (e *LocalExecutor) RemoveFile(ctx context.Context, path string) error {
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }
 

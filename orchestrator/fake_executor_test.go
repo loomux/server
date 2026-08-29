@@ -113,3 +113,10 @@ func (e *fakeExecutor) KillSession(ctx context.Context, session string) error {
 }
 
 func (e *fakeExecutor) Close() error { return nil }
+
+// FileExists and RemoveFile aren't exercised by this package's tests
+// (orchestrator's own tests drive completion via detectortest.
+// ManualDetector, never completion.Detector's marker tier) — trivial
+// stubs satisfy the interface.
+func (e *fakeExecutor) FileExists(ctx context.Context, path string) (bool, error) { return false, nil }
+func (e *fakeExecutor) RemoveFile(ctx context.Context, path string) error         { return nil }

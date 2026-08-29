@@ -76,7 +76,7 @@ func NewDetector(store registry.Store, newExecutor orchestrator.ExecutorFactory,
 	return &Detector{
 		store:   store,
 		config:  config,
-		markers: NewMarkerWatcher(markerDir, defaultPollInterval),
+		markers: NewMarkerWatcher(newExecutor, markerDir, defaultPollInterval),
 		idle:    NewIdleWatcher(newExecutor, defaultPollInterval),
 	}
 }
@@ -93,7 +93,7 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 
 	switch tier {
 	case TierMarker:
-		return d.markers.Wait(ctx, task)
+		return d.markers.Wait(ctx, task, target)
 	default: // TierIdle
 		timeout := cfg.IdleTimeout
 		if timeout <= 0 {
@@ -104,13 +104,15 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 }
 
 // resolve looks up task's target once (needed regardless of tier, to
-// hand to the idle watcher if that's the chosen tier) and picks the
-// detection tier: the agent-type's configured tier, except marker
-// detection currently only works for local targets — the marker watcher
-// observes the Loomux server's own filesystem, and there's no mechanism
-// yet to observe a marker written on a remote target's filesystem — so a
-// marker-configured agent-type on a remote target falls back to the idle
-// heuristic too, same as an unconfigured agent-type would.
+// hand to whichever watcher is chosen) and picks the detection tier:
+// the agent-type's configured tier, falling back to the idle heuristic
+// for an unconfigured agent-type (matching the spec's framing of idle
+// detection as the true last resort). Marker detection (tiers 1+2)
+// works identically for local and remote targets — MarkerWatcher goes
+// through TargetExecutor.FileExists/RemoveFile either way (LOOM-11) —
+// so there's no target-kind restriction here; resolve never probes
+// reachability, and an unreachable target's failure surfaces as a plain
+// error from Wait, same as any other TargetExecutor operation.
 func (d *Detector) resolve(ctx context.Context, task *registry.Task) (*registry.Target, AgentConfig, Tier, error) {
 	ws, err := d.store.GetWorkspace(ctx, task.WorkspaceID)
 	if err != nil {
@@ -122,7 +124,7 @@ func (d *Detector) resolve(ctx context.Context, task *registry.Task) (*registry.
 	}
 
 	cfg, ok := d.config[task.AgentType]
-	if ok && cfg.Tier == TierMarker && target.Kind == registry.TargetKindLocal {
+	if ok && cfg.Tier == TierMarker {
 		return target, cfg, TierMarker, nil
 	}
 	return target, cfg, TierIdle, nil

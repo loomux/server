@@ -44,6 +44,16 @@ type TargetExecutor interface {
 	// Close releases any resources held by the executor (e.g. an SSH
 	// connection multiplexing master).
 	Close() error
+
+	// FileExists reports whether path exists on the target's
+	// filesystem — a lightweight existence check, not a content read
+	// (content was never the completion-detection signal; existence
+	// is — see the completion package's MarkerWatcher).
+	FileExists(ctx context.Context, path string) (bool, error)
+
+	// RemoveFile best-effort removes path from the target's
+	// filesystem.
+	RemoveFile(ctx context.Context, path string) error
 }
 
 // NewExecutor constructs the TargetExecutor appropriate for t.Kind.
