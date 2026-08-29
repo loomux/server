@@ -137,7 +137,7 @@ integers** — ratified during LOOM-3's implementation. Keeps IDs stable and
 collision-free across a future second storage backend, whose native
 autoincrement semantics would otherwise differ from the first backend's.
 Every backend implementation must generate IDs this way to stay conformant
-with the shared test suite (§12).
+with the shared test suite (see Testing strategy below).
 
 Workspaces are either **fixed** (pre-registered, e.g. mirroring today's
 theWyseKube/jetone-infra/scds-infra/command-center split) or **dynamic**
@@ -185,7 +185,7 @@ attach, so a human watching a session is not a special case at all.
 anything — tmux fans output out to every attached client for free. If a
 human wants to actively type into a pane the orchestrator is also driving,
 they signal intent explicitly (e.g. `loomux takeover <session>`), which
-flips that task to `human_takeover` and pauses automated `send-keys` for it;
+flips that task to `human-takeover` and pauses automated `send-keys` for it;
 `loomux release` hands it back. This avoids keystroke collisions without
 degrading the common case (just watching) at all.
 
