@@ -23,7 +23,8 @@ var migrationsFS embed.FS
 
 // Store is a registry.Store backed by a SQLite database.
 type Store struct {
-	db *sql.DB
+	db        *sql.DB
+	masterKey []byte // nil unless WithMasterKey was passed to Open
 }
 
 // Open opens (creating if necessary) a SQLite database at path and applies
@@ -31,7 +32,12 @@ type Store struct {
 // a "schema_migrations" table; goose's own default table name doesn't
 // match, so it's overridden here to keep that contract regardless of
 // which migration tool runs it.
-func Open(path string) (*Store, error) {
+//
+// Credential operations (§7's vault) need an AES-256 key, supplied via
+// WithMasterKey — most callers never touch credentials, so this is an
+// option, not a required parameter; a credential operation attempted
+// without one fails fast with a clear error instead.
+func Open(path string, opts ...Option) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %s: %w", path, err)
@@ -53,7 +59,11 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: run migrations: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // Close closes the underlying database connection.
@@ -392,6 +402,114 @@ func scanTask(row rowScanner) (*registry.Task, error) {
 	t.Kind = registry.TaskKind(kind)
 	t.Status = registry.TaskStatus(status)
 	return &t, nil
+}
+
+func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) error {
+	if s.masterKey == nil {
+		return fmt.Errorf("sqlite: no master key configured (see WithMasterKey); cannot create credential")
+	}
+	now := time.Now().UTC()
+	c.CreatedAt = now
+	c.UpdatedAt = now
+
+	ciphertext, err := encrypt(s.masterKey, c.Value)
+	if err != nil {
+		return fmt.Errorf("sqlite: encrypt credential: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO credentials (id, name, workspace_id, agent_type, ciphertext, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.Name, nullIfEmpty(c.WorkspaceID), c.AgentType, ciphertext, c.CreatedAt, c.UpdatedAt,
+	)
+	if isUniqueConstraintErr(err) {
+		return fmt.Errorf("%w: credential %q already exists at this scope", registry.ErrConflict, c.Name)
+	}
+	if isForeignKeyConstraintErr(err) {
+		return fmt.Errorf("%w: workspace %q does not exist", registry.ErrConflict, c.WorkspaceID)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: create credential: %w", err)
+	}
+	return nil
+}
+
+const credentialColumns = `
+	id, name, workspace_id, agent_type, ciphertext, created_at, updated_at`
+
+func (s *Store) GetCredential(ctx context.Context, id string) (*registry.Credential, error) {
+	if s.masterKey == nil {
+		return nil, fmt.Errorf("sqlite: no master key configured (see WithMasterKey); cannot read credential")
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT `+credentialColumns+` FROM credentials WHERE id = ?`, id)
+	c, err := scanCredential(row, s.masterKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: credential %q", registry.ErrNotFound, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get credential: %w", err)
+	}
+	return c, nil
+}
+
+func (s *Store) ListCredentials(ctx context.Context) ([]*registry.Credential, error) {
+	if s.masterKey == nil {
+		return nil, fmt.Errorf("sqlite: no master key configured (see WithMasterKey); cannot list credentials")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+credentialColumns+` FROM credentials ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list credentials: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*registry.Credential
+	for rows.Next() {
+		c, err := scanCredential(rows, s.masterKey)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list credentials: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list credentials: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) DeleteCredential(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM credentials WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete credential: %w", err)
+	}
+	return requireRowAffected(res, "credential", id)
+}
+
+func scanCredential(row rowScanner, key []byte) (*registry.Credential, error) {
+	var c registry.Credential
+	var workspaceID sql.NullString
+	var ciphertext []byte
+	if err := row.Scan(&c.ID, &c.Name, &workspaceID, &c.AgentType, &ciphertext, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		return nil, err
+	}
+	c.WorkspaceID = workspaceID.String
+	plaintext, err := decrypt(key, ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt credential %q: %w", c.ID, err)
+	}
+	c.Value = plaintext
+	return &c, nil
+}
+
+// nullIfEmpty maps Go's "" (this codebase's usual empty-means-absent
+// convention) to a genuine SQL NULL for workspace_id specifically, so
+// FOREIGN KEY ... ON DELETE RESTRICT applies correctly (SQLite exempts
+// NULL from FK checks) and an unscoped credential never blocks a
+// workspace's deletion.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 type rowScanner interface {

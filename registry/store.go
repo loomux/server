@@ -28,5 +28,15 @@ type Store interface {
 	UpdateTask(ctx context.Context, t *Task) error
 	DeleteTask(ctx context.Context, id string) error
 
+	// CreateCredential, GetCredential, ListCredentials, and
+	// DeleteCredential are the vault (design spec §7's second half).
+	// Credential.Value is plaintext at this interface's boundary; a
+	// backend implementation is responsible for encrypting it at rest
+	// and decrypting on read.
+	CreateCredential(ctx context.Context, c *Credential) error
+	GetCredential(ctx context.Context, id string) (*Credential, error)
+	ListCredentials(ctx context.Context) ([]*Credential, error)
+	DeleteCredential(ctx context.Context, id string) error
+
 	Close() error
 }

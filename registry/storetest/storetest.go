@@ -34,6 +34,13 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TaskListByWorkspace", func(t *testing.T) { testTaskListByWorkspace(t, newStore(t)) })
 	t.Run("DeleteWorkspaceWithTasksRejected", func(t *testing.T) { testDeleteWorkspaceWithTasksRejected(t, newStore(t)) })
 	t.Run("DeleteTargetWithWorkspacesRejected", func(t *testing.T) { testDeleteTargetWithWorkspacesRejected(t, newStore(t)) })
+
+	t.Run("Credential", func(t *testing.T) { testCredentialCRUD(t, newStore(t)) })
+	t.Run("CredentialNotFound", func(t *testing.T) { testCredentialNotFound(t, newStore(t)) })
+	t.Run("CredentialWorkspaceScoped", func(t *testing.T) { testCredentialWorkspaceScoped(t, newStore(t)) })
+	t.Run("CredentialRequiresValidWorkspace", func(t *testing.T) { testCredentialRequiresValidWorkspace(t, newStore(t)) })
+	t.Run("CredentialListIncludesGlobalAndScoped", func(t *testing.T) { testCredentialListIncludesGlobalAndScoped(t, newStore(t)) })
+	t.Run("DeleteWorkspaceWithCredentialRejected", func(t *testing.T) { testDeleteWorkspaceWithCredentialRejected(t, newStore(t)) })
 }
 
 // createTestWorkspace is a fixture: task tests need a valid workspace to
@@ -443,5 +450,120 @@ func testDeleteTargetWithWorkspacesRejected(t *testing.T, s registry.Store) {
 	}
 	if err := s.DeleteTarget(ctx, target.ID); !errors.Is(err, registry.ErrConflict) {
 		t.Fatalf("DeleteTarget with a workspace attached: err = %v, want ErrConflict", err)
+	}
+}
+
+func testCredentialCRUD(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+
+	cred := &registry.Credential{
+		ID:    "cred-1",
+		Name:  "GITHUB_TOKEN",
+		Value: "super-secret-value",
+	}
+	if err := s.CreateCredential(ctx, cred); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+
+	got, err := s.GetCredential(ctx, cred.ID)
+	if err != nil {
+		t.Fatalf("GetCredential: %v", err)
+	}
+	if got.Name != cred.Name || got.Value != cred.Value {
+		t.Fatalf("GetCredential = %+v, want name=%q value=%q", got, cred.Name, cred.Value)
+	}
+	if got.WorkspaceID != "" || got.AgentType != "" {
+		t.Fatalf("GetCredential = %+v, want unscoped (empty WorkspaceID/AgentType)", got)
+	}
+	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
+		t.Fatalf("GetCredential returned zero timestamps: %+v", got)
+	}
+
+	if err := s.DeleteCredential(ctx, cred.ID); err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+	if _, err := s.GetCredential(ctx, cred.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetCredential after delete: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testCredentialNotFound(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	if _, err := s.GetCredential(ctx, "does-not-exist"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetCredential: err = %v, want ErrNotFound", err)
+	}
+	if err := s.DeleteCredential(ctx, "does-not-exist"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("DeleteCredential: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testCredentialWorkspaceScoped(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+
+	cred := &registry.Credential{
+		ID:          "cred-scoped",
+		Name:        "GITHUB_TOKEN",
+		WorkspaceID: ws.ID,
+		AgentType:   "claude-code",
+		Value:       "scoped-value",
+	}
+	if err := s.CreateCredential(ctx, cred); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+
+	got, err := s.GetCredential(ctx, cred.ID)
+	if err != nil {
+		t.Fatalf("GetCredential: %v", err)
+	}
+	if got.WorkspaceID != ws.ID || got.AgentType != "claude-code" || got.Value != "scoped-value" {
+		t.Fatalf("GetCredential = %+v, want workspace=%q agentType=%q value=%q", got, ws.ID, "claude-code", "scoped-value")
+	}
+}
+
+func testCredentialRequiresValidWorkspace(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	cred := &registry.Credential{
+		ID:          "orphan-cred",
+		Name:        "GITHUB_TOKEN",
+		WorkspaceID: "does-not-exist",
+		Value:       "value",
+	}
+	if err := s.CreateCredential(ctx, cred); !errors.Is(err, registry.ErrConflict) {
+		t.Fatalf("CreateCredential with bogus workspace_id: err = %v, want ErrConflict", err)
+	}
+}
+
+func testCredentialListIncludesGlobalAndScoped(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+
+	global := &registry.Credential{ID: "cred-global", Name: "GLOBAL_TOKEN", Value: "g"}
+	wsScoped := &registry.Credential{ID: "cred-ws", Name: "WS_TOKEN", WorkspaceID: ws.ID, Value: "w"}
+	agentScoped := &registry.Credential{ID: "cred-agent", Name: "AGENT_TOKEN", AgentType: "claude-code", Value: "a"}
+	for _, c := range []*registry.Credential{global, wsScoped, agentScoped} {
+		if err := s.CreateCredential(ctx, c); err != nil {
+			t.Fatalf("CreateCredential(%s): %v", c.ID, err)
+		}
+	}
+
+	list, err := s.ListCredentials(ctx)
+	if err != nil {
+		t.Fatalf("ListCredentials: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("ListCredentials = %d credentials, want 3", len(list))
+	}
+}
+
+func testDeleteWorkspaceWithCredentialRejected(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	cred := &registry.Credential{ID: "blocking-cred", Name: "TOKEN", WorkspaceID: ws.ID, Value: "v"}
+	if err := s.CreateCredential(ctx, cred); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	if err := s.DeleteWorkspace(ctx, ws.ID); !errors.Is(err, registry.ErrConflict) {
+		t.Fatalf("DeleteWorkspace with a credential attached: err = %v, want ErrConflict", err)
 	}
 }
