@@ -1,30 +1,41 @@
-// Command loomuxd is the Loomux server process: a thin CLI wrapper
-// around app.Build's fully wired domain layer. The versioned HTTP/WS
-// client API and login-gated auth (design spec §9, §10 axis 1, LOOM-9)
-// aren't built yet, so this binary's "minimal internal interface" is a
-// local one — a single message via -message, or a line-by-line stdin
-// loop otherwise — proving the whole stack constructs and is
-// dispatchable without exposing anything over the network.
+// Command loomuxd is the Loomux server process: a thin wrapper around
+// app.Build's fully wired domain layer and api.NewServer's client-facing
+// HTTP surface (design spec §9, §10 axis 1, LOOM-9). Default mode starts
+// the HTTP server (plain HTTP — the deployment model is a reverse proxy
+// in front terminating TLS, see api/README.md); -message dispatches one
+// message directly, bypassing HTTP/auth entirely, for local debugging;
+// -hash-password is a standalone utility for generating
+// LOOMUX_AUTH_PASSWORD_HASH.
 package main
 
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/app"
 )
 
 func main() {
-	message := flag.String("message", "", "dispatch a single message and exit, instead of reading chat messages from stdin")
-	conversation := flag.String("conversation", "", "conversation ID to use (default: a freshly generated one)")
+	hashPassword := flag.Bool("hash-password", false, "read a password from stdin, print its bcrypt hash (for LOOMUX_AUTH_PASSWORD_HASH), and exit")
+	message := flag.String("message", "", "dispatch a single message directly (bypassing HTTP/auth) and exit, for local debugging")
+	conversation := flag.String("conversation", "", "conversation ID to use with -message (default: a freshly generated one)")
 	flag.Parse()
+
+	if *hashPassword {
+		runHashPassword()
+		return
+	}
 
 	cfg, err := app.LoadConfig()
 	if err != nil {
@@ -45,12 +56,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	convID := *conversation
-	if convID == "" {
-		convID = uuid.NewString()
-	}
-
 	if *message != "" {
+		convID := *conversation
+		if convID == "" {
+			convID = uuid.NewString()
+		}
 		reply, err := loomux.Dispatch(ctx, convID, *message)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -60,17 +70,50 @@ func main() {
 		return
 	}
 
+	runServer(ctx, loomux)
+}
+
+// runHashPassword reads one line (the plaintext password) from stdin and
+// prints its bcrypt hash to stdout — e.g.
+// `echo -n 'my password' | loomuxd -hash-password`. A standalone utility
+// mode: it never touches app.LoadConfig/app.Build (no DB, no router
+// model needed just to hash a password).
+func runHashPassword() {
 	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-		reply, err := loomux.Dispatch(ctx, convID, line)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			continue
-		}
-		fmt.Println(reply)
+	if !scanner.Scan() {
+		fmt.Fprintln(os.Stderr, "loomuxd: could not read a password from stdin")
+		os.Exit(1)
+	}
+	hash, err := api.HashPassword(scanner.Text())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(hash)
+}
+
+// runServer starts the client-facing HTTP API and blocks until ctx is
+// cancelled (SIGINT/SIGTERM), then shuts down gracefully.
+func runServer(ctx context.Context, loomux *app.App) {
+	apiCfg, err := api.LoadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	server := api.NewServer(loomux, loomux.Store(), apiCfg.PasswordHash, api.WithSessionTTL(apiCfg.SessionTTL))
+	httpServer := &http.Server{Addr: apiCfg.Addr, Handler: server}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+	}()
+
+	fmt.Fprintf(os.Stderr, "loomuxd: listening on %s\n", apiCfg.Addr)
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }

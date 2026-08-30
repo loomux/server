@@ -1,0 +1,242 @@
+// Package api is Loomux's client-facing HTTP surface (design spec §9,
+// §10 axis 1): a versioned /api/v1/... surface with real, login-gated
+// Bearer-token auth in front of app.App.Dispatch — "there is no 'it's
+// just me so no auth' shortcut" (spec §9), since clients are reachable
+// outside the server process's own trust boundary. See README.md for
+// the auth design and its deployment assumptions.
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/Loomux/server/registry"
+)
+
+// Dispatcher is the one operation Server needs from the domain layer —
+// satisfied by *app.App. A narrow seam (this package doesn't import app
+// directly) keeps its own tests fast and self-contained, mirroring
+// router.RoutingModel / orchestrator.CompletionDetector's minimal-seam
+// pattern elsewhere in this codebase.
+type Dispatcher interface {
+	Dispatch(ctx context.Context, conversationID, message string) (string, error)
+}
+
+// SessionStore is the session-related slice of registry.Store this
+// package needs — satisfied structurally by any registry.Store
+// (including *app.App.Store()).
+type SessionStore interface {
+	CreateSession(ctx context.Context, s *registry.Session) error
+	GetSessionByTokenHash(ctx context.Context, tokenHash string) (*registry.Session, error)
+	TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error
+	DeleteSession(ctx context.Context, id string) error
+}
+
+// defaultSessionTTL is the sliding-expiration window: a session stays
+// valid as long as it's used at least once within this window: 30 days,
+// reasonable for a personal single-user tool used from mobile.
+const defaultSessionTTL = 30 * 24 * time.Hour
+
+// Server is the client-facing HTTP API. It implements http.Handler —
+// callers decide how to actually listen (http.ListenAndServe,
+// httptest.Server, etc.), keeping this package transport-agnostic about
+// TLS/networking (deployment assumption: plain HTTP behind a reverse
+// proxy that terminates TLS — see README.md).
+type Server struct {
+	dispatcher   Dispatcher
+	sessions     SessionStore
+	passwordHash []byte
+	sessionTTL   time.Duration
+	mux          *http.ServeMux
+}
+
+// Option configures a Server constructed via NewServer.
+type Option func(*Server)
+
+// WithSessionTTL overrides the default sliding-expiration window.
+func WithSessionTTL(d time.Duration) Option {
+	return func(s *Server) { s.sessionTTL = d }
+}
+
+// NewServer constructs a Server. passwordHash is a bcrypt hash (see
+// HashPassword) — the single v1 user's credential, verified at login;
+// never a plaintext password.
+func NewServer(dispatcher Dispatcher, sessions SessionStore, passwordHash []byte, opts ...Option) *Server {
+	s := &Server{
+		dispatcher:   dispatcher,
+		sessions:     sessions,
+		passwordHash: passwordHash,
+		sessionTTL:   defaultSessionTTL,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
+	mux.HandleFunc("POST /api/v1/logout", s.requireAuth(s.handleLogout))
+	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
+	s.mux = mux
+	return s
+}
+
+// ServeHTTP implements http.Handler.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(w, r)
+}
+
+type loginRequest struct {
+	Password string `json:"password"`
+}
+
+type loginResponse struct {
+	Token string `json:"token"`
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed request body")
+		return
+	}
+
+	if err := checkPassword(s.passwordHash, req.Password); err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid password")
+		return
+	}
+
+	token, tokenHash, err := newToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create session")
+		return
+	}
+	sess := &registry.Session{ID: uuid.NewString(), TokenHash: tokenHash}
+	if err := s.sessions.CreateSession(r.Context(), sess); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create session")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, loginResponse{Token: token})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	sess := sessionFromContext(r.Context())
+	if err := s.sessions.DeleteSession(r.Context(), sess.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not revoke session")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type dispatchRequest struct {
+	ConversationID string `json:"conversation_id"`
+	Message        string `json:"message"`
+}
+
+type dispatchResponse struct {
+	Reply string `json:"reply"`
+}
+
+func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
+	var req dispatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed request body")
+		return
+	}
+	if req.ConversationID == "" || req.Message == "" {
+		writeError(w, http.StatusBadRequest, "conversation_id and message are required")
+		return
+	}
+
+	reply, err := s.dispatcher.Dispatch(r.Context(), req.ConversationID, req.Message)
+	if err != nil {
+		// Surfaced verbatim, not genericized: design spec's error-handling
+		// section requires routing failures to reach the user as an
+		// explicit message, never a silently dropped one — and this
+		// endpoint is auth-gated, so the exposure is to the authenticated
+		// owner only, not an anonymous caller.
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, dispatchResponse{Reply: reply})
+}
+
+type sessionContextKey struct{}
+
+// requireAuth gates next behind a valid Bearer session token: missing/
+// malformed header, unknown token, or one past its sliding-expiration
+// window all fail closed with 401. A valid session's LastUsedAt is
+// refreshed on every request (the sliding half of "sliding expiration").
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token, ok := bearerToken(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "missing or malformed Authorization header")
+			return
+		}
+
+		sess, err := s.sessions.GetSessionByTokenHash(r.Context(), hashToken(token))
+		if errors.Is(err, registry.ErrNotFound) {
+			writeError(w, http.StatusUnauthorized, "invalid or expired session")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not verify session")
+			return
+		}
+
+		if time.Since(sess.LastUsedAt) > s.sessionTTL {
+			_ = s.sessions.DeleteSession(r.Context(), sess.ID) // opportunistic cleanup
+			writeError(w, http.StatusUnauthorized, "invalid or expired session")
+			return
+		}
+
+		now := time.Now().UTC()
+		if err := s.sessions.TouchSession(r.Context(), sess.ID, now); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not refresh session")
+			return
+		}
+		sess.LastUsedAt = now
+
+		ctx := context.WithValue(r.Context(), sessionContextKey{}, sess)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+func sessionFromContext(ctx context.Context) *registry.Session {
+	sess, _ := ctx.Value(sessionContextKey{}).(*registry.Session)
+	return sess
+}
+
+func bearerToken(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, prefix) {
+		return "", false
+	}
+	token := strings.TrimPrefix(h, prefix)
+	if token == "" {
+		return "", false
+	}
+	return token, true
+}
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, errorResponse{Error: msg})
+}

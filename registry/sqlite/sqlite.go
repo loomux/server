@@ -500,6 +500,65 @@ func scanCredential(row rowScanner, key []byte) (*registry.Credential, error) {
 	return &c, nil
 }
 
+func (s *Store) CreateSession(ctx context.Context, sess *registry.Session) error {
+	now := time.Now().UTC()
+	sess.CreatedAt = now
+	if sess.LastUsedAt.IsZero() {
+		sess.LastUsedAt = now
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sessions (id, token_hash, created_at, last_used_at)
+		VALUES (?, ?, ?, ?)`,
+		sess.ID, sess.TokenHash, sess.CreatedAt, sess.LastUsedAt,
+	)
+	if isUniqueConstraintErr(err) {
+		return fmt.Errorf("%w: session with this token already exists", registry.ErrConflict)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: create session: %w", err)
+	}
+	return nil
+}
+
+const sessionColumns = `id, token_hash, created_at, last_used_at`
+
+func (s *Store) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*registry.Session, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE token_hash = ?`, tokenHash)
+	sess, err := scanSession(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: session", registry.ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get session: %w", err)
+	}
+	return sess, nil
+}
+
+func (s *Store) TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_used_at = ? WHERE id = ?`, lastUsedAt, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: touch session: %w", err)
+	}
+	return requireRowAffected(res, "session", id)
+}
+
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete session: %w", err)
+	}
+	return requireRowAffected(res, "session", id)
+}
+
+func scanSession(row rowScanner) (*registry.Session, error) {
+	var sess registry.Session
+	if err := row.Scan(&sess.ID, &sess.TokenHash, &sess.CreatedAt, &sess.LastUsedAt); err != nil {
+		return nil, err
+	}
+	return &sess, nil
+}
+
 // nullIfEmpty maps Go's "" (this codebase's usual empty-means-absent
 // convention) to a genuine SQL NULL for workspace_id specifically, so
 // FOREIGN KEY ... ON DELETE RESTRICT applies correctly (SQLite exempts

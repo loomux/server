@@ -1,6 +1,9 @@
 package registry
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Store is the backend-agnostic interface every storage implementation
 // satisfies. It intentionally has no SQL- or driver-specific types in its
@@ -37,6 +40,16 @@ type Store interface {
 	GetCredential(ctx context.Context, id string) (*Credential, error)
 	ListCredentials(ctx context.Context) ([]*Credential, error)
 	DeleteCredential(ctx context.Context, id string) error
+
+	// CreateSession, GetSessionByTokenHash, TouchSession, and
+	// DeleteSession back client auth (design spec §9). TouchSession
+	// updates LastUsedAt (sliding expiration); a caller with an unknown
+	// id gets ErrNotFound, matching every other Update-shaped method
+	// here.
+	CreateSession(ctx context.Context, s *Session) error
+	GetSessionByTokenHash(ctx context.Context, tokenHash string) (*Session, error)
+	TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error
+	DeleteSession(ctx context.Context, id string) error
 
 	Close() error
 }

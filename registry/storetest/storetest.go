@@ -9,6 +9,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Loomux/server/registry"
 )
@@ -41,6 +42,10 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("CredentialRequiresValidWorkspace", func(t *testing.T) { testCredentialRequiresValidWorkspace(t, newStore(t)) })
 	t.Run("CredentialListIncludesGlobalAndScoped", func(t *testing.T) { testCredentialListIncludesGlobalAndScoped(t, newStore(t)) })
 	t.Run("DeleteWorkspaceWithCredentialRejected", func(t *testing.T) { testDeleteWorkspaceWithCredentialRejected(t, newStore(t)) })
+
+	t.Run("Session", func(t *testing.T) { testSessionCRUD(t, newStore(t)) })
+	t.Run("SessionNotFound", func(t *testing.T) { testSessionNotFound(t, newStore(t)) })
+	t.Run("SessionTouchUpdatesLastUsedAt", func(t *testing.T) { testSessionTouchUpdatesLastUsedAt(t, newStore(t)) })
 }
 
 // createTestWorkspace is a fixture: task tests need a valid workspace to
@@ -565,5 +570,71 @@ func testDeleteWorkspaceWithCredentialRejected(t *testing.T, s registry.Store) {
 	}
 	if err := s.DeleteWorkspace(ctx, ws.ID); !errors.Is(err, registry.ErrConflict) {
 		t.Fatalf("DeleteWorkspace with a credential attached: err = %v, want ErrConflict", err)
+	}
+}
+
+func testSessionCRUD(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	lastUsed := time.Now().UTC().Truncate(time.Second)
+
+	sess := &registry.Session{ID: "sess-1", TokenHash: "hash-1", LastUsedAt: lastUsed}
+	if err := s.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	got, err := s.GetSessionByTokenHash(ctx, "hash-1")
+	if err != nil {
+		t.Fatalf("GetSessionByTokenHash: %v", err)
+	}
+	if got.ID != sess.ID || got.TokenHash != "hash-1" {
+		t.Fatalf("GetSessionByTokenHash = %+v, want id=%q tokenHash=%q", got, sess.ID, "hash-1")
+	}
+	if got.CreatedAt.IsZero() {
+		t.Fatalf("GetSessionByTokenHash returned zero CreatedAt: %+v", got)
+	}
+	if !got.LastUsedAt.Equal(lastUsed) {
+		t.Fatalf("LastUsedAt = %v, want %v", got.LastUsedAt, lastUsed)
+	}
+
+	if err := s.DeleteSession(ctx, sess.ID); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if _, err := s.GetSessionByTokenHash(ctx, "hash-1"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetSessionByTokenHash after delete: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testSessionNotFound(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	if _, err := s.GetSessionByTokenHash(ctx, "does-not-exist"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetSessionByTokenHash: err = %v, want ErrNotFound", err)
+	}
+	if err := s.DeleteSession(ctx, "does-not-exist"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("DeleteSession: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testSessionTouchUpdatesLastUsedAt(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	sess := &registry.Session{ID: "sess-touch", TokenHash: "hash-touch", LastUsedAt: time.Now().UTC().Add(-time.Hour)}
+	if err := s.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	newTime := time.Now().UTC().Truncate(time.Second)
+	if err := s.TouchSession(ctx, sess.ID, newTime); err != nil {
+		t.Fatalf("TouchSession: %v", err)
+	}
+
+	got, err := s.GetSessionByTokenHash(ctx, "hash-touch")
+	if err != nil {
+		t.Fatalf("GetSessionByTokenHash: %v", err)
+	}
+	if !got.LastUsedAt.Equal(newTime) {
+		t.Fatalf("LastUsedAt = %v, want %v", got.LastUsedAt, newTime)
+	}
+
+	if err := s.TouchSession(ctx, "does-not-exist", newTime); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("TouchSession on unknown id: err = %v, want ErrNotFound", err)
 	}
 }

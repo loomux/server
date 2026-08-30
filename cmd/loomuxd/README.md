@@ -1,30 +1,38 @@
 # loomuxd
 
-The Loomux server process. A thin CLI wrapper around `app.Build` — see
-`app/README.md` for the actual composition/wiring design.
-
-No network surface exists yet (login-gated auth and the versioned
-HTTP/WS client API are LOOM-9, not yet built), so this binary's
-"minimal internal interface" is local only:
+The Loomux server process. A thin wrapper around `app.Build` (the domain
+layer — see `app/README.md`) and `api.NewServer` (the client-facing HTTP
+surface — see `api/README.md`, including its auth design and known gaps).
 
 ```sh
-# single message, print the reply, exit
-LOOMUX_ROUTER_PRIMARY_BASE_URL=... LOOMUX_ROUTER_PRIMARY_API_KEY=... LOOMUX_ROUTER_PRIMARY_MODEL=... \
-  loomuxd -message "hello"
+# generate a bcrypt hash for LOOMUX_AUTH_PASSWORD_HASH (standalone; no
+# other config needed)
+echo -n 'my password' | loomuxd -hash-password
 
-# interactive: one chat message per line on stdin, one reply per line on stdout
-loomuxd
+# default: start the HTTP server and block until SIGINT/SIGTERM
+LOOMUX_ROUTER_PRIMARY_BASE_URL=... LOOMUX_ROUTER_PRIMARY_API_KEY=... LOOMUX_ROUTER_PRIMARY_MODEL=... \
+  LOOMUX_AUTH_PASSWORD_HASH=... \
+  loomuxd
+
+# debugging only: dispatch one message directly, bypassing HTTP/auth entirely
+loomuxd -message "hello"
 ```
 
-`-conversation` pins the conversation ID used for every dispatched
-message in that run (default: a freshly generated one per process
-start).
+`loomuxd` itself only ever speaks plain HTTP — the assumed deployment is
+a reverse proxy (or an overlay network like Tailscale) in front
+terminating TLS. See `api/README.md`'s Design section for why, and for
+the other security/deployment decisions confirmed with the user before
+this shipped.
+
+`-conversation` pins the conversation ID used with `-message` (default: a
+freshly generated one per process start).
 
 ## Configuration
 
-All via environment variables (see `app.LoadConfig`):
+All via environment variables:
 
 ```
+# app.LoadConfig — the domain layer
 LOOMUX_DB_PATH               SQLite file path (default: loomux.db)
 LOOMUX_MARKER_DIR             completion-marker directory (default: completion's own package default)
 LOOMUX_MASTER_KEY             base64 AES-256 key for the credential vault (optional; a startup
@@ -32,4 +40,9 @@ LOOMUX_MASTER_KEY             base64 AES-256 key for the credential vault (optio
 
 LOOMUX_ROUTER_PRIMARY_BASE_URL / _API_KEY / _MODEL       (required — see router/llmrouter)
 LOOMUX_ROUTER_ESCALATION_BASE_URL / _API_KEY / _MODEL    (optional, all-or-nothing)
+
+# api.LoadConfig — the HTTP/auth layer (only read in the default server mode)
+LOOMUX_AUTH_PASSWORD_HASH    bcrypt hash of the single v1 user's password (required — see loomuxd -hash-password)
+LOOMUX_HTTP_ADDR             address to listen on (default: :8080)
+LOOMUX_SESSION_TTL           sliding-expiration window, time.ParseDuration syntax (default: 720h / 30 days)
 ```

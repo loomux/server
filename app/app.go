@@ -7,6 +7,7 @@ import (
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/orchestrator"
+	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
@@ -15,7 +16,9 @@ import (
 
 // App is the fully wired Loomux domain layer, exposed through the one
 // operation this package's "minimal internal interface" needs —
-// Dispatch — plus lifecycle cleanup.
+// Dispatch — plus lifecycle cleanup and read access to the underlying
+// Store for a client-facing layer (api.Server) that needs its own
+// session storage in the same database.
 type App struct {
 	router *router.Router
 	store  *sqlite.Store
@@ -25,6 +28,13 @@ type App struct {
 // router.Router.Dispatch.
 func (a *App) Dispatch(ctx context.Context, conversationID, message string) (string, error) {
 	return a.router.Dispatch(ctx, conversationID, message)
+}
+
+// Store returns the underlying registry.Store — e.g. for api.Server's
+// session storage, which must live in the same database as everything
+// else rather than a second, separately managed connection.
+func (a *App) Store() registry.Store {
+	return a.store
 }
 
 // Close releases the store's resources (its DB connection).
