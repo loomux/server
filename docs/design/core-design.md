@@ -252,6 +252,16 @@ Two different problems, two different solutions:
   pattern, but database-backed and access-scoped rather than one flat file
   everything reads from.
 
+The router model's own credential (the LLM vendor API key(s) used for
+routing/relay, §6) is a partial exception to both cases above: it's needed
+before any workspace or agent-type is even chosen, so it fits neither the
+OAuth-native-CLI case nor the workspace/agent-type-scoped vault. It's
+configured once, server-wide, via environment variables at process start
+(one set per configured tier — primary always, an optional escalation
+tier for harder cases) — the same env-at-process-start convention as the
+vault's own master key (§8), but deliberately outside the vault itself
+since it isn't scoped to any workspace or agent-type.
+
 ### 8. Storage layer
 
 Pluggable backends (not hardcoded to one database engine), with a real

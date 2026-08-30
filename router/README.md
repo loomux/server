@@ -19,9 +19,7 @@ replies, and updating each workspace's rolling summary).
   shell-kind (provisioning) tasks, since `registry.Task.AgentType` is
   always empty for those.
 - `routing.go` — `RoutingModel` (the swappable seam), `Decision`,
-  `WorkspaceSnapshot`, `ProvisionSpec`. No implementation here beyond a
-  deterministic test stand-in (`routertest.StubRoutingModel`) — a real
-  LLM integration is separate, later work.
+  `WorkspaceSnapshot`, `ProvisionSpec`.
 - `router.go` — `Router`, the actual composition: `Dispatch` routes a
   message, resolves or provisions a workspace, resolves the agent-type's
   launch command and applicable credentials
@@ -33,6 +31,12 @@ replies, and updating each workspace's rolling summary).
   double (not signaled/blocking, unlike
   `orchestrator/detectortest.ManualDetector` — `Decide`/`Relay` aren't
   "wait until told" operations).
+- `llmrouter/` — the real, LLM-backed `RoutingModel`: a generic
+  OpenAI-Chat-Completions-compatible client with a config-swappable
+  primary tier (intended to be a free/cheap, fast model — routing and
+  relay are simple extraction/summarization, not hard reasoning) and an
+  optional escalation tier for when the primary's output is unusable or
+  the primary is unavailable. See `llmrouter/README.md`.
 
 Task-continuation (checking for an already-active task and using
 `SendMessage` instead of always `Launch`) isn't built here — `Dispatch`

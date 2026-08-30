@@ -62,10 +62,9 @@ type Decision struct {
 }
 
 // RoutingModel is the swappable "router model" seam (design spec §6) —
-// a real LLM call in production. No implementation of this interface
-// beyond a deterministic test stand-in (router/routertest) is built in
-// this package; choosing a model vendor and integrating it is separate,
-// later work.
+// a real LLM call in production. router/llmrouter is the real,
+// LLM-backed implementation; router/routertest provides a deterministic
+// test stand-in for tests that don't want a real model call in the loop.
 type RoutingModel interface {
 	// Decide returns a routing decision for an incoming chat message,
 	// given a compact snapshot of the existing workspace registry.

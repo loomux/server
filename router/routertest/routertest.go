@@ -1,7 +1,7 @@
 // Package routertest provides a deterministic RoutingModel stand-in for
-// tests. The real "router model" (design spec §6) is a swappable LLM
-// call in production; no such integration exists here, or anywhere in
-// this repo yet — that's separate, later work.
+// tests. A real, LLM-backed RoutingModel (design spec §6) lives in
+// router/llmrouter; this stub stays deliberately dumb and deterministic
+// for tests that don't want a real model call in the loop.
 package routertest
 
 import (
