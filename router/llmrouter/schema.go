@@ -25,11 +25,22 @@ const decideSystemPrompt = `You are Loomux's routing model. Given an incoming ch
 	`in new_workspace and agent_type. Only use an agent_type from the list of registered agent types ` +
 	`given to you — never invent one.`
 
+// relayToolName is the single function Relay forces the model to call
+// via tool_choice, so it always returns both the condensed reply and
+// the done/continues signal as structured, parseable output.
+const relayToolName = "condense_output"
+
 const relaySystemPrompt = `You are Loomux's relay model. You are given the raw captured output of an ` +
-	`agent's terminal session. Produce exactly one plain-text response — no markdown headers, no ` +
-	`preamble — that condenses what the agent did, what changed, and what (if anything) is needed ` +
-	`next. This single response is shown directly to the user as the chat reply AND stored as the ` +
-	`workspace's rolling summary, so it must stand alone as both: concise, not a verbatim transcript.`
+	`agent's terminal session, captured right after it went quiet (finished a turn). Call the ` +
+	relayToolName + ` function exactly once with two things: reply — exactly one plain-text response, ` +
+	`no markdown headers, no preamble, that condenses what the agent did, what changed, and what (if ` +
+	`anything) is needed next; this single string is shown directly to the user as the chat reply AND ` +
+	`stored as the workspace's rolling summary, so it must stand alone as both — concise, not a ` +
+	`verbatim transcript. And done — true if the task itself is fully finished and no follow-up is ` +
+	`expected (the requested work is complete, or the agent gave a final answer), false if the ` +
+	`conversation is expected to continue (the agent is asking a clarifying question, waiting on ` +
+	`confirmation, or mid-way through a multi-step task) — false keeps the same session open so the ` +
+	`next message is typed into it directly rather than starting a fresh one.`
 
 // buildDecideTool builds the forced tool/function-call schema for Decide.
 // Flat rather than a conditional schema keyed on action — conditional
@@ -78,6 +89,31 @@ func buildDecideTool(agentTypes, workspaceIDs []string) openai.ChatCompletionToo
 			"type":       "object",
 			"properties": properties,
 			"required":   []string{"action"},
+		},
+	})
+}
+
+// buildRelayTool builds the forced tool/function-call schema for Relay:
+// the condensed reply text plus the done/continues signal (design spec
+// §3 step 3), so that signal is always structured rather than parsed
+// out of free text.
+func buildRelayTool() openai.ChatCompletionToolUnionParam {
+	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+		Name:        relayToolName,
+		Description: openai.String("Record the condensed reply and whether the task is fully finished."),
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"reply": map[string]any{
+					"type":        "string",
+					"description": "The condensed, chat-appropriate reply — also stored as the workspace's rolling summary.",
+				},
+				"done": map[string]any{
+					"type":        "boolean",
+					"description": "true if the task is fully finished (tear the session down); false if the conversation should stay open for a follow-up in the same session.",
+				},
+			},
+			"required": []string{"reply", "done"},
 		},
 	})
 }

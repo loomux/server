@@ -2,34 +2,45 @@ package llmrouter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/openai/openai-go/v3"
+
+	"github.com/Loomux/server/router"
 )
+
+// relayArguments mirrors router.RelayResult, the shape condense_output's
+// tool schema asks the model to fill in.
+type relayArguments struct {
+	Reply string `json:"reply"`
+	Done  bool   `json:"done"`
+}
 
 // Relay implements router.RoutingModel. It tries the primary tier first,
 // escalating to the configured escalation tier (if any) when the primary
-// fails (transport/rate-limit) or returns an unusable (empty) response.
-func (m *Model) Relay(ctx context.Context, capturedOutput string) (string, error) {
-	out, err := m.relayWith(ctx, m.cfg.Primary, m.primaryTimeout, capturedOutput)
+// fails (transport/rate-limit) or returns an unusable (unparseable/
+// invalid tool call, or an empty reply).
+func (m *Model) Relay(ctx context.Context, capturedOutput string) (router.RelayResult, error) {
+	result, err := m.relayWith(ctx, m.cfg.Primary, m.primaryTimeout, capturedOutput)
 	if err == nil {
-		return out, nil
+		return result, nil
 	}
 	if m.cfg.Escalation == nil {
-		return "", fmt.Errorf("llmrouter: relay: primary model: %w", err)
+		return router.RelayResult{}, fmt.Errorf("llmrouter: relay: primary model: %w", err)
 	}
 
-	out, err2 := m.relayWith(ctx, *m.cfg.Escalation, m.escalationTimeout, capturedOutput)
+	result, err2 := m.relayWith(ctx, *m.cfg.Escalation, m.escalationTimeout, capturedOutput)
 	if err2 != nil {
-		return "", fmt.Errorf(
+		return router.RelayResult{}, fmt.Errorf(
 			"llmrouter: relay: primary model failed (%v); escalation model also failed: %w", err, err2)
 	}
-	return out, nil
+	return result, nil
 }
 
-func (m *Model) relayWith(ctx context.Context, tier Tier, timeout time.Duration, capturedOutput string) (string, error) {
+func (m *Model) relayWith(ctx context.Context, tier Tier, timeout time.Duration, capturedOutput string) (router.RelayResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -40,17 +51,31 @@ func (m *Model) relayWith(ctx context.Context, tier Tier, timeout time.Duration,
 			openai.SystemMessage(relaySystemPrompt),
 			openai.UserMessage(capturedOutput),
 		},
+		Tools: []openai.ChatCompletionToolUnionParam{buildRelayTool()},
+		ToolChoice: openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
+			Name: relayToolName,
+		}),
 	})
 	if err != nil {
-		return "", fmt.Errorf("call failed: %w", err)
+		return router.RelayResult{}, fmt.Errorf("call failed: %w", err)
 	}
 	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("no choices returned")
+		return router.RelayResult{}, fmt.Errorf("no choices returned")
 	}
 
-	condensed := strings.TrimSpace(resp.Choices[0].Message.Content)
-	if condensed == "" {
-		return "", fmt.Errorf("empty response")
+	toolCalls := resp.Choices[0].Message.ToolCalls
+	if len(toolCalls) == 0 {
+		return router.RelayResult{}, fmt.Errorf("model did not call %s", relayToolName)
 	}
-	return condensed, nil
+
+	var args relayArguments
+	if err := json.Unmarshal([]byte(toolCalls[0].Function.Arguments), &args); err != nil {
+		return router.RelayResult{}, fmt.Errorf("unparseable tool call arguments: %w", err)
+	}
+
+	reply := strings.TrimSpace(args.Reply)
+	if reply == "" {
+		return router.RelayResult{}, fmt.Errorf("empty reply")
+	}
+	return router.RelayResult{Reply: reply, Done: args.Done}, nil
 }

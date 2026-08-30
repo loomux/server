@@ -91,7 +91,7 @@ func TestDecide_ProvisionWorkspace(t *testing.T) {
 }
 
 func TestDecide_MalformedPrimary_EscalatesToHealthyEscalation(t *testing.T) {
-	primarySrv, primaryCount := newFakeServer(t, malformedToolCallHandler(t))
+	primarySrv, primaryCount := newFakeServer(t, malformedToolCallHandler(t, decideToolName))
 	escalationSrv, escalationCount := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
 		"action":        "answer_directly",
 		"direct_answer": "from escalation",

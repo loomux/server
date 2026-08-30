@@ -92,7 +92,7 @@ func toolCallHandler(t *testing.T, functionName string, args any) http.HandlerFu
 
 // malformedToolCallHandler responds with a tool call whose arguments aren't
 // valid JSON.
-func malformedToolCallHandler(t *testing.T) http.HandlerFunc {
+func malformedToolCallHandler(t *testing.T, functionName string) http.HandlerFunc {
 	t.Helper()
 	resp := fakeChatCompletion{
 		ID: "chatcmpl-test", Object: "chat.completion", Created: 1, Model: "test-model",
@@ -103,7 +103,7 @@ func malformedToolCallHandler(t *testing.T) http.HandlerFunc {
 				ToolCalls: []fakeToolCall{{
 					ID:       "call_1",
 					Type:     "function",
-					Function: fakeFunctionCall{Name: decideToolName, Arguments: "{not valid json"},
+					Function: fakeFunctionCall{Name: functionName, Arguments: "{not valid json"},
 				}},
 			},
 		}},

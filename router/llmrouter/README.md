@@ -29,23 +29,29 @@ availability problems (the primary provider being down/rate-limited),
 without a hand-rolled retry loop duplicating what the SDK's own retry
 policy already covers.
 
-`Decide` gets structured output via a **forced tool/function call**
-(`tool_choice` pinned to a single `route_decision` function), not JSON
-mode — the schema mirrors `router.Decision` + `router.ProvisionSpec`
-flattened into one object. `agent_type` and `workspace_id` are
-enum-constrained to the caller-supplied valid sets when non-empty, which
-constrains the model's choice at the schema level rather than only
-validating after the fact. `Relay` is plain free-text completion — no
-schema — since its output is prose, not structured data.
+Both `Decide` and `Relay` get structured output via a **forced
+tool/function call** (`tool_choice` pinned to a single function each),
+not JSON mode. `Decide`'s `route_decision` schema mirrors
+`router.Decision` + `router.ProvisionSpec` flattened into one object;
+`agent_type` and `workspace_id` are enum-constrained to the
+caller-supplied valid sets when non-empty, which constrains the model's
+choice at the schema level rather than only validating after the fact.
+`Relay`'s `condense_output` schema is just `{reply, done}` — `done`
+(design spec §3 step 3: "if the task itself, not just the turn, is
+finished") is what tells `Router.Dispatch` whether to tear the task's
+pane down or leave it open for the next turn in the same session
+(LOOM-13). Structured output for `Relay` too (not free text) is what
+makes that signal reliable rather than parsed out of prose.
 
 **Known risk**: whether every OpenAI-compatible provider honors a *forced,
 named* `tool_choice` (vs. only `auto`) is unverified for any specific
 target vendor. This isn't handled with a separate JSON-mode fallback — a
-primary tier that doesn't support it will simply fail every `Decide` call,
-which the escalation mechanism already absorbs if one is configured. An
-operator picking such a provider as primary with no escalation configured
-will see every `Decide` call fail; verify `tool_choice` support against
-your chosen vendor before deploying without an escalation tier.
+primary tier that doesn't support it will simply fail every `Decide`/
+`Relay` call, which the escalation mechanism already absorbs if one is
+configured. An operator picking such a provider as primary with no
+escalation configured will see every call fail; verify `tool_choice`
+support against your chosen vendor before deploying without an
+escalation tier.
 
 ## Configuration
 
@@ -67,15 +73,16 @@ escalation vars are set partially rather than all-or-nothing.
 
 - `config.go` — `Tier`, `Config`, `ConfigFromEnv`, env var names,
   `ErrConfigInvalid`.
-- `schema.go` — the forced tool-call JSON schema for `Decide`, and the
-  system-prompt text for both `Decide` and `Relay`.
+- `schema.go` — the forced tool-call JSON schemas for `Decide` and
+  `Relay`, and the system-prompt text for both.
 - `llmrouter.go` — `Model`, `New`, functional `Option`s
   (`WithPrimaryTimeout`, `WithEscalationTimeout`).
 - `decide.go` — `Decide` (escalation orchestration) and `decideWith` (one
   tier's round trip: build the schema, force the tool call, parse and
   validate the result).
 - `relay.go` — `Relay` (escalation orchestration) and `relayWith` (one
-  tier's plain free-text round trip).
+  tier's round trip: force the `condense_output` tool call, parse into
+  `router.RelayResult`).
 - `client.go` — `buildClient`, the one place `option.WithBaseURL`/
   `WithAPIKey` are applied.
 

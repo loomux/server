@@ -19,14 +19,18 @@ replies, and updating each workspace's rolling summary).
   shell-kind (provisioning) tasks, since `registry.Task.AgentType` is
   always empty for those.
 - `routing.go` — `RoutingModel` (the swappable seam), `Decision`,
-  `WorkspaceSnapshot`, `ProvisionSpec`.
+  `WorkspaceSnapshot`, `ProvisionSpec`, `RelayResult`.
 - `router.go` — `Router`, the actual composition: `Dispatch` routes a
-  message, resolves or provisions a workspace, resolves the agent-type's
-  launch command and applicable credentials
-  (`credentials.Resolver.Resolve` + `credentials.ShellEnvPrefix`),
-  launches via `orchestrator.Launch`, waits for completion, relays the
-  captured output, and applies it via `orchestrator.Complete`. This is
-  the composition every prior component's ticket left for this one.
+  message, resolves or provisions a workspace, then `dispatchToAgent`
+  finds the task already open for that workspace + conversation
+  (`findActiveTask`) or launches a fresh one, sends the message into it
+  (`orchestrator.SendMessage` — uniformly, first turn and follow-ups
+  alike), waits for completion, relays the captured output, and applies
+  the result: `RelayResult.Done` decides whether the task is torn down
+  via `orchestrator.Complete` or left open (`registry.
+  TaskStatusAwaitingInput`) for the next turn in the same session
+  (design spec §3 steps 2-3, LOOM-13 — closes the gap LOOM-5's handoff
+  first flagged).
 - `routertest/` — `StubRoutingModel`, a plain call-and-return test
   double (not signaled/blocking, unlike
   `orchestrator/detectortest.ManualDetector` — `Decide`/`Relay` aren't
@@ -38,14 +42,10 @@ replies, and updating each workspace's rolling summary).
   optional escalation tier for when the primary's output is unusable or
   the primary is unavailable. See `llmrouter/README.md`.
 
-Task-continuation (checking for an already-active task and using
-`SendMessage` instead of always `Launch`) isn't built here — `Dispatch`
-always launches fresh. This gap was flagged by LOOM-5's handoff and
-remains open.
-
 Run `go test ./...` from the repo root to run the full suite, including
 one true end-to-end integration test (real local tmux, real tiered
-completion detection, real credential resolution) and the
-security-relevant test proving a resolved secret's raw value never
-appears in captured pane output, the relayed reply, or the rolling
-summary.
+completion detection, real credential resolution), `continuation_test.go`
+(the multi-turn task-reuse cases, including a human-takeover refusal and
+an ambiguous-active-task guard), and the security-relevant test proving a
+resolved secret's raw value never appears in captured pane output, the
+relayed reply, or the rolling summary.

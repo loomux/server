@@ -55,8 +55,8 @@ func TestIntegration_RealDispatch(t *testing.T) {
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 			return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "echo-agent"}, nil
 		},
-		RelayFunc: func(ctx context.Context, captured string) (string, error) {
-			return "relayed: " + strings.TrimSpace(captured), nil
+		RelayFunc: func(ctx context.Context, captured string) (router.RelayResult, error) {
+			return router.RelayResult{Reply: "relayed: " + strings.TrimSpace(captured), Done: true}, nil
 		},
 	}
 

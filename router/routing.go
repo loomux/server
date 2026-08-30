@@ -61,6 +61,28 @@ type Decision struct {
 	AgentType string
 }
 
+// RelayResult is what RoutingModel.Relay returns.
+type RelayResult struct {
+	// Reply is the condensed text — used as both the chat-appropriate
+	// reply and the workspace's new rolling summary, regardless of
+	// Done.
+	Reply string
+
+	// Done distinguishes "the turn is finished" (always true, since
+	// Relay only runs after a turn's completion signal fires) from "the
+	// task itself is finished" (design spec §3, step 3: "if the task
+	// itself (not just the turn) is finished, the pane is torn down").
+	// true: the task is fully done — Router.Dispatch tears the pane
+	// down via orchestrator.Complete, and the workspace reverts to
+	// idle. false: the conversation is expected to continue — the task
+	// stays open (registry.TaskStatusAwaitingInput) so the next message
+	// in the same conversation is sent into the same pane via
+	// orchestrator.SendMessage (spec §3, step 2: "If one's already
+	// running, the message is sent into it as the next turn") rather
+	// than launching a fresh one.
+	Done bool
+}
+
 // RoutingModel is the swappable "router model" seam (design spec §6) —
 // a real LLM call in production. router/llmrouter is the real,
 // LLM-backed implementation; router/routertest provides a deterministic
@@ -70,8 +92,7 @@ type RoutingModel interface {
 	// given a compact snapshot of the existing workspace registry.
 	Decide(ctx context.Context, message string, workspaces []WorkspaceSnapshot) (Decision, error)
 
-	// Relay condenses captured agent output into a single string used
-	// as both the chat-appropriate reply and the workspace's new
-	// rolling summary.
-	Relay(ctx context.Context, capturedOutput string) (string, error)
+	// Relay condenses captured agent output into a RelayResult — see
+	// its doc comment for the Done distinction (design spec §3).
+	Relay(ctx context.Context, capturedOutput string) (RelayResult, error)
 }

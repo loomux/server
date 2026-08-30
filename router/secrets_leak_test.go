@@ -81,10 +81,10 @@ func TestSecretsNeverLeakIntoCapturedOutputOrSummary(t *testing.T) {
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 			return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "well-behaved-agent"}, nil
 		},
-		RelayFunc: func(ctx context.Context, captured string) (string, error) {
+		RelayFunc: func(ctx context.Context, captured string) (router.RelayResult, error) {
 			// A trivial passthrough relay — the point of this test is
 			// what the PANE showed, not clever condensation.
-			return strings.TrimSpace(captured), nil
+			return router.RelayResult{Reply: strings.TrimSpace(captured), Done: true}, nil
 		},
 	}
 

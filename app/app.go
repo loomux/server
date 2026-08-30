@@ -73,6 +73,15 @@ func dispatchableAgentTypeNames(agentTypes router.AgentTypeRegistry) []string {
 // failure after the store opens successfully, the store is closed
 // before returning the error.
 func Build(cfg Config) (*App, error) {
+	return build(cfg, DefaultAgentTypes())
+}
+
+// build is Build's parameterized core — split out so tests can wire a
+// custom AgentTypeRegistry (e.g. a fast TierIdle agent type against a
+// real tmux session) without needing a real "claude" CLI installed,
+// while Build's public signature stays fixed to the production
+// registry.
+func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	var opts []sqlite.Option
 	if cfg.MasterKey != nil {
 		opts = append(opts, sqlite.WithMasterKey(cfg.MasterKey))
@@ -82,7 +91,6 @@ func Build(cfg Config) (*App, error) {
 		return nil, fmt.Errorf("app: open store: %w", err)
 	}
 
-	agentTypes := DefaultAgentTypes()
 	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), cfg.MarkerDir)
 	orch := orchestrator.New(store, targets.NewExecutor, detector)
 	creds := credentials.NewResolver(store)

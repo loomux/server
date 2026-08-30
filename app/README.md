@@ -28,11 +28,20 @@ package and wrap an `*App` rather than re-wire these pieces itself;
   marker completion, launch template `claude`) plus the `""`
   bookkeeping entry completion detection needs for shell-kind
   (provisioning) tasks — deliberately excluded from what's offered to
-  the router model as a real agent-type choice.
+  the router model as a real agent-type choice. `Build` wraps an
+  unexported, parameterized `build(cfg, agentTypes)` — the public
+  signature always uses `DefaultAgentTypes()`; the split exists purely
+  so tests can wire a fast `TierIdle` agent type against a real tmux
+  session without needing a real `claude` CLI installed.
 
 ## Testing
 
 `app_test.go` runs a real end-to-end dispatch (real SQLite via a temp
 file, real `llmrouter.Model` hitting an `httptest.Server` standing in
 for the LLM vendor) through the `answer_directly` path, which needs no
-real tmux/agent CLI. Run `go test ./app/...`.
+real tmux/agent CLI. `continuation_test.go` goes further — a real local
+tmux session carries two turns of a conversation (LOOM-13: the second
+turn's message is sent into the same session, not a fresh one, until
+the fake LLM server's second `Relay` call says `Done: true`) — using
+`build` directly with a custom agent type, per the note above. Run
+`go test ./app/...`.

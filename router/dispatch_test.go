@@ -113,11 +113,11 @@ func TestDispatch_UseWorkspace(t *testing.T) {
 		}
 		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
 	}
-	model.RelayFunc = func(ctx context.Context, captured string) (string, error) {
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
 		if captured != exec.capture {
 			t.Fatalf("Relay received %q, want the fake pane output %q", captured, exec.capture)
 		}
-		return "condensed reply", nil
+		return router.RelayResult{Reply: "condensed reply", Done: true}, nil
 	}
 
 	reply, err := r.Dispatch(context.Background(), "conv-1", "do the thing")
@@ -172,8 +172,8 @@ func TestDispatch_ProvisionWorkspace(t *testing.T) {
 			AgentType: "claude-code",
 		}, nil
 	}
-	model.RelayFunc = func(ctx context.Context, captured string) (string, error) {
-		return "provisioned and dispatched", nil
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
+		return router.RelayResult{Reply: "provisioned and dispatched", Done: true}, nil
 	}
 
 	reply, err := r.Dispatch(context.Background(), "conv-1", "start a new workspace")

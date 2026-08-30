@@ -17,14 +17,14 @@ import (
 // Wait is).
 type StubRoutingModel struct {
 	DecideFunc func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error)
-	RelayFunc  func(ctx context.Context, capturedOutput string) (string, error)
+	RelayFunc  func(ctx context.Context, capturedOutput string) (router.RelayResult, error)
 }
 
 func (m *StubRoutingModel) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 	return m.DecideFunc(ctx, message, workspaces)
 }
 
-func (m *StubRoutingModel) Relay(ctx context.Context, capturedOutput string) (string, error) {
+func (m *StubRoutingModel) Relay(ctx context.Context, capturedOutput string) (router.RelayResult, error) {
 	return m.RelayFunc(ctx, capturedOutput)
 }
 
