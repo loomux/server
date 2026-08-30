@@ -17,7 +17,13 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/version"
 )
+
+// APIVersion is the server↔client API version this package serves
+// (design spec §10 axis 1) — the "v1" in /api/v1/..., independent of
+// version.Version (axis 4, the server's own release version).
+const APIVersion = "v1"
 
 // Dispatcher is the one operation Server needs from the domain layer —
 // satisfied by *app.App. A narrow seam (this package doesn't import app
@@ -82,12 +88,25 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, passwordHash []byte
 	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/logout", s.requireAuth(s.handleLogout))
 	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
+	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	s.mux = mux
 	return s
 }
 
-// ServeHTTP implements http.Handler.
+// ServeHTTP implements http.Handler. Any /api/... path outside /api/v1/
+// (a different or unsupported version, or the bare /api/ root) is
+// rejected here, before reaching the mux — design spec §10 axis 1: "a
+// mismatch is a clear rejection ... not silent breakage," structured
+// rather than a bare 404. This check is a simple path-prefix test done
+// ahead of routing, not a registered ServeMux pattern, specifically so
+// it can never shadow a real /api/v1/... route hit with the wrong HTTP
+// method (ServeMux's own 405 for that case is the correct, distinct
+// response — a known path used incorrectly, not an unknown version).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/v1/") {
+		s.handleUnsupportedAPIPath(w, r)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -165,6 +184,30 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, dispatchResponse{Reply: reply})
+}
+
+type versionResponse struct {
+	ServerVersion string `json:"server_version"`
+	APIVersion    string `json:"api_version"`
+}
+
+// handleVersion is unauthenticated — clients need to be able to check
+// compatibility (design spec §10 axis 1, axis 4) before they've logged
+// in, and version strings aren't sensitive.
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, versionResponse{ServerVersion: version.Version, APIVersion: APIVersion})
+}
+
+type unsupportedVersionResponse struct {
+	Error             string   `json:"error"`
+	SupportedVersions []string `json:"supported_versions"`
+}
+
+func (s *Server) handleUnsupportedAPIPath(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotFound, unsupportedVersionResponse{
+		Error:             "unsupported or unknown API path",
+		SupportedVersions: []string{APIVersion},
+	})
 }
 
 type sessionContextKey struct{}

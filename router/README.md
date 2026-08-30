@@ -49,3 +49,28 @@ completion detection, real credential resolution), `continuation_test.go`
 an ambiguous-active-task guard), and the security-relevant test proving a
 resolved secret's raw value never appears in captured pane output, the
 relayed reply, or the rolling summary.
+
+## Not built: agent-adapter versioning (design spec §10 axis 3)
+
+`AgentType` has no version-range field, and nothing checks a real
+`claude --version` (or any agent CLI's) output before `orchestrator.Launch`
+— so a drifted tool version currently fails the way the spec explicitly
+says it shouldn't: silently, mid-task, via a broken completion signal,
+rather than loud at launch. LOOM-10 flagged this as real, separate design
+work rather than building it speculatively, since it needs:
+- A mechanism to actually run a one-shot version-check command and read
+  its output. `TargetExecutor` has no such primitive today (`NewSession`
+  is for long-running interactive panes) — either it gains one, or a
+  version check is faked via a short-lived session
+  (`NewSession`+wait+`CapturePane`+`KillSession`), which is buildable and
+  testable against a fake executor without needing a real agent CLI, the
+  same way every other test in this package works.
+- A declared "known-good version range" format per agent-type. A real
+  `claude --version` (checked while writing this note) prints
+  `2.1.251 (Claude Code)` — not strict semver — so whatever range
+  representation gets chosen needs to fit real CLI output, not an
+  idealized one.
+- Where the check actually hooks into the launch path
+  (`router.launchAgent`, before `orchestrator.Launch`, presumably) and
+  what "fails loud" means concretely (the task never gets created at
+  all, vs. created and immediately `Fail`ed).

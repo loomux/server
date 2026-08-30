@@ -5,6 +5,9 @@ layer — see `app/README.md`) and `api.NewServer` (the client-facing HTTP
 surface — see `api/README.md`, including its auth design and known gaps).
 
 ```sh
+# print the server's own release version and exit (design spec §10 axis 4)
+loomuxd -version
+
 # generate a bcrypt hash for LOOMUX_AUTH_PASSWORD_HASH (standalone; no
 # other config needed)
 echo -n 'my password' | loomuxd -hash-password
@@ -17,6 +20,10 @@ LOOMUX_ROUTER_PRIMARY_BASE_URL=... LOOMUX_ROUTER_PRIMARY_API_KEY=... LOOMUX_ROUT
 # debugging only: dispatch one message directly, bypassing HTTP/auth entirely
 loomuxd -message "hello"
 ```
+
+Build a release with a real version baked in (see `version/README.md`):
+`go build -ldflags "-X github.com/Loomux/server/version.Version=1.2.3" ./cmd/loomuxd`
+— without it, `-version` prints `dev`.
 
 `loomuxd` itself only ever speaks plain HTTP — the assumed deployment is
 a reverse proxy (or an overlay network like Tailscale) in front

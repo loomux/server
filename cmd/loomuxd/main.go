@@ -24,13 +24,20 @@ import (
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/app"
+	"github.com/Loomux/server/version"
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "print the server version and exit")
 	hashPassword := flag.Bool("hash-password", false, "read a password from stdin, print its bcrypt hash (for LOOMUX_AUTH_PASSWORD_HASH), and exit")
 	message := flag.String("message", "", "dispatch a single message directly (bypassing HTTP/auth) and exit, for local debugging")
 	conversation := flag.String("conversation", "", "conversation ID to use with -message (default: a freshly generated one)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.Version)
+		return
+	}
 
 	if *hashPassword {
 		runHashPassword()

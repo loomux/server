@@ -55,12 +55,18 @@ not engineering taste):
   covers this (fail2ban, Cloudflare, etc.) — but `loomuxd` itself doesn't
   enforce anything. Worth a future ticket if this is ever internet-facing
   without such a proxy.
-- **API versioning is just the `/api/v1/...` prefix** — there's only ever
-  been one version so far, so the spec's "a mismatch is a clear rejection
-  or warning" requirement (§10 axis 1) hasn't been exercised against a
-  real v2. A request to an undefined path 404s, which is "a clear
-  rejection," but no version-negotiation protocol (e.g. a client
-  declaring what it expects beyond the URL) exists yet.
+- **API version mismatch handling is real but URL-only** (LOOM-10): any
+  `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
+  bare `/api/` root — gets a structured 404 naming `api.APIVersion`
+  (`ServeHTTP`, ahead of routing so it can never shadow a real `/api/v1/`
+  route hit with the wrong HTTP method, which correctly gets ServeMux's
+  own 405 instead). `GET /api/v1/version` (unauthenticated) lets a client
+  check `api.APIVersion` + `version.Version` before it even logs in. This
+  satisfies §10 axis 1's "a mismatch is a clear rejection... not silent
+  breakage" for the one version that exists — there's still no
+  negotiation protocol beyond the URL itself (e.g. a client declaring a
+  minimum/maximum it accepts), since nothing has needed one with only a
+  v1 to compare against.
 - **No idle-session reaper.** A session past its TTL is only actually
   deleted the next time someone tries to use it (opportunistic cleanup in
   `requireAuth`) — an abandoned expired row otherwise just sits in the
@@ -81,11 +87,14 @@ not engineering taste):
   satisfied by `*app.App` and `*app.App.Store()` respectively, without
   importing `app` directly, mirroring `router.RoutingModel`/
   `orchestrator.CompletionDetector`'s minimal-interface pattern), the
-  `requireAuth` middleware, and the three handlers:
+  `requireAuth` middleware, `APIVersion`, and the four handlers:
   - `POST /api/v1/login` — `{password}` → `{token}`
   - `POST /api/v1/logout` — auth-gated, revokes the presented token
   - `POST /api/v1/dispatch` — auth-gated, `{conversation_id, message}` →
     `{reply}`, wraps `Dispatcher.Dispatch`
+  - `GET /api/v1/version` — unauthenticated, `{server_version, api_version}`
+    (`server_version` comes from the top-level `version` package, not
+    defined in this one)
 
 ## Testing
 
