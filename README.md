@@ -5,7 +5,10 @@ lightweight swappable router model deciding routing/relay between the chat
 and the agent fleet. A human can SSH into wherever an agent is running and
 attach to its tmux session directly, without breaking the automated side.
 
-**Status: pre-alpha — design phase complete, implementation not yet started.**
+**Status: pre-alpha — domain layer (registry, targets, orchestrator,
+completion detection, credentials, router, LLM-backed routing model) is
+wired into a runnable `cmd/loomuxd` process. No client-facing API/auth yet
+(LOOM-9) — `loomuxd` only exposes a local single-message/stdin interface.**
 
 ## Design
 
