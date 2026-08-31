@@ -27,6 +27,10 @@ type AgentType struct {
 	// NewSession's own dir parameter; credentials are prefixed
 	// separately via credentials.ShellEnvPrefix, not templated in).
 	LaunchTemplate string
+	// VersionCheck, if set, is run before every launch of this
+	// agent-type (design spec §10 axis 3). nil means no check is
+	// enforced.
+	VersionCheck *VersionCheck
 }
 
 // AgentTypeRegistry maps agent-type name to its AgentType entry. An
@@ -48,12 +52,22 @@ func (r AgentTypeRegistry) CompletionConfig() completion.Config {
 	return cfg
 }
 
+// Get returns the full AgentType entry for agentType, or an error if it
+// isn't registered.
+func (r AgentTypeRegistry) Get(agentType string) (AgentType, error) {
+	at, ok := r[agentType]
+	if !ok {
+		return AgentType{}, fmt.Errorf("router: unknown agent type %q", agentType)
+	}
+	return at, nil
+}
+
 // LaunchCommand returns the resolved launch command for agentType, or
 // an error if it isn't registered.
 func (r AgentTypeRegistry) LaunchCommand(agentType string) (string, error) {
-	at, ok := r[agentType]
-	if !ok {
-		return "", fmt.Errorf("router: unknown agent type %q", agentType)
+	at, err := r.Get(agentType)
+	if err != nil {
+		return "", err
 	}
 	return at.LaunchTemplate, nil
 }

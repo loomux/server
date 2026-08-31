@@ -202,13 +202,23 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 }
 
 // launchAgent resolves the agent-type's launch command and applicable
-// credentials, then launches a fresh agent-kind task. The chat message
-// itself is sent by dispatchToAgent afterward, uniformly with the
-// continuation path.
+// credentials, verifies the agent-type's declared version range if it
+// has one (design spec §10 axis 3 — before anything else, so a failing
+// check never creates a task record at all: "fails loud at launch" here
+// means the dispatch attempt itself fails, not a task that gets created
+// then flips to Failed), then launches a fresh agent-kind task. The chat
+// message itself is sent by dispatchToAgent afterward, uniformly with
+// the continuation path.
 func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, agentType string) (*registry.Task, error) {
-	command, err := r.agentTypes.LaunchCommand(agentType)
+	entry, err := r.agentTypes.Get(agentType)
 	if err != nil {
 		return nil, fmt.Errorf("router: dispatch: %w", err)
+	}
+
+	if entry.VersionCheck != nil {
+		if err := r.verifyAgentVersion(ctx, workspaceID, *entry.VersionCheck); err != nil {
+			return nil, fmt.Errorf("router: dispatch: %w", err)
+		}
 	}
 
 	secrets, err := r.creds.Resolve(ctx, workspaceID, agentType)
@@ -220,11 +230,34 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		return nil, fmt.Errorf("router: dispatch: %w", err)
 	}
 
-	task, err := r.orch.Launch(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, prefix+command)
+	task, err := r.orch.Launch(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, prefix+entry.LaunchTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("router: dispatch: launch: %w", err)
 	}
 	return task, nil
+}
+
+// verifyAgentVersion runs vc.Command via a one-shot TargetExecutor.RunOnce
+// against workspaceID's target, extracts a comparable version via
+// vc.Parse, and checks it falls within [vc.Min, vc.Max).
+func (r *Router) verifyAgentVersion(ctx context.Context, workspaceID string, vc VersionCheck) error {
+	exec, err := r.executorForWorkspace(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("version check: %w", err)
+	}
+
+	output, err := exec.RunOnce(ctx, vc.Command)
+	if err != nil {
+		return fmt.Errorf("version check: run %q: %w", vc.Command, err)
+	}
+	version, err := vc.Parse(output)
+	if err != nil {
+		return fmt.Errorf("version check: parse output of %q: %w", vc.Command, err)
+	}
+	if err := CheckVersionRange(version, vc.Min, vc.Max); err != nil {
+		return fmt.Errorf("version check: %w", err)
+	}
+	return nil
 }
 
 // findActiveTask returns the non-terminal task (if any) already open
@@ -275,7 +308,15 @@ func (r *Router) sessionIsLive(ctx context.Context, task *registry.Task) (bool, 
 // internally, necessarily duplicated here since CapturePane isn't part
 // of Orchestrator's public surface.
 func (r *Router) executorFor(ctx context.Context, task *registry.Task) (targets.TargetExecutor, error) {
-	ws, err := r.store.GetWorkspace(ctx, task.WorkspaceID)
+	return r.executorForWorkspace(ctx, task.WorkspaceID)
+}
+
+// executorForWorkspace resolves the TargetExecutor for the target a
+// workspace runs on — the workspace-scoped half of executorFor, needed
+// on its own by verifyAgentVersion (design spec §10 axis 3), which runs
+// before any task exists.
+func (r *Router) executorForWorkspace(ctx context.Context, workspaceID string) (targets.TargetExecutor, error) {
+	ws, err := r.store.GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}

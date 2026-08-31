@@ -28,6 +28,12 @@ type fakeExecutor struct {
 	// constant by design, so the idle-heuristic completion detector
 	// treats it as "gone quiet" almost immediately.
 	capture string
+	// runOnceOutput/runOnceErr control RunOnce's return — used by the
+	// version-check tests. Constant across calls; no per-command
+	// scripting needed since a test only ever exercises one version
+	// command at a time.
+	runOnceOutput string
+	runOnceErr    error
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -113,3 +119,10 @@ func (e *fakeExecutor) Close() error { return nil }
 // trivial stubs satisfy the interface.
 func (e *fakeExecutor) FileExists(ctx context.Context, path string) (bool, error) { return false, nil }
 func (e *fakeExecutor) RemoveFile(ctx context.Context, path string) error         { return nil }
+
+func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, error) {
+	if e.unreachable {
+		return "", targets.ErrUnreachable
+	}
+	return e.runOnceOutput, e.runOnceErr
+}

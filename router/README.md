@@ -37,6 +37,9 @@ replies, and updating each workspace's rolling summary).
   did; either way `dispatchToAgent` fails the stale task (so
   `findActiveTask` stops finding it) and transparently falls back to a
   fresh launch rather than erroring the conversation out.
+- `version.go` — `VersionCheck`, `ExtractDottedVersion`, `CheckVersionRange`
+  (design spec §10 axis 3, LOOM-17): a per-agent-type declared version
+  gate, checked at launch. See the Agent-adapter versioning section below.
 - `routertest/` — `StubRoutingModel`, a plain call-and-return test
   double (not signaled/blocking, unlike
   `orchestrator/detectortest.ManualDetector` — `Decide`/`Relay` aren't
@@ -56,27 +59,42 @@ an ambiguous-active-task guard), and the security-relevant test proving a
 resolved secret's raw value never appears in captured pane output, the
 relayed reply, or the rolling summary.
 
-## Not built: agent-adapter versioning (design spec §10 axis 3)
+## Agent-adapter versioning (design spec §10 axis 3, LOOM-17)
 
-`AgentType` has no version-range field, and nothing checks a real
-`claude --version` (or any agent CLI's) output before `orchestrator.Launch`
-— so a drifted tool version currently fails the way the spec explicitly
-says it shouldn't: silently, mid-task, via a broken completion signal,
-rather than loud at launch. LOOM-10 flagged this as real, separate design
-work rather than building it speculatively, since it needs:
-- A mechanism to actually run a one-shot version-check command and read
-  its output. `TargetExecutor` has no such primitive today (`NewSession`
-  is for long-running interactive panes) — either it gains one, or a
-  version check is faked via a short-lived session
-  (`NewSession`+wait+`CapturePane`+`KillSession`), which is buildable and
-  testable against a fake executor without needing a real agent CLI, the
-  same way every other test in this package works.
-- A declared "known-good version range" format per agent-type. A real
-  `claude --version` (checked while writing this note) prints
-  `2.1.251 (Claude Code)` — not strict semver — so whatever range
-  representation gets chosen needs to fit real CLI output, not an
-  idealized one.
-- Where the check actually hooks into the launch path
-  (`router.launchAgent`, before `orchestrator.Launch`, presumably) and
-  what "fails loud" means concretely (the task never gets created at
-  all, vs. created and immediately `Fail`ed).
+`AgentType.VersionCheck` (nil means "no check enforced") declares a
+command (`targets.TargetExecutor.RunOnce` — a real one-shot "run this,
+read the output" primitive, distinct from the tmux-pane-oriented session
+methods), a `Parse` function extracting a comparable dotted-number
+version string from that command's raw output, and a `[Min, Max)` range.
+`router.launchAgent` runs the check — if one is declared — before
+anything else, including credential resolution: a failing check means
+`orchestrator.Launch` is never called at all, so no task record gets
+created for a doomed launch. That's "fails loud at launch, not silently
+mid-task via a broken completion signal" (the spec's own words) made
+concrete: the dispatch attempt itself fails.
+
+`Parse` is per-agent-type rather than one shared regex, because each
+CLI's `--version` output has its own shape — `claude --version` prints
+`2.1.251 (Claude Code)`, not strict semver. `ExtractDottedVersion` is a
+reusable `Parse` for the common "grab the first dotted-number sequence"
+case; `CheckVersionRange`/`compareVersions` do the actual comparison
+(component-wise on dotted numbers — not full semver, no pre-release/
+build metadata, which is more than this needs).
+
+**Deliberately not wired into `app.DefaultAgentTypes()`'s production
+`"claude-code"` entry.** The mechanism is built and verified against the
+real `claude` binary (`router/version_check_integration_test.go`,
+running the actual installed CLI, not a fake), but picking the actual
+supported version floor for production is a policy call this ticket
+didn't have grounds to make — it's only ever been checked against the one
+version installed in this environment. Wiring in an unverified `Min`
+would either silently block real usage (set too high) or provide false
+confidence (set too low, or matching only what happens to be installed
+right now). Worth its own decision once there's real signal about what
+range Loomux actually needs to support.
+
+Whether to cache a version check per target+agent-type (avoiding a fresh
+`RunOnce` — an SSH round-trip for a remote target — on every single
+launch) or just re-run it every time is left as-is: re-run every time.
+`RunOnce` is cheap enough that this probably doesn't matter much either
+way; caching can be added later if it ever does.

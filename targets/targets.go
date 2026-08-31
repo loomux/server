@@ -54,6 +54,14 @@ type TargetExecutor interface {
 	// RemoveFile best-effort removes path from the target's
 	// filesystem.
 	RemoveFile(ctx context.Context, path string) error
+
+	// RunOnce runs command once, non-interactively, and returns its
+	// combined stdout+stderr. Distinct from NewSession/SendKeys/
+	// CapturePane's long-running interactive tmux pane — this is a
+	// one-shot command whose output is read straight back, e.g. a
+	// version-check command like "claude --version" (design spec §10
+	// axis 3, router.VersionCheck).
+	RunOnce(ctx context.Context, command string) (string, error)
 }
 
 // NewExecutor constructs the TargetExecutor appropriate for t.Kind.

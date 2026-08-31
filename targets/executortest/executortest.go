@@ -23,6 +23,27 @@ import (
 func Run(t *testing.T, newExecutor func(t *testing.T) targets.TargetExecutor) {
 	t.Run("SessionLifecycle", func(t *testing.T) { testSessionLifecycle(t, newExecutor(t)) })
 	t.Run("FileExistsLifecycle", func(t *testing.T) { testFileExistsLifecycle(t, newExecutor(t)) })
+	t.Run("RunOnce", func(t *testing.T) { testRunOnce(t, newExecutor(t)) })
+}
+
+// testRunOnce covers RunOnce's contract (design spec §10 axis 3 —
+// router.VersionCheck's real primitive): a one-shot, non-interactive
+// command whose combined stdout+stderr comes straight back, distinct
+// from the tmux-pane-oriented session methods.
+func testRunOnce(t *testing.T, exec targets.TargetExecutor) {
+	ctx := context.Background()
+
+	out, err := exec.RunOnce(ctx, "echo hello-runonce")
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if !strings.Contains(out, "hello-runonce") {
+		t.Fatalf("RunOnce output = %q, want it to contain %q", out, "hello-runonce")
+	}
+
+	if _, err := exec.RunOnce(ctx, "exit 1"); err == nil {
+		t.Fatal("RunOnce with a failing command: want error, got nil")
+	}
 }
 
 func testFileExistsLifecycle(t *testing.T, exec targets.TargetExecutor) {

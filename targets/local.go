@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 )
@@ -95,6 +96,20 @@ func (e *LocalExecutor) RemoveFile(ctx context.Context, path string) error {
 		return err
 	}
 	return nil
+}
+
+// RunOnce runs command once via a local shell and returns its combined
+// stdout+stderr — e.g. many CLIs print --version to stderr, so both
+// streams are captured rather than just stdout.
+func (e *LocalExecutor) RunOnce(ctx context.Context, command string) (string, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return out.String(), fmt.Errorf("targets: run once: %s: %w", command, err)
+	}
+	return out.String(), nil
 }
 
 func firstNonEmpty(a, b string) string {

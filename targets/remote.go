@@ -238,6 +238,23 @@ func (e *RemoteExecutor) KillSession(ctx context.Context, session string) error 
 	return err
 }
 
+// RunOnce runs command once, non-interactively, over SSH (via sshExec —
+// the same connection-multiplexed primitive run() and the file-existence
+// methods share) and returns its combined stdout+stderr — e.g. many CLIs
+// print --version to stderr, so both streams are captured rather than
+// just stdout.
+func (e *RemoteExecutor) RunOnce(ctx context.Context, command string) (string, error) {
+	stdout, stderr, exitCode, err := e.sshExec(ctx, command)
+	if err != nil {
+		return "", err
+	}
+	output := stdout + stderr
+	if exitCode != 0 {
+		return output, fmt.Errorf("targets: run once: %s: exit status %d", command, exitCode)
+	}
+	return output, nil
+}
+
 // ControlMasterAlive reports whether an SSH ControlMaster is currently
 // running for this executor's ControlPath — proof that multiplexing is
 // actually in effect rather than each call paying a fresh handshake.
