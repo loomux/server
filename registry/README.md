@@ -18,7 +18,10 @@ on top of it.
   implementation detail, the same way `Workspace.Tags` is plain
   `[]string` here despite being JSON-encoded in `sqlite`. `Session` backs
   client auth (`api/`, design spec §9) — only a hash of each bearer token
-  is ever stored, never the raw token.
+  is ever stored, never the raw token. `Task.ReapedAt` is set by the idle
+  reaper (`orchestrator.Reaper`, LOOM-16) — purely informational, doesn't
+  change `Task.Status` or gate anything by itself; see
+  `orchestrator/README.md`.
 - `storetest/` — the backend-conformance test suite (`storetest.Run`).
   Any backend implementation should pass this suite unmodified.
 - `sqlite/` — the first `Store` implementation, backed by SQLite via the

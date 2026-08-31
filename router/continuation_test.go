@@ -119,6 +119,89 @@ func TestDispatch_NotDone_KeepsTaskOpenForFollowUp(t *testing.T) {
 	}
 }
 
+// TestDispatch_StaleSessionAfterReap_FallsBackToFreshLaunch is LOOM-16's
+// core case: a task is left open (Done: false) same as any continuation,
+// but by the time a follow-up message arrives its session is gone (idle
+// reaped, crashed, manually killed — Dispatch can't tell which, and
+// doesn't need to). Router must not error out or get stuck on the
+// ambiguous-active-task guard; it fails the stale task and transparently
+// launches a fresh one for the same conversation, so the conversation
+// itself keeps working across a reap.
+func TestDispatch_StaleSessionAfterReap_FallsBackToFreshLaunch(t *testing.T) {
+	store, exec, r, model := setup(t)
+	ws := createFixtureWorkspace(t, store)
+
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+	}
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
+		return router.RelayResult{Reply: "still working on it", Done: false}, nil
+	}
+
+	if _, err := r.Dispatch(context.Background(), "conv-1", "start the thing"); err != nil {
+		t.Fatalf("Dispatch (turn 1): %v", err)
+	}
+
+	tasks, err := store.ListTasksByWorkspace(context.Background(), ws.ID)
+	if err != nil {
+		t.Fatalf("ListTasksByWorkspace: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("ListTasksByWorkspace = %+v, want exactly 1 task after turn 1", tasks)
+	}
+	staleTask := tasks[0]
+
+	// Simulate the session vanishing out-of-band — exactly what
+	// orchestrator.Reap does (tested directly at that layer); here we
+	// only care that Router copes when it finds this state, regardless
+	// of what caused it.
+	if err := exec.KillSession(context.Background(), staleTask.TmuxSession); err != nil {
+		t.Fatalf("KillSession (simulating a reap): %v", err)
+	}
+
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
+		return router.RelayResult{Reply: "picked back up", Done: true}, nil
+	}
+
+	reply, err := r.Dispatch(context.Background(), "conv-1", "keep going")
+	if err != nil {
+		t.Fatalf("Dispatch (turn 2, after simulated reap): %v", err)
+	}
+	if reply != "picked back up" {
+		t.Fatalf("reply = %q, want %q", reply, "picked back up")
+	}
+
+	// A fresh session was launched — not a second attempt to use the
+	// dead one.
+	if len(exec.sessions) != 2 {
+		t.Fatalf("sessions = %+v, want 2 (the dead one plus a fresh one)", exec.sessions)
+	}
+
+	tasks, err = store.ListTasksByWorkspace(context.Background(), ws.ID)
+	if err != nil {
+		t.Fatalf("ListTasksByWorkspace (after fallback): %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("ListTasksByWorkspace = %+v, want 2 tasks (the stale one plus a fresh one)", tasks)
+	}
+	var freshTask *registry.Task
+	for _, tk := range tasks {
+		if tk.ID == staleTask.ID {
+			if tk.Status != registry.TaskStatusFailed {
+				t.Fatalf("stale task Status = %q, want %q (so findActiveTask stops finding it)", tk.Status, registry.TaskStatusFailed)
+			}
+			continue
+		}
+		freshTask = tk
+	}
+	if freshTask == nil {
+		t.Fatal("no second (fresh) task found")
+	}
+	if freshTask.Status != registry.TaskStatusCompleted {
+		t.Fatalf("fresh task Status = %q, want %q (Done: true on turn 2)", freshTask.Status, registry.TaskStatusCompleted)
+	}
+}
+
 // TestDispatch_DifferentConversation_DoesNotReuseAnOpenTask proves the
 // active-task lookup is scoped by conversation, not just workspace: a
 // second, unrelated conversation dispatching to the same workspace

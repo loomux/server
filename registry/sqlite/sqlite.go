@@ -315,10 +315,10 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tasks (
 			id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
-			created_at, updated_at, started_at, completed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, updated_at, started_at, completed_at, reaped_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.WorkspaceID, string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
-		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.CompletedAt,
+		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt,
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: workspace %q does not exist", registry.ErrConflict, t.WorkspaceID)
@@ -331,7 +331,7 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 
 const taskColumns = `
 	id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
-	created_at, updated_at, started_at, completed_at`
+	created_at, updated_at, started_at, completed_at, reaped_at`
 
 func (s *Store) GetTask(ctx context.Context, id string) (*registry.Task, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = ?`, id)
@@ -371,10 +371,10 @@ func (s *Store) UpdateTask(ctx context.Context, t *registry.Task) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE tasks SET
 			kind = ?, agent_type = ?, tmux_session = ?, status = ?, conversation_id = ?,
-			updated_at = ?, started_at = ?, completed_at = ?
+			updated_at = ?, started_at = ?, completed_at = ?, reaped_at = ?
 		WHERE id = ?`,
 		string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
-		t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ID,
+		t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: update task: %w", err)
@@ -395,7 +395,7 @@ func scanTask(row rowScanner) (*registry.Task, error) {
 	var kind, status string
 	if err := row.Scan(
 		&t.ID, &t.WorkspaceID, &kind, &t.AgentType, &t.TmuxSession, &status, &t.ConversationID,
-		&t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.CompletedAt,
+		&t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.CompletedAt, &t.ReapedAt,
 	); err != nil {
 		return nil, err
 	}

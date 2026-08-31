@@ -339,11 +339,13 @@ func testTaskCRUD(t *testing.T, s registry.Store) {
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
 		t.Fatalf("GetTask returned zero timestamps: %+v", got)
 	}
-	if got.StartedAt != nil || got.CompletedAt != nil {
-		t.Fatalf("GetTask = %+v, want nil StartedAt/CompletedAt on creation", got)
+	if got.StartedAt != nil || got.CompletedAt != nil || got.ReapedAt != nil {
+		t.Fatalf("GetTask = %+v, want nil StartedAt/CompletedAt/ReapedAt on creation", got)
 	}
 
 	got.Status = registry.TaskStatusCompleted
+	reapedAt := time.Now().UTC().Truncate(time.Second)
+	got.ReapedAt = &reapedAt
 	if err := s.UpdateTask(ctx, got); err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
@@ -353,6 +355,9 @@ func testTaskCRUD(t *testing.T, s registry.Store) {
 	}
 	if updated.Status != registry.TaskStatusCompleted {
 		t.Fatalf("Status = %q after update, want %q", updated.Status, registry.TaskStatusCompleted)
+	}
+	if updated.ReapedAt == nil || !updated.ReapedAt.Equal(reapedAt) {
+		t.Fatalf("ReapedAt = %v after update, want %v", updated.ReapedAt, reapedAt)
 	}
 
 	if err := s.DeleteTask(ctx, task.ID); err != nil {

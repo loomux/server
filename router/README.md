@@ -30,7 +30,13 @@ replies, and updating each workspace's rolling summary).
   via `orchestrator.Complete` or left open (`registry.
   TaskStatusAwaitingInput`) for the next turn in the same session
   (design spec §3 steps 2-3, LOOM-13 — closes the gap LOOM-5's handoff
-  first flagged).
+  first flagged). Before reusing a found active task, `sessionIsLive`
+  checks it actually still has a live tmux session — a task can be
+  legitimately open (`AwaitingInput`) but sessionless if the idle reaper
+  (`orchestrator.Reaper`, LOOM-16) tore it down, or a crash/manual kill
+  did; either way `dispatchToAgent` fails the stale task (so
+  `findActiveTask` stops finding it) and transparently falls back to a
+  fresh launch rather than erroring the conversation out.
 - `routertest/` — `StubRoutingModel`, a plain call-and-return test
   double (not signaled/blocking, unlike
   `orchestrator/detectortest.ManualDetector` — `Decide`/`Relay` aren't

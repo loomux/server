@@ -177,6 +177,51 @@ func (o *Orchestrator) Fail(ctx context.Context, taskID, reason string) error {
 	return o.failTask(ctx, task)
 }
 
+// Reap tears down an idle task's session (design spec's continuation
+// model, LOOM-16): the tmux pane is killed if it still exists — which
+// also destroys any credential material a launch injected as env vars,
+// the only place it lives beyond the stateless per-call resolution in
+// credentials.Resolver.Resolve, so no separate vault "release" call
+// exists to make. Idempotent: a session already gone for some other
+// reason (crash, manual kill) is not an error.
+//
+// Unlike Fail, Status is deliberately left unchanged and the workspace
+// is not reverted to Idle — a reaped task is still logically open
+// (Running/AwaitingInput) as far as the conversation goes; only the
+// session is gone. ReapedAt is set purely for visibility. The next
+// message routed to this task discovers the session missing (a live
+// HasSession check) and the router falls back to a fresh task,
+// transitioning this one to Failed at that point — see
+// router.dispatchToAgent.
+func (o *Orchestrator) Reap(ctx context.Context, taskID string) error {
+	task, err := o.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: reap: %w", err)
+	}
+
+	exec, err := o.executorFor(ctx, task)
+	if err != nil {
+		return fmt.Errorf("orchestrator: reap: %w", err)
+	}
+
+	live, err := exec.HasSession(ctx, task.TmuxSession)
+	if err != nil {
+		return fmt.Errorf("orchestrator: reap: %w", err)
+	}
+	if live {
+		if err := exec.KillSession(ctx, task.TmuxSession); err != nil {
+			return fmt.Errorf("orchestrator: reap: kill session: %w", err)
+		}
+	}
+
+	now := time.Now().UTC()
+	task.ReapedAt = &now
+	if err := o.store.UpdateTask(ctx, task); err != nil {
+		return fmt.Errorf("orchestrator: reap: %w", err)
+	}
+	return nil
+}
+
 // executorFor resolves the TargetExecutor for the target a task's
 // workspace runs on.
 func (o *Orchestrator) executorFor(ctx context.Context, task *registry.Task) (targets.TargetExecutor, error) {

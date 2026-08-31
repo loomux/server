@@ -12,6 +12,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router/llmrouter"
@@ -35,14 +36,33 @@ type Config struct {
 	MasterKey []byte
 	// Router is the LLM-backed RoutingModel's own configuration.
 	Router llmrouter.Config
+	// ReapIdleThreshold is how long a task can go without a state change
+	// (design spec's continuation model, LOOM-16 — see
+	// orchestrator.Reaper's doc comment for exactly what "idle" means)
+	// before its session is torn down. Zero means "unset" — build applies
+	// defaultReapIdleThreshold, the same way LoadConfig does; existing
+	// callers that construct Config directly (tests) get sensible
+	// behavior without needing to set every field.
+	ReapIdleThreshold time.Duration
+	// ReapInterval is how often the idle reaper sweeps. Same zero-means-
+	// default handling as ReapIdleThreshold.
+	ReapInterval time.Duration
 }
 
 const (
-	envDBPath    = "LOOMUX_DB_PATH"
-	envMarkerDir = "LOOMUX_MARKER_DIR"
-	envMasterKey = "LOOMUX_MASTER_KEY"
+	envDBPath            = "LOOMUX_DB_PATH"
+	envMarkerDir         = "LOOMUX_MARKER_DIR"
+	envMasterKey         = "LOOMUX_MASTER_KEY"
+	envReapIdleThreshold = "LOOMUX_REAP_IDLE_THRESHOLD"
+	envReapInterval      = "LOOMUX_REAP_INTERVAL"
 
 	defaultDBPath = "loomux.db"
+
+	// defaultReapIdleThreshold/Interval are also build's fallback for a
+	// zero Config field, not just LoadConfig's env default — see Config's
+	// doc comments.
+	defaultReapIdleThreshold = 24 * time.Hour
+	defaultReapInterval      = time.Hour
 )
 
 // LoadConfig reads Config from the environment, failing fast on
@@ -69,10 +89,29 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("app: router config: %w", err)
 	}
 
+	reapIdleThreshold := defaultReapIdleThreshold
+	if raw := os.Getenv(envReapIdleThreshold); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration: %w", envReapIdleThreshold, err)
+		}
+		reapIdleThreshold = d
+	}
+	reapInterval := defaultReapInterval
+	if raw := os.Getenv(envReapInterval); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration: %w", envReapInterval, err)
+		}
+		reapInterval = d
+	}
+
 	return Config{
-		DBPath:    dbPath,
-		MarkerDir: os.Getenv(envMarkerDir),
-		MasterKey: masterKey,
-		Router:    routerCfg,
+		DBPath:            dbPath,
+		MarkerDir:         os.Getenv(envMarkerDir),
+		MasterKey:         masterKey,
+		Router:            routerCfg,
+		ReapIdleThreshold: reapIdleThreshold,
+		ReapInterval:      reapInterval,
 	}, nil
 }

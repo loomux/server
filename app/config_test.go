@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setRouterEnv(t *testing.T) {
@@ -28,6 +29,39 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 	if cfg.MasterKey != nil {
 		t.Errorf("MasterKey = %v, want nil", cfg.MasterKey)
+	}
+	if cfg.ReapIdleThreshold != defaultReapIdleThreshold {
+		t.Errorf("ReapIdleThreshold = %v, want %v", cfg.ReapIdleThreshold, defaultReapIdleThreshold)
+	}
+	if cfg.ReapInterval != defaultReapInterval {
+		t.Errorf("ReapInterval = %v, want %v", cfg.ReapInterval, defaultReapInterval)
+	}
+}
+
+func TestLoadConfig_CustomReapTiming(t *testing.T) {
+	setRouterEnv(t)
+	t.Setenv(envReapIdleThreshold, "48h")
+	t.Setenv(envReapInterval, "30m")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ReapIdleThreshold != 48*time.Hour {
+		t.Errorf("ReapIdleThreshold = %v, want 48h", cfg.ReapIdleThreshold)
+	}
+	if cfg.ReapInterval != 30*time.Minute {
+		t.Errorf("ReapInterval = %v, want 30m", cfg.ReapInterval)
+	}
+}
+
+func TestLoadConfig_InvalidReapTiming(t *testing.T) {
+	setRouterEnv(t)
+	t.Setenv(envReapIdleThreshold, "not-a-duration")
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Fatal("LoadConfig: want error for a malformed reap idle threshold")
 	}
 }
 

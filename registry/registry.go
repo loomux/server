@@ -90,4 +90,12 @@ type Task struct {
 	UpdatedAt      time.Time
 	StartedAt      *time.Time
 	CompletedAt    *time.Time
+	// ReapedAt is set when the idle reaper (design spec's continuation
+	// model, LOOM-16) tears down this task's session for inactivity.
+	// Purely informational — it does not change Status or otherwise gate
+	// resumability: a follow-up message still finds this task via its
+	// (unchanged) Status, discovers the session is gone, and the router
+	// falls back to a fresh task (a new row, ReapedAt naturally nil)
+	// rather than clearing this one's marker in place.
+	ReapedAt *time.Time
 }

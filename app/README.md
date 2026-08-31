@@ -18,14 +18,21 @@ package and wrap an `*App` rather than re-wire these pieces itself;
   (optional, defaults to `loomux.db`), `LOOMUX_MARKER_DIR` (optional),
   `LOOMUX_MASTER_KEY` (optional — the credential vault's AES-256 key;
   unset means credential operations fail per `registry/sqlite`'s own
-  fail-fast behavior, not a startup requirement here), and the router
-  model's own config via `router/llmrouter.ConfigFromEnv()`.
+  fail-fast behavior, not a startup requirement here), the router
+  model's own config via `router/llmrouter.ConfigFromEnv()`, and the
+  idle reaper's timing (`LOOMUX_REAP_IDLE_THRESHOLD` default 24h,
+  `LOOMUX_REAP_INTERVAL` default 1h — design spec's continuation model,
+  LOOM-16). A zero `ReapIdleThreshold`/`ReapInterval` on a `Config` built
+  directly (not via `LoadConfig` — existing tests do this) isn't an
+  error: `build` applies the same defaults, so callers don't need to set
+  every field.
 - `app.go` — `App`, `Build(cfg)`, `DefaultAgentTypes()`: the actual
   wiring order is storage → executor factory → completion detection →
   orchestrator → credential resolver → LLM-backed routing model →
-  router. `DefaultAgentTypes()` is the production
-  `router.AgentTypeRegistry` — currently just `"claude-code"` (tier-1/2
-  marker completion, launch template `claude`) plus the `""`
+  router → a background idle-reaper goroutine (`orchestrator.Reaper.Run`,
+  started here and stopped by `App.Close`). `DefaultAgentTypes()` is the
+  production `router.AgentTypeRegistry` — currently just `"claude-code"`
+  (tier-1/2 marker completion, launch template `claude`) plus the `""`
   bookkeeping entry completion detection needs for shell-kind
   (provisioning) tasks — deliberately excluded from what's offered to
   the router model as a real agent-type choice. `Build` wraps an
@@ -43,5 +50,11 @@ real tmux/agent CLI. `continuation_test.go` goes further — a real local
 tmux session carries two turns of a conversation (LOOM-13: the second
 turn's message is sent into the same session, not a fresh one, until
 the fake LLM server's second `Relay` call says `Done: true`) — using
-`build` directly with a custom agent type, per the note above. Run
-`go test ./app/...`.
+`build` directly with a custom agent type, per the note above.
+`reap_test.go` proves the background reaper started inside `build`
+actually tears down a real, idle tmux session on its own — no further
+`Dispatch` calls, just waiting — then that a follow-up `Dispatch` for the
+same conversation transparently picks up with a fresh session (the
+router-level fallback, LOOM-16). This test is what caught a real bug in
+the reaper's own filtering logic (see `orchestrator/README.md`'s Reap
+section) before it shipped. Run `go test ./app/...`.

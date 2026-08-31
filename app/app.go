@@ -20,8 +20,10 @@ import (
 // Store for a client-facing layer (api.Server) that needs its own
 // session storage in the same database.
 type App struct {
-	router *router.Router
-	store  *sqlite.Store
+	router     *router.Router
+	store      *sqlite.Store
+	stopReaper context.CancelFunc
+	reaperDone chan struct{}
 }
 
 // Dispatch routes one chat message through the full pipeline. See
@@ -37,8 +39,13 @@ func (a *App) Store() registry.Store {
 	return a.store
 }
 
-// Close releases the store's resources (its DB connection).
+// Close stops the background idle reaper (LOOM-16) and releases the
+// store's resources (its DB connection).
 func (a *App) Close() error {
+	if a.stopReaper != nil {
+		a.stopReaper()
+		<-a.reaperDone
+	}
 	return a.store.Close()
 }
 
@@ -111,8 +118,26 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		return nil, fmt.Errorf("app: router model: %w", err)
 	}
 
+	threshold := cfg.ReapIdleThreshold
+	if threshold == 0 {
+		threshold = defaultReapIdleThreshold
+	}
+	interval := cfg.ReapInterval
+	if interval == 0 {
+		interval = defaultReapInterval
+	}
+	reaper := orchestrator.NewReaper(orch, threshold)
+	reaperCtx, stopReaper := context.WithCancel(context.Background())
+	reaperDone := make(chan struct{})
+	go func() {
+		defer close(reaperDone)
+		reaper.Run(reaperCtx, interval)
+	}()
+
 	return &App{
-		router: router.New(store, orch, targets.NewExecutor, creds, agentTypes, model),
-		store:  store,
+		router:     router.New(store, orch, targets.NewExecutor, creds, agentTypes, model),
+		store:      store,
+		stopReaper: stopReaper,
+		reaperDone: reaperDone,
 	}, nil
 }

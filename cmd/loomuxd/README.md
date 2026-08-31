@@ -44,6 +44,8 @@ LOOMUX_DB_PATH               SQLite file path (default: loomux.db)
 LOOMUX_MARKER_DIR             completion-marker directory (default: completion's own package default)
 LOOMUX_MASTER_KEY             base64 AES-256 key for the credential vault (optional; a startup
                                warning is printed if unset, since credential operations will then fail)
+LOOMUX_REAP_IDLE_THRESHOLD    idle reaper threshold, time.ParseDuration syntax (default: 24h)
+LOOMUX_REAP_INTERVAL          idle reaper sweep interval, time.ParseDuration syntax (default: 1h)
 
 LOOMUX_ROUTER_PRIMARY_BASE_URL / _API_KEY / _MODEL       (required — see router/llmrouter)
 LOOMUX_ROUTER_ESCALATION_BASE_URL / _API_KEY / _MODEL    (optional, all-or-nothing)

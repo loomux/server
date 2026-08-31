@@ -139,6 +139,25 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
+	if task != nil {
+		live, err := r.sessionIsLive(ctx, task)
+		if err != nil {
+			return "", fmt.Errorf("router: dispatch: %w", err)
+		}
+		if !live {
+			// The tracked session is gone — idle-reaped (LOOM-16), crashed,
+			// or manually killed. Design spec's continuation model treats
+			// this as recoverable, not an error: fail the stale task so
+			// findActiveTask won't keep finding it (and won't trip its
+			// more-than-one-active-task guard once the fresh one below
+			// exists), then fall through to a fresh launch exactly as if
+			// no active task had been found at all.
+			if err := r.orch.Fail(ctx, task.ID, "session no longer exists"); err != nil {
+				return "", fmt.Errorf("router: dispatch: %w", err)
+			}
+			task = nil
+		}
+	}
 	if task == nil {
 		task, err = r.launchAgent(ctx, workspaceID, conversationID, agentType)
 		if err != nil {
@@ -235,6 +254,20 @@ func (r *Router) findActiveTask(ctx context.Context, workspaceID, conversationID
 		}
 	}
 	return active, nil
+}
+
+// sessionIsLive reports whether task's tracked tmux session still
+// actually exists. false doesn't necessarily mean anything went wrong —
+// design spec's continuation model expects a session can vanish for
+// reasons outside Router's control (the idle reaper, LOOM-16; a crash; a
+// human manually killing it) and treats that as recoverable via a fresh
+// launch, not an error.
+func (r *Router) sessionIsLive(ctx context.Context, task *registry.Task) (bool, error) {
+	exec, err := r.executorFor(ctx, task)
+	if err != nil {
+		return false, err
+	}
+	return exec.HasSession(ctx, task.TmuxSession)
 }
 
 // executorFor resolves the TargetExecutor for the target a task's
