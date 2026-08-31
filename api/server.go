@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,17 +50,27 @@ type SessionStore interface {
 // reasonable for a personal single-user tool used from mobile.
 const defaultSessionTTL = 30 * 24 * time.Hour
 
+// defaultLoginBackoffBase/Max are loginThrottle's production timing: a
+// mistyped password barely registers (1s), while a sustained brute-force
+// attempt tops out waiting 30s between guesses — see throttle.go for why
+// this is backoff, not a hard lockout.
+const (
+	defaultLoginBackoffBase = time.Second
+	defaultLoginBackoffMax  = 30 * time.Second
+)
+
 // Server is the client-facing HTTP API. It implements http.Handler —
 // callers decide how to actually listen (http.ListenAndServe,
 // httptest.Server, etc.), keeping this package transport-agnostic about
 // TLS/networking (deployment assumption: plain HTTP behind a reverse
 // proxy that terminates TLS — see README.md).
 type Server struct {
-	dispatcher   Dispatcher
-	sessions     SessionStore
-	passwordHash []byte
-	sessionTTL   time.Duration
-	mux          *http.ServeMux
+	dispatcher    Dispatcher
+	sessions      SessionStore
+	passwordHash  []byte
+	sessionTTL    time.Duration
+	loginThrottle *loginThrottle
+	mux           *http.ServeMux
 }
 
 // Option configures a Server constructed via NewServer.
@@ -70,15 +81,23 @@ func WithSessionTTL(d time.Duration) Option {
 	return func(s *Server) { s.sessionTTL = d }
 }
 
+// WithLoginBackoff overrides /login's default exponential-backoff timing
+// (base delay after the first failure, capped at max). Mainly for tests;
+// production defaults are defaultLoginBackoffBase/Max.
+func WithLoginBackoff(base, max time.Duration) Option {
+	return func(s *Server) { s.loginThrottle = newLoginThrottle(base, max) }
+}
+
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
 func NewServer(dispatcher Dispatcher, sessions SessionStore, passwordHash []byte, opts ...Option) *Server {
 	s := &Server{
-		dispatcher:   dispatcher,
-		sessions:     sessions,
-		passwordHash: passwordHash,
-		sessionTTL:   defaultSessionTTL,
+		dispatcher:    dispatcher,
+		sessions:      sessions,
+		passwordHash:  passwordHash,
+		sessionTTL:    defaultSessionTTL,
+		loginThrottle: newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -119,6 +138,12 @@ type loginResponse struct {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if wait := s.loginThrottle.wait(); wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "too many failed login attempts, try again later")
+		return
+	}
+
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed request body")
@@ -126,9 +151,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := checkPassword(s.passwordHash, req.Password); err != nil {
+		s.loginThrottle.recordFailure()
 		writeError(w, http.StatusUnauthorized, "invalid password")
 		return
 	}
+	s.loginThrottle.recordSuccess()
 
 	token, tokenHash, err := newToken()
 	if err != nil {

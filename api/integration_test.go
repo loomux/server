@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/app"
@@ -67,7 +68,12 @@ func TestIntegration_RealAppBehindAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
-	server := api.NewServer(realApp, realApp.Store(), []byte(hash))
+	// A zero login backoff (base 0 => wait() is always 0, regardless of
+	// real elapsed time between calls) so the deliberate wrong-then-right
+	// sequence below isn't itself throttled by production timing
+	// (LOOM-15) — this test isn't exercising the throttle, TestLogin_* in
+	// server_test.go does that.
+	server := api.NewServer(realApp, realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 

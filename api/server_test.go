@@ -243,3 +243,111 @@ func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
 		}
 	}
 }
+
+func TestLogin_RepeatedFailures_TriggersBackoffWith429AndRetryAfter(t *testing.T) {
+	srv, _ := newTestServer(t, api.WithLoginBackoff(200*time.Millisecond, 30*time.Second))
+
+	_, status := login(t, srv.URL, "wrong")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("first wrong attempt status = %d, want %d", status, http.StatusUnauthorized)
+	}
+
+	// Immediately retrying (well within the backoff window) must be
+	// throttled — 429, not another 401, and it must not even have
+	// re-checked the password.
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/login", "", mustJSON(t, map[string]string{"password": "wrong"}))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("throttled attempt status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Error("throttled response has no Retry-After header")
+	}
+}
+
+func TestLogin_SuccessAfterFailure_ResetsThrottle(t *testing.T) {
+	srv, _ := newTestServer(t, api.WithLoginBackoff(50*time.Millisecond, 30*time.Second))
+
+	_, status := login(t, srv.URL, "wrong")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("wrong attempt status = %d, want %d", status, http.StatusUnauthorized)
+	}
+	time.Sleep(60 * time.Millisecond) // wait out the backoff so the correct attempt below isn't itself throttled
+
+	token, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("correct-password login after one prior failure: status = %d token = %q", status, token)
+	}
+
+	// A fresh wrong attempt right after a success must go back to a
+	// plain 401 (base delay), not stay throttled from before the reset.
+	_, status = login(t, srv.URL, "wrong-again")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("wrong attempt right after a success: status = %d, want %d (throttle should have reset)", status, http.StatusUnauthorized)
+	}
+}
+
+// TestLogin_NeverPermanentlyLocksOut is the core property the backoff
+// design (over a hard lockout) exists for: no matter how many times an
+// attacker fails, the real password still works once the (bounded) max
+// delay has passed — the legitimate user is slowed down, never
+// permanently denied.
+func TestLogin_NeverPermanentlyLocksOut(t *testing.T) {
+	srv, _ := newTestServer(t, api.WithLoginBackoff(10*time.Millisecond, 60*time.Millisecond))
+
+	for i := 0; i < 10; i++ {
+		_, status := login(t, srv.URL, "wrong")
+		if status != http.StatusUnauthorized && status != http.StatusTooManyRequests {
+			t.Fatalf("failure %d status = %d, want 401 or 429", i, status)
+		}
+		time.Sleep(15 * time.Millisecond) // stay ahead of the (capped) backoff so each attempt actually reaches the password check
+	}
+
+	time.Sleep(70 * time.Millisecond) // wait out the capped max delay
+	token, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("correct password after 10 failures + waiting out max delay: status = %d token = %q, want a successful login", status, token)
+	}
+}
+
+// TestLogin_ThrottleIsGlobalNotPerClient proves the deliberate design
+// choice: failures are shared server-wide, not scoped to a claimed
+// source IP — a client can't dodge the throttle by presenting a
+// different X-Forwarded-For on each request (this server doesn't even
+// read that header, on purpose — see throttle.go).
+func TestLogin_ThrottleIsGlobalNotPerClient(t *testing.T) {
+	srv, _ := newTestServer(t, api.WithLoginBackoff(200*time.Millisecond, 30*time.Second))
+
+	req1, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/login", bytes.NewReader(mustJSON(t, map[string]string{"password": "wrong"})))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("X-Forwarded-For", "203.0.113.1")
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp1.Body.Close()
+	if resp1.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("first client's attempt status = %d, want %d", resp1.StatusCode, http.StatusUnauthorized)
+	}
+
+	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/login", bytes.NewReader(mustJSON(t, map[string]string{"password": "wrong"})))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Forwarded-For", "203.0.113.99") // a different claimed source
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second (differently-IP-claiming) client's attempt status = %d, want %d (throttle is global)", resp2.StatusCode, http.StatusTooManyRequests)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return data
+}

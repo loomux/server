@@ -45,16 +45,27 @@ not engineering taste):
   every authenticated request. `POST /api/v1/logout` deletes the session
   row outright, for revoking a lost device immediately rather than
   waiting out the window.
-
-## Known gaps (flagged, not built)
-
-- **No brute-force protection on `/login`** beyond bcrypt's own
-  computational cost. No lockout, no rate limiting, no audit log of
-  failed attempts (this repo has no logging convention to hook into yet).
-  A reverse proxy in front (the assumed deployment model above) commonly
-  covers this (fail2ban, Cloudflare, etc.) — but `loomuxd` itself doesn't
-  enforce anything. Worth a future ticket if this is ever internet-facing
-  without such a proxy.
+- **`/login` brute-force protection: global exponential backoff, not a
+  hard lockout** (LOOM-15). `throttle.go`'s `loginThrottle` is one
+  in-memory counter for the whole process — deliberately *not* scoped
+  per-IP or per-user: there's no username here to scope by (`loginRequest`
+  is just `{password}` — single-user, single credential), and behind the
+  confirmed reverse-proxy deployment model every request's `RemoteAddr`
+  is typically the proxy's own address anyway, so IP-scoping would either
+  do nothing (using `RemoteAddr`) or require trusting a client-spoofable
+  `X-Forwarded-For` header — a global counter sidesteps that trust
+  question entirely. Backoff, not a lockout, is also deliberate: on a
+  single-account system a hard lockout is itself a denial-of-service
+  vector (an attacker who can't guess the password can still lock the
+  real user out just by failing repeatedly). Each failure doubles the
+  wait before the *next* attempt is even checked (1s, 2s, 4s, ... capped
+  at 30s); a success resets it to zero. A throttled attempt gets `429`
+  with `Retry-After` — including a *correct* password presented while
+  throttled, so the throttle state itself never leaks whether a guess
+  would have worked. Still no audit log of failed attempts (no logging
+  convention in this repo to hook into yet), and state resets on
+  restart (in-memory only) — acceptable since the confirmed deployment
+  has no attacker-triggerable restart path.
 - **API version mismatch handling is real but URL-only** (LOOM-10): any
   `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
   bare `/api/` root — gets a structured 404 naming `api.APIVersion`
@@ -70,7 +81,7 @@ not engineering taste):
 - **No idle-session reaper.** A session past its TTL is only actually
   deleted the next time someone tries to use it (opportunistic cleanup in
   `requireAuth`) — an abandoned expired row otherwise just sits in the
-  table. Harmless bloat for a single-user table, same shape as LOOM-15's
+  table. Harmless bloat for a single-user table, same shape as LOOM-16's
   idle-conversation-reaper gap.
 
 ## Layout
@@ -78,6 +89,9 @@ not engineering taste):
 - `auth.go` — `HashPassword` (bcrypt, used by `loomuxd -hash-password`
   and by callers configuring `LOOMUX_AUTH_PASSWORD_HASH`), `checkPassword`,
   token generation/hashing (`newToken`, `hashToken`).
+- `throttle.go` — `loginThrottle`: the global exponential-backoff counter
+  behind `/login` (see Design above for why global/backoff, not
+  per-IP/lockout).
 - `config.go` — `Config`, `LoadConfig()`: `LOOMUX_AUTH_PASSWORD_HASH`
   (required, validated as a real bcrypt hash), `LOOMUX_HTTP_ADDR`
   (optional, default `:8080`), `LOOMUX_SESSION_TTL` (optional, default 30
@@ -100,9 +114,16 @@ not engineering taste):
 
 `server_test.go` covers the auth/session state machine (login success/
 failure, missing/invalid/expired/logged-out tokens, sliding-expiration
-refresh) against a fake `Dispatcher` and a real (temp-file) sqlite store
-for sessions. `integration_test.go` proves the same behavior against a
-real `app.App` (real sqlite, a real `llmrouter.Model` hitting an
-`httptest.Server` standing in for the LLM vendor) driven purely over real
-HTTP — the full stack, not just this package in isolation. Run
+refresh, and the login throttle — repeated failures triggering `429`
+with `Retry-After`, a success resetting it, that it's shared across
+different claimed `X-Forwarded-For` values (proving "global" is real,
+not just documented), and that enough waiting always lets the correct
+password through no matter how many failures preceded it) against a fake
+`Dispatcher` and a real (temp-file) sqlite store for sessions.
+`throttle_test.go` covers `loginThrottle` in isolation (pure timing
+logic, including the zero-base edge case tests use to disable backoff
+entirely). `integration_test.go` proves the auth/dispatch behavior
+against a real `app.App` (real sqlite, a real `llmrouter.Model` hitting
+an `httptest.Server` standing in for the LLM vendor) driven purely over
+real HTTP — the full stack, not just this package in isolation. Run
 `go test ./api/...`.
