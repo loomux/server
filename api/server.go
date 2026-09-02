@@ -65,6 +65,17 @@ type TaskLister interface {
 	ListTasks(ctx context.Context) ([]*registry.Task, error)
 }
 
+// AttachInfoStore is the get-chain slice of registry.Store LOOM-20's
+// attach-info endpoint needs to resolve a task down to the target a
+// human would SSH into: task -> its workspace -> that workspace's
+// target. Satisfied structurally by any registry.Store, mirroring this
+// package's other narrow seams.
+type AttachInfoStore interface {
+	GetTask(ctx context.Context, id string) (*registry.Task, error)
+	GetWorkspace(ctx context.Context, id string) (*registry.Workspace, error)
+	GetTarget(ctx context.Context, id string) (*registry.Target, error)
+}
+
 // defaultSessionTTL is the sliding-expiration window: a session stays
 // valid as long as it's used at least once within this window: 30 days,
 // reasonable for a personal single-user tool used from mobile.
@@ -89,6 +100,7 @@ type Server struct {
 	sessions      SessionStore
 	workspaces    WorkspaceLister
 	tasks         TaskLister
+	attachInfo    AttachInfoStore
 	passwordHash  []byte
 	sessionTTL    time.Duration
 	loginThrottle *loginThrottle
@@ -113,12 +125,13 @@ func WithLoginBackoff(base, max time.Duration) Option {
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
-func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, tasks TaskLister, passwordHash []byte, opts ...Option) *Server {
+func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, tasks TaskLister, attachInfo AttachInfoStore, passwordHash []byte, opts ...Option) *Server {
 	s := &Server{
 		dispatcher:    dispatcher,
 		sessions:      sessions,
 		workspaces:    workspaces,
 		tasks:         tasks,
+		attachInfo:    attachInfo,
 		passwordHash:  passwordHash,
 		sessionTTL:    defaultSessionTTL,
 		loginThrottle: newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
@@ -134,6 +147,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
 	mux.HandleFunc("GET /api/v1/conversations", s.requireAuth(s.handleListConversations))
 	mux.HandleFunc("GET /api/v1/conversations/{id}", s.requireAuth(s.handleGetConversation))
+	mux.HandleFunc("GET /api/v1/tasks/{id}/attach-info", s.requireAuth(s.handleAttachInfo))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	s.mux = mux
 	return s
@@ -378,6 +392,67 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out})
+}
+
+type attachTargetInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Host string `json:"host"`
+	User string `json:"user"`
+}
+
+type attachInfoResponse struct {
+	TaskID      string           `json:"task_id"`
+	TmuxSession string           `json:"tmux_session"`
+	Target      attachTargetInfo `json:"target"`
+}
+
+// handleAttachInfo resolves a task down to the target+session a human
+// would SSH into to attach and watch/take over (design spec §4) —
+// task -> its workspace -> that workspace's target. Returns the stored
+// data as-is, without probing whether the tmux session is still actually
+// alive (matching this API's other endpoints, which are thin
+// passthroughs over registry state rather than live target probes): a
+// completed/reaped/crashed task's info is still returned, and the client
+// discovers a dead session the same way a human always would — the
+// attach attempt itself.
+func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	task, err := s.attachInfo.GetTask(r.Context(), id)
+	if errors.Is(err, registry.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "no such task")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not fetch task")
+		return
+	}
+
+	ws, err := s.attachInfo.GetWorkspace(r.Context(), task.WorkspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not resolve task's workspace")
+		return
+	}
+
+	target, err := s.attachInfo.GetTarget(r.Context(), ws.TargetID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not resolve workspace's target")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, attachInfoResponse{
+		TaskID:      task.ID,
+		TmuxSession: task.TmuxSession,
+		Target: attachTargetInfo{
+			ID:   target.ID,
+			Name: target.Name,
+			Kind: string(target.Kind),
+			Host: target.Host,
+			User: target.User,
+		},
+	})
 }
 
 type versionResponse struct {

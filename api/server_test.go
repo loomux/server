@@ -47,7 +47,7 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 	}
 	dispatcher := &fakeDispatcher{}
 	store := newTestStore(t)
-	server := api.NewServer(dispatcher, store, store, store, []byte(hash), opts...)
+	server := api.NewServer(dispatcher, store, store, store, store, []byte(hash), opts...)
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 	return httpSrv, dispatcher, store
@@ -608,6 +608,80 @@ func TestGetConversation_ValidToken_ReturnsChronologicalTaskHistory(t *testing.T
 	}
 	if out.Tasks[0].WorkspaceID != wsA.ID || out.Tasks[1].WorkspaceID != wsB.ID {
 		t.Fatalf("workspace ids = [%q, %q], want [%q, %q]", out.Tasks[0].WorkspaceID, out.Tasks[1].WorkspaceID, wsA.ID, wsB.ID)
+	}
+}
+
+func TestAttachInfo_NoToken_ReturnsUnauthorized(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/tasks/task-1/attach-info", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestAttachInfo_UnknownTask_ReturnsNotFound(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/tasks/no-such-task/attach-info", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+func TestAttachInfo_ValidToken_ReturnsTargetAndSessionInfo(t *testing.T) {
+	srv, _, store := newTestServer(t)
+
+	target := &registry.Target{
+		ID: "remote-1", Name: "remote-1", Kind: registry.TargetKindRemote,
+		Host: "jet01.example.com", User: "orski",
+	}
+	if err := store.CreateTarget(context.Background(), target); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	ws := &registry.Workspace{
+		ID: "ws-remote", Name: "ws-remote", Path: "/srv/app", TargetID: target.ID,
+		Status: registry.WorkspaceStatusActive,
+	}
+	if err := store.CreateWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	task := &registry.Task{
+		ID: "task-attach", WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "loomux-task-attach", Status: registry.TaskStatusRunning, ConversationID: "conv-attach",
+	}
+	if err := store.CreateTask(context.Background(), task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	token, _ := login(t, srv.URL, testPassword)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/tasks/task-attach/attach-info", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var out struct {
+		TaskID      string `json:"task_id"`
+		TmuxSession string `json:"tmux_session"`
+		Target      struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+			Host string `json:"host"`
+			User string `json:"user"`
+		} `json:"target"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.TaskID != "task-attach" || out.TmuxSession != "loomux-task-attach" {
+		t.Fatalf("task_id/tmux_session = %q/%q, want task-attach/loomux-task-attach", out.TaskID, out.TmuxSession)
+	}
+	if out.Target.ID != "remote-1" || out.Target.Kind != "remote" || out.Target.Host != "jet01.example.com" || out.Target.User != "orski" {
+		t.Fatalf("target = %+v, want {id:remote-1 kind:remote host:jet01.example.com user:orski}", out.Target)
 	}
 }
 

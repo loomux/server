@@ -135,6 +135,15 @@ not engineering taste):
     can't answer "every task in this conversation" since a conversation
     isn't pinned to one workspace) satisfied structurally by
     `*app.App.Store()`.
+  - `GET /api/v1/tasks/{id}/attach-info` — auth-gated (LOOM-20), resolves
+    a task down to the target+session a human would SSH into to attach
+    (design spec §4): `{task_id, tmux_session, target: {id, name, kind,
+    host, user}}`; `404` if the task doesn't exist. Returns stored data
+    as-is — no live probe of whether the tmux session is actually still
+    up (matching this API's other endpoints' thin-passthrough style); a
+    dead session is discovered the same way a human always would, by
+    trying to attach. Wraps `AttachInfoStore` (`GetTask` → `GetWorkspace`
+    → `GetTarget`), a narrow seam mirroring the others here.
   - `GET /api/v1/version` — unauthenticated, `{server_version, api_version}`
     (`server_version` comes from the top-level `version` package, not
     defined in this one)
@@ -154,7 +163,9 @@ cases, asserting the trimmed field set against real store fixtures) and
 `/api/v1/conversations` + `/api/v1/conversations/{id}` (auth required,
 empty-list, recency-sorted grouping across multiple conversations, a
 conversation spanning two workspaces returning chronological history,
-an unrelated conversation not leaking in, and unknown-id 404).
+an unrelated conversation not leaking in, and unknown-id 404) and
+`/api/v1/tasks/{id}/attach-info` (auth required, unknown-task 404, and a
+remote target's host/user/kind flowing through correctly).
 `throttle_test.go` covers `loginThrottle` in isolation (pure timing
 logic, including the zero-base edge case tests use to disable backoff
 entirely). `integration_test.go` proves the auth/dispatch behavior
