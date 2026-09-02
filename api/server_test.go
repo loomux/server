@@ -1,12 +1,14 @@
 package api_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -682,6 +684,145 @@ func TestAttachInfo_ValidToken_ReturnsTargetAndSessionInfo(t *testing.T) {
 	}
 	if out.Target.ID != "remote-1" || out.Target.Kind != "remote" || out.Target.Host != "jet01.example.com" || out.Target.User != "orski" {
 		t.Fatalf("target = %+v, want {id:remote-1 kind:remote host:jet01.example.com user:orski}", out.Target)
+	}
+}
+
+// sseEvent is one parsed Server-Sent Event: its "event:" line and the
+// concatenated body of its "data:" line(s).
+type sseEvent struct {
+	Event string
+	Data  string
+}
+
+// readSSEEvent reads lines from r until one complete SSE event has been
+// assembled (a blank line terminates it), skipping heartbeat comment
+// lines (starting with ':'). Blocks until an event arrives, the reader
+// errors (e.g. the connection closes), or eventCh's caller times out.
+func readSSEEvent(t *testing.T, r *bufio.Reader) (sseEvent, error) {
+	t.Helper()
+	var ev sseEvent
+	var data []string
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return sseEvent{}, err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		switch {
+		case line == "":
+			if ev.Event != "" || len(data) > 0 {
+				ev.Data = strings.Join(data, "\n")
+				return ev, nil
+			}
+			// Blank line with nothing accumulated yet: keep reading.
+		case strings.HasPrefix(line, ":"):
+			// Heartbeat comment — ignore.
+		case strings.HasPrefix(line, "event:"):
+			ev.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+}
+
+// readSSEEventWithTimeout runs readSSEEvent on a goroutine and fails the
+// test if no complete event arrives within d — so a broken stream hangs
+// the test for at most d, not forever.
+func readSSEEventWithTimeout(t *testing.T, r *bufio.Reader, d time.Duration) sseEvent {
+	t.Helper()
+	type result struct {
+		ev  sseEvent
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		ev, err := readSSEEvent(t, r)
+		ch <- result{ev, err}
+	}()
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			t.Fatalf("readSSEEvent: %v", res.err)
+		}
+		return res.ev
+	case <-time.After(d):
+		t.Fatal("timed out waiting for SSE event")
+		return sseEvent{}
+	}
+}
+
+func TestStream_NoToken_ReturnsUnauthorized(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations/conv-1/stream", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestStream_EmitsUpdatesAsTaskStatusChanges(t *testing.T) {
+	srv, _, store := newTestServer(t, api.WithStreamPollInterval(10*time.Millisecond))
+	ws := createTestWorkspace(t, store, "ws-stream", registry.WorkspaceStatusIdle)
+	token, _ := login(t, srv.URL, testPassword)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/conversations/conv-stream/stream", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	// No task exists yet for this conversation — create one and expect
+	// an event describing it.
+	task := createTestTask(t, store, "task-stream-1", ws.ID, "conv-stream", registry.TaskStatusRunning)
+
+	ev := readSSEEventWithTimeout(t, reader, 2*time.Second)
+	if ev.Event != "task_update" {
+		t.Fatalf("event type = %q, want task_update", ev.Event)
+	}
+	var payload struct {
+		TaskID      string `json:"task_id"`
+		WorkspaceID string `json:"workspace_id"`
+		Status      string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("unmarshal event data %q: %v", ev.Data, err)
+	}
+	if payload.TaskID != task.ID || payload.WorkspaceID != ws.ID || payload.Status != "running" {
+		t.Fatalf("event payload = %+v, want {task_id:%s workspace_id:%s status:running}", payload, task.ID, ws.ID)
+	}
+
+	// Now transition the task's status — expect a second event
+	// reflecting the change.
+	got, err := store.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	got.Status = registry.TaskStatusCompleted
+	if err := store.UpdateTask(context.Background(), got); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	ev2 := readSSEEventWithTimeout(t, reader, 2*time.Second)
+	var payload2 struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(ev2.Data), &payload2); err != nil {
+		t.Fatalf("unmarshal event data %q: %v", ev2.Data, err)
+	}
+	if payload2.Status != "completed" {
+		t.Fatalf("second event status = %q, want completed", payload2.Status)
 	}
 }
 

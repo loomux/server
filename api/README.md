@@ -135,6 +135,39 @@ not engineering taste):
     can't answer "every task in this conversation" since a conversation
     isn't pinned to one workspace) satisfied structurally by
     `*app.App.Store()`.
+  - `GET /api/v1/conversations/{id}/stream` — auth-gated (LOOM-21),
+    Server-Sent Events reporting task status transitions for one
+    conversation, so a client can watch a dispatch progress instead of
+    only getting a single reply when `POST /dispatch`'s blocking call
+    eventually returns — that endpoint's own contract is unchanged, this
+    is purely additive. No `404` for an unknown `conversation_id`: a
+    client may open the stream before ever calling dispatch, to catch the
+    very first transition. `event: task_update` frames carry
+    `{task_id, workspace_id, status, updated_at}` for the conversation's
+    most-recently-updated task, sent whenever that tuple changes. A `:
+    heartbeat` comment line every 15s keeps the connection alive through
+    the reverse-proxy deployment model (above); the stream stays open
+    until the client disconnects or the request context ends — it does
+    not auto-close on a terminal status, so a client can keep watching
+    across multiple turns of a long-lived conversation. Implemented as a
+    polling loop (default 500ms, `WithStreamPollInterval` override)
+    against `TaskLister` — the same seam the conversation endpoints use —
+    rather than a new push-based event bus, matching this repo's existing
+    minimal-machinery style (e.g. completion detection's own idle-
+    heuristic tier).
+
+    **Design note on reply text:** the actual chat reply is still only
+    ever produced by `POST /dispatch`'s blocking return value — it is
+    never persisted per-task or per-conversation (`Complete` only ever
+    writes it into the workspace's `rolling_summary`, which is replaced,
+    not conversation-scoped, and shared across every conversation that
+    touches that workspace). So a client's real flow is: open the stream
+    for live progress, and still block on (or already have called)
+    `POST /dispatch` to get the actual reply text — the stream is a
+    supplementary progress indicator, not a full async-dispatch
+    replacement. Persisting reply text per-task so a client could skip
+    blocking entirely was considered and deliberately deferred — real
+    schema growth beyond this ticket's scope, confirmed with the user.
   - `GET /api/v1/tasks/{id}/attach-info` — auth-gated (LOOM-20), resolves
     a task down to the target+session a human would SSH into to attach
     (design spec §4): `{task_id, tmux_session, target: {id, name, kind,
@@ -165,7 +198,14 @@ empty-list, recency-sorted grouping across multiple conversations, a
 conversation spanning two workspaces returning chronological history,
 an unrelated conversation not leaking in, and unknown-id 404) and
 `/api/v1/tasks/{id}/attach-info` (auth required, unknown-task 404, and a
-remote target's host/user/kind flowing through correctly).
+remote target's host/user/kind flowing through correctly), and
+`/api/v1/conversations/{id}/stream` (auth required; a real SSE round-trip
+— created-then-updated task status changes arriving as ordered
+`task_update` events, parsed off the live response body with a bounded
+per-event timeout so a broken stream fails the test instead of hanging).
+Run with `-race` too — the stream handler's poll loop and heartbeat
+ticker run concurrently with request handling, and this is the one
+handler in this package doing that.
 `throttle_test.go` covers `loginThrottle` in isolation (pure timing
 logic, including the zero-base edge case tests use to disable backoff
 entirely). `integration_test.go` proves the auth/dispatch behavior

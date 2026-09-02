@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -90,21 +91,35 @@ const (
 	defaultLoginBackoffMax  = 30 * time.Second
 )
 
+// defaultStreamPollInterval is how often the conversation-stream endpoint
+// (LOOM-21) re-checks task state for changes worth pushing to a
+// connected client — frequent enough to feel live, infrequent enough not
+// to hammer sqlite for what's still a polling loop under the hood.
+const defaultStreamPollInterval = 500 * time.Millisecond
+
+// streamHeartbeatInterval is how often a connected stream gets an SSE
+// comment line, purely to keep the connection alive through the
+// reverse-proxy deployment model this API assumes (README) — proxies
+// commonly time out an idle-looking connection well before any real
+// status change would otherwise be sent.
+const streamHeartbeatInterval = 15 * time.Second
+
 // Server is the client-facing HTTP API. It implements http.Handler —
 // callers decide how to actually listen (http.ListenAndServe,
 // httptest.Server, etc.), keeping this package transport-agnostic about
 // TLS/networking (deployment assumption: plain HTTP behind a reverse
 // proxy that terminates TLS — see README.md).
 type Server struct {
-	dispatcher    Dispatcher
-	sessions      SessionStore
-	workspaces    WorkspaceLister
-	tasks         TaskLister
-	attachInfo    AttachInfoStore
-	passwordHash  []byte
-	sessionTTL    time.Duration
-	loginThrottle *loginThrottle
-	mux           *http.ServeMux
+	dispatcher         Dispatcher
+	sessions           SessionStore
+	workspaces         WorkspaceLister
+	tasks              TaskLister
+	attachInfo         AttachInfoStore
+	passwordHash       []byte
+	sessionTTL         time.Duration
+	loginThrottle      *loginThrottle
+	streamPollInterval time.Duration
+	mux                *http.ServeMux
 }
 
 // Option configures a Server constructed via NewServer.
@@ -122,19 +137,27 @@ func WithLoginBackoff(base, max time.Duration) Option {
 	return func(s *Server) { s.loginThrottle = newLoginThrottle(base, max) }
 }
 
+// WithStreamPollInterval overrides the conversation-stream endpoint's
+// default polling interval (see defaultStreamPollInterval). Mainly for
+// tests, so they don't wait a full production-length interval per event.
+func WithStreamPollInterval(d time.Duration) Option {
+	return func(s *Server) { s.streamPollInterval = d }
+}
+
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
 func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, tasks TaskLister, attachInfo AttachInfoStore, passwordHash []byte, opts ...Option) *Server {
 	s := &Server{
-		dispatcher:    dispatcher,
-		sessions:      sessions,
-		workspaces:    workspaces,
-		tasks:         tasks,
-		attachInfo:    attachInfo,
-		passwordHash:  passwordHash,
-		sessionTTL:    defaultSessionTTL,
-		loginThrottle: newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
+		dispatcher:         dispatcher,
+		sessions:           sessions,
+		workspaces:         workspaces,
+		tasks:              tasks,
+		attachInfo:         attachInfo,
+		passwordHash:       passwordHash,
+		sessionTTL:         defaultSessionTTL,
+		loginThrottle:      newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
+		streamPollInterval: defaultStreamPollInterval,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -147,6 +170,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
 	mux.HandleFunc("GET /api/v1/conversations", s.requireAuth(s.handleListConversations))
 	mux.HandleFunc("GET /api/v1/conversations/{id}", s.requireAuth(s.handleGetConversation))
+	mux.HandleFunc("GET /api/v1/conversations/{id}/stream", s.requireAuth(s.handleStream))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attach-info", s.requireAuth(s.handleAttachInfo))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	s.mux = mux
@@ -453,6 +477,103 @@ func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
 			User: target.User,
 		},
 	})
+}
+
+type taskUpdateEvent struct {
+	TaskID      string    `json:"task_id"`
+	WorkspaceID string    `json:"workspace_id"`
+	Status      string    `json:"status"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// handleStream serves GET /api/v1/conversations/{id}/stream (LOOM-21):
+// Server-Sent Events reporting task status transitions for one
+// conversation, so a client can watch a dispatch progress instead of
+// only getting a single reply when POST /dispatch's blocking call
+// eventually returns (that endpoint's contract is unchanged — this is
+// purely additive). No 404 for an unknown conversation_id: a client may
+// open the stream before ever calling dispatch, to catch the very first
+// transition. Implemented as a polling loop against TaskLister (the same
+// seam LOOM-18's conversation endpoints use) rather than a push-based
+// event bus — this repo's established minimal-machinery style (see e.g.
+// completion detection's own idle-heuristic tier) — diffing the
+// conversation's latest task by (id, status, updated_at) each tick.
+// Stays open until the client disconnects or the request context ends;
+// it does not auto-close on a terminal task status, so a client can keep
+// watching across multiple turns of a long-lived conversation.
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	id := r.PathValue("id")
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	poll := time.NewTicker(s.streamPollInterval)
+	defer poll.Stop()
+	heartbeat := time.NewTicker(streamHeartbeatInterval)
+	defer heartbeat.Stop()
+
+	var lastSent *taskUpdateEvent
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
+		case <-poll.C:
+			ev, err := s.latestConversationTaskEvent(r.Context(), id)
+			if err != nil || ev == nil {
+				continue
+			}
+			if lastSent != nil && *lastSent == *ev {
+				continue
+			}
+			lastSent = ev
+			data, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: task_update\ndata: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+}
+
+// latestConversationTaskEvent finds conversationID's most-recently-
+// updated task (mirroring handleListConversations' own grouping logic,
+// scoped to one conversation) and reports it as a taskUpdateEvent. nil,
+// nil means no task exists yet for this conversation.
+func (s *Server) latestConversationTaskEvent(ctx context.Context, conversationID string) (*taskUpdateEvent, error) {
+	tasks, err := s.tasks.ListTasks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var latest *registry.Task
+	for _, t := range tasks {
+		if t.ConversationID != conversationID {
+			continue
+		}
+		if latest == nil || t.UpdatedAt.After(latest.UpdatedAt) {
+			latest = t
+		}
+	}
+	if latest == nil {
+		return nil, nil
+	}
+	return &taskUpdateEvent{
+		TaskID:      latest.ID,
+		WorkspaceID: latest.WorkspaceID,
+		Status:      string(latest.Status),
+		UpdatedAt:   latest.UpdatedAt,
+	}, nil
 }
 
 type versionResponse struct {
