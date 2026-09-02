@@ -114,6 +114,27 @@ not engineering taste):
     §6, not client-facing yet). Wraps `WorkspaceLister.ListWorkspaces`, a
     narrow seam mirroring `SessionStore`, satisfied structurally by
     `*app.App.Store()`.
+  - `GET /api/v1/conversations` — auth-gated (LOOM-18), one summary row
+    per distinct `conversation_id`, most-recently-updated first:
+    `{conversations: [{conversation_id, workspace_id, status,
+    updated_at}, ...]}`. A conversation isn't a stored entity (no such
+    table in the design spec) — this groups `TaskLister.ListTasks` by
+    `conversation_id`, taking each conversation's most-recently-updated
+    task as representative, since one conversation can span more than one
+    task row (LOOM-13 continuation, or the router sending a later message
+    in the same conversation to a different workspace).
+  - `GET /api/v1/conversations/{id}` — auth-gated (LOOM-18), the full task
+    history for one conversation: `{conversation_id, tasks: [{id,
+    workspace_id, kind, agent_type, status, created_at, updated_at,
+    started_at, completed_at}, ...]}`, oldest first; `404` if no task
+    matches that `conversation_id`. "History" here is exactly what the
+    registry stores — task lifecycle rows, not a per-turn chat transcript
+    (no message log exists in the schema). Both conversation endpoints
+    share `TaskLister`, a narrow seam (`ListTasks`, the store's
+    unfiltered, cross-workspace task query — `ListTasksByWorkspace` alone
+    can't answer "every task in this conversation" since a conversation
+    isn't pinned to one workspace) satisfied structurally by
+    `*app.App.Store()`.
   - `GET /api/v1/version` — unauthenticated, `{server_version, api_version}`
     (`server_version` comes from the top-level `version` package, not
     defined in this one)
@@ -129,7 +150,11 @@ not just documented), and that enough waiting always lets the correct
 password through no matter how many failures preceded it) against a fake
 `Dispatcher` and a real (temp-file) sqlite store for sessions, plus
 `/api/v1/workspaces` (auth required, empty-list, and populated-and-sorted
-cases, asserting the trimmed field set against real store fixtures).
+cases, asserting the trimmed field set against real store fixtures) and
+`/api/v1/conversations` + `/api/v1/conversations/{id}` (auth required,
+empty-list, recency-sorted grouping across multiple conversations, a
+conversation spanning two workspaces returning chronological history,
+an unrelated conversation not leaking in, and unknown-id 404).
 `throttle_test.go` covers `loginThrottle` in isolation (pure timing
 logic, including the zero-base edge case tests use to disable backoff
 entirely). `integration_test.go` proves the auth/dispatch behavior

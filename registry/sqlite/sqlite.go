@@ -390,6 +390,27 @@ func (s *Store) DeleteTask(ctx context.Context, id string) error {
 	return requireRowAffected(res, "task", id)
 }
 
+func (s *Store) ListTasks(ctx context.Context) ([]*registry.Task, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*registry.Task
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list tasks: %w", err)
+		}
+		out = append(out, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list tasks: %w", err)
+	}
+	return out, nil
+}
+
 func scanTask(row rowScanner) (*registry.Task, error) {
 	var t registry.Task
 	var kind, status string

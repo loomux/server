@@ -47,7 +47,7 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 	}
 	dispatcher := &fakeDispatcher{}
 	store := newTestStore(t)
-	server := api.NewServer(dispatcher, store, store, []byte(hash), opts...)
+	server := api.NewServer(dispatcher, store, store, store, []byte(hash), opts...)
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 	return httpSrv, dispatcher, store
@@ -73,6 +73,25 @@ func createTestWorkspace(t *testing.T, s registry.Store, name string, status reg
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
 	return ws
+}
+
+// createTestTask inserts a task (and its workspace/target, if needed)
+// directly via the store, as a fixture for conversation-endpoint tests
+// that aren't exercising task-creation behavior themselves.
+func createTestTask(t *testing.T, s registry.Store, id, workspaceID, conversationID string, status registry.TaskStatus) *registry.Task {
+	t.Helper()
+	task := &registry.Task{
+		ID:             id,
+		WorkspaceID:    workspaceID,
+		Kind:           registry.TaskKindShell,
+		TmuxSession:    "sess-" + id,
+		Status:         status,
+		ConversationID: conversationID,
+	}
+	if err := s.CreateTask(context.Background(), task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	return task
 }
 
 func login(t *testing.T, baseURL, password string) (token string, status int) {
@@ -432,6 +451,163 @@ func TestListWorkspaces_NoWorkspaces_ReturnsEmptyList(t *testing.T) {
 	}
 	if len(out.Workspaces) != 0 {
 		t.Fatalf("got %d workspaces, want 0", len(out.Workspaces))
+	}
+}
+
+func TestListConversations_NoToken_ReturnsUnauthorized(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+type conversationSummary struct {
+	ConversationID string `json:"conversation_id"`
+	WorkspaceID    string `json:"workspace_id"`
+	Status         string `json:"status"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+func TestListConversations_ValidToken_ReturnsOneSummaryPerConversationSortedByRecency(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	ws := createTestWorkspace(t, store, "ws1", registry.WorkspaceStatusIdle)
+
+	// conv-old is created first, then conv-new; but conv-old's task is
+	// updated last, so recency-sorting must reflect the update, not
+	// creation order.
+	createTestTask(t, store, "task-old-1", ws.ID, "conv-old", registry.TaskStatusRunning)
+	time.Sleep(10 * time.Millisecond)
+	createTestTask(t, store, "task-new-1", ws.ID, "conv-new", registry.TaskStatusRunning)
+	time.Sleep(10 * time.Millisecond)
+
+	taskOld1, err := store.GetTask(context.Background(), "task-old-1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	taskOld1.Status = registry.TaskStatusCompleted
+	if err := store.UpdateTask(context.Background(), taskOld1); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	token, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login status = %d", status)
+	}
+
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var out struct {
+		Conversations []conversationSummary `json:"conversations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Conversations) != 2 {
+		t.Fatalf("got %d conversations, want 2", len(out.Conversations))
+	}
+	if out.Conversations[0].ConversationID != "conv-old" || out.Conversations[1].ConversationID != "conv-new" {
+		t.Fatalf("order = [%q, %q], want [conv-old, conv-new] (most-recently-updated first)",
+			out.Conversations[0].ConversationID, out.Conversations[1].ConversationID)
+	}
+	if out.Conversations[0].Status != "completed" || out.Conversations[0].WorkspaceID != ws.ID {
+		t.Fatalf("conv-old summary = %+v, want status=completed workspace_id=%s", out.Conversations[0], ws.ID)
+	}
+	if out.Conversations[1].Status != "running" {
+		t.Fatalf("conv-new summary = %+v, want status=running", out.Conversations[1])
+	}
+}
+
+func TestListConversations_None_ReturnsEmptyList(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var out struct {
+		Conversations []conversationSummary `json:"conversations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Conversations == nil {
+		t.Fatal("conversations field decoded as null, want an empty array")
+	}
+	if len(out.Conversations) != 0 {
+		t.Fatalf("got %d conversations, want 0", len(out.Conversations))
+	}
+}
+
+func TestGetConversation_NoToken_ReturnsUnauthorized(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations/conv-1", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestGetConversation_Unknown_ReturnsNotFound(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations/no-such-conversation", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+func TestGetConversation_ValidToken_ReturnsChronologicalTaskHistory(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	wsA := createTestWorkspace(t, store, "ws-a", registry.WorkspaceStatusIdle)
+	wsB := createTestWorkspace(t, store, "ws-b", registry.WorkspaceStatusIdle)
+
+	// The same conversation spans two workspaces over time (LOOM-13
+	// continuation / a later message routed elsewhere) — history must
+	// include both tasks, oldest first.
+	createTestTask(t, store, "task-1", wsA.ID, "conv-multi", registry.TaskStatusCompleted)
+	time.Sleep(10 * time.Millisecond)
+	createTestTask(t, store, "task-2", wsB.ID, "conv-multi", registry.TaskStatusRunning)
+	// An unrelated conversation must not leak into this one's history.
+	createTestTask(t, store, "task-other", wsA.ID, "conv-other", registry.TaskStatusRunning)
+
+	token, _ := login(t, srv.URL, testPassword)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations/conv-multi", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var out struct {
+		ConversationID string `json:"conversation_id"`
+		Tasks          []struct {
+			ID          string `json:"id"`
+			WorkspaceID string `json:"workspace_id"`
+			Status      string `json:"status"`
+		} `json:"tasks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.ConversationID != "conv-multi" {
+		t.Fatalf("conversation_id = %q, want conv-multi", out.ConversationID)
+	}
+	if len(out.Tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2", len(out.Tasks))
+	}
+	if out.Tasks[0].ID != "task-1" || out.Tasks[1].ID != "task-2" {
+		t.Fatalf("task order = [%q, %q], want [task-1, task-2] (chronological)", out.Tasks[0].ID, out.Tasks[1].ID)
+	}
+	if out.Tasks[0].WorkspaceID != wsA.ID || out.Tasks[1].WorkspaceID != wsB.ID {
+		t.Fatalf("workspace ids = [%q, %q], want [%q, %q]", out.Tasks[0].WorkspaceID, out.Tasks[1].WorkspaceID, wsA.ID, wsB.ID)
 	}
 }
 

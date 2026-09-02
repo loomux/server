@@ -33,6 +33,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TaskNotFound", func(t *testing.T) { testTaskNotFound(t, newStore(t)) })
 	t.Run("TaskRequiresValidWorkspace", func(t *testing.T) { testTaskRequiresValidWorkspace(t, newStore(t)) })
 	t.Run("TaskListByWorkspace", func(t *testing.T) { testTaskListByWorkspace(t, newStore(t)) })
+	t.Run("TaskListAll", func(t *testing.T) { testTaskListAll(t, newStore(t)) })
 	t.Run("DeleteWorkspaceWithTasksRejected", func(t *testing.T) { testDeleteWorkspaceWithTasksRejected(t, newStore(t)) })
 	t.Run("DeleteTargetWithWorkspacesRejected", func(t *testing.T) { testDeleteTargetWithWorkspacesRejected(t, newStore(t)) })
 
@@ -433,6 +434,52 @@ func testTaskListByWorkspace(t *testing.T, s registry.Store) {
 		if task.WorkspaceID != wsA.ID {
 			t.Fatalf("ListTasksByWorkspace(wsA) returned task for workspace %q", task.WorkspaceID)
 		}
+	}
+}
+
+// testTaskListAll covers ListTasks — the unfiltered, cross-workspace query
+// LOOM-18's conversation-listing endpoints are built on, since a
+// conversation isn't pinned to one workspace (the router can route the
+// same conversation_id to a different workspace on a later message).
+func testTaskListAll(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+
+	wsA := &registry.Workspace{ID: "ws-a-" + t.Name(), Name: "ws-a-" + t.Name(), Path: "/a", TargetID: target.ID, Status: registry.WorkspaceStatusIdle}
+	if err := s.CreateWorkspace(ctx, wsA); err != nil {
+		t.Fatalf("CreateWorkspace(wsA): %v", err)
+	}
+	wsB := &registry.Workspace{ID: "ws-b-" + t.Name(), Name: "ws-b-" + t.Name(), Path: "/b", TargetID: target.ID, Status: registry.WorkspaceStatusIdle}
+	if err := s.CreateWorkspace(ctx, wsB); err != nil {
+		t.Fatalf("CreateWorkspace(wsB): %v", err)
+	}
+
+	mk := func(id, workspaceID string) *registry.Task {
+		return &registry.Task{
+			ID: id, WorkspaceID: workspaceID, Kind: registry.TaskKindShell,
+			TmuxSession: "sess-" + id, Status: registry.TaskStatusRunning, ConversationID: "conv",
+		}
+	}
+	if err := s.CreateTask(ctx, mk("task-a1", wsA.ID)); err != nil {
+		t.Fatalf("CreateTask(a1): %v", err)
+	}
+	if err := s.CreateTask(ctx, mk("task-b1", wsB.ID)); err != nil {
+		t.Fatalf("CreateTask(b1): %v", err)
+	}
+
+	list, err := s.ListTasks(ctx)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListTasks = %d tasks, want 2 (across both workspaces)", len(list))
+	}
+	seen := map[string]bool{}
+	for _, task := range list {
+		seen[task.ID] = true
+	}
+	if !seen["task-a1"] || !seen["task-b1"] {
+		t.Fatalf("ListTasks = %+v, want both task-a1 (wsA) and task-b1 (wsB)", list)
 	}
 }
 

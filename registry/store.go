@@ -28,6 +28,12 @@ type Store interface {
 	CreateTask(ctx context.Context, t *Task) error
 	GetTask(ctx context.Context, id string) (*Task, error)
 	ListTasksByWorkspace(ctx context.Context, workspaceID string) ([]*Task, error)
+	// ListTasks returns every task across every workspace — a
+	// conversation isn't pinned to one workspace (the router can route
+	// the same conversation_id to a different workspace on a later
+	// message), so listing/grouping by conversation needs the
+	// unfiltered view rather than ListTasksByWorkspace.
+	ListTasks(ctx context.Context) ([]*Task, error)
 	UpdateTask(ctx context.Context, t *Task) error
 	DeleteTask(ctx context.Context, id string) error
 

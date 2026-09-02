@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,17 @@ type WorkspaceLister interface {
 	ListWorkspaces(ctx context.Context) ([]*registry.Workspace, error)
 }
 
+// TaskLister is the unfiltered task-listing slice of registry.Store this
+// package needs to serve conversation listing/history (LOOM-18) —
+// satisfied structurally by any registry.Store. Unfiltered because a
+// conversation isn't pinned to one workspace: the router can route the
+// same conversation_id to a different workspace on a later message, so
+// grouping/filtering by conversation has to happen above
+// ListTasksByWorkspace's per-workspace scope.
+type TaskLister interface {
+	ListTasks(ctx context.Context) ([]*registry.Task, error)
+}
+
 // defaultSessionTTL is the sliding-expiration window: a session stays
 // valid as long as it's used at least once within this window: 30 days,
 // reasonable for a personal single-user tool used from mobile.
@@ -76,6 +88,7 @@ type Server struct {
 	dispatcher    Dispatcher
 	sessions      SessionStore
 	workspaces    WorkspaceLister
+	tasks         TaskLister
 	passwordHash  []byte
 	sessionTTL    time.Duration
 	loginThrottle *loginThrottle
@@ -100,11 +113,12 @@ func WithLoginBackoff(base, max time.Duration) Option {
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
-func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, passwordHash []byte, opts ...Option) *Server {
+func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, tasks TaskLister, passwordHash []byte, opts ...Option) *Server {
 	s := &Server{
 		dispatcher:    dispatcher,
 		sessions:      sessions,
 		workspaces:    workspaces,
+		tasks:         tasks,
 		passwordHash:  passwordHash,
 		sessionTTL:    defaultSessionTTL,
 		loginThrottle: newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
@@ -118,6 +132,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("POST /api/v1/logout", s.requireAuth(s.handleLogout))
 	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
 	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
+	mux.HandleFunc("GET /api/v1/conversations", s.requireAuth(s.handleListConversations))
+	mux.HandleFunc("GET /api/v1/conversations/{id}", s.requireAuth(s.handleGetConversation))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	s.mux = mux
 	return s
@@ -256,6 +272,112 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, listWorkspacesResponse{Workspaces: out})
+}
+
+type conversationSummary struct {
+	ConversationID string    `json:"conversation_id"`
+	WorkspaceID    string    `json:"workspace_id"`
+	Status         string    `json:"status"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type listConversationsResponse struct {
+	Conversations []conversationSummary `json:"conversations"`
+}
+
+// handleListConversations returns one summary row per distinct
+// conversation_id, sorted most-recently-updated first — the "which
+// conversation is active" overview. A conversation isn't a stored entity
+// (design spec has no such table); this groups TaskLister.ListTasks by
+// ConversationID, taking each conversation's most-recently-updated task
+// as representative, since the same conversation can span more than one
+// task (LOOM-13 continuation, or a later message routed to a different
+// workspace by the router).
+func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.tasks.ListTasks(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list conversations")
+		return
+	}
+
+	latest := make(map[string]*registry.Task, len(tasks))
+	for _, t := range tasks {
+		cur, ok := latest[t.ConversationID]
+		if !ok || t.UpdatedAt.After(cur.UpdatedAt) {
+			latest[t.ConversationID] = t
+		}
+	}
+
+	out := make([]conversationSummary, 0, len(latest))
+	for convID, t := range latest {
+		out = append(out, conversationSummary{
+			ConversationID: convID,
+			WorkspaceID:    t.WorkspaceID,
+			Status:         string(t.Status),
+			UpdatedAt:      t.UpdatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+
+	writeJSON(w, http.StatusOK, listConversationsResponse{Conversations: out})
+}
+
+type conversationTask struct {
+	ID          string     `json:"id"`
+	WorkspaceID string     `json:"workspace_id"`
+	Kind        string     `json:"kind"`
+	AgentType   string     `json:"agent_type"`
+	Status      string     `json:"status"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+type getConversationResponse struct {
+	ConversationID string             `json:"conversation_id"`
+	Tasks          []conversationTask `json:"tasks"`
+}
+
+// handleGetConversation returns a conversation's full task history —
+// every Task row sharing this conversation_id, oldest first
+// (TaskLister.ListTasks's own order). This is "history" in terms of what
+// the registry actually stores: task-lifecycle records, not a per-turn
+// chat transcript (no such log exists in the schema). A conversation_id
+// matching zero tasks is a 404, not an empty list — unlike
+// handleListConversations, this is a "fetch one thing" endpoint.
+func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	tasks, err := s.tasks.ListTasks(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not fetch conversation")
+		return
+	}
+
+	out := make([]conversationTask, 0)
+	for _, t := range tasks {
+		if t.ConversationID != id {
+			continue
+		}
+		out = append(out, conversationTask{
+			ID:          t.ID,
+			WorkspaceID: t.WorkspaceID,
+			Kind:        string(t.Kind),
+			AgentType:   t.AgentType,
+			Status:      string(t.Status),
+			CreatedAt:   t.CreatedAt,
+			UpdatedAt:   t.UpdatedAt,
+			StartedAt:   t.StartedAt,
+			CompletedAt: t.CompletedAt,
+		})
+	}
+	if len(out) == 0 {
+		writeError(w, http.StatusNotFound, "no such conversation")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out})
 }
 
 type versionResponse struct {
