@@ -31,11 +31,29 @@ package and wrap an `*App` rather than re-wire these pieces itself;
   orchestrator → credential resolver → LLM-backed routing model →
   router → a background idle-reaper goroutine (`orchestrator.Reaper.Run`,
   started here and stopped by `App.Close`). `DefaultAgentTypes()` is the
-  production `router.AgentTypeRegistry` — currently just `"claude-code"`
-  (tier-1/2 marker completion, launch template `claude`) plus the `""`
-  bookkeeping entry completion detection needs for shell-kind
-  (provisioning) tasks — deliberately excluded from what's offered to
-  the router model as a real agent-type choice. `Build` wraps an
+  production `router.AgentTypeRegistry` — `"claude-code"` (launch
+  template `claude`) and `"codex"` (launch template `codex`, LOOM-22 —
+  proves the interface generalizes beyond one CLI), both declaring
+  `Tier: TierMarker` symmetrically, plus the `""` bookkeeping entry
+  completion detection needs for shell-kind (provisioning) tasks —
+  deliberately excluded from what's offered to the router model as a
+  real agent-type choice.
+
+  **Known gap, affects both entries equally:** neither entry's
+  `TierMarker` declaration is actually backed by per-task marker-path
+  injection. `MarkerWatcher` expects a marker file keyed by the task's
+  internal UUID, but `AgentType.LaunchTemplate` is a static literal
+  string (`agenttype.go`'s own doc comment: no per-launch templating),
+  and that UUID doesn't exist until `Orchestrator.Launch` mints it —
+  after the launch command is already built. So today there's no
+  mechanism telling a launched `claude` or `codex` process which marker
+  file to touch; both CLIs do have a plausible native-hook or
+  self-report mechanism to wire (Claude Code's `Stop` hook; Codex's own
+  `Stop` hook or its simpler `notify` config key), but connecting either
+  one to a real per-task path is unbuilt. Flagged rather than solved
+  here — fixing it means giving `LaunchTemplate` real per-launch
+  parameterization, a bigger design question than adding a second
+  adapter answers on its own. `Build` wraps an
   unexported, parameterized `build(cfg, agentTypes)` — the public
   signature always uses `DefaultAgentTypes()`; the split exists purely
   so tests can wire a fast `TierIdle` agent type against a real tmux

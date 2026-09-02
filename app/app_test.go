@@ -114,6 +114,17 @@ func TestDefaultAgentTypes(t *testing.T) {
 	if shell.Tier != completion.TierIdle {
 		t.Errorf(`"" Tier = %v, want TierIdle`, shell.Tier)
 	}
+
+	codex, ok := agentTypes["codex"]
+	if !ok {
+		t.Fatal(`DefaultAgentTypes()["codex"] missing`)
+	}
+	if codex.LaunchTemplate != "codex" {
+		t.Errorf("codex LaunchTemplate = %q, want %q", codex.LaunchTemplate, "codex")
+	}
+	if codex.Tier != completion.TierMarker {
+		t.Errorf("codex Tier = %v, want TierMarker (mirrors claude-code's wiring level — see LOOM-22)", codex.Tier)
+	}
 }
 
 func TestDispatchableAgentTypeNames_ExcludesEmptyKey(t *testing.T) {
@@ -123,7 +134,17 @@ func TestDispatchableAgentTypeNames_ExcludesEmptyKey(t *testing.T) {
 			t.Fatal(`dispatchableAgentTypeNames included "" — must never offer it to the router model`)
 		}
 	}
-	if len(names) != 1 || names[0] != "claude-code" {
-		t.Errorf("dispatchableAgentTypeNames = %v, want [claude-code]", names)
+	want := []string{"claude-code", "codex"}
+	if len(names) != len(want) {
+		t.Fatalf("dispatchableAgentTypeNames = %v, want (in any order) %v", names, want)
+	}
+	got := map[string]bool{}
+	for _, n := range names {
+		got[n] = true
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("dispatchableAgentTypeNames = %v, missing %q", names, w)
+		}
 	}
 }

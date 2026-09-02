@@ -49,15 +49,24 @@ func (a *App) Close() error {
 	return a.store.Close()
 }
 
-// DefaultAgentTypes is the production registered-agent-type set. Only
-// "claude-code" is wired today — matches this repo's own established
-// test-fixture convention (router/agenttype_test.go) and the fact that
-// this whole project is built around tmux-backed Claude Code agents.
-// The "" entry configures completion detection for shell-kind
-// (provisioning) tasks only (router/agenttype.go's own doc comment) —
-// it is never a real dispatchable agent type and is deliberately
-// excluded from what's offered to the router model by
-// dispatchableAgentTypeNames below.
+// DefaultAgentTypes is the production registered-agent-type set:
+// "claude-code" and "codex" (LOOM-22 — proves the agent-type interface
+// generalizes beyond a single CLI). Both declare Tier: TierMarker,
+// mirroring each other exactly: Codex CLI has a completion-signal
+// mechanism roughly analogous to Claude Code's Stop hook (either an
+// experimental per-turn Stop hook, or the simpler long-standing `notify`
+// config key), but — same as claude-code's own entry today — this
+// registry doesn't yet wire per-task marker-path injection into the
+// launch command (AgentType.LaunchTemplate is a static literal, and a
+// task's ID doesn't exist until after Orchestrator.Launch mints it, so
+// there's no mechanism today to tell a launched process which marker
+// file to write). That's a real, pre-existing gap affecting both agent
+// types equally — out of scope here; flagged as a follow-up rather than
+// solved inside "add a second adapter." The "" entry configures
+// completion detection for shell-kind (provisioning) tasks only
+// (router/agenttype.go's own doc comment) — it is never a real
+// dispatchable agent type and is deliberately excluded from what's
+// offered to the router model by dispatchableAgentTypeNames below.
 func DefaultAgentTypes() router.AgentTypeRegistry {
 	return router.AgentTypeRegistry{
 		"": router.AgentType{
@@ -66,6 +75,10 @@ func DefaultAgentTypes() router.AgentTypeRegistry {
 		"claude-code": router.AgentType{
 			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
 			LaunchTemplate: "claude",
+		},
+		"codex": router.AgentType{
+			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
+			LaunchTemplate: "codex",
 		},
 	}
 }
