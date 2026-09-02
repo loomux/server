@@ -39,7 +39,7 @@ func newTestStore(t *testing.T) registry.Store {
 	return store
 }
 
-func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDispatcher) {
+func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDispatcher, registry.Store) {
 	t.Helper()
 	hash, err := api.HashPassword(testPassword)
 	if err != nil {
@@ -47,10 +47,32 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 	}
 	dispatcher := &fakeDispatcher{}
 	store := newTestStore(t)
-	server := api.NewServer(dispatcher, store, []byte(hash), opts...)
+	server := api.NewServer(dispatcher, store, store, []byte(hash), opts...)
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
-	return httpSrv, dispatcher
+	return httpSrv, dispatcher, store
+}
+
+// createTestWorkspace inserts a target + workspace directly via the store,
+// as a fixture for endpoint tests that aren't exercising workspace-creation
+// behavior themselves.
+func createTestWorkspace(t *testing.T, s registry.Store, name string, status registry.WorkspaceStatus) *registry.Workspace {
+	t.Helper()
+	target := &registry.Target{ID: "target-" + name, Name: "target-" + name, Kind: registry.TargetKindLocal}
+	if err := s.CreateTarget(context.Background(), target); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	ws := &registry.Workspace{
+		ID:       "ws-" + name,
+		Name:     name,
+		Path:     "/fixture/" + name,
+		TargetID: target.ID,
+		Status:   status,
+	}
+	if err := s.CreateWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	return ws
 }
 
 func login(t *testing.T, baseURL, password string) (token string, status int) {
@@ -92,7 +114,7 @@ func authedRequest(t *testing.T, method, url, token string, body []byte) *http.R
 }
 
 func TestLogin_CorrectPassword_ReturnsToken(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 	token, status := login(t, srv.URL, testPassword)
 	if status != http.StatusOK {
 		t.Fatalf("login status = %d, want %d", status, http.StatusOK)
@@ -103,7 +125,7 @@ func TestLogin_CorrectPassword_ReturnsToken(t *testing.T) {
 }
 
 func TestLogin_WrongPassword_ReturnsUnauthorized(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 	_, status := login(t, srv.URL, "wrong-password")
 	if status != http.StatusUnauthorized {
 		t.Fatalf("login status = %d, want %d", status, http.StatusUnauthorized)
@@ -111,7 +133,7 @@ func TestLogin_WrongPassword_ReturnsUnauthorized(t *testing.T) {
 }
 
 func TestLogin_MalformedBody_ReturnsBadRequest(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 	resp, err := http.Post(srv.URL+"/api/v1/login", "application/json", bytes.NewReader([]byte("{not json")))
 	if err != nil {
 		t.Fatalf("POST /api/v1/login: %v", err)
@@ -123,7 +145,7 @@ func TestLogin_MalformedBody_ReturnsBadRequest(t *testing.T) {
 }
 
 func TestDispatch_NoToken_ReturnsUnauthorized(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
 	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", "", body)
 	defer resp.Body.Close()
@@ -133,7 +155,7 @@ func TestDispatch_NoToken_ReturnsUnauthorized(t *testing.T) {
 }
 
 func TestDispatch_InvalidToken_ReturnsUnauthorized(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
 	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", "not-a-real-token", body)
 	defer resp.Body.Close()
@@ -143,7 +165,7 @@ func TestDispatch_InvalidToken_ReturnsUnauthorized(t *testing.T) {
 }
 
 func TestDispatch_ValidToken_CallsDispatcherAndReturnsReply(t *testing.T) {
-	srv, dispatcher := newTestServer(t)
+	srv, dispatcher, _ := newTestServer(t)
 	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
 		if conversationID != "c1" || message != "hello" {
 			t.Fatalf("Dispatch called with (%q, %q), want (c1, hello)", conversationID, message)
@@ -174,7 +196,7 @@ func TestDispatch_ValidToken_CallsDispatcherAndReturnsReply(t *testing.T) {
 }
 
 func TestDispatch_MissingFields_ReturnsBadRequest(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 	token, _ := login(t, srv.URL, testPassword)
 
 	body, _ := json.Marshal(map[string]string{"conversation_id": "", "message": ""})
@@ -186,7 +208,7 @@ func TestDispatch_MissingFields_ReturnsBadRequest(t *testing.T) {
 }
 
 func TestLogout_RevokesToken(t *testing.T) {
-	srv, dispatcher := newTestServer(t)
+	srv, dispatcher, _ := newTestServer(t)
 	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
 		return "ok", nil
 	}
@@ -207,7 +229,7 @@ func TestLogout_RevokesToken(t *testing.T) {
 }
 
 func TestSession_ExpiresAfterTTL(t *testing.T) {
-	srv, dispatcher := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
+	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
 	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
 		return "ok", nil
 	}
@@ -224,7 +246,7 @@ func TestSession_ExpiresAfterTTL(t *testing.T) {
 }
 
 func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
-	srv, dispatcher := newTestServer(t, api.WithSessionTTL(150*time.Millisecond))
+	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(150*time.Millisecond))
 	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
 		return "ok", nil
 	}
@@ -245,7 +267,7 @@ func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
 }
 
 func TestLogin_RepeatedFailures_TriggersBackoffWith429AndRetryAfter(t *testing.T) {
-	srv, _ := newTestServer(t, api.WithLoginBackoff(200*time.Millisecond, 30*time.Second))
+	srv, _, _ := newTestServer(t, api.WithLoginBackoff(200*time.Millisecond, 30*time.Second))
 
 	_, status := login(t, srv.URL, "wrong")
 	if status != http.StatusUnauthorized {
@@ -266,7 +288,7 @@ func TestLogin_RepeatedFailures_TriggersBackoffWith429AndRetryAfter(t *testing.T
 }
 
 func TestLogin_SuccessAfterFailure_ResetsThrottle(t *testing.T) {
-	srv, _ := newTestServer(t, api.WithLoginBackoff(50*time.Millisecond, 30*time.Second))
+	srv, _, _ := newTestServer(t, api.WithLoginBackoff(50*time.Millisecond, 30*time.Second))
 
 	_, status := login(t, srv.URL, "wrong")
 	if status != http.StatusUnauthorized {
@@ -293,7 +315,7 @@ func TestLogin_SuccessAfterFailure_ResetsThrottle(t *testing.T) {
 // delay has passed — the legitimate user is slowed down, never
 // permanently denied.
 func TestLogin_NeverPermanentlyLocksOut(t *testing.T) {
-	srv, _ := newTestServer(t, api.WithLoginBackoff(10*time.Millisecond, 60*time.Millisecond))
+	srv, _, _ := newTestServer(t, api.WithLoginBackoff(10*time.Millisecond, 60*time.Millisecond))
 
 	for i := 0; i < 10; i++ {
 		_, status := login(t, srv.URL, "wrong")
@@ -316,7 +338,7 @@ func TestLogin_NeverPermanentlyLocksOut(t *testing.T) {
 // different X-Forwarded-For on each request (this server doesn't even
 // read that header, on purpose — see throttle.go).
 func TestLogin_ThrottleIsGlobalNotPerClient(t *testing.T) {
-	srv, _ := newTestServer(t, api.WithLoginBackoff(200*time.Millisecond, 30*time.Second))
+	srv, _, _ := newTestServer(t, api.WithLoginBackoff(200*time.Millisecond, 30*time.Second))
 
 	req1, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/login", bytes.NewReader(mustJSON(t, map[string]string{"password": "wrong"})))
 	req1.Header.Set("Content-Type", "application/json")
@@ -340,6 +362,76 @@ func TestLogin_ThrottleIsGlobalNotPerClient(t *testing.T) {
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("second (differently-IP-claiming) client's attempt status = %d, want %d (throttle is global)", resp2.StatusCode, http.StatusTooManyRequests)
+	}
+}
+
+func TestListWorkspaces_NoToken_ReturnsUnauthorized(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/workspaces", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestListWorkspaces_ValidToken_ReturnsWorkspacesSortedByName(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	createTestWorkspace(t, store, "zeta", registry.WorkspaceStatusIdle)
+	createTestWorkspace(t, store, "alpha", registry.WorkspaceStatusActive)
+
+	token, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login status = %d", status)
+	}
+
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/workspaces", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var out struct {
+		Workspaces []struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			TargetID string `json:"target_id"`
+			Status   string `json:"status"`
+		} `json:"workspaces"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Workspaces) != 2 {
+		t.Fatalf("got %d workspaces, want 2", len(out.Workspaces))
+	}
+	if out.Workspaces[0].Name != "alpha" || out.Workspaces[1].Name != "zeta" {
+		t.Fatalf("workspace order = [%q, %q], want [alpha, zeta] (sorted by name)", out.Workspaces[0].Name, out.Workspaces[1].Name)
+	}
+	if out.Workspaces[0].ID != "ws-alpha" || out.Workspaces[0].TargetID != "target-alpha" || out.Workspaces[0].Status != "active" {
+		t.Fatalf("unexpected workspace fields: %+v", out.Workspaces[0])
+	}
+}
+
+func TestListWorkspaces_NoWorkspaces_ReturnsEmptyList(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/workspaces", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var out struct {
+		Workspaces []struct{} `json:"workspaces"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Workspaces == nil {
+		t.Fatal("workspaces field decoded as null, want an empty array")
+	}
+	if len(out.Workspaces) != 0 {
+		t.Fatalf("got %d workspaces, want 0", len(out.Workspaces))
 	}
 }
 

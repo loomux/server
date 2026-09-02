@@ -106,6 +106,14 @@ not engineering taste):
   - `POST /api/v1/logout` — auth-gated, revokes the presented token
   - `POST /api/v1/dispatch` — auth-gated, `{conversation_id, message}` →
     `{reply}`, wraps `Dispatcher.Dispatch`
+  - `GET /api/v1/workspaces` — auth-gated (LOOM-19), lists registered
+    workspaces sorted by name: `{workspaces: [{id, name, target_id,
+    status}, ...]}`. Deliberately trimmed to what a client needs to render
+    a workspace list — not the full `registry.Workspace` (tags/description/
+    capabilities/rolling_summary are the router's own matching metadata,
+    §6, not client-facing yet). Wraps `WorkspaceLister.ListWorkspaces`, a
+    narrow seam mirroring `SessionStore`, satisfied structurally by
+    `*app.App.Store()`.
   - `GET /api/v1/version` — unauthenticated, `{server_version, api_version}`
     (`server_version` comes from the top-level `version` package, not
     defined in this one)
@@ -119,7 +127,9 @@ with `Retry-After`, a success resetting it, that it's shared across
 different claimed `X-Forwarded-For` values (proving "global" is real,
 not just documented), and that enough waiting always lets the correct
 password through no matter how many failures preceded it) against a fake
-`Dispatcher` and a real (temp-file) sqlite store for sessions.
+`Dispatcher` and a real (temp-file) sqlite store for sessions, plus
+`/api/v1/workspaces` (auth required, empty-list, and populated-and-sorted
+cases, asserting the trimmed field set against real store fixtures).
 `throttle_test.go` covers `loginThrottle` in isolation (pure timing
 logic, including the zero-base edge case tests use to disable backoff
 entirely). `integration_test.go` proves the auth/dispatch behavior

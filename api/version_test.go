@@ -12,7 +12,7 @@ import (
 // (server semver, independent of the API version) — an unauthenticated
 // endpoint so clients can check compatibility before logging in.
 func TestVersion_ReturnsServerAndAPIVersion(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/api/v1/version")
 	if err != nil {
@@ -43,7 +43,7 @@ func TestVersion_ReturnsServerAndAPIVersion(t *testing.T) {
 // breakage" — a client hitting an unknown/future API version gets a
 // structured body naming what's actually supported, not a bare 404.
 func TestUnsupportedAPIPath_ReturnsStructuredRejection(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/api/v2/dispatch")
 	if err != nil {
@@ -74,7 +74,7 @@ func TestUnsupportedAPIPath_ReturnsStructuredRejection(t *testing.T) {
 // hit with the wrong HTTP method — that's a distinct "you have the
 // right version but the wrong verb" case, not a version mismatch.
 func TestWrongMethod_OnKnownPath_Returns405NotTheCatchAll(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, _, _ := newTestServer(t)
 
 	resp, err := http.Get(srv.URL + "/api/v1/login") // login is POST-only
 	if err != nil {

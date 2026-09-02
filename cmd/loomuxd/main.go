@@ -108,7 +108,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		os.Exit(1)
 	}
 
-	server := api.NewServer(loomux, loomux.Store(), apiCfg.PasswordHash, api.WithSessionTTL(apiCfg.SessionTTL))
+	server := api.NewServer(loomux, loomux.Store(), loomux.Store(), apiCfg.PasswordHash, api.WithSessionTTL(apiCfg.SessionTTL))
 	httpServer := &http.Server{Addr: apiCfg.Addr, Handler: server}
 
 	go func() {

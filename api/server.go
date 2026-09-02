@@ -45,6 +45,14 @@ type SessionStore interface {
 	DeleteSession(ctx context.Context, id string) error
 }
 
+// WorkspaceLister is the workspace-listing slice of registry.Store this
+// package needs — satisfied structurally by any registry.Store
+// (including *app.App.Store()), mirroring SessionStore's narrow-seam
+// pattern.
+type WorkspaceLister interface {
+	ListWorkspaces(ctx context.Context) ([]*registry.Workspace, error)
+}
+
 // defaultSessionTTL is the sliding-expiration window: a session stays
 // valid as long as it's used at least once within this window: 30 days,
 // reasonable for a personal single-user tool used from mobile.
@@ -67,6 +75,7 @@ const (
 type Server struct {
 	dispatcher    Dispatcher
 	sessions      SessionStore
+	workspaces    WorkspaceLister
 	passwordHash  []byte
 	sessionTTL    time.Duration
 	loginThrottle *loginThrottle
@@ -91,10 +100,11 @@ func WithLoginBackoff(base, max time.Duration) Option {
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
-func NewServer(dispatcher Dispatcher, sessions SessionStore, passwordHash []byte, opts ...Option) *Server {
+func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, passwordHash []byte, opts ...Option) *Server {
 	s := &Server{
 		dispatcher:    dispatcher,
 		sessions:      sessions,
+		workspaces:    workspaces,
 		passwordHash:  passwordHash,
 		sessionTTL:    defaultSessionTTL,
 		loginThrottle: newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
@@ -107,6 +117,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, passwordHash []byte
 	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/logout", s.requireAuth(s.handleLogout))
 	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
+	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	s.mux = mux
 	return s
@@ -211,6 +222,40 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, dispatchResponse{Reply: reply})
+}
+
+type workspaceSummary struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	TargetID string `json:"target_id"`
+	Status   string `json:"status"`
+}
+
+type listWorkspacesResponse struct {
+	Workspaces []workspaceSummary `json:"workspaces"`
+}
+
+// handleListWorkspaces returns a trimmed summary of every registered
+// workspace (id/name/target/status), sorted by name (registry.Store's own
+// ListWorkspaces order) — not the full registry.Workspace, since fields
+// like tags/description/capabilities/rolling_summary are the router's own
+// routing metadata (design spec §6), not yet client-facing.
+func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	workspaces, err := s.workspaces.ListWorkspaces(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list workspaces")
+		return
+	}
+	out := make([]workspaceSummary, 0, len(workspaces))
+	for _, ws := range workspaces {
+		out = append(out, workspaceSummary{
+			ID:       ws.ID,
+			Name:     ws.Name,
+			TargetID: ws.TargetID,
+			Status:   string(ws.Status),
+		})
+	}
+	writeJSON(w, http.StatusOK, listWorkspacesResponse{Workspaces: out})
 }
 
 type versionResponse struct {
