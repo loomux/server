@@ -118,8 +118,15 @@ Supporting stack:
 - **React Router** — a handful of routes, nothing more is needed
 - **TanStack Query** — caching/loading/retry state for the list endpoints
   (`/workspaces`, `/conversations`), instead of hand-rolling it
-- Native **EventSource** for SSE — no library needed, the browser API is
-  sufficient and auto-reconnects on drop
+- **`@microsoft/fetch-event-source`** for SSE — not native `EventSource`:
+  caught during scaffolding that `EventSource` cannot send a custom
+  `Authorization` header (only cookie auth), and
+  `/conversations/{id}/stream` is Bearer-token auth-gated via
+  `requireAuth` like every other endpoint. This small `fetch`-based
+  library sends the same headers as any other API call and handles
+  reconnection itself — avoids a server-side change (e.g. accepting the
+  token as a query param) to keep the header-based auth model uniform
+  across every endpoint
 - **Tailwind CSS** for styling
 - **Vitest + React Testing Library** for tests
 
@@ -171,14 +178,15 @@ Loomux's client/server boundary entirely.
 
 ### Real-time updates
 
-`EventSource` against `/conversations/{id}/stream` drives a live status
-indicator while a `POST /dispatch` call is in flight or a task from a prior
-turn is still resolving. The dispatch call's own blocking response remains
-the sole source of actual reply text (matches the API's documented
-contract exactly — see "Known API gap," above, and the stream is
-supplementary, never a replacement per `api/README.md`'s own design note).
-Native `EventSource` auto-reconnects on drop; no custom reconnect logic is
-written.
+`fetchEventSource` (`@microsoft/fetch-event-source`) against
+`/conversations/{id}/stream`, with the same `Authorization: Bearer <token>`
+header as every other call, drives a live status indicator while a `POST
+/dispatch` call is in flight or a task from a prior turn is still
+resolving. The dispatch call's own blocking response remains the sole
+source of actual reply text (matches the API's documented contract exactly
+— see "Known API gap," above, and the stream is supplementary, never a
+replacement per `api/README.md`'s own design note). The library handles
+reconnection on drop itself; no custom reconnect logic is written.
 
 ## Hosting / serving integration
 
@@ -214,11 +222,11 @@ across repo boundaries to land.
 ## Testing strategy
 
 Vitest + React Testing Library for components, hooks, and the auth layer;
-the API client tested against a mocked `fetch`/`EventSource` rather than a
-real server. No end-to-end tooling (Playwright, etc.) for v1 — YAGNI for a
-single-user pre-alpha tool with one active developer; revisit once LOOM-24
-build-out is further along and the surface is stable enough to be worth
-the maintenance cost of E2E tests.
+the API client tested against a mocked `fetch` rather than a real server.
+No end-to-end tooling (Playwright, etc.) for v1 — YAGNI for a single-user
+pre-alpha tool with one active developer; revisit once LOOM-24 build-out is
+further along and the surface is stable enough to be worth the maintenance
+cost of E2E tests.
 
 ## Deferred (separate future work, several already filed)
 
