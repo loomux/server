@@ -207,8 +207,8 @@ across repo boundaries to land.
   carrying the server's `error` message verbatim (mirrors
   `core-design.md`'s "never silently drop" stance for routing failures,
   extended to every client-side call) — never swallowed.
-- SSE stream drop → native browser reconnect; a "reconnecting…" indicator
-  shown if disconnected for more than 5 seconds.
+- SSE stream drop → `fetchEventSource`'s built-in reconnect; a
+  "reconnecting…" indicator shown if disconnected for more than 5 seconds.
 - API version mismatch (`/version` reports something this build wasn't
   built against) → persistent banner, app remains otherwise usable — a
   soft warning, not a hard block, since `v1` is the only version that
