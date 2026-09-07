@@ -34,8 +34,6 @@ already filed as its own ticket):
 - SSO/OAuth (the API's own design already names this as a planned future
   swap of `checkPassword` alone, per `api/README.md` — this client's auth
   layer is built with that seam in mind but does not implement it)
-- Persisted per-turn message transcripts (LOOM-31, already filed — see
-  "Known API gap," below)
 - GitHub-provisioning UI (LOOM-28, LOOM-29)
 - Multi-user support (the server itself is single-user by design, per
   `core-design.md` §9)
@@ -64,20 +62,18 @@ All under `/api/v1/`, Bearer-token auth except `/login` and `/version`
   {id, name, kind, host, user}}`, `404` if unknown
 - `GET /version` — unauthenticated, `{server_version, api_version}`
 
-### Known API gap: no persisted message transcript
+### Persisted message transcript (LOOM-31 — shipped)
 
-`GET /conversations/{id}` returns task *lifecycle* rows (workspace, status,
-timestamps) — not per-turn message text. No such log exists in the schema
-yet (`api/README.md`'s own design notes call this out explicitly), and
-LOOM-31 ("Message/turn-level logging for conversations") is already filed
-against it. Consequence for this client: the chat view's message bubbles
-are built from what *the current browser tab* has actually sent/received
-via `POST /dispatch` during this session, kept in local component state —
-not fetched from the server. Reopening an older conversation, or opening
-one from a second device, shows the task-history skeleton (workspace,
-status, timestamps — accurate) but not prior message text (unavailable
-until LOOM-31 lands). The UI makes this distinction visible rather than
-implying a transcript it doesn't have.
+`GET /conversations/{id}` returns a `messages` array (per-turn transcript,
+oldest first — `{id, role, content, task_id, created_at}`) alongside the
+task-lifecycle rows, landed server-side in LOOM-31 and wired into this
+client in `loomux/web#1` (merged 2026-09-07). `history.messages` is the
+chat view's source of truth for persisted turns; the only client-side
+state is a short-lived optimistic entry for the turn currently in flight
+(the just-sent message + a pending reply while `POST /dispatch` is
+outstanding), cleared once the post-dispatch refetch lands. Reopening an
+older conversation, or opening one from a second device, now shows the
+real prior message text, not just the task-history skeleton.
 
 ## Architecture Overview
 
@@ -184,22 +180,20 @@ header as every other call, drives a live status indicator while a `POST
 /dispatch` call is in flight or a task from a prior turn is still
 resolving. The dispatch call's own blocking response remains the sole
 source of actual reply text (matches the API's documented contract exactly
-— see "Known API gap," above, and the stream is supplementary, never a
-replacement per `api/README.md`'s own design note). The library handles
+— see "Persisted message transcript," above, and the stream is
+supplementary, never a replacement per `api/README.md`'s own design note).
+The library handles
 reconnection on drop itself; no custom reconnect logic is written.
 
 ## Hosting / serving integration
 
-**Dependency, not built as part of this repo's scope, and not built in
-this session.** For "static files served by `loomuxd`" to work, the server
-needs a small addition: serve a configured static directory for any
+**Shipped (LOOM-33, `loomux/server#34`, merged 2026-09-07).** `loomuxd` now
+serves a configured static directory (`LOOMUX_STATIC_DIR`) for any
 non-`/api/*` path, with SPA fallback to `index.html` for client-side
-routes (so a hard refresh on `/conversations/abc123` doesn't 404). This is
-a change to **loomux-server** (this repo), not to the new client repo —
-flagged in this design rather than silently assumed, so command-center can
-track it as its own small companion ticket against this repo instead of
-LOOM-24 (which is scoped to the client repo) quietly needing to reach
-across repo boundaries to land.
+routes, so a hard refresh on `/conversations/abc123` doesn't 404. This was
+tracked as its own ticket against loomux-server rather than LOOM-24
+(scoped to the client repo), exactly as flagged when this design was
+originally written.
 
 ## Error handling
 
@@ -232,9 +226,5 @@ cost of E2E tests.
 
 - Android, iOS clients (LOOM-26, LOOM-30)
 - SSO/OAuth login
-- Persisted per-turn message transcripts (LOOM-31)
 - GitHub-provisioning UI (LOOM-28, LOOM-29)
-- `loomuxd` static-file-serving addition this design depends on (see
-  "Hosting / serving integration," above) — needs its own ticket against
-  this repo
 - Offline support / PWA install
