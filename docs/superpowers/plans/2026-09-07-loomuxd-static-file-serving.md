@@ -322,6 +322,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 Add the handler constructor near the bottom of the file, above `sessionContextKey`/`requireAuth` (or anywhere at package scope — placed here to group it with the other top-level helpers like `writeJSON`):
 
+> **Note (post-implementation correction):** the block below is what actually
+> shipped, not the first draft this plan was written against. The first draft
+> rewrote the fallback request's path to `/index.html` and re-delegated to
+> `fileServer.ServeHTTP` — that hits a built-in special case in net/http's
+> `serveFile`, which 301-redirects any request whose path ends in
+> `/index.html` to `./` (URL canonicalization, so `/foo/index.html` and
+> `/foo/` aren't two live URLs for the same page). Since the rewritten path
+> literally *is* `/index.html` every time, that redirected every fallback
+> request in an infinite loop. Fixed by serving `index.html` directly via
+> `http.ServeContent` instead of routing back through `fileServer`.
+
 ```go
 // newStaticHandler serves a built SPA from dir: a request that maps to a
 // real file under dir is served as-is via http.FileServer (correct
@@ -334,13 +345,31 @@ Add the handler constructor near the bottom of the file, above `sessionContextKe
 // because it already rejects ".." path elements — a traversal attempt
 // falls into the same "no such file" branch as any other unknown path
 // and gets the SPA shell, never an out-of-dir file.
+//
+// The fallback serves index.html via http.ServeContent directly rather
+// than delegating to fileServer with a rewritten request path: net/http's
+// own serveFile has a built-in special case that 301-redirects any
+// request whose path ends in "/index.html" to "./" (URL canonicalization,
+// so /foo/index.html and /foo/ aren't two live URLs for the same page) —
+// rewriting every fallback request's path to literally "/index.html" and
+// handing it back to fileServer would hit that special case on every
+// single fallback and redirect-loop forever.
 func newStaticHandler(dir string) http.HandlerFunc {
 	root := http.Dir(dir)
 	fileServer := http.FileServer(root)
 	serveIndex := func(w http.ResponseWriter, r *http.Request) {
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = "/index.html"
-		fileServer.ServeHTTP(w, r2)
+		f, err := root.Open("/index.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeContent(w, r, "index.html", info.ModTime(), f)
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		f, err := root.Open(r.URL.Path)
@@ -530,3 +559,18 @@ Expected: PASS across the whole module — confirms this change didn't regress a
 
 - Comment on and close GitHub issue LOOM-33 (`gh issue comment 32 --repo Loomux/server` / `gh issue close 32 --repo Loomux/server`), per this repo's standing convention (CLAUDE.md) — summarize what changed, which commits, and the verification evidence from Task 4.
 - Send an `agent-mailbox` `handoff` to `command-center` (per this repo's CLAUDE.md cross-workspace boundary rule) — do NOT touch Vikunja/Plane directly. Note in the handoff that GitHub issue LOOM-33 already references Vikunja Loomux #767 / Plane LOOM-33 in its body; ask command-center to verify/reconcile those against its own records rather than assuming they're already accurate, since this session did not create or check them.
+
+## Post-merge correction (from independent review)
+
+An independent review of this PR (a different model, run against the merged
+diff) found a real bug in `ServeHTTP`'s routing check that this plan's Task 2
+missed: it tested `strings.HasPrefix(r.URL.Path, "/api/")` (trailing slash
+required), so the exact path `/api` (no trailing slash) didn't match and fell
+through to the static handler — returning the SPA shell (200) instead of the
+same unsupported-API-path rejection `/api/v2/...` already got. Fixed by also
+matching the bare `/api` path explicitly: `r.URL.Path == "/api" ||
+strings.HasPrefix(r.URL.Path, "/api/")`. Two tests were added alongside the
+fix: a regression test for this exact case, and a path-traversal coverage
+test (plain `..` and its `%2e%2e` percent-encoded form) confirming
+`http.Dir.Open`'s existing dot-dot rejection already prevented escaping the
+static directory — that part needed a test locking it in, not a fix.

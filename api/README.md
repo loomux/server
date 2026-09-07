@@ -86,16 +86,19 @@ not engineering taste):
 - **Static SPA serving is opt-in and lives outside the API surface
   entirely** (LOOM-33). `WithStaticDir`/`LOOMUX_STATIC_DIR` (unset by
   default) points `Server` at a built web-client directory
-  (`loomux/web`'s Vite output); any request whose path doesn't start
-  with `/api/` is served from there, with fallback to `index.html` for
-  anything that isn't a real file — a browser refresh on a client-side
-  route like `/conversations/abc123` gets the SPA shell instead of a
-  404. Routed entirely in `ServeHTTP` ahead of `mux`, mirroring the
-  existing `/api/` version check already there — `/api/*` paths never
-  reach the static handler and the static handler never reaches `mux`,
-  so neither can shadow the other. Not built as part of LOOM-23/LOOM-24
-  (the web client itself); this is the small server-side hosting
-  addition their design flagged as a dependency.
+  (`loomux/web`'s Vite output); any request whose path is neither `/api`
+  nor starts with `/api/` is served from there, with fallback to
+  `index.html` for anything that isn't a real file — a browser refresh on
+  a client-side route like `/conversations/abc123` gets the SPA shell
+  instead of a 404. Routed entirely in `ServeHTTP` ahead of `mux`,
+  mirroring the existing `/api/` version check already there — `/api` and
+  every `/api/*` path never reach the static handler (the bare `/api`
+  path, with no trailing slash, is checked explicitly alongside the
+  `/api/` prefix so it can't slip through and get served as static
+  content) and the static handler never reaches `mux`, so neither can
+  shadow the other. Not built as part of LOOM-23/LOOM-24 (the web client
+  itself); this is the small server-side hosting addition their design
+  flagged as a dependency.
 
 ## Layout
 
@@ -227,8 +230,13 @@ handler in this package doing that.
 file served as-is, an unknown client-side route and the root path both
 falling back to `index.html`, `/api/*` paths staying untouched by static
 serving (including the unsupported-API-version rejection still winning
-over the SPA fallback), and — separately — that static serving stays off
-(still `404`) when `WithStaticDir` is never used, matching this
+over the SPA fallback, and the bare `/api` path with no trailing slash
+specifically — a prior version of this routing check missed it and let
+it fall through to the static handler), a path-traversal attempt (both
+literal `..` and its `%2e%2e` percent-encoded form) falling back to the
+SPA shell rather than escaping the configured directory, and —
+separately — that static serving stays off (still `404`) when
+`WithStaticDir` is never used, matching this
 package's behavior before the option existed.
 `throttle_test.go` covers `loginThrottle` in isolation (pure timing
 logic, including the zero-base edge case tests use to disable backoff

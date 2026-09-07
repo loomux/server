@@ -216,13 +216,18 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 // method (ServeMux's own 405 for that case is the correct, distinct
 // response — a known path used incorrectly, not an unknown version).
 //
-// Every other path (anything not starting with /api/) goes to the static
-// handler when WithStaticDir was used (LOOM-33) — never to mux, so a
-// static build can never shadow or be shadowed by an /api/v1/ route.
-// Without WithStaticDir, those paths 404 via http.NotFound, matching this
-// package's behavior before this option existed.
+// Every other path (anything not equal to /api and not starting with
+// /api/) goes to the static handler when WithStaticDir was used
+// (LOOM-33) — never to mux, so a static build can never shadow or be
+// shadowed by an /api/v1/ route. Without WithStaticDir, those paths 404
+// via http.NotFound, matching this package's behavior before this option
+// existed. The bare "/api" case (no trailing slash) is checked
+// explicitly alongside the "/api/" prefix — strings.HasPrefix alone
+// would miss it, letting an API-shaped path fall through to the static
+// handler and get served the SPA shell instead of the same
+// unsupported-path rejection "/api/v2/..." already gets.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") {
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			s.handleUnsupportedAPIPath(w, r)
 			return

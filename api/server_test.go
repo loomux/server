@@ -993,6 +993,42 @@ func TestStaticFileServing(t *testing.T) {
 			t.Errorf("body = %q, want the unsupported-version JSON response, not static content", body)
 		}
 	})
+
+	// Regression test: ServeHTTP's routing check used to be a bare
+	// strings.HasPrefix(r.URL.Path, "/api/") (trailing slash required),
+	// so the exact path "/api" (no trailing slash) didn't match it and
+	// fell through to the static handler — returning the SPA shell (200)
+	// for a path that should be treated as an API path, exactly like
+	// "/api/v2/whatever" above.
+	t.Run("bare /api path (no trailing slash) is still treated as an API path, not static", func(t *testing.T) {
+		resp, body := get(t, "/api")
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (unsupported API path)", resp.StatusCode)
+		}
+		if strings.Contains(body, "spa shell") {
+			t.Errorf("body = %q, want the unsupported-API-path JSON response, not static content", body)
+		}
+	})
+
+	t.Run("path traversal falls back to the SPA shell, never escapes the static dir", func(t *testing.T) {
+		resp, body := get(t, "/../../etc/passwd")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (SPA fallback)", resp.StatusCode)
+		}
+		if body != "<html>spa shell</html>" {
+			t.Errorf("body = %q, want index.html content (SPA fallback), not an escaped file", body)
+		}
+	})
+
+	t.Run("url-encoded path traversal also falls back to the SPA shell", func(t *testing.T) {
+		resp, body := get(t, "/%2e%2e/%2e%2e/etc/passwd")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (SPA fallback)", resp.StatusCode)
+		}
+		if body != "<html>spa shell</html>" {
+			t.Errorf("body = %q, want index.html content (SPA fallback), not an escaped file", body)
+		}
+	})
 }
 
 func TestStaticFileServing_DisabledByDefault(t *testing.T) {
