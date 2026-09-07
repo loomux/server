@@ -37,6 +37,13 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("DeleteWorkspaceWithTasksRejected", func(t *testing.T) { testDeleteWorkspaceWithTasksRejected(t, newStore(t)) })
 	t.Run("DeleteTargetWithWorkspacesRejected", func(t *testing.T) { testDeleteTargetWithWorkspacesRejected(t, newStore(t)) })
 
+	t.Run("Message", func(t *testing.T) { testMessageCRUD(t, newStore(t)) })
+	t.Run("MessageWithoutTask", func(t *testing.T) { testMessageWithoutTask(t, newStore(t)) })
+	t.Run("MessageListByConversationOrdering", func(t *testing.T) { testMessageListByConversationOrdering(t, newStore(t)) })
+	t.Run("MessageListByConversationUnknownReturnsEmpty", func(t *testing.T) { testMessageListByConversationUnknownReturnsEmpty(t, newStore(t)) })
+	t.Run("MessageRequiresValidTaskWhenSet", func(t *testing.T) { testMessageRequiresValidTaskWhenSet(t, newStore(t)) })
+	t.Run("MessageSurvivesTaskDeletion", func(t *testing.T) { testMessageSurvivesTaskDeletion(t, newStore(t)) })
+
 	t.Run("Credential", func(t *testing.T) { testCredentialCRUD(t, newStore(t)) })
 	t.Run("CredentialNotFound", func(t *testing.T) { testCredentialNotFound(t, newStore(t)) })
 	t.Run("CredentialWorkspaceScoped", func(t *testing.T) { testCredentialWorkspaceScoped(t, newStore(t)) })
@@ -507,6 +514,162 @@ func testDeleteTargetWithWorkspacesRejected(t *testing.T, s registry.Store) {
 	}
 	if err := s.DeleteTarget(ctx, target.ID); !errors.Is(err, registry.ErrConflict) {
 		t.Fatalf("DeleteTarget with a workspace attached: err = %v, want ErrConflict", err)
+	}
+}
+
+func testMessageCRUD(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{
+		ID: "msg-task-" + t.Name(), WorkspaceID: ws.ID, Kind: registry.TaskKindAgent,
+		AgentType: "claude-code", TmuxSession: "sess-" + t.Name(), Status: registry.TaskStatusRunning,
+		ConversationID: "conv-1",
+	}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	msg := &registry.Message{
+		ID:             "msg-1-" + t.Name(),
+		ConversationID: "conv-1",
+		TaskID:         task.ID,
+		Role:           registry.MessageRoleUser,
+		Content:        "hello there",
+	}
+	if err := s.CreateMessage(ctx, msg); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if msg.CreatedAt.IsZero() {
+		t.Fatalf("CreateMessage did not set CreatedAt: %+v", msg)
+	}
+
+	list, err := s.ListMessagesByConversation(ctx, "conv-1")
+	if err != nil {
+		t.Fatalf("ListMessagesByConversation: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("ListMessagesByConversation = %+v, want 1 message", list)
+	}
+	got := list[0]
+	if got.ID != msg.ID || got.ConversationID != "conv-1" || got.TaskID != task.ID ||
+		got.Role != registry.MessageRoleUser || got.Content != "hello there" {
+		t.Fatalf("ListMessagesByConversation[0] = %+v, want %+v", got, msg)
+	}
+}
+
+func testMessageWithoutTask(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	msg := &registry.Message{
+		ID:             "msg-direct-" + t.Name(),
+		ConversationID: "conv-direct",
+		Role:           registry.MessageRoleAssistant,
+		Content:        "a direct answer",
+	}
+	if err := s.CreateMessage(ctx, msg); err != nil {
+		t.Fatalf("CreateMessage (no task): %v", err)
+	}
+
+	list, err := s.ListMessagesByConversation(ctx, "conv-direct")
+	if err != nil {
+		t.Fatalf("ListMessagesByConversation: %v", err)
+	}
+	if len(list) != 1 || list[0].TaskID != "" {
+		t.Fatalf("ListMessagesByConversation = %+v, want 1 message with empty TaskID", list)
+	}
+}
+
+// testMessageListByConversationOrdering deliberately inserts three
+// messages back-to-back with no artificial delay between them, to prove
+// ordering is guaranteed by insertion order and doesn't depend on
+// created_at having enough timestamp resolution to distinguish rows
+// written in the same instant.
+func testMessageListByConversationOrdering(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	mk := func(id, conversationID, content string) *registry.Message {
+		return &registry.Message{ID: id, ConversationID: conversationID, Role: registry.MessageRoleUser, Content: content}
+	}
+	if err := s.CreateMessage(ctx, mk("m1", "conv-order", "first")); err != nil {
+		t.Fatalf("CreateMessage(m1): %v", err)
+	}
+	if err := s.CreateMessage(ctx, mk("m2", "conv-order", "second")); err != nil {
+		t.Fatalf("CreateMessage(m2): %v", err)
+	}
+	if err := s.CreateMessage(ctx, mk("m3", "conv-order", "third")); err != nil {
+		t.Fatalf("CreateMessage(m3): %v", err)
+	}
+	// An unrelated conversation must not leak in.
+	if err := s.CreateMessage(ctx, mk("m-other", "conv-other", "unrelated")); err != nil {
+		t.Fatalf("CreateMessage(m-other): %v", err)
+	}
+
+	list, err := s.ListMessagesByConversation(ctx, "conv-order")
+	if err != nil {
+		t.Fatalf("ListMessagesByConversation: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("ListMessagesByConversation = %+v, want 3 messages", list)
+	}
+	want := []string{"first", "second", "third"}
+	for i, w := range want {
+		if list[i].Content != w {
+			t.Fatalf("ListMessagesByConversation[%d].Content = %q, want %q (insertion order = %+v)", i, list[i].Content, w, list)
+		}
+	}
+}
+
+func testMessageListByConversationUnknownReturnsEmpty(t *testing.T, s registry.Store) {
+	list, err := s.ListMessagesByConversation(context.Background(), "no-such-conversation")
+	if err != nil {
+		t.Fatalf("ListMessagesByConversation: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("ListMessagesByConversation(unknown) = %+v, want empty", list)
+	}
+}
+
+func testMessageRequiresValidTaskWhenSet(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	msg := &registry.Message{
+		ID: "msg-bad-task", ConversationID: "conv-1", TaskID: "does-not-exist",
+		Role: registry.MessageRoleUser, Content: "hi",
+	}
+	if err := s.CreateMessage(ctx, msg); !errors.Is(err, registry.ErrConflict) {
+		t.Fatalf("CreateMessage with an unknown task id: err = %v, want ErrConflict", err)
+	}
+}
+
+func testMessageSurvivesTaskDeletion(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{
+		ID: "msg-del-task", WorkspaceID: ws.ID, Kind: registry.TaskKindAgent,
+		AgentType: "claude-code", TmuxSession: "sess-del", Status: registry.TaskStatusCompleted,
+		ConversationID: "conv-del",
+	}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	msg := &registry.Message{
+		ID: "msg-del-1", ConversationID: "conv-del", TaskID: task.ID,
+		Role: registry.MessageRoleUser, Content: "hi",
+	}
+	if err := s.CreateMessage(ctx, msg); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+
+	if err := s.DeleteTask(ctx, task.ID); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	list, err := s.ListMessagesByConversation(ctx, "conv-del")
+	if err != nil {
+		t.Fatalf("ListMessagesByConversation: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("ListMessagesByConversation = %+v, want the message to survive task deletion", list)
+	}
+	if list[0].TaskID != "" {
+		t.Fatalf("message TaskID = %q after its task was deleted, want empty (ON DELETE SET NULL)", list[0].TaskID)
 	}
 }
 

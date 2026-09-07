@@ -37,6 +37,18 @@ type Store interface {
 	UpdateTask(ctx context.Context, t *Task) error
 	DeleteTask(ctx context.Context, id string) error
 
+	// CreateMessage and ListMessagesByConversation store the per-turn
+	// chat transcript (design spec docs/design/message-logging-design.md).
+	// Messages are append-only — there is no update/delete here by
+	// design (see registry.Message's doc comment).
+	CreateMessage(ctx context.Context, m *Message) error
+	// ListMessagesByConversation returns every message for
+	// conversationID, oldest first (insertion order). An unknown
+	// conversationID returns an empty slice, not an error — mirrors
+	// ListTasks's own "conversation isn't a stored entity" stance;
+	// there's nothing to 404 on at this layer.
+	ListMessagesByConversation(ctx context.Context, conversationID string) ([]*Message, error)
+
 	// CreateCredential, GetCredential, ListCredentials, and
 	// DeleteCredential are the vault (design spec §7's second half).
 	// Credential.Value is plaintext at this interface's boundary; a

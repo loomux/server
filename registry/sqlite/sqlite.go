@@ -425,6 +425,65 @@ func scanTask(row rowScanner) (*registry.Task, error) {
 	return &t, nil
 }
 
+func (s *Store) CreateMessage(ctx context.Context, m *registry.Message) error {
+	m.CreatedAt = time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO messages (id, conversation_id, task_id, role, content, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, nullIfEmpty(m.TaskID), string(m.Role), m.Content, m.CreatedAt,
+	)
+	if isForeignKeyConstraintErr(err) {
+		return fmt.Errorf("%w: task %q does not exist", registry.ErrConflict, m.TaskID)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: create message: %w", err)
+	}
+	return nil
+}
+
+const messageColumns = `id, conversation_id, task_id, role, content, created_at`
+
+// ListMessagesByConversation orders by created_at then the table's
+// implicit rowid — the rowid tiebreak guarantees insertion order even
+// when two messages in the same turn (a user message immediately
+// followed by its assistant reply) land on a created_at value with
+// insufficient resolution to distinguish them on its own.
+func (s *Store) ListMessagesByConversation(ctx context.Context, conversationID string) ([]*registry.Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+messageColumns+` FROM messages
+		WHERE conversation_id = ?
+		ORDER BY created_at, rowid`, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list messages by conversation: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*registry.Message, 0)
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list messages by conversation: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list messages by conversation: %w", err)
+	}
+	return out, nil
+}
+
+func scanMessage(row rowScanner) (*registry.Message, error) {
+	var m registry.Message
+	var taskID sql.NullString
+	var role string
+	if err := row.Scan(&m.ID, &m.ConversationID, &taskID, &role, &m.Content, &m.CreatedAt); err != nil {
+		return nil, err
+	}
+	m.TaskID = taskID.String
+	m.Role = registry.MessageRole(role)
+	return &m, nil
+}
+
 func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) error {
 	if s.masterKey == nil {
 		return fmt.Errorf("sqlite: no master key configured (see WithMasterKey); cannot create credential")
