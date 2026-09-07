@@ -11,17 +11,37 @@ import (
 	"github.com/Loomux/server/targets"
 )
 
-// Launch creates a new task and starts its tmux session. command is
-// assumed to already be a complete, resolved launch command (credential
-// injection and agent-type→command-template resolution are separate
-// concerns, not this package's job). agentType is only stored for
-// TaskKindAgent.
-//
-// Launch always returns a non-nil *registry.Task once its row has been
-// created, even if starting the session subsequently fails (in which
-// case the returned task is already Failed and the error describes why)
-// — the row stays visible/auditable rather than vanishing on failure.
+// Launch creates a new task (minting a fresh UUID for it) and starts its
+// tmux session. See LaunchWithID for the full behavior — Launch is a
+// thin wrapper for the common case where the caller has no need to know
+// the task's ID before command is already built.
 func (o *Orchestrator) Launch(ctx context.Context, workspaceID, conversationID string, kind registry.TaskKind, agentType, command string) (*registry.Task, error) {
+	return o.LaunchWithID(ctx, workspaceID, conversationID, kind, agentType, uuid.NewString(), command)
+}
+
+// LaunchWithID is Launch, but with the task's ID supplied by the caller
+// instead of minted here. command is assumed to already be a complete,
+// resolved launch command (credential injection and agent-type→command-
+// template resolution are separate concerns, not this package's job).
+// agentType is only stored for TaskKindAgent.
+//
+// This seam exists for a caller — router.launchAgent — that needs to
+// know a task's ID before command itself is built (LOOM-32: a
+// TierMarker agent-type's launch command must embed a per-task
+// completion-marker path, which is only meaningful once the task ID
+// exists; Launch alone can't support that, since it doesn't mint the ID
+// until after the caller has already handed it a finished command).
+// taskID must be non-empty and caller-unique (a UUID, same as Launch's
+// own default) — LaunchWithID doesn't validate uniqueness itself; a
+// collision surfaces as whatever error the store's CreateTask returns
+// for a duplicate primary key.
+//
+// LaunchWithID always returns a non-nil *registry.Task once its row has
+// been created, even if starting the session subsequently fails (in
+// which case the returned task is already Failed and the error
+// describes why) — the row stays visible/auditable rather than
+// vanishing on failure.
+func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversationID string, kind registry.TaskKind, agentType, taskID, command string) (*registry.Task, error) {
 	ws, err := o.store.GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: launch: %w", err)
@@ -37,7 +57,7 @@ func (o *Orchestrator) Launch(ctx context.Context, workspaceID, conversationID s
 
 	now := time.Now().UTC()
 	task := &registry.Task{
-		ID:             uuid.NewString(),
+		ID:             taskID,
 		WorkspaceID:    workspaceID,
 		Kind:           kind,
 		TmuxSession:    "loomux-" + uuid.NewString(),

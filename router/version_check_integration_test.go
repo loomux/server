@@ -51,7 +51,8 @@ func realVersionCheckFixture(t *testing.T, vc router.VersionCheck) (*router.Rout
 			VersionCheck:   &vc,
 		},
 	}
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), t.TempDir())
+	markerDir := t.TempDir()
+	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, targets.NewExecutor, detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{
@@ -63,7 +64,7 @@ func realVersionCheckFixture(t *testing.T, vc router.VersionCheck) (*router.Rout
 		},
 	}
 
-	r := router.New(store, orch, targets.NewExecutor, resolver, agentTypes, model)
+	r := router.New(store, orch, targets.NewExecutor, resolver, agentTypes, model, markerDir)
 	return r, ws, store
 }
 
