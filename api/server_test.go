@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -910,4 +912,134 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return data
+}
+
+func TestStaticFileServing(t *testing.T) {
+	dir := t.TempDir()
+	writeFile := func(rel, content string) {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", rel, err)
+		}
+	}
+	writeFile("index.html", "<html>spa shell</html>")
+	writeFile("assets/app.js", "console.log('hi')")
+
+	httpSrv, _, _ := newTestServer(t, api.WithStaticDir(dir))
+
+	get := func(t *testing.T, path string) (*http.Response, string) {
+		t.Helper()
+		resp, err := http.Get(httpSrv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		t.Cleanup(func() { resp.Body.Close() })
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return resp, string(body)
+	}
+
+	t.Run("serves a real static file as-is", func(t *testing.T) {
+		resp, body := get(t, "/assets/app.js")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if body != "console.log('hi')" {
+			t.Errorf("body = %q, want the raw asset content", body)
+		}
+	})
+
+	t.Run("unknown client-side route falls back to index.html", func(t *testing.T) {
+		resp, body := get(t, "/conversations/abc123")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (SPA fallback)", resp.StatusCode)
+		}
+		if body != "<html>spa shell</html>" {
+			t.Errorf("body = %q, want index.html content (SPA fallback)", body)
+		}
+	})
+
+	t.Run("root path serves index.html", func(t *testing.T) {
+		resp, body := get(t, "/")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if body != "<html>spa shell</html>" {
+			t.Errorf("body = %q, want index.html content", body)
+		}
+	})
+
+	t.Run("api paths are unaffected by static serving", func(t *testing.T) {
+		resp, body := get(t, "/api/v1/version")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if strings.Contains(body, "spa shell") {
+			t.Errorf("body = %q, want the JSON version response, not static content", body)
+		}
+	})
+
+	t.Run("unsupported api version is still rejected, not served as static", func(t *testing.T) {
+		resp, body := get(t, "/api/v2/whatever")
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", resp.StatusCode)
+		}
+		if strings.Contains(body, "spa shell") {
+			t.Errorf("body = %q, want the unsupported-version JSON response, not static content", body)
+		}
+	})
+
+	// Regression test: ServeHTTP's routing check used to be a bare
+	// strings.HasPrefix(r.URL.Path, "/api/") (trailing slash required),
+	// so the exact path "/api" (no trailing slash) didn't match it and
+	// fell through to the static handler — returning the SPA shell (200)
+	// for a path that should be treated as an API path, exactly like
+	// "/api/v2/whatever" above.
+	t.Run("bare /api path (no trailing slash) is still treated as an API path, not static", func(t *testing.T) {
+		resp, body := get(t, "/api")
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (unsupported API path)", resp.StatusCode)
+		}
+		if strings.Contains(body, "spa shell") {
+			t.Errorf("body = %q, want the unsupported-API-path JSON response, not static content", body)
+		}
+	})
+
+	t.Run("path traversal falls back to the SPA shell, never escapes the static dir", func(t *testing.T) {
+		resp, body := get(t, "/../../etc/passwd")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (SPA fallback)", resp.StatusCode)
+		}
+		if body != "<html>spa shell</html>" {
+			t.Errorf("body = %q, want index.html content (SPA fallback), not an escaped file", body)
+		}
+	})
+
+	t.Run("url-encoded path traversal also falls back to the SPA shell", func(t *testing.T) {
+		resp, body := get(t, "/%2e%2e/%2e%2e/etc/passwd")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (SPA fallback)", resp.StatusCode)
+		}
+		if body != "<html>spa shell</html>" {
+			t.Errorf("body = %q, want index.html content (SPA fallback), not an escaped file", body)
+		}
+	})
+}
+
+func TestStaticFileServing_DisabledByDefault(t *testing.T) {
+	httpSrv, _, _ := newTestServer(t)
+
+	resp, err := http.Get(httpSrv.URL + "/conversations/abc123")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (static serving not configured)", resp.StatusCode)
+	}
 }

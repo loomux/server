@@ -23,12 +23,24 @@ type Config struct {
 	Addr string
 	// SessionTTL is the sliding-expiration window (see WithSessionTTL).
 	SessionTTL time.Duration
+	// StaticDir, if set, is the directory containing the web client's
+	// built static files (loomux/web's Vite build output) — passed to
+	// WithStaticDir so Server serves it for any non-/api/* path, with SPA
+	// fallback to index.html (design spec docs/design/web-client-design.md,
+	// "Hosting / serving integration"; tracked as GitHub issue LOOM-33).
+	// Empty (the default) disables static serving entirely — the same
+	// "optional, unvalidated path" convention as app.Config.MarkerDir,
+	// since there's no way to tell "not configured yet" apart from "wrong
+	// path" without trying to open it, and that's Server's job, not
+	// LoadConfig's.
+	StaticDir string
 }
 
 const (
 	envPasswordHash = "LOOMUX_AUTH_PASSWORD_HASH"
 	envAddr         = "LOOMUX_HTTP_ADDR"
 	envSessionTTL   = "LOOMUX_SESSION_TTL"
+	envStaticDir    = "LOOMUX_STATIC_DIR"
 
 	defaultAddr = ":8080"
 )
@@ -59,5 +71,5 @@ func LoadConfig() (Config, error) {
 		ttl = d
 	}
 
-	return Config{PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl}, nil
+	return Config{PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl, StaticDir: os.Getenv(envStaticDir)}, nil
 }

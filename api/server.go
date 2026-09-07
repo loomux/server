@@ -128,6 +128,8 @@ type Server struct {
 	sessionTTL         time.Duration
 	loginThrottle      *loginThrottle
 	streamPollInterval time.Duration
+	staticDir          string
+	static             http.HandlerFunc
 	mux                *http.ServeMux
 }
 
@@ -153,6 +155,20 @@ func WithStreamPollInterval(d time.Duration) Option {
 	return func(s *Server) { s.streamPollInterval = d }
 }
 
+// WithStaticDir configures Server to serve a built single-page-app from
+// dir for any request whose path does not start with /api/ — the web
+// client's Vite build output (design spec docs/design/web-client-design.md,
+// "Hosting / serving integration"; GitHub issue LOOM-33). A request that
+// resolves to a real file under dir is served as-is (correct Content-Type
+// via http.FileServer); anything else — an unknown path, or a client-side
+// route like /conversations/abc123 that only exists in the SPA's own
+// router — falls back to dir/index.html, so a hard refresh on a deep link
+// gets the SPA shell instead of a 404. Unset (the default): every such
+// request still 404s, unchanged from before this option existed.
+func WithStaticDir(dir string) Option {
+	return func(s *Server) { s.staticDir = dir }
+}
+
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
@@ -171,6 +187,9 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.staticDir != "" {
+		s.static = newStaticHandler(s.staticDir)
 	}
 
 	mux := http.NewServeMux()
@@ -196,12 +215,31 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 // it can never shadow a real /api/v1/... route hit with the wrong HTTP
 // method (ServeMux's own 405 for that case is the correct, distinct
 // response — a known path used incorrectly, not an unknown version).
+//
+// Every other path (anything not equal to /api and not starting with
+// /api/) goes to the static handler when WithStaticDir was used
+// (LOOM-33) — never to mux, so a static build can never shadow or be
+// shadowed by an /api/v1/ route. Without WithStaticDir, those paths 404
+// via http.NotFound, matching this package's behavior before this option
+// existed. The bare "/api" case (no trailing slash) is checked
+// explicitly alongside the "/api/" prefix — strings.HasPrefix alone
+// would miss it, letting an API-shaped path fall through to the static
+// handler and get served the SPA shell instead of the same
+// unsupported-path rejection "/api/v2/..." already gets.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/v1/") {
-		s.handleUnsupportedAPIPath(w, r)
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
+			s.handleUnsupportedAPIPath(w, r)
+			return
+		}
+		s.mux.ServeHTTP(w, r)
 		return
 	}
-	s.mux.ServeHTTP(w, r)
+	if s.static != nil {
+		s.static(w, r)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 type loginRequest struct {
@@ -640,6 +678,59 @@ func (s *Server) handleUnsupportedAPIPath(w http.ResponseWriter, r *http.Request
 		Error:             "unsupported or unknown API path",
 		SupportedVersions: []string{APIVersion},
 	})
+}
+
+// newStaticHandler serves a built SPA from dir: a request that maps to a
+// real file under dir is served as-is via http.FileServer (correct
+// Content-Type from the file extension); anything else — no such file,
+// or the path is a directory (including the root "/") — falls back to
+// dir/index.html, so a browser refresh on a client-side route (e.g.
+// /conversations/abc123, React Router) gets the SPA shell instead of a
+// 404 (design spec web-client-design.md, "Hosting / serving
+// integration"). Uses http.Dir.Open (not a raw os.Stat) specifically
+// because it already rejects ".." path elements — a traversal attempt
+// falls into the same "no such file" branch as any other unknown path
+// and gets the SPA shell, never an out-of-dir file.
+//
+// The fallback serves index.html via http.ServeContent directly rather
+// than delegating to fileServer with a rewritten request path: net/http's
+// own serveFile has a built-in special case that 301-redirects any
+// request whose path ends in "/index.html" to "./" (URL canonicalization,
+// so /foo/index.html and /foo/ aren't two live URLs for the same page) —
+// rewriting every fallback request's path to literally "/index.html" and
+// handing it back to fileServer would hit that special case on every
+// single fallback and redirect-loop forever.
+func newStaticHandler(dir string) http.HandlerFunc {
+	root := http.Dir(dir)
+	fileServer := http.FileServer(root)
+	serveIndex := func(w http.ResponseWriter, r *http.Request) {
+		f, err := root.Open("/index.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeContent(w, r, "index.html", info.ModTime(), f)
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		f, err := root.Open(r.URL.Path)
+		if err != nil {
+			serveIndex(w, r)
+			return
+		}
+		info, statErr := f.Stat()
+		f.Close()
+		if statErr != nil || info.IsDir() {
+			serveIndex(w, r)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	}
 }
 
 type sessionContextKey struct{}

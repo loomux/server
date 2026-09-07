@@ -75,3 +75,28 @@ func TestLoadConfig_InvalidSessionTTL(t *testing.T) {
 		t.Fatal("LoadConfig: want error for a malformed session TTL")
 	}
 }
+
+func TestLoadConfig_StaticDirDefaultsEmpty(t *testing.T) {
+	t.Setenv("LOOMUX_AUTH_PASSWORD_HASH", validPasswordHashEnv(t))
+
+	cfg, err := api.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.StaticDir != "" {
+		t.Errorf("StaticDir = %q, want empty (static serving disabled by default)", cfg.StaticDir)
+	}
+}
+
+func TestLoadConfig_StaticDirFromEnv(t *testing.T) {
+	t.Setenv("LOOMUX_AUTH_PASSWORD_HASH", validPasswordHashEnv(t))
+	t.Setenv("LOOMUX_STATIC_DIR", "/srv/loomux/web")
+
+	cfg, err := api.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.StaticDir != "/srv/loomux/web" {
+		t.Errorf("StaticDir = %q, want %q", cfg.StaticDir, "/srv/loomux/web")
+	}
+}
