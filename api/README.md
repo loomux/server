@@ -83,6 +83,19 @@ not engineering taste):
   `requireAuth`) — an abandoned expired row otherwise just sits in the
   table. Harmless bloat for a single-user table, same shape as LOOM-16's
   idle-conversation-reaper gap.
+- **Static SPA serving is opt-in and lives outside the API surface
+  entirely** (LOOM-33). `WithStaticDir`/`LOOMUX_STATIC_DIR` (unset by
+  default) points `Server` at a built web-client directory
+  (`loomux/web`'s Vite output); any request whose path doesn't start
+  with `/api/` is served from there, with fallback to `index.html` for
+  anything that isn't a real file — a browser refresh on a client-side
+  route like `/conversations/abc123` gets the SPA shell instead of a
+  404. Routed entirely in `ServeHTTP` ahead of `mux`, mirroring the
+  existing `/api/` version check already there — `/api/*` paths never
+  reach the static handler and the static handler never reaches `mux`,
+  so neither can shadow the other. Not built as part of LOOM-23/LOOM-24
+  (the web client itself); this is the small server-side hosting
+  addition their design flagged as a dependency.
 
 ## Layout
 
@@ -95,13 +108,16 @@ not engineering taste):
 - `config.go` — `Config`, `LoadConfig()`: `LOOMUX_AUTH_PASSWORD_HASH`
   (required, validated as a real bcrypt hash), `LOOMUX_HTTP_ADDR`
   (optional, default `:8080`), `LOOMUX_SESSION_TTL` (optional, default 30
-  days).
+  days), `LOOMUX_STATIC_DIR` (optional, default unset — static serving
+  disabled).
 - `server.go` — `Server` (implements `http.Handler`), `NewServer`,
   `Dispatcher`/`SessionStore` (the narrow seams this package depends on —
   satisfied by `*app.App` and `*app.App.Store()` respectively, without
   importing `app` directly, mirroring `router.RoutingModel`/
   `orchestrator.CompletionDetector`'s minimal-interface pattern), the
-  `requireAuth` middleware, `APIVersion`, and the four handlers:
+  `requireAuth` middleware, `APIVersion`, `WithStaticDir` (opt-in static
+  SPA serving with `index.html` fallback, LOOM-33 — see Design above),
+  and the four handlers:
   - `POST /api/v1/login` — `{password}` → `{token}`
   - `POST /api/v1/logout` — auth-gated, revokes the presented token
   - `POST /api/v1/dispatch` — auth-gated, `{conversation_id, message}` →
@@ -207,6 +223,13 @@ per-event timeout so a broken stream fails the test instead of hanging).
 Run with `-race` too — the stream handler's poll loop and heartbeat
 ticker run concurrently with request handling, and this is the one
 handler in this package doing that.
+`server_test.go` also covers `WithStaticDir` (LOOM-33): a real static
+file served as-is, an unknown client-side route and the root path both
+falling back to `index.html`, `/api/*` paths staying untouched by static
+serving (including the unsupported-API-version rejection still winning
+over the SPA fallback), and — separately — that static serving stays off
+(still `404`) when `WithStaticDir` is never used, matching this
+package's behavior before the option existed.
 `throttle_test.go` covers `loginThrottle` in isolation (pure timing
 logic, including the zero-base edge case tests use to disable backoff
 entirely). `integration_test.go` proves the auth/dispatch behavior
