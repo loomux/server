@@ -65,6 +65,9 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string) (
 	var workspaceID string
 	switch decision.Action {
 	case ActionAnswerDirectly:
+		if err := r.logTurn(ctx, conversationID, "", message, decision.DirectAnswer); err != nil {
+			return "", fmt.Errorf("router: dispatch: %w", err)
+		}
 		return decision.DirectAnswer, nil
 
 	case ActionUseWorkspace:
@@ -198,7 +201,39 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		return "", fmt.Errorf("router: dispatch: update rolling summary: %w", err)
 	}
 
+	if err := r.logTurn(ctx, conversationID, task.ID, message, result.Reply); err != nil {
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+
 	return result.Reply, nil
+}
+
+// logTurn persists one turn's user/assistant message pair. Called only
+// once a reply is actually available (design spec
+// docs/design/message-logging-design.md, "Where it's written") — a
+// Dispatch call that errors before producing a reply leaves no trace
+// here; the caller already learns about the failure synchronously via
+// Dispatch's own returned error.
+func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessage, assistantReply string) error {
+	if err := r.store.CreateMessage(ctx, &registry.Message{
+		ID:             uuid.NewString(),
+		ConversationID: conversationID,
+		TaskID:         taskID,
+		Role:           registry.MessageRoleUser,
+		Content:        userMessage,
+	}); err != nil {
+		return fmt.Errorf("log turn: user message: %w", err)
+	}
+	if err := r.store.CreateMessage(ctx, &registry.Message{
+		ID:             uuid.NewString(),
+		ConversationID: conversationID,
+		TaskID:         taskID,
+		Role:           registry.MessageRoleAssistant,
+		Content:        assistantReply,
+	}); err != nil {
+		return fmt.Errorf("log turn: assistant message: %w", err)
+	}
+	return nil
 }
 
 // launchAgent resolves the agent-type's launch command and applicable
