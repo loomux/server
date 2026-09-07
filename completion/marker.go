@@ -2,12 +2,38 @@ package completion
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 )
+
+// MarkerDir resolves the effective marker directory: configured
+// unchanged if non-empty, else the same $TMPDIR/loomux/completion-markers
+// default NewDetector has always fallen back to (same convention family
+// as LOOM-4's $TMPDIR/loomux/ssh-cm for SSH ControlPath). Exported
+// (LOOM-32) so a caller that needs the real effective directory — e.g.
+// router.Router, to compute a per-task marker path for env-var
+// injection — can resolve exactly what NewDetector itself will resolve,
+// without constructing a Detector first.
+func MarkerDir(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	return filepath.Join(os.TempDir(), "loomux", "completion-markers")
+}
+
+// MarkerPath returns the deterministic marker file path for a task ID
+// under dir — the same convention MarkerWatcher.MarkerPath applies via
+// its own configured dir. A package-level function (LOOM-32) so a
+// caller without a *MarkerWatcher instance (router.Router, building a
+// launch command before any watcher is involved) can compute the exact
+// same path a hook/notify script should be told to touch.
+func MarkerPath(dir, taskID string) string {
+	return filepath.Join(dir, taskID+".done")
+}
 
 // MarkerWatcher implements the shared mechanism behind design spec §5's
 // tiers 1 and 2 (native hook vs. prompt-engineered self-report): watch a
@@ -33,7 +59,7 @@ func NewMarkerWatcher(newExecutor orchestrator.ExecutorFactory, dir string, poll
 
 // MarkerPath returns the deterministic marker file path for a task ID.
 func (w *MarkerWatcher) MarkerPath(taskID string) string {
-	return filepath.Join(w.dir, taskID+".done")
+	return MarkerPath(w.dir, taskID)
 }
 
 // Wait blocks until task's marker file exists on target's filesystem, or

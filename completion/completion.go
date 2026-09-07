@@ -10,8 +10,6 @@ package completion
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/Loomux/server/orchestrator"
@@ -70,9 +68,7 @@ type Detector struct {
 // $TMPDIR/loomux/completion-markers (same convention family as LOOM-4's
 // $TMPDIR/loomux/ssh-cm for SSH ControlPath).
 func NewDetector(store registry.Store, newExecutor orchestrator.ExecutorFactory, config Config, markerDir string) *Detector {
-	if markerDir == "" {
-		markerDir = filepath.Join(os.TempDir(), "loomux", "completion-markers")
-	}
+	markerDir = MarkerDir(markerDir)
 	return &Detector{
 		store:   store,
 		config:  config,

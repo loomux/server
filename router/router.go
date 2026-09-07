@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
@@ -31,11 +32,23 @@ type Router struct {
 	creds       *credentials.Resolver
 	agentTypes  AgentTypeRegistry
 	model       RoutingModel
+	// markerDir is the same effective marker directory the real
+	// completion.Detector watches (see app.build, which resolves
+	// completion.MarkerDir once and passes it to both) — needed here so
+	// launchAgent can compute completion.MarkerPath for a TierMarker
+	// agent-type's launch env (LOOM-32) without depending on the
+	// Detector itself.
+	markerDir string
 }
 
-// New constructs a Router.
+// New constructs a Router. markerDir must be the same effective marker
+// directory the CompletionDetector behind orch was constructed with
+// (typically completion.MarkerDir(cfg.MarkerDir), resolved once by the
+// caller and passed to both) — a mismatch would mean a TierMarker
+// agent-type's hook script is told to touch a path completion.Detector
+// never watches.
 func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orchestrator.ExecutorFactory,
-	creds *credentials.Resolver, agentTypes AgentTypeRegistry, model RoutingModel) *Router {
+	creds *credentials.Resolver, agentTypes AgentTypeRegistry, model RoutingModel, markerDir string) *Router {
 	return &Router{
 		store:       store,
 		orch:        orch,
@@ -43,6 +56,7 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 		creds:       creds,
 		agentTypes:  agentTypes,
 		model:       model,
+		markerDir:   markerDir,
 	}
 }
 
@@ -244,6 +258,19 @@ func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessag
 // then flips to Failed), then launches a fresh agent-kind task. The chat
 // message itself is sent by dispatchToAgent afterward, uniformly with
 // the continuation path.
+//
+// The task ID is minted here, before the launch command is built
+// (LOOM-32) — not left to orchestrator.Launch to mint afterward — so it
+// can be embedded into the command itself via agentEnvPrefix:
+// LOOMUX_TASK_ID always, and for a TierMarker agent-type,
+// LOOMUX_MARKER_PATH too, so a hook/notify script running inside the
+// launched session can actually resolve which marker file to touch on
+// completion (the gap this ticket fixes — TierMarker was previously
+// declared but nonfunctional for any real deployment). Generalizes
+// across every agent-type entry, including both real ones
+// (app.DefaultAgentTypes' "claude-code" and "codex") — the fix lives in
+// this one shared path, not per-adapter code, since neither adapter is
+// more than a registry entry (see LOOM-22).
 func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, agentType string) (*registry.Task, error) {
 	entry, err := r.agentTypes.Get(agentType)
 	if err != nil {
@@ -265,11 +292,35 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		return nil, fmt.Errorf("router: dispatch: %w", err)
 	}
 
-	task, err := r.orch.Launch(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, prefix+entry.LaunchTemplate)
+	taskID := uuid.NewString()
+	envPrefix, err := r.agentEnvPrefix(taskID, entry)
+	if err != nil {
+		return nil, fmt.Errorf("router: dispatch: %w", err)
+	}
+
+	task, err := r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID, prefix+envPrefix+entry.LaunchTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("router: dispatch: launch: %w", err)
 	}
 	return task, nil
+}
+
+// agentEnvPrefix returns the shell-prefix env assignments (same
+// VAR='value' shape and shell-quoting safety as credentials.
+// ShellEnvPrefix, reused here rather than duplicated) that tell a
+// launched agent process its own task ID — and, for a TierMarker
+// agent-type, the exact marker file path a hook/notify script should
+// touch on completion (LOOM-32). LOOMUX_TASK_ID is set regardless of
+// tier — cheap and generically useful for any hook needing task-scoped
+// behavior; LOOMUX_MARKER_PATH only when Tier == TierMarker, since it's
+// meaningless otherwise and completion.MarkerWatcher never watches for
+// it under any other tier.
+func (r *Router) agentEnvPrefix(taskID string, entry AgentType) (string, error) {
+	env := map[string]string{"LOOMUX_TASK_ID": taskID}
+	if entry.Tier == completion.TierMarker {
+		env["LOOMUX_MARKER_PATH"] = completion.MarkerPath(r.markerDir, taskID)
+	}
+	return credentials.ShellEnvPrefix(env)
 }
 
 // verifyAgentVersion runs vc.Command via a one-shot TargetExecutor.RunOnce

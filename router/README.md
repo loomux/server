@@ -36,7 +36,10 @@ replies, and updating each workspace's rolling summary).
   (`orchestrator.Reaper`, LOOM-16) tore it down, or a crash/manual kill
   did; either way `dispatchToAgent` fails the stale task (so
   `findActiveTask` stops finding it) and transparently falls back to a
-  fresh launch rather than erroring the conversation out.
+  fresh launch rather than erroring the conversation out. `launchAgent`
+  mints the task's ID itself, before building the launch command, and
+  passes it to `orchestrator.LaunchWithID` rather than letting `Launch`
+  mint one afterward — see the TierMarker section below (LOOM-32).
 - `version.go` — `VersionCheck`, `ExtractDottedVersion`, `CheckVersionRange`
   (design spec §10 axis 3, LOOM-17): a per-agent-type declared version
   gate, checked at launch. See the Agent-adapter versioning section below.
@@ -55,9 +58,47 @@ Run `go test ./...` from the repo root to run the full suite, including
 one true end-to-end integration test (real local tmux, real tiered
 completion detection, real credential resolution), `continuation_test.go`
 (the multi-turn task-reuse cases, including a human-takeover refusal and
-an ambiguous-active-task guard), and the security-relevant test proving a
+an ambiguous-active-task guard), the security-relevant test proving a
 resolved secret's raw value never appears in captured pane output, the
-relayed reply, or the rolling summary.
+relayed reply, or the rolling summary, and `tiermarker_integration_test.go`
+(a real-tmux end-to-end proof that TierMarker actually works — see
+below).
+
+## Getting a task ID into a launched agent (LOOM-32)
+
+TierMarker (`completion.TierMarker`) was declared for both
+`app.DefaultAgentTypes()` entries (`"claude-code"`, `"codex"`) from the
+day the Codex adapter shipped, but was nonfunctional: nothing told a
+launched process its own task ID, so a hook/notify script running inside
+it had no way to know which marker file to touch. The gap was
+structural — `orchestrator.Launch` minted `task.ID` *after* the caller
+had already built the final launch command.
+
+Fixed by inverting the order in `launchAgent`: it now mints the task ID
+itself (`uuid.NewString()`) before building `command`, and passes both
+to the new `orchestrator.LaunchWithID` (`Launch` is now a thin wrapper
+around it for callers — e.g. `provisionWorkspace`'s shell-kind tasks —
+that don't need to know the ID up front). `agentEnvPrefix` then builds a
+`VAR='value' ` shell prefix (reusing `credentials.ShellEnvPrefix` — a
+generic, already-tested "map → safe shell env prefix" utility, not
+credential-specific in its mechanism) containing:
+
+- `LOOMUX_TASK_ID` — always, regardless of tier. Cheap, and generically
+  useful to any hook needing task-scoped behavior beyond just markers.
+- `LOOMUX_MARKER_PATH` — only when `entry.Tier == completion.TierMarker`,
+  computed via `completion.MarkerPath(r.markerDir, taskID)`. `r.markerDir`
+  is threaded into `router.New` from `app.build`, which resolves
+  `completion.MarkerDir(cfg.MarkerDir)` once and passes the *same*
+  resolved value to both the real `completion.Detector` and `Router` — a
+  hook told to touch a path the Detector never watches would be a silent
+  no-op, so this single-resolution discipline is what keeps them
+  necessarily in agreement.
+
+Wiring an actual hook script (a Claude Code `Stop` hook touching
+`$LOOMUX_MARKER_PATH`, or a Codex `notify` entry doing the same) is the
+target machine's own CLI config, not something this repo manages — same
+precedent as OAuth-CLI credentials (design spec §7). This package's
+responsibility ends at guaranteeing the env var is present and correct.
 
 ## Agent-adapter versioning (design spec §10 axis 3, LOOM-17)
 

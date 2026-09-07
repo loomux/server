@@ -34,11 +34,12 @@ func setupWithVersionCheck(t *testing.T, vc router.VersionCheck) (registry.Store
 	store := newTestStore(t)
 	exec := newFakeExecutor()
 	agentTypes := versionCheckedAgentTypes(vc)
-	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), t.TempDir())
+	markerDir := t.TempDir()
+	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, exec.factory(), detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{}
-	r := router.New(store, orch, exec.factory(), resolver, agentTypes, model)
+	r := router.New(store, orch, exec.factory(), resolver, agentTypes, model, markerDir)
 	return store, exec, r, model
 }
 

@@ -48,7 +48,8 @@ func TestIntegration_RealDispatch(t *testing.T) {
 			LaunchTemplate: `sh -c 'echo integration-test-output; sleep 30'`,
 		},
 	}
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), t.TempDir())
+	markerDir := t.TempDir()
+	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, targets.NewExecutor, detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{
@@ -60,7 +61,7 @@ func TestIntegration_RealDispatch(t *testing.T) {
 		},
 	}
 
-	r := router.New(store, orch, targets.NewExecutor, resolver, agentTypes, model)
+	r := router.New(store, orch, targets.NewExecutor, resolver, agentTypes, model, markerDir)
 
 	reply, err := r.Dispatch(ctx, "conv-real", "do the real thing")
 	if err != nil {

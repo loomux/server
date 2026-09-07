@@ -14,8 +14,8 @@ without colliding with automated dispatch.
 - `orchestrator.go` — the `Orchestrator` struct, `New()`, the
   `CompletionDetector` and `ExecutorFactory` seams, and the error
   sentinels (`ErrHumanTakeover`, `ErrTaskInactive`).
-- `lifecycle.go` — `Launch`, `SendMessage`, `WaitForCompletion`,
-  `Complete`, `Fail`, `Reap`.
+- `lifecycle.go` — `Launch`, `LaunchWithID`, `SendMessage`,
+  `WaitForCompletion`, `Complete`, `Fail`, `Reap`.
 - `takeover.go` — `Takeover`, `Release`.
 - `reaper.go` — `Reaper`: periodically sweeps for `AwaitingInput` tasks
   idle past a threshold (design spec's continuation model, LOOM-13/16)
@@ -33,6 +33,14 @@ summary verbatim — it never generates or condenses one itself (that's
 the router's job). `Launch`'s `command` parameter is assumed to already
 be a complete, resolved launch string — no agent-type→command-template
 resolution or credential injection happens here.
+
+`Launch` mints the task's ID itself (a fresh UUID) and is a thin wrapper
+around `LaunchWithID`, which takes the ID as a parameter instead. That
+seam exists for `router.launchAgent` (LOOM-32): a TierMarker agent-type's
+launch command needs to embed the task's own ID (and a completion-marker
+path derived from it) *before* the command is built, which `Launch`
+alone can't support — it never hands the ID back until after `command`
+would already need to contain it.
 
 ## Reap vs. Fail/Complete
 

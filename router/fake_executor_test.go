@@ -34,6 +34,13 @@ type fakeExecutor struct {
 	// command at a time.
 	runOnceOutput string
 	runOnceErr    error
+	// fileExists controls FileExists's return for every path — a fast
+	// unit test exercising TierMarker (LOOM-32) sets this true to
+	// simulate "the hook already touched the marker," so
+	// completion.MarkerWatcher.Wait returns on its very first poll
+	// instead of blocking forever (no real hook script runs against
+	// this fake).
+	fileExists bool
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -114,11 +121,19 @@ func (e *fakeExecutor) KillSession(ctx context.Context, session string) error {
 
 func (e *fakeExecutor) Close() error { return nil }
 
-// FileExists and RemoveFile aren't exercised by router's fast unit
-// tests (they always configure TierIdle via shortIdleAgentTypes);
-// trivial stubs satisfy the interface.
-func (e *fakeExecutor) FileExists(ctx context.Context, path string) (bool, error) { return false, nil }
-func (e *fakeExecutor) RemoveFile(ctx context.Context, path string) error         { return nil }
+// FileExists returns fileExists for every path — false by default,
+// which preserves every existing test's behavior (they configure
+// TierIdle via shortIdleAgentTypes and never poll FileExists at all).
+// RemoveFile is a trivial stub; no test needs to observe its effect.
+func (e *fakeExecutor) FileExists(ctx context.Context, path string) (bool, error) {
+	if e.unreachable {
+		return false, targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.fileExists, nil
+}
+func (e *fakeExecutor) RemoveFile(ctx context.Context, path string) error { return nil }
 
 func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, error) {
 	if e.unreachable {

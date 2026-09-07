@@ -55,18 +55,18 @@ func (a *App) Close() error {
 // mirroring each other exactly: Codex CLI has a completion-signal
 // mechanism roughly analogous to Claude Code's Stop hook (either an
 // experimental per-turn Stop hook, or the simpler long-standing `notify`
-// config key), but — same as claude-code's own entry today — this
-// registry doesn't yet wire per-task marker-path injection into the
-// launch command (AgentType.LaunchTemplate is a static literal, and a
-// task's ID doesn't exist until after Orchestrator.Launch mints it, so
-// there's no mechanism today to tell a launched process which marker
-// file to write). That's a real, pre-existing gap affecting both agent
-// types equally — out of scope here; flagged as a follow-up rather than
-// solved inside "add a second adapter." The "" entry configures
-// completion detection for shell-kind (provisioning) tasks only
-// (router/agenttype.go's own doc comment) — it is never a real
-// dispatchable agent type and is deliberately excluded from what's
-// offered to the router model by dispatchableAgentTypeNames below.
+// config key). Both entries' TierMarker declaration is now actually
+// backed by per-task marker-path injection (LOOM-32 — router.launchAgent
+// mints the task ID before building the launch command and embeds it,
+// plus the marker path, as LOOMUX_TASK_ID/LOOMUX_MARKER_PATH env vars),
+// closing the gap LOOM-22 first flagged: a hook/notify script configured
+// on the target (outside Loomux's own responsibility, same as any other
+// OAuth-CLI local config — design spec §7) can read those to know which
+// marker file to touch on completion. The "" entry configures completion
+// detection for shell-kind (provisioning) tasks only (router/agenttype.go's
+// own doc comment) — it is never a real dispatchable agent type and is
+// deliberately excluded from what's offered to the router model by
+// dispatchableAgentTypeNames below.
 func DefaultAgentTypes() router.AgentTypeRegistry {
 	return router.AgentTypeRegistry{
 		"": router.AgentType{
@@ -121,7 +121,13 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		return nil, fmt.Errorf("app: open store: %w", err)
 	}
 
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), cfg.MarkerDir)
+	// Resolved once and passed to both the detector and the router, so
+	// they necessarily agree on where a TierMarker agent-type's marker
+	// files live (LOOM-32) — router.launchAgent computes the path a
+	// launched process is told to touch; completion.Detector is what
+	// actually watches for it.
+	markerDir := completion.MarkerDir(cfg.MarkerDir)
+	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, targets.NewExecutor, detector)
 	creds := credentials.NewResolver(store)
 
@@ -148,7 +154,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}()
 
 	return &App{
-		router:     router.New(store, orch, targets.NewExecutor, creds, agentTypes, model),
+		router:     router.New(store, orch, targets.NewExecutor, creds, agentTypes, model, markerDir),
 		store:      store,
 		stopReaper: stopReaper,
 		reaperDone: reaperDone,

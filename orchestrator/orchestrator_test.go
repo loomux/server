@@ -131,6 +131,40 @@ func TestLaunch(t *testing.T) {
 	}
 }
 
+// TestLaunchWithID_UsesSuppliedTaskID proves LaunchWithID (LOOM-32) uses
+// the caller-supplied ID as task.ID instead of minting its own — the
+// mechanism router.launchAgent needs to know a task's ID before its
+// launch command (which embeds that ID for a TierMarker hook script to
+// read) is even built.
+func TestLaunchWithID_UsesSuppliedTaskID(t *testing.T) {
+	store, ws, exec, _, o := setup(t)
+	ctx := context.Background()
+
+	task, err := o.LaunchWithID(ctx, ws.ID, "conv-1", registry.TaskKindAgent, "claude-code", "supplied-task-id", "claude")
+	if err != nil {
+		t.Fatalf("LaunchWithID: %v", err)
+	}
+	if task.ID != "supplied-task-id" {
+		t.Fatalf("task.ID = %q, want the supplied ID %q", task.ID, "supplied-task-id")
+	}
+
+	stored, err := store.GetTask(ctx, "supplied-task-id")
+	if err != nil {
+		t.Fatalf("GetTask(supplied-task-id): %v", err)
+	}
+	if stored.WorkspaceID != ws.ID {
+		t.Fatalf("stored WorkspaceID = %q, want %q", stored.WorkspaceID, ws.ID)
+	}
+
+	sess := exec.sessionFor(task.TmuxSession)
+	if sess == nil {
+		t.Fatalf("no session created on executor for %q", task.TmuxSession)
+	}
+	if sess.command != "claude" {
+		t.Fatalf("session command = %q, want %q", sess.command, "claude")
+	}
+}
+
 func TestLaunchShell(t *testing.T) {
 	_, ws, exec, _, o := setup(t)
 	ctx := context.Background()

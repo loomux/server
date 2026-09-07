@@ -39,21 +39,13 @@ package and wrap an `*App` rather than re-wire these pieces itself;
   deliberately excluded from what's offered to the router model as a
   real agent-type choice.
 
-  **Known gap, affects both entries equally:** neither entry's
-  `TierMarker` declaration is actually backed by per-task marker-path
-  injection. `MarkerWatcher` expects a marker file keyed by the task's
-  internal UUID, but `AgentType.LaunchTemplate` is a static literal
-  string (`agenttype.go`'s own doc comment: no per-launch templating),
-  and that UUID doesn't exist until `Orchestrator.Launch` mints it —
-  after the launch command is already built. So today there's no
-  mechanism telling a launched `claude` or `codex` process which marker
-  file to touch; both CLIs do have a plausible native-hook or
-  self-report mechanism to wire (Claude Code's `Stop` hook; Codex's own
-  `Stop` hook or its simpler `notify` config key), but connecting either
-  one to a real per-task path is unbuilt. Flagged rather than solved
-  here — fixing it means giving `LaunchTemplate` real per-launch
-  parameterization, a bigger design question than adding a second
-  adapter answers on its own. `Build` wraps an
+  `build` resolves the effective marker directory exactly once
+  (`completion.MarkerDir(cfg.MarkerDir)`) and passes that same value to
+  both `completion.NewDetector` and `router.New` — the two halves of
+  LOOM-32's fix (see `router/README.md`'s "Getting a task ID into a
+  launched agent" section) that must agree on where marker files live:
+  `Router` computes the path a launched process is told to touch,
+  `Detector` is what actually watches for it. `Build` wraps an
   unexported, parameterized `build(cfg, agentTypes)` — the public
   signature always uses `DefaultAgentTypes()`; the split exists purely
   so tests can wire a fast `TierIdle` agent type against a real tmux
