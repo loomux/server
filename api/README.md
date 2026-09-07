@@ -124,17 +124,18 @@ not engineering taste):
     task row (LOOM-13 continuation, or the router sending a later message
     in the same conversation to a different workspace).
   - `GET /api/v1/conversations/{id}` — auth-gated (LOOM-18), the full task
-    history for one conversation: `{conversation_id, tasks: [{id,
-    workspace_id, kind, agent_type, status, created_at, updated_at,
-    started_at, completed_at}, ...]}`, oldest first; `404` if no task
-    matches that `conversation_id`. "History" here is exactly what the
-    registry stores — task lifecycle rows, not a per-turn chat transcript
-    (no message log exists in the schema). Both conversation endpoints
-    share `TaskLister`, a narrow seam (`ListTasks`, the store's
-    unfiltered, cross-workspace task query — `ListTasksByWorkspace` alone
-    can't answer "every task in this conversation" since a conversation
-    isn't pinned to one workspace) satisfied structurally by
-    `*app.App.Store()`.
+    history for one conversation plus its message transcript (LOOM-31):
+    `{conversation_id, tasks: [{id, workspace_id, kind, agent_type,
+    status, created_at, updated_at, started_at, completed_at}, ...],
+    messages: [{id, role, content, task_id, created_at}, ...]}`, both
+    oldest first; `404` only if there is neither task history nor any
+    message for that `conversation_id` — an `answer_directly`-only
+    conversation has messages but no tasks and still resolves to `200`.
+    Backed by `TaskLister` (`ListTasks`, the store's unfiltered,
+    cross-workspace task query — `ListTasksByWorkspace` alone can't answer
+    "every task in this conversation" since a conversation isn't pinned to
+    one workspace) and `MessageLister` (`ListMessagesByConversation`),
+    both satisfied structurally by `*app.App.Store()`.
   - `GET /api/v1/conversations/{id}/stream` — auth-gated (LOOM-21),
     Server-Sent Events reporting task status transitions for one
     conversation, so a client can watch a dispatch progress instead of

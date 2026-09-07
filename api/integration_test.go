@@ -73,7 +73,7 @@ func TestIntegration_RealAppBehindAuth(t *testing.T) {
 	// sequence below isn't itself throttled by production timing
 	// (LOOM-15) — this test isn't exercising the throttle, TestLogin_* in
 	// server_test.go does that.
-	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
+	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 
@@ -121,6 +121,100 @@ func TestIntegration_RealAppBehindAuth(t *testing.T) {
 	defer afterLogoutResp.Body.Close()
 	if afterLogoutResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("dispatch after logout status = %d, want %d", afterLogoutResp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// TestIntegration_DispatchThenConversationDetail_ShowsMessages proves
+// LOOM-31 end-to-end: a real POST /dispatch call against the real stack
+// (real sqlite, a fake LLM vendor) results in a subsequent
+// GET /conversations/{id} response that includes the turn's actual
+// message text, not just task-lifecycle rows.
+func TestIntegration_DispatchThenConversationDetail_ShowsMessages(t *testing.T) {
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion", "created": 1, "model": "test-model",
+			"choices": []map[string]any{{
+				"index": 0, "finish_reason": "tool_calls",
+				"message": map[string]any{
+					"role": "assistant",
+					"tool_calls": []map[string]any{{
+						"id": "call_1", "type": "function",
+						"function": map[string]any{
+							"name":      "route_decision",
+							"arguments": `{"action":"answer_directly","direct_answer":"the transcript works"}`,
+						},
+					}},
+				},
+			}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(llmSrv.Close)
+
+	realApp, err := app.Build(app.Config{
+		DBPath: filepath.Join(t.TempDir(), "test.db"),
+		Router: routerConfigFor(llmSrv.URL),
+	})
+	if err != nil {
+		t.Fatalf("app.Build: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := realApp.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	hash, err := api.HashPassword("integration-test-password")
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
+	httpSrv := httptest.NewServer(server)
+	t.Cleanup(httpSrv.Close)
+
+	token, status := doLogin(t, httpSrv.URL, "integration-test-password")
+	if status != http.StatusOK {
+		t.Fatalf("login status = %d, want %d", status, http.StatusOK)
+	}
+
+	dispatchResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c-transcript", "message": "hello"})
+	dispatchResp.Body.Close()
+	if dispatchResp.StatusCode != http.StatusOK {
+		t.Fatalf("dispatch status = %d, want %d", dispatchResp.StatusCode, http.StatusOK)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/conversations/c-transcript", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	convResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer convResp.Body.Close()
+	if convResp.StatusCode != http.StatusOK {
+		t.Fatalf("conversation detail status = %d, want %d", convResp.StatusCode, http.StatusOK)
+	}
+
+	var out struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(convResp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode conversation detail: %v", err)
+	}
+	if len(out.Messages) != 2 {
+		t.Fatalf("got %d messages, want 2: %+v", len(out.Messages), out.Messages)
+	}
+	if out.Messages[0].Role != "user" || out.Messages[0].Content != "hello" {
+		t.Fatalf("messages[0] = %+v, want role=user content=%q", out.Messages[0], "hello")
+	}
+	if out.Messages[1].Role != "assistant" || out.Messages[1].Content != "the transcript works" {
+		t.Fatalf("messages[1] = %+v, want role=assistant content=%q", out.Messages[1], "the transcript works")
 	}
 }
 

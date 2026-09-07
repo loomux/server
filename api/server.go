@@ -66,6 +66,14 @@ type TaskLister interface {
 	ListTasks(ctx context.Context) ([]*registry.Task, error)
 }
 
+// MessageLister is the message-transcript slice of registry.Store this
+// package needs to extend conversation-detail (LOOM-18) with real chat
+// turns instead of only task-lifecycle rows (LOOM-31) — satisfied
+// structurally by any registry.Store, mirroring TaskLister.
+type MessageLister interface {
+	ListMessagesByConversation(ctx context.Context, conversationID string) ([]*registry.Message, error)
+}
+
 // AttachInfoStore is the get-chain slice of registry.Store LOOM-20's
 // attach-info endpoint needs to resolve a task down to the target a
 // human would SSH into: task -> its workspace -> that workspace's
@@ -114,6 +122,7 @@ type Server struct {
 	sessions           SessionStore
 	workspaces         WorkspaceLister
 	tasks              TaskLister
+	messages           MessageLister
 	attachInfo         AttachInfoStore
 	passwordHash       []byte
 	sessionTTL         time.Duration
@@ -147,12 +156,13 @@ func WithStreamPollInterval(d time.Duration) Option {
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
-func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, tasks TaskLister, attachInfo AttachInfoStore, passwordHash []byte, opts ...Option) *Server {
+func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, tasks TaskLister, messages MessageLister, attachInfo AttachInfoStore, passwordHash []byte, opts ...Option) *Server {
 	s := &Server{
 		dispatcher:         dispatcher,
 		sessions:           sessions,
 		workspaces:         workspaces,
 		tasks:              tasks,
+		messages:           messages,
 		attachInfo:         attachInfo,
 		passwordHash:       passwordHash,
 		sessionTTL:         defaultSessionTTL,
@@ -372,18 +382,29 @@ type conversationTask struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
+type messageSummary struct {
+	ID        string    `json:"id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	TaskID    string    `json:"task_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type getConversationResponse struct {
 	ConversationID string             `json:"conversation_id"`
 	Tasks          []conversationTask `json:"tasks"`
+	Messages       []messageSummary   `json:"messages"`
 }
 
-// handleGetConversation returns a conversation's full task history —
-// every Task row sharing this conversation_id, oldest first
-// (TaskLister.ListTasks's own order). This is "history" in terms of what
-// the registry actually stores: task-lifecycle records, not a per-turn
-// chat transcript (no such log exists in the schema). A conversation_id
-// matching zero tasks is a 404, not an empty list — unlike
-// handleListConversations, this is a "fetch one thing" endpoint.
+// handleGetConversation returns a conversation's full task history (every
+// Task row sharing this conversation_id, oldest first) plus its message
+// transcript (LOOM-31: every Message row sharing this conversation_id,
+// oldest first) — TaskLister.ListTasks's and MessageLister.
+// ListMessagesByConversation's own orders, respectively. A conversation_id
+// matching zero tasks AND zero messages is a 404, not an empty response —
+// unlike handleListConversations, this is a "fetch one thing" endpoint. A
+// conversation that only ever produced answer_directly replies has
+// messages but no tasks, and must still resolve to 200.
 func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -410,12 +431,33 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 			CompletedAt: t.CompletedAt,
 		})
 	}
-	if len(out) == 0 {
+
+	messages, err := s.messages.ListMessagesByConversation(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not fetch conversation")
+		return
+	}
+	msgOut := make([]messageSummary, 0, len(messages))
+	for _, m := range messages {
+		msgOut = append(msgOut, messageSummary{
+			ID:        m.ID,
+			Role:      string(m.Role),
+			Content:   m.Content,
+			TaskID:    m.TaskID,
+			CreatedAt: m.CreatedAt,
+		})
+	}
+
+	// A conversation is only truly unknown if it has neither task
+	// history nor any logged messages — an answer_directly-only
+	// conversation (LOOM-31) has messages but zero tasks, and must not
+	// 404.
+	if len(out) == 0 && len(msgOut) == 0 {
 		writeError(w, http.StatusNotFound, "no such conversation")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out})
+	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out, Messages: msgOut})
 }
 
 type attachTargetInfo struct {

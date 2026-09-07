@@ -49,7 +49,7 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 	}
 	dispatcher := &fakeDispatcher{}
 	store := newTestStore(t)
-	server := api.NewServer(dispatcher, store, store, store, store, []byte(hash), opts...)
+	server := api.NewServer(dispatcher, store, store, store, store, store, []byte(hash), opts...)
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 	return httpSrv, dispatcher, store
@@ -94,6 +94,18 @@ func createTestTask(t *testing.T, s registry.Store, id, workspaceID, conversatio
 		t.Fatalf("CreateTask: %v", err)
 	}
 	return task
+}
+
+// createTestMessage inserts a message directly via the store, as a
+// fixture for conversation-endpoint tests that aren't exercising
+// message-creation behavior themselves.
+func createTestMessage(t *testing.T, s registry.Store, id, conversationID, taskID string, role registry.MessageRole, content string) *registry.Message {
+	t.Helper()
+	msg := &registry.Message{ID: id, ConversationID: conversationID, TaskID: taskID, Role: role, Content: content}
+	if err := s.CreateMessage(context.Background(), msg); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	return msg
 }
 
 func login(t *testing.T, baseURL, password string) (token string, status int) {
@@ -610,6 +622,71 @@ func TestGetConversation_ValidToken_ReturnsChronologicalTaskHistory(t *testing.T
 	}
 	if out.Tasks[0].WorkspaceID != wsA.ID || out.Tasks[1].WorkspaceID != wsB.ID {
 		t.Fatalf("workspace ids = [%q, %q], want [%q, %q]", out.Tasks[0].WorkspaceID, out.Tasks[1].WorkspaceID, wsA.ID, wsB.ID)
+	}
+}
+
+func TestGetConversation_ValidToken_IncludesMessagesOldestFirst(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	ws := createTestWorkspace(t, store, "ws-a", registry.WorkspaceStatusIdle)
+	task := createTestTask(t, store, "task-1", ws.ID, "conv-msgs", registry.TaskStatusCompleted)
+	createTestMessage(t, store, "m1", "conv-msgs", task.ID, registry.MessageRoleUser, "hi there")
+	createTestMessage(t, store, "m2", "conv-msgs", task.ID, registry.MessageRoleAssistant, "hello!")
+	// An unrelated conversation must not leak in.
+	createTestMessage(t, store, "m-other", "conv-other", "", registry.MessageRoleUser, "unrelated")
+
+	token, _ := login(t, srv.URL, testPassword)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations/conv-msgs", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var out struct {
+		Messages []struct {
+			ID      string `json:"id"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
+			TaskID  string `json:"task_id"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Messages) != 2 {
+		t.Fatalf("got %d messages, want 2: %+v", len(out.Messages), out.Messages)
+	}
+	if out.Messages[0].ID != "m1" || out.Messages[0].Role != "user" || out.Messages[0].Content != "hi there" || out.Messages[0].TaskID != task.ID {
+		t.Fatalf("messages[0] = %+v, want the user message first", out.Messages[0])
+	}
+	if out.Messages[1].ID != "m2" || out.Messages[1].Role != "assistant" || out.Messages[1].Content != "hello!" {
+		t.Fatalf("messages[1] = %+v, want the assistant message second", out.Messages[1])
+	}
+}
+
+func TestGetConversation_MessagesOnlyNoTasks_ReturnsOK(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	createTestMessage(t, store, "m1", "conv-direct-only", "", registry.MessageRoleUser, "what's up")
+	createTestMessage(t, store, "m2", "conv-direct-only", "", registry.MessageRoleAssistant, "not much")
+
+	token, _ := login(t, srv.URL, testPassword)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations/conv-direct-only", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d (a message-only, task-less conversation must not 404)", resp.StatusCode, http.StatusOK)
+	}
+
+	var out struct {
+		Tasks    []any `json:"tasks"`
+		Messages []any `json:"messages"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Tasks) != 0 {
+		t.Fatalf("got %d tasks, want 0", len(out.Tasks))
+	}
+	if len(out.Messages) != 2 {
+		t.Fatalf("got %d messages, want 2", len(out.Messages))
 	}
 }
 
