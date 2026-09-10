@@ -360,15 +360,24 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			Name:           ws.Name,
 			TargetID:       ws.TargetID,
 			Status:         string(ws.Status),
-			Tags:           ws.Tags,
+			Tags:           orEmpty(ws.Tags),
 			Description:    ws.Description,
-			Capabilities:   ws.Capabilities,
+			Capabilities:   orEmpty(ws.Capabilities),
 			RollingSummary: ws.RollingSummary,
 			IsDynamic:      ws.IsDynamic,
 			LastUsedAt:     ws.LastUsedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, listWorkspacesResponse{Workspaces: out})
+}
+
+// orEmpty returns s when non-nil, otherwise an empty (non-nil) slice. It
+// keeps JSON serialization of []string fields as [] instead of null.
+func orEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 type conversationSummary struct {

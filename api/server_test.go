@@ -561,6 +561,30 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 	if _, ok := raw.Workspaces[1]["last_used_at"]; ok {
 		t.Fatal("plain workspace JSON contains last_used_at; want it omitted when null")
 	}
+
+	// tags and capabilities must serialize as [] even when empty — the
+	// contract says they are always present, never null.
+	metaTags, ok := raw.Workspaces[0]["tags"].([]any)
+	if !ok {
+		t.Fatalf("meta workspace tags raw type = %T, want []", raw.Workspaces[0]["tags"])
+	}
+	if len(metaTags) != 2 || metaTags[0] != "go" || metaTags[1] != "api" {
+		t.Fatalf("meta workspace tags raw value = %v, want [go api]", metaTags)
+	}
+	plainTags, ok := raw.Workspaces[1]["tags"].([]any)
+	if !ok {
+		t.Fatalf("plain workspace tags raw type = %T, want []", raw.Workspaces[1]["tags"])
+	}
+	if len(plainTags) != 0 {
+		t.Fatalf("plain workspace tags raw value = %v, want []", plainTags)
+	}
+	plainCaps, ok := raw.Workspaces[1]["capabilities"].([]any)
+	if !ok {
+		t.Fatalf("plain workspace capabilities raw type = %T, want []", raw.Workspaces[1]["capabilities"])
+	}
+	if len(plainCaps) != 0 {
+		t.Fatalf("plain workspace capabilities raw value = %v, want []", plainCaps)
+	}
 }
 
 func sliceEq(a, b []string) bool {
