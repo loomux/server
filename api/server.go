@@ -327,21 +327,26 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 }
 
 type workspaceSummary struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	TargetID string `json:"target_id"`
-	Status   string `json:"status"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	TargetID       string     `json:"target_id"`
+	Status         string     `json:"status"`
+	Tags           []string   `json:"tags"`
+	Description    string     `json:"description"`
+	Capabilities   []string   `json:"capabilities"`
+	RollingSummary string     `json:"rolling_summary"`
+	IsDynamic      bool       `json:"is_dynamic"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 }
 
 type listWorkspacesResponse struct {
 	Workspaces []workspaceSummary `json:"workspaces"`
 }
 
-// handleListWorkspaces returns a trimmed summary of every registered
-// workspace (id/name/target/status), sorted by name (registry.Store's own
-// ListWorkspaces order) — not the full registry.Workspace, since fields
-// like tags/description/capabilities/rolling_summary are the router's own
-// routing metadata (design spec §6), not yet client-facing.
+// handleListWorkspaces returns a summary of every registered workspace
+// (id/name/target/status plus tags/description/capabilities/rolling_summary/
+// is_dynamic/last_used_at), sorted by name (registry.Store's own
+// ListWorkspaces order). Wraps WorkspaceLister.ListWorkspaces.
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	workspaces, err := s.workspaces.ListWorkspaces(r.Context())
 	if err != nil {
@@ -351,13 +356,28 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	out := make([]workspaceSummary, 0, len(workspaces))
 	for _, ws := range workspaces {
 		out = append(out, workspaceSummary{
-			ID:       ws.ID,
-			Name:     ws.Name,
-			TargetID: ws.TargetID,
-			Status:   string(ws.Status),
+			ID:             ws.ID,
+			Name:           ws.Name,
+			TargetID:       ws.TargetID,
+			Status:         string(ws.Status),
+			Tags:           orEmpty(ws.Tags),
+			Description:    ws.Description,
+			Capabilities:   orEmpty(ws.Capabilities),
+			RollingSummary: ws.RollingSummary,
+			IsDynamic:      ws.IsDynamic,
+			LastUsedAt:     ws.LastUsedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, listWorkspacesResponse{Workspaces: out})
+}
+
+// orEmpty returns s when non-nil, otherwise an empty (non-nil) slice. It
+// keeps JSON serialization of []string fields as [] instead of null.
+func orEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 type conversationSummary struct {

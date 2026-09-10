@@ -48,7 +48,8 @@ All under `/api/v1/`, Bearer-token auth except `/login` and `/version`
 - `POST /dispatch` — auth'd, `{conversation_id, message}` → `{reply}`
   (blocking — this is still the only source of actual reply text)
 - `GET /workspaces` — auth'd, `{workspaces: [{id, name, target_id,
-  status}, ...]}`
+  status, tags, description, capabilities, rolling_summary, is_dynamic,
+  last_used_at?}, ...]}`
 - `GET /conversations` — auth'd, `{conversations: [{conversation_id,
   workspace_id, status, updated_at}, ...]}`, most-recently-updated first
 - `GET /conversations/{id}` — auth'd, `{conversation_id, tasks: [{id,
@@ -149,7 +150,8 @@ extended to this client) — a persistent banner, not a hard block, since
 ### Pages / routes
 
 - `/login` — password form
-- `/workspaces` — list: id, name, target, status (mirrors
+- `/workspaces` — list: id, name, target, status, tags, description,
+  capabilities, rolling_summary, is_dynamic, last_used_at (mirrors
   `workspaceSummary` exactly, no client-side enrichment)
 - `/conversations` — list, most-recently-updated first (mirrors
   `conversationSummary`)

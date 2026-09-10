@@ -447,6 +447,158 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspacesSortedByName(t *testing.T) {
 	}
 }
 
+func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
+	srv, _, store := newTestServer(t)
+
+	target := &registry.Target{ID: "target-meta", Name: "target-meta", Kind: registry.TargetKindLocal}
+	if err := store.CreateTarget(context.Background(), target); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+
+	lastUsed := time.Now().UTC().Truncate(time.Millisecond)
+	ws := &registry.Workspace{
+		ID:             "ws-meta",
+		Name:           "meta",
+		Path:           "/fixture/meta",
+		TargetID:       target.ID,
+		Status:         registry.WorkspaceStatusIdle,
+		Tags:           []string{"go", "api"},
+		Description:    "metadata workspace",
+		Capabilities:   []string{"mcp-git", "mcp-filesystem"},
+		RollingSummary: "last did some work",
+		IsDynamic:      true,
+		LastUsedAt:     &lastUsed,
+	}
+	if err := store.CreateWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
+	// A second workspace with no optional metadata proves last_used_at is
+	// omitted when null and empty slices/strings are returned as their zero
+	// values.
+	createTestWorkspace(t, store, "plain", registry.WorkspaceStatusActive)
+
+	token, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login status = %d", status)
+	}
+
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/workspaces", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	var out struct {
+		Workspaces []struct {
+			ID             string     `json:"id"`
+			Name           string     `json:"name"`
+			TargetID       string     `json:"target_id"`
+			Status         string     `json:"status"`
+			Tags           []string   `json:"tags"`
+			Description    string     `json:"description"`
+			Capabilities   []string   `json:"capabilities"`
+			RollingSummary string     `json:"rolling_summary"`
+			IsDynamic      bool       `json:"is_dynamic"`
+			LastUsedAt     *time.Time `json:"last_used_at"`
+		} `json:"workspaces"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Workspaces) != 2 {
+		t.Fatalf("got %d workspaces, want 2", len(out.Workspaces))
+	}
+
+	meta := out.Workspaces[0]
+	if meta.ID != "ws-meta" || meta.Name != "meta" || meta.TargetID != target.ID || meta.Status != "idle" {
+		t.Fatalf("unexpected metadata workspace identity: %+v", meta)
+	}
+	if !sliceEq(meta.Tags, []string{"go", "api"}) {
+		t.Fatalf("tags = %v, want [go api]", meta.Tags)
+	}
+	if meta.Description != "metadata workspace" {
+		t.Fatalf("description = %q, want %q", meta.Description, "metadata workspace")
+	}
+	if !sliceEq(meta.Capabilities, []string{"mcp-git", "mcp-filesystem"}) {
+		t.Fatalf("capabilities = %v, want [mcp-git mcp-filesystem]", meta.Capabilities)
+	}
+	if meta.RollingSummary != "last did some work" {
+		t.Fatalf("rolling_summary = %q, want %q", meta.RollingSummary, "last did some work")
+	}
+	if !meta.IsDynamic {
+		t.Fatal("is_dynamic = false, want true")
+	}
+	if meta.LastUsedAt == nil || !meta.LastUsedAt.Equal(lastUsed) {
+		t.Fatalf("last_used_at = %v, want %v", meta.LastUsedAt, lastUsed)
+	}
+
+	plain := out.Workspaces[1]
+	if plain.ID != "ws-plain" {
+		t.Fatalf("unexpected plain workspace identity: %+v", plain)
+	}
+	if plain.LastUsedAt != nil {
+		t.Fatalf("plain.last_used_at = %v, want nil (omitted when null)", plain.LastUsedAt)
+	}
+	if len(plain.Tags) != 0 || len(plain.Capabilities) != 0 || plain.Description != "" || plain.RollingSummary != "" || plain.IsDynamic {
+		t.Fatalf("plain workspace has unexpected metadata: %+v", plain)
+	}
+
+	// last_used_at must actually be omitted from the JSON when null, not
+	// serialized as null, so a strict client that distinguishes absent vs
+	// null fields stays compatible.
+	var raw struct {
+		Workspaces []map[string]any `json:"workspaces"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("raw decode: %v", err)
+	}
+	if _, ok := raw.Workspaces[1]["last_used_at"]; ok {
+		t.Fatal("plain workspace JSON contains last_used_at; want it omitted when null")
+	}
+
+	// tags and capabilities must serialize as [] even when empty — the
+	// contract says they are always present, never null.
+	metaTags, ok := raw.Workspaces[0]["tags"].([]any)
+	if !ok {
+		t.Fatalf("meta workspace tags raw type = %T, want []", raw.Workspaces[0]["tags"])
+	}
+	if len(metaTags) != 2 || metaTags[0] != "go" || metaTags[1] != "api" {
+		t.Fatalf("meta workspace tags raw value = %v, want [go api]", metaTags)
+	}
+	plainTags, ok := raw.Workspaces[1]["tags"].([]any)
+	if !ok {
+		t.Fatalf("plain workspace tags raw type = %T, want []", raw.Workspaces[1]["tags"])
+	}
+	if len(plainTags) != 0 {
+		t.Fatalf("plain workspace tags raw value = %v, want []", plainTags)
+	}
+	plainCaps, ok := raw.Workspaces[1]["capabilities"].([]any)
+	if !ok {
+		t.Fatalf("plain workspace capabilities raw type = %T, want []", raw.Workspaces[1]["capabilities"])
+	}
+	if len(plainCaps) != 0 {
+		t.Fatalf("plain workspace capabilities raw value = %v, want []", plainCaps)
+	}
+}
+
+func sliceEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestListWorkspaces_NoWorkspaces_ReturnsEmptyList(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	token, _ := login(t, srv.URL, testPassword)
