@@ -127,12 +127,12 @@ not engineering taste):
     `{reply}`, wraps `Dispatcher.Dispatch`
   - `GET /api/v1/workspaces` — auth-gated (LOOM-19), lists registered
     workspaces sorted by name: `{workspaces: [{id, name, target_id,
-    status}, ...]}`. Deliberately trimmed to what a client needs to render
-    a workspace list — not the full `registry.Workspace` (tags/description/
-    capabilities/rolling_summary are the router's own matching metadata,
-    §6, not client-facing yet). Wraps `WorkspaceLister.ListWorkspaces`, a
-    narrow seam mirroring `SessionStore`, satisfied structurally by
-    `*app.App.Store()`.
+    status, tags, description, capabilities, rolling_summary, is_dynamic,
+    last_used_at?}, ...]}`. Includes the router's matching metadata
+    (tags/description/capabilities/rolling_summary) and the dynamic/usage
+    flags now that the Phase 2 web fleet-status page consumes them
+    (LOOM-44). Wraps `WorkspaceLister.ListWorkspaces`, a narrow seam
+    mirroring `SessionStore`, satisfied structurally by `*app.App.Store()`.
   - `GET /api/v1/conversations` — auth-gated (LOOM-18), one summary row
     per distinct `conversation_id`, most-recently-updated first:
     `{conversations: [{conversation_id, workspace_id, status,
@@ -211,8 +211,10 @@ different claimed `X-Forwarded-For` values (proving "global" is real,
 not just documented), and that enough waiting always lets the correct
 password through no matter how many failures preceded it) against a fake
 `Dispatcher` and a real (temp-file) sqlite store for sessions, plus
-`/api/v1/workspaces` (auth required, empty-list, and populated-and-sorted
-cases, asserting the trimmed field set against real store fixtures) and
+`/api/v1/workspaces` (auth required, empty-list, populated-and-sorted,
+ and metadata round-trip cases, asserting the full field set including
+ tags/description/capabilities/rolling_summary/is_dynamic/last_used_at
+ against real store fixtures) and
 `/api/v1/conversations` + `/api/v1/conversations/{id}` (auth required,
 empty-list, recency-sorted grouping across multiple conversations, a
 conversation spanning two workspaces returning chronological history,
