@@ -385,10 +385,37 @@ type conversationSummary struct {
 	WorkspaceID    string    `json:"workspace_id"`
 	Status         string    `json:"status"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	// Preview (LOOM-45) is the conversation's first-ever message,
+	// truncated to previewMaxRunes — a short snippet for a conversation
+	// list UI row, matching how most chat clients label a thread by its
+	// opening line rather than its most recent one (which is already
+	// visible as Status/UpdatedAt). Empty if the conversation somehow
+	// has no messages at all (shouldn't happen in practice: a
+	// conversation only appears here because it has at least one task,
+	// and every dispatched turn is logged — see logTurn — before this
+	// endpoint could see it).
+	Preview string `json:"preview"`
 }
 
 type listConversationsResponse struct {
 	Conversations []conversationSummary `json:"conversations"`
+}
+
+// previewMaxRunes bounds conversationSummary.Preview's length. 200 is
+// generous enough to show a real opening sentence or two in a list row,
+// short enough that one long first message can't bloat the whole
+// listing response.
+const previewMaxRunes = 200
+
+// firstMessagePreview truncates a conversation's first message to
+// previewMaxRunes runes (not bytes, so multi-byte UTF-8 text isn't cut
+// mid-rune), appending "…" when truncated.
+func firstMessagePreview(content string) string {
+	runes := []rune(content)
+	if len(runes) <= previewMaxRunes {
+		return content
+	}
+	return string(runes[:previewMaxRunes]) + "…"
 }
 
 // handleListConversations returns one summary row per distinct
@@ -398,7 +425,11 @@ type listConversationsResponse struct {
 // ConversationID, taking each conversation's most-recently-updated task
 // as representative, since the same conversation can span more than one
 // task (LOOM-13 continuation, or a later message routed to a different
-// workspace by the router).
+// workspace by the router). Preview (LOOM-45) is looked up per
+// conversation via MessageLister — one query per distinct conversation,
+// which is fine at this tool's expected scale (design spec: personal,
+// single-user) and mirrors handleGetConversation's own reliance on the
+// same interface rather than adding a new bulk-fetch method to Store.
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.tasks.ListTasks(r.Context())
 	if err != nil {
@@ -416,8 +447,18 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 
 	out := make([]conversationSummary, 0, len(latest))
 	for convID, t := range latest {
+		var preview string
+		messages, err := s.messages.ListMessagesByConversation(r.Context(), convID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not list conversations")
+			return
+		}
+		if len(messages) > 0 {
+			preview = firstMessagePreview(messages[0].Content)
+		}
 		out = append(out, conversationSummary{
 			ConversationID: convID,
+			Preview:        preview,
 			WorkspaceID:    t.WorkspaceID,
 			Status:         string(t.Status),
 			UpdatedAt:      t.UpdatedAt,

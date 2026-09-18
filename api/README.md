@@ -136,12 +136,17 @@ not engineering taste):
   - `GET /api/v1/conversations` — auth-gated (LOOM-18), one summary row
     per distinct `conversation_id`, most-recently-updated first:
     `{conversations: [{conversation_id, workspace_id, status,
-    updated_at}, ...]}`. A conversation isn't a stored entity (no such
-    table in the design spec) — this groups `TaskLister.ListTasks` by
-    `conversation_id`, taking each conversation's most-recently-updated
+    updated_at, preview}, ...]}`. A conversation isn't a stored entity
+    (no such table in the design spec) — this groups `TaskLister.ListTasks`
+    by `conversation_id`, taking each conversation's most-recently-updated
     task as representative, since one conversation can span more than one
     task row (LOOM-13 continuation, or the router sending a later message
-    in the same conversation to a different workspace).
+    in the same conversation to a different workspace). `preview`
+    (LOOM-45) is the conversation's first-ever message (via
+    `MessageLister`, one lookup per distinct conversation), truncated to
+    200 runes with a trailing "…" — the opening line for a conversation
+    list UI row, deliberately the earliest message rather than the
+    latest (status/updated_at already cover "what's happening now").
   - `GET /api/v1/conversations/{id}` — auth-gated (LOOM-18), the full task
     history for one conversation plus its message transcript (LOOM-31):
     `{conversation_id, tasks: [{id, workspace_id, kind, agent_type,
