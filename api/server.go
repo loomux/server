@@ -39,10 +39,13 @@ type Dispatcher interface {
 
 // SessionStore is the session-related slice of registry.Store this
 // package needs — satisfied structurally by any registry.Store
-// (including *app.App.Store()).
+// (including *app.App.Store()). ListSessions backs LOOM-47's
+// session-listing/revoke-by-id endpoints; DeleteSession already served
+// self-revoke-only (/logout) and is reused unchanged for revoke-by-id.
 type SessionStore interface {
 	CreateSession(ctx context.Context, s *registry.Session) error
 	GetSessionByTokenHash(ctx context.Context, tokenHash string) (*registry.Session, error)
+	ListSessions(ctx context.Context) ([]*registry.Session, error)
 	TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error
 	DeleteSession(ctx context.Context, id string) error
 }
@@ -195,6 +198,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/logout", s.requireAuth(s.handleLogout))
+	mux.HandleFunc("GET /api/v1/sessions", s.requireAuth(s.handleListSessions))
+	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAuth(s.handleRevokeSession))
 	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
 	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
 	mux.HandleFunc("GET /api/v1/conversations", s.requireAuth(s.handleListConversations))
@@ -287,6 +292,70 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	sess := sessionFromContext(r.Context())
 	if err := s.sessions.DeleteSession(r.Context(), sess.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not revoke session")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type sessionSummary struct {
+	ID         string    `json:"id"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at"`
+	// Current marks the session backing this very request's Bearer
+	// token, so a "your devices" UI can label one row "this device"
+	// without ever seeing a token or token hash — this API never
+	// returns either (see Session.TokenHash's own doc comment on why).
+	Current bool `json:"current"`
+}
+
+type listSessionsResponse struct {
+	Sessions []sessionSummary `json:"sessions"`
+}
+
+// handleListSessions serves GET /api/v1/sessions (LOOM-47): every
+// active session — every device/client currently holding a valid Bearer
+// token — most-recently-used first (SessionStore.ListSessions's own
+// order), so a client can render a "log out other devices" view. Never
+// exposes TokenHash; there is no way to turn a listed session back into
+// a usable credential.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions, err := s.sessions.ListSessions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list sessions")
+		return
+	}
+	current := sessionFromContext(r.Context())
+
+	out := make([]sessionSummary, 0, len(sessions))
+	for _, sess := range sessions {
+		out = append(out, sessionSummary{
+			ID:         sess.ID,
+			CreatedAt:  sess.CreatedAt,
+			LastUsedAt: sess.LastUsedAt,
+			Current:    current != nil && sess.ID == current.ID,
+		})
+	}
+	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: out})
+}
+
+// handleRevokeSession serves DELETE /api/v1/sessions/{id} (LOOM-47):
+// revoke any session by id, immediately invalidating whatever Bearer
+// token it backs — the same underlying operation /logout already
+// performs for the presented token, generalized to any id a client
+// learned from GET /api/v1/sessions (e.g. "sign out that other
+// device"). Revoking the session backing the current request is
+// allowed and behaves exactly like /logout; there's no special case for
+// it. 404 if id doesn't name an existing session (SessionStore.
+// DeleteSession's own registry.ErrNotFound, e.g. it was already revoked
+// or never existed).
+func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.sessions.DeleteSession(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no such session")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not revoke session")
 		return
 	}

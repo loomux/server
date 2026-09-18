@@ -615,6 +615,27 @@ func (s *Store) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*r
 	return sess, nil
 }
 
+func (s *Store) ListSessions(ctx context.Context) ([]*registry.Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+sessionColumns+` FROM sessions ORDER BY last_used_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*registry.Session
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list sessions: %w", err)
+		}
+		out = append(out, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list sessions: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Store) TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_used_at = ? WHERE id = ?`, lastUsedAt, id)
 	if err != nil {

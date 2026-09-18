@@ -54,6 +54,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("Session", func(t *testing.T) { testSessionCRUD(t, newStore(t)) })
 	t.Run("SessionNotFound", func(t *testing.T) { testSessionNotFound(t, newStore(t)) })
 	t.Run("SessionTouchUpdatesLastUsedAt", func(t *testing.T) { testSessionTouchUpdatesLastUsedAt(t, newStore(t)) })
+	t.Run("SessionListOrderedByLastUsedDescending", func(t *testing.T) { testSessionListOrderedByLastUsedDescending(t, newStore(t)) })
+	t.Run("SessionListEmpty", func(t *testing.T) { testSessionListEmpty(t, newStore(t)) })
 }
 
 // createTestWorkspace is a fixture: task tests need a valid workspace to
@@ -851,5 +853,49 @@ func testSessionTouchUpdatesLastUsedAt(t *testing.T, s registry.Store) {
 
 	if err := s.TouchSession(ctx, "does-not-exist", newTime); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("TouchSession on unknown id: err = %v, want ErrNotFound", err)
+	}
+}
+
+// testSessionListOrderedByLastUsedDescending (LOOM-47) proves
+// ListSessions returns every session, most-recently-used first — the
+// order a "revoke a device" UI needs (most likely to still matter to
+// the caller listed first).
+func testSessionListOrderedByLastUsedDescending(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	oldest := &registry.Session{ID: "sess-oldest", TokenHash: "hash-oldest", LastUsedAt: now.Add(-2 * time.Hour)}
+	middle := &registry.Session{ID: "sess-middle", TokenHash: "hash-middle", LastUsedAt: now.Add(-1 * time.Hour)}
+	newest := &registry.Session{ID: "sess-newest", TokenHash: "hash-newest", LastUsedAt: now}
+	for _, sess := range []*registry.Session{oldest, middle, newest} {
+		if err := s.CreateSession(ctx, sess); err != nil {
+			t.Fatalf("CreateSession(%s): %v", sess.ID, err)
+		}
+	}
+
+	got, err := s.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ListSessions returned %d sessions, want 3", len(got))
+	}
+	gotIDs := []string{got[0].ID, got[1].ID, got[2].ID}
+	wantIDs := []string{"sess-newest", "sess-middle", "sess-oldest"}
+	if !slices.Equal(gotIDs, wantIDs) {
+		t.Fatalf("ListSessions order = %v, want %v (most-recently-used first)", gotIDs, wantIDs)
+	}
+}
+
+// testSessionListEmpty proves ListSessions on a fresh store returns an
+// empty result, not an error — mirroring every other List* method's own
+// "nothing yet" stance elsewhere in this suite.
+func testSessionListEmpty(t *testing.T, s registry.Store) {
+	got, err := s.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListSessions on empty store = %+v, want empty", got)
 	}
 }
