@@ -27,9 +27,18 @@ type App struct {
 }
 
 // Dispatch routes one chat message through the full pipeline. See
-// router.Router.Dispatch.
-func (a *App) Dispatch(ctx context.Context, conversationID, message string) (string, error) {
-	return a.router.Dispatch(ctx, conversationID, message)
+// router.Router.Dispatch. workspaceHint (LOOM-46) is an optional,
+// advisory workspace ID — empty means no hint — surfaced as a plain
+// string rather than a router.DispatchOption specifically so callers
+// like api.Server's Dispatcher interface don't need to import the
+// router package just to supply it (mirroring api.Dispatcher's own
+// narrow-seam rationale).
+func (a *App) Dispatch(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+	var opts []router.DispatchOption
+	if workspaceHint != "" {
+		opts = append(opts, router.WithWorkspaceHint(workspaceHint))
+	}
+	return a.router.Dispatch(ctx, conversationID, message, opts...)
 }
 
 // Store returns the underlying registry.Store — e.g. for api.Server's

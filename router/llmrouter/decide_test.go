@@ -2,6 +2,8 @@ package llmrouter
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -50,6 +52,46 @@ func TestDecide_UseWorkspace(t *testing.T) {
 	want := router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: "ws-1", AgentType: "claude-code"}
 	if !reflect.DeepEqual(dec, want) {
 		t.Errorf("Decide = %+v, want %+v", dec, want)
+	}
+}
+
+// TestDecide_WorkspaceHint_AppearsInPromptAdvisoryOnly proves
+// router.WithWorkspaceHint (LOOM-46) reaches the actual LLM call as
+// advisory text in the user prompt, but never overrides the model's own
+// use_workspace decision — the model here picks a workspace other than
+// the hinted one, and Decide returns that unmodified.
+func TestDecide_WorkspaceHint_AppearsInPromptAdvisoryOnly(t *testing.T) {
+	var gotBody []byte
+	handler := toolCallHandler(t, decideToolName, map[string]any{
+		"action":       "use_workspace",
+		"workspace_id": "ws-other",
+		"agent_type":   "claude-code",
+	})
+	srv, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		handler(w, r)
+	})
+
+	m, err := New(Config{Primary: tierFor(srv, "test-model")}, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	workspaces := []router.WorkspaceSnapshot{{ID: "ws-hinted", Name: "Hinted"}, {ID: "ws-other", Name: "Other"}}
+	dec, err := m.Decide(context.Background(), "do the thing", workspaces, router.WithWorkspaceHint("ws-hinted"))
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	want := router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: "ws-other", AgentType: "claude-code"}
+	if !reflect.DeepEqual(dec, want) {
+		t.Errorf("Decide = %+v, want %+v (the hint must be advisory, not binding)", dec, want)
+	}
+	if !strings.Contains(string(gotBody), "ws-hinted") {
+		t.Errorf("request body did not mention the hinted workspace_id %q: %s", "ws-hinted", gotBody)
 	}
 }
 

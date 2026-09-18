@@ -34,7 +34,12 @@ const APIVersion = "v1"
 // router.RoutingModel / orchestrator.CompletionDetector's minimal-seam
 // pattern elsewhere in this codebase.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, conversationID, message string) (string, error)
+	// Dispatch routes one chat message. workspaceHint (LOOM-46) is an
+	// optional, advisory workspace ID — empty means none was given — a
+	// plain string rather than a router.DispatchOption so this
+	// interface doesn't need to import the router package (this
+	// package's own narrow-seam rationale, see the doc comment above).
+	Dispatch(ctx context.Context, conversationID, message, workspaceHint string) (string, error)
 }
 
 // SessionStore is the session-related slice of registry.Store this
@@ -296,6 +301,11 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 type dispatchRequest struct {
 	ConversationID string `json:"conversation_id"`
 	Message        string `json:"message"`
+	// WorkspaceHint (LOOM-46) is optional: a client-supplied workspace
+	// ID the caller believes this message likely belongs to (e.g. a
+	// chat UI already focused on that workspace's conversation). It's
+	// advisory only — see Dispatcher.Dispatch and router.WithWorkspaceHint.
+	WorkspaceHint string `json:"workspace_hint,omitempty"`
 }
 
 type dispatchResponse struct {
@@ -313,7 +323,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reply, err := s.dispatcher.Dispatch(r.Context(), req.ConversationID, req.Message)
+	reply, err := s.dispatcher.Dispatch(r.Context(), req.ConversationID, req.Message, req.WorkspaceHint)
 	if err != nil {
 		// Surfaced verbatim, not genericized: design spec's error-handling
 		// section requires routing failures to reach the user as an

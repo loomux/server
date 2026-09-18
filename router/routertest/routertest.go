@@ -18,9 +18,20 @@ import (
 type StubRoutingModel struct {
 	DecideFunc func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error)
 	RelayFunc  func(ctx context.Context, capturedOutput string) (router.RelayResult, error)
+
+	// LastDecideOptions captures the resolved DispatchOptions from the
+	// most recent Decide call (LOOM-46's WithWorkspaceHint, etc.), so
+	// tests can assert an option reached the routing model without
+	// DecideFunc itself needing to know about the variadic tail.
+	LastDecideOptions router.DispatchOptions
 }
 
-func (m *StubRoutingModel) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+func (m *StubRoutingModel) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot, opts ...router.DispatchOption) (router.Decision, error) {
+	var o router.DispatchOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	m.LastDecideOptions = o
 	return m.DecideFunc(ctx, message, workspaces)
 }
 

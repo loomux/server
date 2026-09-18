@@ -22,11 +22,11 @@ import (
 const testPassword = "correct-horse-battery-staple"
 
 type fakeDispatcher struct {
-	DispatchFunc func(ctx context.Context, conversationID, message string) (string, error)
+	DispatchFunc func(ctx context.Context, conversationID, message, workspaceHint string) (string, error)
 }
 
-func (f *fakeDispatcher) Dispatch(ctx context.Context, conversationID, message string) (string, error) {
-	return f.DispatchFunc(ctx, conversationID, message)
+func (f *fakeDispatcher) Dispatch(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+	return f.DispatchFunc(ctx, conversationID, message, workspaceHint)
 }
 
 func newTestStore(t *testing.T) registry.Store {
@@ -201,9 +201,9 @@ func TestDispatch_InvalidToken_ReturnsUnauthorized(t *testing.T) {
 
 func TestDispatch_ValidToken_CallsDispatcherAndReturnsReply(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
-		if conversationID != "c1" || message != "hello" {
-			t.Fatalf("Dispatch called with (%q, %q), want (c1, hello)", conversationID, message)
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+		if conversationID != "c1" || message != "hello" || workspaceHint != "" {
+			t.Fatalf("Dispatch called with (%q, %q, %q), want (c1, hello, \"\")", conversationID, message, workspaceHint)
 		}
 		return "the reply", nil
 	}
@@ -230,6 +230,33 @@ func TestDispatch_ValidToken_CallsDispatcherAndReturnsReply(t *testing.T) {
 	}
 }
 
+// TestDispatch_WorkspaceHint_ReachesDispatcher proves the optional
+// workspace_hint request field (LOOM-46) flows through unmodified to
+// Dispatcher.Dispatch, and that omitting it entirely (as every request
+// before this ticket did) still resolves to an empty hint rather than
+// an error.
+func TestDispatch_WorkspaceHint_ReachesDispatcher(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t)
+	var gotHint string
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+		gotHint = workspaceHint
+		return "ok", nil
+	}
+	token, _ := login(t, srv.URL, testPassword)
+
+	body, _ := json.Marshal(map[string]string{
+		"conversation_id": "c1", "message": "hello", "workspace_hint": "ws-hinted",
+	})
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if gotHint != "ws-hinted" {
+		t.Fatalf("Dispatch received workspaceHint = %q, want %q", gotHint, "ws-hinted")
+	}
+}
+
 func TestDispatch_MissingFields_ReturnsBadRequest(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	token, _ := login(t, srv.URL, testPassword)
@@ -244,7 +271,7 @@ func TestDispatch_MissingFields_ReturnsBadRequest(t *testing.T) {
 
 func TestLogout_RevokesToken(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 	token, _ := login(t, srv.URL, testPassword)
@@ -265,7 +292,7 @@ func TestLogout_RevokesToken(t *testing.T) {
 
 func TestSession_ExpiresAfterTTL(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 	token, _ := login(t, srv.URL, testPassword)
@@ -282,7 +309,7 @@ func TestSession_ExpiresAfterTTL(t *testing.T) {
 
 func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(150*time.Millisecond))
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 	token, _ := login(t, srv.URL, testPassword)
