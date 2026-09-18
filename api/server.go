@@ -319,6 +319,16 @@ type listSessionsResponse struct {
 // order), so a client can render a "log out other devices" view. Never
 // exposes TokenHash; there is no way to turn a listed session back into
 // a usable credential.
+//
+// "Active" is enforced here explicitly: expiration is a sliding TTL
+// (sessionTTL) that requireAuth otherwise only checks opportunistically
+// — against whichever single token a request happens to present, with
+// stale rows left in the store untouched until that token is next used
+// (see requireAuth's own doc comment). Left unfiltered, a session past
+// its TTL would still show up here as if it were live, even though the
+// same token would already be rejected by requireAuth. This applies the
+// identical time.Since(LastUsedAt) > sessionTTL check so the listing's
+// definition of "active" actually matches requireAuth's.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := s.sessions.ListSessions(r.Context())
 	if err != nil {
@@ -326,9 +336,13 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := sessionFromContext(r.Context())
+	now := time.Now()
 
 	out := make([]sessionSummary, 0, len(sessions))
 	for _, sess := range sessions {
+		if now.Sub(sess.LastUsedAt) > s.sessionTTL {
+			continue
+		}
 		out = append(out, sessionSummary{
 			ID:         sess.ID,
 			CreatedAt:  sess.CreatedAt,

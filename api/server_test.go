@@ -335,6 +335,46 @@ func TestListSessions_MultipleLogins_ListsAllMarkingCurrent(t *testing.T) {
 	_ = tokenA // both tokens exist only to prove two distinct sessions are listed
 }
 
+// TestListSessions_ExpiredSession_ExcludedFromListing proves the
+// listing's "every active session" claim is actually true: a session
+// past sessionTTL is excluded even though nothing has presented its
+// token since expiry to trigger requireAuth's own opportunistic
+// cleanup (see that method's doc comment) — the row would otherwise
+// still sit in the store, unexpired-looking, until someone tried to use
+// it.
+func TestListSessions_ExpiredSession_ExcludedFromListing(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+		return "ok", nil
+	}
+
+	staleToken, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login (stale) status = %d", status)
+	}
+
+	time.Sleep(100 * time.Millisecond) // past sessionTTL, staleToken's session is now expired
+
+	freshToken, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login (fresh) status = %d", status)
+	}
+
+	resp, sessions := listSessions(t, srv.URL, freshToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1 (the expired one must be excluded): %+v", len(sessions), sessions)
+	}
+	if !sessions[0].Current {
+		t.Fatalf("sessions[0] = %+v, want the fresh (current) session, not the expired one", sessions[0])
+	}
+
+	_ = staleToken // exists only to have created the now-expired session
+}
+
 func TestRevokeSession_NoToken_ReturnsUnauthorized(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	resp := authedRequest(t, http.MethodDelete, srv.URL+"/api/v1/sessions/does-not-exist", "", nil)
