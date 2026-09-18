@@ -5,12 +5,17 @@ orchestrator, completion detection, credential vault, and router
 dispatch pipeline (design spec §2-§7) into a runnable `App` with a
 single `Dispatch` operation.
 
-The versioned HTTP/WS client API and login-gated auth (design spec §9,
-§10 axis 1) are explicitly out of scope here (LOOM-9, not yet built) —
-this package only proves the whole stack constructs and is
-dispatchable. A later HTTP/WS/auth layer is expected to import this
-package and wrap an `*App` rather than re-wire these pieces itself;
-`cmd/loomuxd` is the current thin CLI entrypoint built on it.
+The versioned HTTP client API and login-gated auth (design spec §9,
+§10 axis 1) are out of scope here by design — this package only proves
+the whole stack constructs and is dispatchable, exposing `Dispatch` and
+`Store()` as the narrow surface a client-facing layer needs. The `api`
+package (LOOM-9, shipped 2026-08-30) is that layer: it imports this
+package and wraps an `*App` rather than re-wiring these pieces itself,
+via the same structural, narrow-interface seam (`api.Dispatcher`) this
+package's own `RoutingModel`/`CompletionDetector` seams use elsewhere.
+`cmd/loomuxd` is the thin CLI entrypoint that wires both `app.Build` and
+`api.NewServer` together (plus a `-message` flag for dispatching one
+message directly, bypassing HTTP/auth entirely, for local debugging).
 
 ## Layout
 
