@@ -121,7 +121,7 @@ func TestBuild_EndToEnd_Continuation_RealTmux(t *testing.T) {
 	defer a.Close()
 
 	// Turn 1: launches a real tmux session; Relay says Done: false.
-	reply, err := a.Dispatch(ctx, "conv-1", "start the thing")
+	reply, err := a.Dispatch(ctx, "conv-1", "start the thing", "")
 	if err != nil {
 		t.Fatalf("Dispatch (turn 1): %v", err)
 	}
@@ -166,7 +166,7 @@ func TestBuild_EndToEnd_Continuation_RealTmux(t *testing.T) {
 	// Turn 2: same conversation. Must reuse the same real tmux session
 	// (SendMessage, not a fresh Launch) and, this time, Relay says
 	// Done: true, so the session is torn down.
-	reply, err = a.Dispatch(ctx, "conv-1", "keep going")
+	reply, err = a.Dispatch(ctx, "conv-1", "keep going", "")
 	if err != nil {
 		t.Fatalf("Dispatch (turn 2): %v", err)
 	}

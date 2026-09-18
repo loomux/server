@@ -123,8 +123,15 @@ not engineering taste):
   and the four handlers:
   - `POST /api/v1/login` — `{password}` → `{token}`
   - `POST /api/v1/logout` — auth-gated, revokes the presented token
-  - `POST /api/v1/dispatch` — auth-gated, `{conversation_id, message}` →
-    `{reply}`, wraps `Dispatcher.Dispatch`
+  - `POST /api/v1/dispatch` — auth-gated, `{conversation_id, message,
+    workspace_hint?}` → `{reply}`, wraps `Dispatcher.Dispatch`.
+    `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
+    ID (e.g. a chat UI already focused on that workspace's conversation)
+    that's folded into the router model's prompt as advisory context
+    only; the router model (design spec §6) keeps final authority over
+    which workspace a message actually goes to, exactly as it already
+    does for the workspace list itself. Omitting it (every request
+    before this ticket) is unchanged
   - `GET /api/v1/workspaces` — auth-gated (LOOM-19), lists registered
     workspaces sorted by name: `{workspaces: [{id, name, target_id,
     status, tags, description, capabilities, rolling_summary, is_dynamic,

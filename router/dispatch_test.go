@@ -100,6 +100,43 @@ func TestDispatch_AnswerDirectly(t *testing.T) {
 	}
 }
 
+// TestDispatch_WorkspaceHint_ReachesRoutingModel proves Dispatch's
+// variadic DispatchOption tail (LOOM-46) is threaded through to the
+// routing model's Decide call unmodified — Router itself neither acts
+// on nor validates the hint, that's the model's job.
+func TestDispatch_WorkspaceHint_ReachesRoutingModel(t *testing.T) {
+	_, _, r, model := setup(t)
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "the answer"}, nil
+	}
+
+	if _, err := r.Dispatch(context.Background(), "conv-1", "what's up", router.WithWorkspaceHint("ws-hinted")); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if model.LastDecideOptions.WorkspaceHint != "ws-hinted" {
+		t.Fatalf("Decide's options.WorkspaceHint = %q, want %q", model.LastDecideOptions.WorkspaceHint, "ws-hinted")
+	}
+}
+
+// TestDispatch_NoWorkspaceHint_OptionsAreZeroValue proves the ordinary,
+// no-hint call path (every pre-LOOM-46 call site, including every other
+// test in this file) still resolves to a zero-value DispatchOptions —
+// the variadic tail being entirely optional wasn't just a compile-time
+// nicety.
+func TestDispatch_NoWorkspaceHint_OptionsAreZeroValue(t *testing.T) {
+	_, _, r, model := setup(t)
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "the answer"}, nil
+	}
+
+	if _, err := r.Dispatch(context.Background(), "conv-1", "what's up"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if model.LastDecideOptions != (router.DispatchOptions{}) {
+		t.Fatalf("Decide's options = %+v, want zero value", model.LastDecideOptions)
+	}
+}
+
 func TestDispatch_UseWorkspace(t *testing.T) {
 	store, exec, r, model := setup(t)
 	ws := createFixtureWorkspace(t, store)
