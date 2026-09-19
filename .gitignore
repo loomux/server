@@ -10,3 +10,6 @@ coverage.out
 
 # Local Claude settings
 .claude/settings.local.json
+
+# Locally materialised web bundle (see docs/deploy/container.md)
+/.web-dist/

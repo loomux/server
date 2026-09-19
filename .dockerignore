@@ -1,0 +1,24 @@
+# Keep the build context small and deterministic. Note the deliberate
+# un-ignores below: the web bundle is supplied *through the build context*
+# (see docs/deploy/container.md), so whatever directory WEB_DIST points at
+# must survive this file.
+
+.git
+.github
+.gitignore
+.claude
+*.db
+*.db-shm
+*.db-wal
+Dockerfile
+.dockerignore
+
+# Docs and licence text are not needed to build the binary.
+docs
+README.md
+CLAUDE.md
+LICENSE
+
+# ...but the placeholder web bundle and any CI-materialised real bundle are.
+!deploy/web-placeholder
+!.web-dist
