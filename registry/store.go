@@ -59,13 +59,19 @@ type Store interface {
 	ListCredentials(ctx context.Context) ([]*Credential, error)
 	DeleteCredential(ctx context.Context, id string) error
 
-	// CreateSession, GetSessionByTokenHash, TouchSession, and
-	// DeleteSession back client auth (design spec §9). TouchSession
+	// CreateSession, GetSessionByTokenHash, ListSessions, TouchSession,
+	// and DeleteSession back client auth (design spec §9). TouchSession
 	// updates LastUsedAt (sliding expiration); a caller with an unknown
 	// id gets ErrNotFound, matching every other Update-shaped method
-	// here.
+	// here. ListSessions (LOOM-47) backs a "which devices are logged in"
+	// view and revoke-by-id, alongside the existing self-revoke-only
+	// DeleteSession (already used by /logout for the presented token).
 	CreateSession(ctx context.Context, s *Session) error
 	GetSessionByTokenHash(ctx context.Context, tokenHash string) (*Session, error)
+	// ListSessions returns every session, ordered most-recently-used
+	// first — the order a "revoke a device" UI would want a session
+	// list rendered in.
+	ListSessions(ctx context.Context) ([]*Session, error)
 	TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error
 	DeleteSession(ctx context.Context, id string) error
 

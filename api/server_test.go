@@ -290,6 +290,218 @@ func TestLogout_RevokesToken(t *testing.T) {
 	}
 }
 
+type sessionSummary struct {
+	ID         string `json:"id"`
+	CreatedAt  string `json:"created_at"`
+	LastUsedAt string `json:"last_used_at"`
+	Current    bool   `json:"current"`
+}
+
+func listSessions(t *testing.T, baseURL, token string) (*http.Response, []sessionSummary) {
+	t.Helper()
+	resp := authedRequest(t, http.MethodGet, baseURL+"/api/v1/sessions", token, nil)
+	if resp.StatusCode != http.StatusOK {
+		return resp, nil
+	}
+	var out struct {
+		Sessions []sessionSummary `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp, out.Sessions
+}
+
+func TestListSessions_NoToken_ReturnsUnauthorized(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/sessions", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// TestListSessions_MultipleLogins_ListsAllMarkingCurrent proves
+// GET /api/v1/sessions (LOOM-47) returns every active session — not
+// just the caller's own — most-recently-used first, with exactly the
+// session backing the request's own token marked "current".
+func TestListSessions_MultipleLogins_ListsAllMarkingCurrent(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t)
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+		return "ok", nil
+	}
+
+	tokenA, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login A status = %d", status)
+	}
+	time.Sleep(10 * time.Millisecond)
+	tokenB, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login B status = %d", status)
+	}
+
+	resp, sessions := listSessions(t, srv.URL, tokenB)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2", len(sessions))
+	}
+	// Most-recently-used first: the request made with tokenB just now
+	// (listing itself touches tokenB's LastUsedAt via requireAuth) sorts
+	// ahead of tokenA, which has been idle since login.
+	if !sessions[0].Current {
+		t.Fatalf("sessions[0] = %+v, want the current (tokenB) session listed first and marked current", sessions[0])
+	}
+	if sessions[1].Current {
+		t.Fatalf("sessions[1] = %+v, want the other (tokenA) session not marked current", sessions[1])
+	}
+
+	_ = tokenA // both tokens exist only to prove two distinct sessions are listed
+}
+
+// TestListSessions_ExpiredSession_ExcludedFromListing proves the
+// listing's "every active session" claim is actually true: a session
+// past sessionTTL is excluded even though nothing has presented its
+// token since expiry to trigger requireAuth's own opportunistic
+// cleanup (see that method's doc comment) — the row would otherwise
+// still sit in the store, unexpired-looking, until someone tried to use
+// it.
+func TestListSessions_ExpiredSession_ExcludedFromListing(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+		return "ok", nil
+	}
+
+	staleToken, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login (stale) status = %d", status)
+	}
+
+	time.Sleep(100 * time.Millisecond) // past sessionTTL, staleToken's session is now expired
+
+	freshToken, status := login(t, srv.URL, testPassword)
+	if status != http.StatusOK {
+		t.Fatalf("login (fresh) status = %d", status)
+	}
+
+	resp, sessions := listSessions(t, srv.URL, freshToken)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1 (the expired one must be excluded): %+v", len(sessions), sessions)
+	}
+	if !sessions[0].Current {
+		t.Fatalf("sessions[0] = %+v, want the fresh (current) session, not the expired one", sessions[0])
+	}
+
+	_ = staleToken // exists only to have created the now-expired session
+}
+
+func TestRevokeSession_NoToken_ReturnsUnauthorized(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	resp := authedRequest(t, http.MethodDelete, srv.URL+"/api/v1/sessions/does-not-exist", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestRevokeSession_UnknownID_ReturnsNotFound(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+
+	resp := authedRequest(t, http.MethodDelete, srv.URL+"/api/v1/sessions/does-not-exist", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+// TestRevokeSession_ByID_InvalidatesThatTokenButNotOthers proves
+// DELETE /api/v1/sessions/{id} (LOOM-47) revokes exactly the named
+// session — generalizing /logout (which only ever revoked the
+// presented token) to revoking any session the caller learned about via
+// GET /api/v1/sessions, e.g. signing another device out remotely.
+func TestRevokeSession_ByID_InvalidatesThatTokenButNotOthers(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t)
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+		return "ok", nil
+	}
+
+	tokenA, _ := login(t, srv.URL, testPassword)
+	tokenB, _ := login(t, srv.URL, testPassword)
+
+	_, sessions := listSessions(t, srv.URL, tokenA)
+	var targetID string
+	for _, s := range sessions {
+		if !s.Current {
+			targetID = s.ID
+		}
+	}
+	if targetID == "" {
+		t.Fatalf("could not find tokenB's session id among %+v", sessions)
+	}
+
+	revokeResp := authedRequest(t, http.MethodDelete, srv.URL+"/api/v1/sessions/"+targetID, tokenA, nil)
+	defer revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke status = %d, want %d", revokeResp.StatusCode, http.StatusNoContent)
+	}
+
+	// tokenB (revoked by id) can no longer authenticate...
+	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
+	respB := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", tokenB, body)
+	defer respB.Body.Close()
+	if respB.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("dispatch with revoked tokenB status = %d, want %d", respB.StatusCode, http.StatusUnauthorized)
+	}
+
+	// ...but tokenA (the caller, untouched) still can.
+	respA := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", tokenA, body)
+	defer respA.Body.Close()
+	if respA.StatusCode != http.StatusOK {
+		t.Fatalf("dispatch with tokenA status = %d, want %d", respA.StatusCode, http.StatusOK)
+	}
+
+	// Revoking the same id again is a 404, not a repeatable success.
+	resp2 := authedRequest(t, http.MethodDelete, srv.URL+"/api/v1/sessions/"+targetID, tokenA, nil)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("re-revoke status = %d, want %d", resp2.StatusCode, http.StatusNotFound)
+	}
+}
+
+// TestRevokeSession_CurrentSession_BehavesLikeLogout proves revoking
+// the session backing the request's own token is allowed and has the
+// same effect as /logout — no special-cased self-protection.
+func TestRevokeSession_CurrentSession_BehavesLikeLogout(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+
+	_, sessions := listSessions(t, srv.URL, token)
+	if len(sessions) != 1 || !sessions[0].Current {
+		t.Fatalf("sessions = %+v, want exactly one, marked current", sessions)
+	}
+
+	resp := authedRequest(t, http.MethodDelete, srv.URL+"/api/v1/sessions/"+sessions[0].ID, token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke-self status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
+	after := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	defer after.Body.Close()
+	if after.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("dispatch after self-revoke status = %d, want %d", after.StatusCode, http.StatusUnauthorized)
+	}
+}
+
 func TestSession_ExpiresAfterTTL(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
 	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {

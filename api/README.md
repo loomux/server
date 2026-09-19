@@ -120,9 +120,30 @@ not engineering taste):
   `orchestrator.CompletionDetector`'s minimal-interface pattern), the
   `requireAuth` middleware, `APIVersion`, `WithStaticDir` (opt-in static
   SPA serving with `index.html` fallback, LOOM-33 — see Design above),
-  and the four handlers:
+  and the handlers:
   - `POST /api/v1/login` — `{password}` → `{token}`
   - `POST /api/v1/logout` — auth-gated, revokes the presented token
+  - `GET /api/v1/sessions` — auth-gated (LOOM-47), every active session
+    (every device/client currently holding a valid, unexpired Bearer
+    token), most-recently-used first: `{sessions: [{id, created_at,
+    last_used_at, current}, ...]}`. `current` marks the session backing
+    this request's own token, so a "your devices" UI can label one row
+    without this API ever exposing a token or its hash. Wraps
+    `SessionStore.ListSessions` and then applies the same
+    `time.Since(last_used_at) > sessionTTL` expiry check `requireAuth`
+    uses — `ListSessions` itself has no expiration concept (design spec:
+    that's a decision for the layer that knows the configured TTL, same
+    as `registry.Session.LastUsedAt`'s own doc comment says), and
+    without this filter an expired row would still list as active until
+    someone happened to present its token and trip `requireAuth`'s own
+    opportunistic cleanup.
+  - `DELETE /api/v1/sessions/{id}` — auth-gated (LOOM-47), revokes any
+    session by id — the same underlying operation as `/logout`,
+    generalized to any id from `GET /api/v1/sessions` (e.g. signing
+    another device out remotely); revoking the current request's own
+    session is allowed and behaves exactly like `/logout`. `204` on
+    success, `404` if `id` doesn't name an existing session. Wraps
+    `SessionStore.DeleteSession`.
   - `POST /api/v1/dispatch` — auth-gated, `{conversation_id, message,
     workspace_hint?}` → `{reply}`, wraps `Dispatcher.Dispatch`.
     `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
@@ -221,8 +242,16 @@ refresh, and the login throttle — repeated failures triggering `429`
 with `Retry-After`, a success resetting it, that it's shared across
 different claimed `X-Forwarded-For` values (proving "global" is real,
 not just documented), and that enough waiting always lets the correct
-password through no matter how many failures preceded it) against a fake
-`Dispatcher` and a real (temp-file) sqlite store for sessions, plus
+password through no matter how many failures preceded it), plus
+`GET /api/v1/sessions` / `DELETE /api/v1/sessions/{id}` (LOOM-47: listing
+across multiple logins with exactly the caller's own session marked
+`current`, a session past `sessionTTL` excluded from the listing even
+though nothing has presented its token since expiry to trigger
+`requireAuth`'s own opportunistic cleanup, revoke-by-id invalidating
+that token without touching others, unknown-id `404`, re-revoking the
+same id `404` rather than a repeatable success, and revoking the
+current session behaving like `/logout`)
+against a fake `Dispatcher` and a real (temp-file) sqlite store for sessions, plus
 `/api/v1/workspaces` (auth required, empty-list, populated-and-sorted,
  and metadata round-trip cases, asserting the full field set including
  tags/description/capabilities/rolling_summary/is_dynamic/last_used_at
