@@ -1,0 +1,175 @@
+# Builds ghcr.io/loomux/server and publishes it on merge to main (LOOM-51).
+#
+# Two things here are less boilerplate than they look:
+#
+#   1. The web client's static bundle lives in a *separate, private* repo
+#      (loomux/web). This workflow's GITHUB_TOKEN is scoped to loomux/server
+#      and cannot read it, so a dedicated token is required — see the
+#      "guard" step, which fails loudly rather than letting the image ship
+#      with the placeholder UI.
+#   2. The image is verified by *running it* before it is pushed. loomuxd
+#      execs ssh/tmux/sh at runtime, so a green `go build` says nothing
+#      about whether the image can actually dispatch. See
+#      docs/deploy/container.md.
+name: image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      web_ref:
+        description: "loomux/web ref to build the UI from (default: deploy/web-ref)"
+        required: false
+        type: string
+
+env:
+  IMAGE: ghcr.io/loomux/server
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out loomux/server
+        uses: actions/checkout@v4
+
+      - name: Guard — cross-repo token for loomux/web
+        env:
+          WEB_REPO_TOKEN: ${{ secrets.WEB_REPO_TOKEN }}
+        run: |
+          if [ -z "${WEB_REPO_TOKEN}" ]; then
+            echo "::error::WEB_REPO_TOKEN is not set. It must be a token with read access" \
+                 "to the private loomux/web repo; this workflow's GITHUB_TOKEN is scoped to" \
+                 "loomux/server only. Failing rather than shipping an image whose UI is the" \
+                 "placeholder page (see docs/deploy/container.md)."
+            exit 1
+          fi
+
+      - name: Resolve the loomux/web ref
+        id: webref
+        env:
+          OVERRIDE: ${{ inputs.web_ref }}
+        run: |
+          ref="${OVERRIDE:-$(tr -d '[:space:]' < deploy/web-ref)}"
+          if [ -z "${ref}" ]; then
+            echo "::error::No loomux/web ref: deploy/web-ref is empty and no override was given."
+            exit 1
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "Building the UI from loomux/web@${ref}"
+
+      - name: Check out loomux/web
+        uses: actions/checkout@v4
+        with:
+          repository: loomux/web
+          ref: ${{ steps.webref.outputs.ref }}
+          token: ${{ secrets.WEB_REPO_TOKEN }}
+          path: web-src
+          persist-credentials: false
+
+      # Node 22 matches what loomux/web's own CI builds and tests against.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-src/package-lock.json
+
+      - name: Build the web bundle
+        working-directory: web-src
+        run: |
+          npm ci
+          npm run build
+
+      - name: Guard — the bundle actually exists
+        run: |
+          if [ ! -f web-src/dist/index.html ]; then
+            echo "::error::loomux/web built without producing dist/index.html. Refusing to" \
+                 "continue: the Dockerfile would silently fall back to the placeholder UI."
+            exit 1
+          fi
+          mv web-src/dist .web-dist
+          echo "Bundle:"; ls -la .web-dist
+
+      - name: Compute tags
+        id: meta
+        run: |
+          short="$(git rev-parse --short HEAD)"
+          echo "sha=${short}" >> "$GITHUB_OUTPUT"
+          echo "version=${short} (web ${{ steps.webref.outputs.ref }})" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Built and loaded locally first, never built straight to the registry:
+      # the verification step below is a publish gate, and a pushed-then-failed
+      # image is already visible to anything watching the tag.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.sha }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            WEB_DIST=.web-dist
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The check that a `go build` cannot make: loomuxd shells out to these
+      # binaries at runtime, so their absence is invisible until a dispatch
+      # fails in production. `nc` must be the OpenBSD one — busybox's has no
+      # -X, and -X 5 is the SOCKS5 ProxyCommand used to reach targets through
+      # a userspace-mode Tailscale sidecar (LOOM-52).
+      #
+      # The last two assertions enforce the promise in docs/deploy/container.md
+      # that CI never silently ships the UI-less placeholder: one greps for the
+      # placeholder's own wording (coupled to deploy/web-placeholder/index.html),
+      # the other requires the /assets directory that a real Vite build emits.
+      - name: Verify the image can actually run
+        run: |
+          docker run --rm --entrypoint /bin/sh "${IMAGE}:${{ steps.meta.outputs.sha }}" -c '
+            set -e
+            ssh -V
+            tmux -V
+            nc -h 2>&1 | grep -q -- "-X proto" || { echo "MISSING: OpenBSD nc (no -X)"; exit 1; }
+            missing=""
+            for b in sh ssh tmux nc socat; do
+              command -v "$b" >/dev/null || missing="$missing $b"
+            done
+            [ -z "$missing" ] || { echo "MISSING:$missing"; exit 1; }
+            loomuxd -version
+            test -f /srv/loomux/web/index.html || { echo "MISSING: web bundle"; exit 1; }
+            if grep -q "built without a web client bundle" /srv/loomux/web/index.html; then
+              echo "FAIL: the placeholder page shipped as the UI (WEB_DIST did not take effect)"
+              exit 1
+            fi
+            test -d /srv/loomux/web/assets || { echo "FAIL: no /assets in the bundle - not a real Vite build"; exit 1; }
+            echo "OK: runtime dependencies and web bundle present"
+          '
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both tags point at the same verified image. theWyseKube pins the SHA
+      # tag; :main exists for humans and for "what is current".
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: |
+          docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:main"
+          docker push "${IMAGE}:${{ steps.meta.outputs.sha }}"
+          docker push "${IMAGE}:main"
+          {
+            echo "### Pushed \`${IMAGE}:${{ steps.meta.outputs.sha }}\`"
+            echo ""
+            echo "UI built from \`loomux/web@${{ steps.webref.outputs.ref }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
