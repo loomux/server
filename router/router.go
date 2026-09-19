@@ -64,14 +64,16 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 // workspace, then finds the task already open for that workspace +
 // conversation or launches a fresh one (see dispatchToAgent), waits for
 // completion, relays the captured output, and applies the result.
-// Returns the chat-appropriate reply.
-func (r *Router) Dispatch(ctx context.Context, conversationID, message string) (string, error) {
+// Returns the chat-appropriate reply. opts is passed through to the
+// routing model's Decide call unmodified (e.g. WithWorkspaceHint,
+// LOOM-46) — Router itself has no opinion on what to do with them.
+func (r *Router) Dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
 	workspaces, err := r.store.ListWorkspaces(ctx)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
-	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces))
+	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces), opts...)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: routing failed: %w", err)
 	}

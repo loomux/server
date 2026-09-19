@@ -131,8 +131,11 @@ func enumStringProperty(description string, values []string) map[string]any {
 
 // decideUserPrompt renders the message and compact workspace registry
 // (design spec §6: tags/description/capabilities, not full history) as the
-// user turn.
-func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot) string {
+// user turn. workspaceHint (LOOM-46), when non-empty, is appended as
+// advisory context — the client's suggested workspace_id, which the
+// model may follow or disregard; it's never substituted for the model's
+// own use_workspace decision.
+func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, workspaceHint string) string {
 	var b strings.Builder
 	b.WriteString("Message:\n")
 	b.WriteString(message)
@@ -143,6 +146,10 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot) str
 	for _, ws := range workspaces {
 		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  description: %s\n  tags: %s\n  capabilities: %s\n",
 			ws.ID, ws.Name, ws.Description, strings.Join(ws.Tags, ", "), strings.Join(ws.Capabilities, ", "))
+	}
+	if workspaceHint != "" {
+		fmt.Fprintf(&b, "\nClient hint: the caller suggests this message likely belongs to workspace_id %q. "+
+			"Treat this as advisory only — use your own judgement and the message content to decide.\n", workspaceHint)
 	}
 	return b.String()
 }

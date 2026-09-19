@@ -35,9 +35,17 @@ type decideArgumentsWorkspace struct {
 // Decide implements router.RoutingModel. It tries the primary tier first,
 // escalating to the configured escalation tier (if any) when the primary's
 // output can't be used (transport/rate-limit failure, or an unparseable/
-// invalid tool call) or the primary is unavailable.
-func (m *Model) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
-	dec, err := m.decideWith(ctx, m.cfg.Primary, m.primaryTimeout, message, workspaces)
+// invalid tool call) or the primary is unavailable. opts' WithWorkspaceHint
+// (LOOM-46), if set, is folded into the user prompt as advisory context —
+// it never bypasses the model's own workspace_id validation against
+// workspaces.
+func (m *Model) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot, opts ...router.DispatchOption) (router.Decision, error) {
+	var o router.DispatchOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	dec, err := m.decideWith(ctx, m.cfg.Primary, m.primaryTimeout, message, workspaces, o.WorkspaceHint)
 	if err == nil {
 		return dec, nil
 	}
@@ -45,7 +53,7 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 		return router.Decision{}, fmt.Errorf("llmrouter: decide: primary model: %w", err)
 	}
 
-	dec, err2 := m.decideWith(ctx, *m.cfg.Escalation, m.escalationTimeout, message, workspaces)
+	dec, err2 := m.decideWith(ctx, *m.cfg.Escalation, m.escalationTimeout, message, workspaces, o.WorkspaceHint)
 	if err2 != nil {
 		return router.Decision{}, fmt.Errorf(
 			"llmrouter: decide: primary model failed (%v); escalation model also failed: %w", err, err2)
@@ -53,7 +61,7 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 	return dec, nil
 }
 
-func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration, message string, workspaces []router.WorkspaceSnapshot, workspaceHint string) (router.Decision, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -67,7 +75,7 @@ func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration
 		Model: tier.Model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(decideSystemPrompt),
-			openai.UserMessage(decideUserPrompt(message, workspaces)),
+			openai.UserMessage(decideUserPrompt(message, workspaces, workspaceHint)),
 		},
 		Tools: []openai.ChatCompletionToolUnionParam{buildDecideTool(m.agentTypes, workspaceIDs)},
 		ToolChoice: openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{

@@ -83,6 +83,34 @@ type RelayResult struct {
 	Done bool
 }
 
+// DispatchOptions holds the optional, per-call knobs Dispatch/Decide
+// accept beyond their required positional arguments (LOOM-46) — a
+// struct-of-options rather than growing Dispatch's/Decide's own
+// parameter lists, so a caller that doesn't need any of them (nearly
+// every existing call site, including every test in this repo) is
+// completely unaffected: DispatchOption is applied through a variadic
+// tail, never a required argument.
+type DispatchOptions struct {
+	// WorkspaceHint is a client-supplied workspace ID the caller
+	// believes this message likely belongs to (e.g. a chat UI already
+	// focused on that workspace's conversation). It is advisory only —
+	// the router model retains final authority over workspace selection
+	// (design spec §6), the same as it already does for every workspace
+	// named in the snapshot it's given. An empty string (the default)
+	// means no hint was supplied.
+	WorkspaceHint string
+}
+
+// DispatchOption configures a DispatchOptions via With* constructors
+// below — the functional-options pattern already used elsewhere in this
+// codebase (see api.Option).
+type DispatchOption func(*DispatchOptions)
+
+// WithWorkspaceHint sets DispatchOptions.WorkspaceHint.
+func WithWorkspaceHint(workspaceID string) DispatchOption {
+	return func(o *DispatchOptions) { o.WorkspaceHint = workspaceID }
+}
+
 // RoutingModel is the swappable "router model" seam (design spec §6) —
 // a real LLM call in production. router/llmrouter is the real,
 // LLM-backed implementation; router/routertest provides a deterministic
@@ -90,7 +118,10 @@ type RelayResult struct {
 type RoutingModel interface {
 	// Decide returns a routing decision for an incoming chat message,
 	// given a compact snapshot of the existing workspace registry.
-	Decide(ctx context.Context, message string, workspaces []WorkspaceSnapshot) (Decision, error)
+	// opts carries optional advisory input such as WithWorkspaceHint
+	// (LOOM-46) — an implementation is free to ignore any option it
+	// doesn't understand.
+	Decide(ctx context.Context, message string, workspaces []WorkspaceSnapshot, opts ...DispatchOption) (Decision, error)
 
 	// Relay condenses captured agent output into a RelayResult — see
 	// its doc comment for the Done distinction (design spec §3).

@@ -113,7 +113,7 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	}
 	defer a.Close()
 
-	reply, err := a.Dispatch(ctx, "conv-1", "start the thing")
+	reply, err := a.Dispatch(ctx, "conv-1", "start the thing", "")
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	// Follow-up for the same conversation: the router-level stale-session
 	// fallback (also LOOM-16) should transparently launch a fresh real
 	// session rather than erroring out.
-	reply, err = a.Dispatch(ctx, "conv-1", "keep going")
+	reply, err = a.Dispatch(ctx, "conv-1", "keep going", "")
 	if err != nil {
 		t.Fatalf("Dispatch (after reap): %v", err)
 	}

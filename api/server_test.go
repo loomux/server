@@ -22,11 +22,11 @@ import (
 const testPassword = "correct-horse-battery-staple"
 
 type fakeDispatcher struct {
-	DispatchFunc func(ctx context.Context, conversationID, message string) (string, error)
+	DispatchFunc func(ctx context.Context, conversationID, message, workspaceHint string) (string, error)
 }
 
-func (f *fakeDispatcher) Dispatch(ctx context.Context, conversationID, message string) (string, error) {
-	return f.DispatchFunc(ctx, conversationID, message)
+func (f *fakeDispatcher) Dispatch(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+	return f.DispatchFunc(ctx, conversationID, message, workspaceHint)
 }
 
 func newTestStore(t *testing.T) registry.Store {
@@ -201,9 +201,9 @@ func TestDispatch_InvalidToken_ReturnsUnauthorized(t *testing.T) {
 
 func TestDispatch_ValidToken_CallsDispatcherAndReturnsReply(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
-		if conversationID != "c1" || message != "hello" {
-			t.Fatalf("Dispatch called with (%q, %q), want (c1, hello)", conversationID, message)
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+		if conversationID != "c1" || message != "hello" || workspaceHint != "" {
+			t.Fatalf("Dispatch called with (%q, %q, %q), want (c1, hello, \"\")", conversationID, message, workspaceHint)
 		}
 		return "the reply", nil
 	}
@@ -230,6 +230,33 @@ func TestDispatch_ValidToken_CallsDispatcherAndReturnsReply(t *testing.T) {
 	}
 }
 
+// TestDispatch_WorkspaceHint_ReachesDispatcher proves the optional
+// workspace_hint request field (LOOM-46) flows through unmodified to
+// Dispatcher.Dispatch, and that omitting it entirely (as every request
+// before this ticket did) still resolves to an empty hint rather than
+// an error.
+func TestDispatch_WorkspaceHint_ReachesDispatcher(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t)
+	var gotHint string
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
+		gotHint = workspaceHint
+		return "ok", nil
+	}
+	token, _ := login(t, srv.URL, testPassword)
+
+	body, _ := json.Marshal(map[string]string{
+		"conversation_id": "c1", "message": "hello", "workspace_hint": "ws-hinted",
+	})
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if gotHint != "ws-hinted" {
+		t.Fatalf("Dispatch received workspaceHint = %q, want %q", gotHint, "ws-hinted")
+	}
+}
+
 func TestDispatch_MissingFields_ReturnsBadRequest(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	token, _ := login(t, srv.URL, testPassword)
@@ -244,7 +271,7 @@ func TestDispatch_MissingFields_ReturnsBadRequest(t *testing.T) {
 
 func TestLogout_RevokesToken(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 	token, _ := login(t, srv.URL, testPassword)
@@ -300,7 +327,7 @@ func TestListSessions_NoToken_ReturnsUnauthorized(t *testing.T) {
 // session backing the request's own token marked "current".
 func TestListSessions_MultipleLogins_ListsAllMarkingCurrent(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 
@@ -344,7 +371,7 @@ func TestListSessions_MultipleLogins_ListsAllMarkingCurrent(t *testing.T) {
 // it.
 func TestListSessions_ExpiredSession_ExcludedFromListing(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 
@@ -402,7 +429,7 @@ func TestRevokeSession_UnknownID_ReturnsNotFound(t *testing.T) {
 // GET /api/v1/sessions, e.g. signing another device out remotely.
 func TestRevokeSession_ByID_InvalidatesThatTokenButNotOthers(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 
@@ -477,7 +504,7 @@ func TestRevokeSession_CurrentSession_BehavesLikeLogout(t *testing.T) {
 
 func TestSession_ExpiresAfterTTL(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 	token, _ := login(t, srv.URL, testPassword)
@@ -494,7 +521,7 @@ func TestSession_ExpiresAfterTTL(t *testing.T) {
 
 func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(150*time.Millisecond))
-	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message string) (string, error) {
+	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 	token, _ := login(t, srv.URL, testPassword)
@@ -848,6 +875,7 @@ type conversationSummary struct {
 	WorkspaceID    string `json:"workspace_id"`
 	Status         string `json:"status"`
 	UpdatedAt      string `json:"updated_at"`
+	Preview        string `json:"preview"`
 }
 
 func TestListConversations_ValidToken_ReturnsOneSummaryPerConversationSortedByRecency(t *testing.T) {
@@ -858,8 +886,10 @@ func TestListConversations_ValidToken_ReturnsOneSummaryPerConversationSortedByRe
 	// updated last, so recency-sorting must reflect the update, not
 	// creation order.
 	createTestTask(t, store, "task-old-1", ws.ID, "conv-old", registry.TaskStatusRunning)
+	createTestMessage(t, store, "msg-old-1", "conv-old", "task-old-1", registry.MessageRoleUser, "first message in conv-old")
 	time.Sleep(10 * time.Millisecond)
 	createTestTask(t, store, "task-new-1", ws.ID, "conv-new", registry.TaskStatusRunning)
+	createTestMessage(t, store, "msg-new-1", "conv-new", "task-new-1", registry.MessageRoleUser, "first message in conv-new")
 	time.Sleep(10 * time.Millisecond)
 
 	taskOld1, err := store.GetTask(context.Background(), "task-old-1")
@@ -899,6 +929,47 @@ func TestListConversations_ValidToken_ReturnsOneSummaryPerConversationSortedByRe
 	}
 	if out.Conversations[1].Status != "running" {
 		t.Fatalf("conv-new summary = %+v, want status=running", out.Conversations[1])
+	}
+	if out.Conversations[0].Preview != "first message in conv-old" {
+		t.Fatalf("conv-old preview = %q, want %q", out.Conversations[0].Preview, "first message in conv-old")
+	}
+	if out.Conversations[1].Preview != "first message in conv-new" {
+		t.Fatalf("conv-new preview = %q, want %q", out.Conversations[1].Preview, "first message in conv-new")
+	}
+}
+
+// TestListConversations_Preview_TruncatesLongFirstMessageAndUsesEarliestNotLatest
+// proves the preview (LOOM-45) is the conversation's very first message
+// — not its most recent one, which the rest of the summary row already
+// reflects via status/updated_at — and that a long first message is
+// truncated rather than bloating the listing response.
+func TestListConversations_Preview_TruncatesLongFirstMessageAndUsesEarliestNotLatest(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	ws := createTestWorkspace(t, store, "ws1", registry.WorkspaceStatusIdle)
+	createTestTask(t, store, "task-1", ws.ID, "conv-1", registry.TaskStatusRunning)
+
+	long := strings.Repeat("x", 250)
+	createTestMessage(t, store, "msg-1", "conv-1", "task-1", registry.MessageRoleUser, long)
+	createTestMessage(t, store, "msg-2", "conv-1", "task-1", registry.MessageRoleAssistant, "a much later, different reply")
+
+	token, _ := login(t, srv.URL, testPassword)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var out struct {
+		Conversations []conversationSummary `json:"conversations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Conversations) != 1 {
+		t.Fatalf("got %d conversations, want 1", len(out.Conversations))
+	}
+	want := strings.Repeat("x", 200) + "…"
+	if out.Conversations[0].Preview != want {
+		t.Fatalf("preview = %q, want %q (truncated to 200 runes)", out.Conversations[0].Preview, want)
 	}
 }
 

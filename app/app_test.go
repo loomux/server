@@ -62,7 +62,7 @@ func TestBuild_EndToEnd_AnswerDirectly(t *testing.T) {
 	}
 	defer app.Close()
 
-	reply, err := app.Dispatch(context.Background(), "conv-1", "hi")
+	reply, err := app.Dispatch(context.Background(), "conv-1", "hi", "")
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}

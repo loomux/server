@@ -32,6 +32,7 @@ func main() {
 	hashPassword := flag.Bool("hash-password", false, "read a password from stdin, print its bcrypt hash (for LOOMUX_AUTH_PASSWORD_HASH), and exit")
 	message := flag.String("message", "", "dispatch a single message directly (bypassing HTTP/auth) and exit, for local debugging")
 	conversation := flag.String("conversation", "", "conversation ID to use with -message (default: a freshly generated one)")
+	workspaceHint := flag.String("workspace-hint", "", "optional advisory workspace ID to use with -message (LOOM-46; see api/README.md)")
 	flag.Parse()
 
 	if *showVersion {
@@ -68,7 +69,7 @@ func main() {
 		if convID == "" {
 			convID = uuid.NewString()
 		}
-		reply, err := loomux.Dispatch(ctx, convID, *message)
+		reply, err := loomux.Dispatch(ctx, convID, *message, *workspaceHint)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
