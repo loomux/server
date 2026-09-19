@@ -23,7 +23,15 @@ RUN go mod download
 COPY . .
 
 # VERSION is stamped into version.Version, which backs both `loomuxd
-# -version` and GET /api/v1/version. CI passes the short SHA.
+# -version` and GET /api/v1/version.
+#
+# CI passes a human-readable string that CONTAINS SPACES:
+# "<short sha> (web <loomux/web ref>)". That is why the -X value below is
+# single-quoted, and the quotes are load-bearing: `go build` splits the
+# -ldflags value on whitespace (respecting quotes) before handing it to the
+# linker, so an unquoted value makes the linker see "(web" and "<ref>)" as
+# unknown flags and the build fails. Keep the quotes even if some future
+# caller only passes a bare SHA.
 ARG VERSION=dev
 
 # CGO_ENABLED=0 is safe here: the only C-ish dependency would be SQLite, and
@@ -31,7 +39,7 @@ ARG VERSION=dev
 # question moot for the runtime base.
 RUN CGO_ENABLED=0 go build \
         -trimpath \
-        -ldflags "-s -w -X github.com/Loomux/server/version.Version=${VERSION}" \
+        -ldflags "-s -w -X 'github.com/Loomux/server/version.Version=${VERSION}'" \
         -o /out/loomuxd ./cmd/loomuxd
 
 # ---------------------------------------------------------------------------
