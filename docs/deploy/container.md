@@ -154,6 +154,11 @@ sockets under `${TMPDIR}/loomux/ssh-cm` (`os.MkdirAll(..., 0700)`), and
 multiplexing fails without it. An `emptyDir` is fine — the sockets are not
 worth persisting.
 
+`$HOME/.ssh` must be writable as well, for the same reason `/tmp` is: the
+entrypoint copies the SSH Secret there at startup. Under
+`readOnlyRootFilesystem: true` that needs its own `emptyDir` or the pod
+never starts. See `docs/deploy/ssh.md`.
+
 Completion markers do **not** need a volume. `completion.MarkerWatcher`
 checks for them through the *target's* executor, so for a remote target the
 marker lives on the remote host, not in this container
@@ -212,13 +217,16 @@ ingress or reverse proxy in front handles TLS (see `api/README.md`).
 
 ## SSH access to targets
 
-Not covered here. LOOM-52 adds `docs/deploy/ssh.md`, covering how
-`$HOME/.ssh` gets populated from a mounted Secret (a Secret volume is
-read-only, root-owned and mode 0644, and `ssh` refuses a private key it
-considers group-readable — so it cannot simply be mounted at `~/.ssh`) and
-the SOCKS5 `ProxyCommand` that reaches targets through a userspace-mode
-Tailscale sidecar. This image provides what that needs: `$HOME` at mode
-0700 owned by the runtime user, plus `nc`/`socat`.
+See [`ssh.md`](ssh.md). In short: `$HOME/.ssh` is the entire
+configuration surface for remote dispatch (production builds the remote
+executor with no options), and it is populated at startup by
+`deploy/entrypoint.sh`, which copies a read-only Secret mounted at
+`/etc/loomux/ssh` into `$HOME/.ssh` at 0700/0600. The Secret cannot be
+mounted at `~/.ssh` directly: a Secret volume is read-only, root-owned and
+mode 0644, and `ssh` refuses a private key it considers group-readable.
+That document also covers the SOCKS5 `ProxyCommand` reaching targets
+through a userspace-mode Tailscale sidecar — which is what `nc`/`socat` in
+this image are for.
 
 ## Verifying a build
 

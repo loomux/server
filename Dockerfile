@@ -68,6 +68,18 @@ RUN addgroup -g 10001 loomux \
 
 COPY --from=build /out/loomuxd /usr/local/bin/loomuxd
 
+# Materialises $HOME/.ssh from a read-only Secret mount before exec'ing
+# loomuxd. Remote dispatch is configured through ~/.ssh (identity, the
+# SOCKS5 ProxyCommand, known_hosts) because production builds the remote
+# executor with no options — see docs/deploy/ssh.md.
+# Plain COPY, not COPY --chmod: --chmod requires BuildKit, and this file
+# must also build under the legacy builder (docs/deploy/container.md
+# documents a bare `docker build .` as supported). COPY preserves the
+# source mode instead, so this relies on the script being committed
+# executable — git records the exec bit, and losing it would leave the
+# image unable to start at all.
+COPY deploy/entrypoint.sh /usr/local/bin/loomux-entrypoint
+
 # The web client's built static assets. loomuxd serves them itself (LOOM-33)
 # for any non-/api/* path, with SPA fallback to index.html.
 #
@@ -91,7 +103,10 @@ EXPOSE 8080
 
 # GET /api/v1/version is the one unauthenticated route — use it for k8s
 # liveness/readiness probes.
-ENTRYPOINT ["/usr/local/bin/loomuxd"]
+#
+# Arguments are forwarded to loomuxd unchanged, so `docker run <image>
+# -version` still works. Use --entrypoint to bypass the SSH setup.
+ENTRYPOINT ["/usr/local/bin/loomux-entrypoint"]
 
 LABEL org.opencontainers.image.title="loomux-server" \
       org.opencontainers.image.description="Loomux server (loomuxd): chat-driven multi-agent tmux orchestration" \
