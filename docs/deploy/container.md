@@ -154,6 +154,11 @@ sockets under `${TMPDIR}/loomux/ssh-cm` (`os.MkdirAll(..., 0700)`), and
 multiplexing fails without it. An `emptyDir` is fine — the sockets are not
 worth persisting.
 
+`$HOME/.ssh` must be writable as well, for the same reason `/tmp` is: the
+entrypoint copies the SSH Secret there at startup. Under
+`readOnlyRootFilesystem: true` that needs its own `emptyDir` or the pod
+never starts. See `docs/deploy/ssh.md`.
+
 Completion markers do **not** need a volume. `completion.MarkerWatcher`
 checks for them through the *target's* executor, so for a remote target the
 marker lives on the remote host, not in this container

@@ -144,6 +144,37 @@ demand. With `readOnlyRootFilesystem: true`, mount an `emptyDir` at `/tmp`.
 A Unix socket cannot live on a `tmpfs`-less read-only path, and the failure
 is a connection error, not a clear permissions message.
 
+**`$HOME/.ssh` must be writable too.** The entrypoint *copies* the Secret
+into `/home/loomux/.ssh` rather than using the mount directly, because a
+projected Secret is mode 0644 and root-owned and `ssh` rejects it. That copy
+needs a writable `$HOME`, so `readOnlyRootFilesystem: true` needs a second
+`emptyDir`:
+
+```yaml
+securityContext:
+  readOnlyRootFilesystem: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+volumeMounts:
+  - { name: tmp,     mountPath: /tmp }
+  - { name: ssh-run, mountPath: /home/loomux/.ssh }
+volumes:
+  - { name: tmp,     emptyDir: {} }
+  - { name: ssh-run, emptyDir: {} }
+```
+
+`fsGroup` is what makes the `emptyDir` writable by uid 10001. Without this
+mount the pod does not start at all — the entrypoint fails on its first
+`mkdir` and never execs `loomuxd`:
+
+```
+mkdir: can't create directory '/home/loomux/.ssh': Read-only file system
+```
+
+That one is at least loud. It is listed here because the `/tmp` note above
+otherwise reads as the *only* thing read-only root filesystems need.
+
 ## Verifying it, inside the pod
 
 ```sh
