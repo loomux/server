@@ -22,6 +22,14 @@ Explicitly deferred to their own future specs: the web/Android/iOS clients,
 the specific router-model vendor, and concrete agent-type adapters beyond
 the interface they implement.
 
+## Deployment
+
+`loomuxd` ships as a container image, `ghcr.io/loomux/server` — see
+[`docs/deploy/container.md`](docs/deploy/container.md) for how it's built
+(including why the runtime base is not `scratch`/distroless, and how the
+web client's static bundle is sourced), its configuration, and its health
+probe.
+
 ## Layout
 
 Each top-level directory corresponds to a component boundary from the

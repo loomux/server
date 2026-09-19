@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loomux — no web bundle embedded</title>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         max-width: 44rem; margin: 4rem auto; padding: 0 1.5rem;
+         line-height: 1.6; color: #1c1c1c; background: #fafafa; }
+  code { background: #ececec; padding: .1rem .3rem; border-radius: 3px; }
+  .warn { border-left: 4px solid #c0392b; padding-left: 1rem; }
+</style>
+</head>
+<body>
+<h1>Loomux server</h1>
+<div class="warn">
+<p><strong>This image was built without a web client bundle.</strong></p>
+<p>You are seeing the placeholder from
+<code>deploy/web-placeholder/</code>, not the loomux/web Vite build. The
+JSON API under <code>/api/v1/</code> is fully functional; only the browser
+UI is missing.</p>
+</div>
+<p>To build an image with the real UI, point the <code>WEB_DIST</code>
+build argument at a directory in the build context holding loomux/web's
+<code>dist/</code> output:</p>
+<pre><code>docker build --build-arg WEB_DIST=.web-dist -t ghcr.io/loomux/server .</code></pre>
+<p>See <code>docs/deploy/container.md</code> for the full rationale and for
+how CI materialises that directory.</p>
+</body>
+</html>
