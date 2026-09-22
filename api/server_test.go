@@ -51,7 +51,7 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 	}
 	dispatcher := &fakeDispatcher{}
 	store := newTestStore(t)
-	server := api.NewServer(dispatcher, store, store, store, store, store, []byte(hash), opts...)
+	server := api.NewServer(dispatcher, store, store, store, store, store, store, []byte(hash), opts...)
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 	return httpSrv, dispatcher, store

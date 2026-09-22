@@ -73,7 +73,7 @@ func TestIntegration_RealAppBehindAuth(t *testing.T) {
 	// sequence below isn't itself throttled by production timing
 	// (LOOM-15) — this test isn't exercising the throttle, TestLogin_* in
 	// server_test.go does that.
-	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
+	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 
@@ -169,7 +169,7 @@ func TestIntegration_DispatchThenConversationDetail_ShowsMessages(t *testing.T) 
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
-	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
+	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 
