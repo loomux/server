@@ -114,7 +114,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		opts = append(opts, api.WithStaticDir(apiCfg.StaticDir))
 	}
 
-	server := api.NewServer(loomux, loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), apiCfg.PasswordHash, opts...)
+	server := api.NewServer(loomux, loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), apiCfg.PasswordHash, opts...)
 	httpServer := &http.Server{Addr: apiCfg.Addr, Handler: server}
 
 	go func() {

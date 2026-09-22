@@ -230,6 +230,55 @@ not engineering taste):
     dead session is discovered the same way a human always would, by
     trying to attach. Wraps `AttachInfoStore` (`GetTask` → `GetWorkspace`
     → `GetTarget`), a narrow seam mirroring the others here.
+  - `POST /api/v1/targets`, `GET /api/v1/targets`,
+    `PUT /api/v1/targets/{id}`, `DELETE /api/v1/targets/{id}` —
+    auth-gated target registration (LOOM-59). `registry.Store`'s target
+    CRUD existed and was tested from the first commit but had *no
+    production caller at all*, so the only way to register an execution
+    target was to hand-write a row into sqlite on the deployment host.
+    That left a fresh deployment with nowhere to dispatch work — the
+    router correctly falls back to `answer_directly` when no target
+    exists — and it is why these are HTTP routes rather than an admin
+    CLI subcommand: registration has to be reachable by an operator who
+    has no shell on the pod, and a CLI would have been a second
+    validation path to keep in sync while still not meeting that bar.
+    The deployment already configures `LOOMUX_AUTH_PASSWORD_HASH`, so
+    there is no bootstrap chicken-and-egg to justify one.
+
+    Bodies are `{name, kind, host, user, ssh_key_ref}`; responses add
+    the server-minted `id` plus `created_at`/`updated_at`. **The id is
+    never accepted from the client** — workspaces reference targets by
+    id, and letting a caller choose one invites exactly the collisions
+    and hand-minted ids this endpoint exists to replace, so it is
+    generated here the way session ids already are. `ssh_key_ref` *is*
+    returned (unlike the deliberately display-only `attach-info`
+    payload): it is a reference into the credential vault, never secret
+    material, and a client needs it back to round-trip a `PUT` without
+    silently clearing the field.
+
+    Validation enforces the invariants the execution layer assumes but
+    cannot check at registration time, so a target that could never be
+    dispatched to is rejected at the boundary rather than stored and
+    discovered broken later: `kind` must be one of the two
+    `targets.NewExecutor` knows; a `remote` needs both `host` and
+    `user`, because `RemoteExecutor.destination()` builds `user+"@"+host`
+    and ssh rejects a bare `@host`; a `local` must carry neither, since
+    clearing them silently would hide a caller's misunderstanding until
+    an attach-info response came back missing fields they thought they
+    had set. Bad body or failed validation is `400`, a duplicate name
+    `409` (the store's unique constraint).
+
+    All four operations ship, not just create, because create-only would
+    reproduce this ticket's own failure mode in miniature — a write path
+    with no way to read or fix. `GET` is how a client discovers the
+    server-assigned id it needs to attach a workspace; `DELETE` undoes a
+    mistaken registration (`409`, not `500`, once workspaces reference
+    it — the foreign key doing its job, and the operator needs to be
+    told which it is); `PUT` is then the *only* correction path left,
+    which is why it exists. `PUT` re-reads the stored row rather than
+    echoing back the struct it passed to `UpdateTarget`: that call fills
+    in `UpdatedAt` but not `CreatedAt`, so only a read returns a
+    canonical row. Unknown id is `404` on both.
   - `GET /api/v1/version` — unauthenticated, `{server_version, api_version}`
     (`server_version` comes from the top-level `version` package, not
     defined in this one)
@@ -281,6 +330,22 @@ SPA shell rather than escaping the configured directory, and —
 separately — that static serving stays off (still `404`) when
 `WithStaticDir` is never used, matching this
 package's behavior before the option existed.
+`targets_test.go` covers the LOOM-59 target endpoints end-to-end through
+real HTTP against a real store: a remote target created and read back by
+`GET`, a local one persisting without host/user, server-minted ids being
+distinct and a client-supplied `id` field being ignored rather than
+honoured, every validation rejection (missing name; unknown/empty/
+wrong-case `kind`; remote missing host or user; local carrying either;
+malformed JSON) as `400` with a populated error envelope, duplicate name
+as `409`, `PUT` changing stored fields and `DELETE` removing them,
+unknown id as `404` on both, `DELETE` of a target with workspaces
+attached as `409`, and — the check that matters most for an
+administrative endpoint — that all four routes reject an unauthenticated
+caller *and* that a rejected `POST` leaves the store empty, so auth
+failure can't be a write that merely reports failure. The unknown-id
+cases assert on the error envelope specifically: net/http's mux also
+returns `404` for an unregistered route, so a bare status check there
+passes vacuously whether or not the handler exists.
 `throttle_test.go` covers `loginThrottle` in isolation (pure timing
 logic, including the zero-base edge case tests use to disable backoff
 entirely). `integration_test.go` proves the auth/dispatch behavior

@@ -93,6 +93,21 @@ type AttachInfoStore interface {
 	GetTarget(ctx context.Context, id string) (*registry.Target, error)
 }
 
+// TargetStore is the target-CRUD slice of registry.Store behind the
+// /api/v1/targets endpoints (LOOM-59). Those store methods existed and
+// were tested from the start but had no production caller at all, which
+// left registering a target possible only by hand-writing a row into
+// sqlite on the deployment host — and so left a fresh deployment with
+// nowhere to dispatch work. Satisfied structurally by any
+// registry.Store, mirroring this package's other narrow seams.
+type TargetStore interface {
+	CreateTarget(ctx context.Context, t *registry.Target) error
+	GetTarget(ctx context.Context, id string) (*registry.Target, error)
+	ListTargets(ctx context.Context) ([]*registry.Target, error)
+	UpdateTarget(ctx context.Context, t *registry.Target) error
+	DeleteTarget(ctx context.Context, id string) error
+}
+
 // defaultSessionTTL is the sliding-expiration window: a session stays
 // valid as long as it's used at least once within this window: 30 days,
 // reasonable for a personal single-user tool used from mobile.
@@ -132,6 +147,7 @@ type Server struct {
 	tasks              TaskLister
 	messages           MessageLister
 	attachInfo         AttachInfoStore
+	targets            TargetStore
 	passwordHash       []byte
 	sessionTTL         time.Duration
 	loginThrottle      *loginThrottle
@@ -180,7 +196,7 @@ func WithStaticDir(dir string) Option {
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
-func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, tasks TaskLister, messages MessageLister, attachInfo AttachInfoStore, passwordHash []byte, opts ...Option) *Server {
+func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces WorkspaceLister, tasks TaskLister, messages MessageLister, attachInfo AttachInfoStore, targets TargetStore, passwordHash []byte, opts ...Option) *Server {
 	s := &Server{
 		dispatcher:         dispatcher,
 		sessions:           sessions,
@@ -188,6 +204,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 		tasks:              tasks,
 		messages:           messages,
 		attachInfo:         attachInfo,
+		targets:            targets,
 		passwordHash:       passwordHash,
 		sessionTTL:         defaultSessionTTL,
 		loginThrottle:      newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
@@ -211,6 +228,10 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/conversations/{id}", s.requireAuth(s.handleGetConversation))
 	mux.HandleFunc("GET /api/v1/conversations/{id}/stream", s.requireAuth(s.handleStream))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attach-info", s.requireAuth(s.handleAttachInfo))
+	mux.HandleFunc("POST /api/v1/targets", s.requireAuth(s.handleCreateTarget))
+	mux.HandleFunc("GET /api/v1/targets", s.requireAuth(s.handleListTargets))
+	mux.HandleFunc("PUT /api/v1/targets/{id}", s.requireAuth(s.handleUpdateTarget))
+	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	s.mux = mux
 	return s
@@ -945,6 +966,211 @@ func bearerToken(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return token, true
+}
+
+// targetResponse is a registry.Target as clients see it. Unlike
+// attachTargetInfo (which is a display payload for a human about to SSH
+// somewhere) this includes ssh_key_ref: it is a reference into the
+// credential vault, never secret material itself (see registry.Target),
+// and a client needs it back to round-trip a PUT without silently
+// clearing the field.
+type targetResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Kind      string    `json:"kind"`
+	Host      string    `json:"host"`
+	User      string    `json:"user"`
+	SSHKeyRef string    `json:"ssh_key_ref"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func newTargetResponse(t *registry.Target) targetResponse {
+	return targetResponse{
+		ID:        t.ID,
+		Name:      t.Name,
+		Kind:      string(t.Kind),
+		Host:      t.Host,
+		User:      t.User,
+		SSHKeyRef: t.SSHKeyRef,
+		CreatedAt: t.CreatedAt,
+		UpdatedAt: t.UpdatedAt,
+	}
+}
+
+// targetRequest is the create/update body. It deliberately has no id
+// field: ids are server-minted (see handleCreateTarget), so a client
+// that sends one has it ignored rather than silently honoured.
+type targetRequest struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Host      string `json:"host"`
+	User      string `json:"user"`
+	SSHKeyRef string `json:"ssh_key_ref"`
+}
+
+type listTargetsResponse struct {
+	Targets []targetResponse `json:"targets"`
+}
+
+// validateTargetRequest enforces the invariants the execution layer
+// assumes but cannot itself check at registration time, so a target
+// that could never be dispatched to is rejected at the boundary rather
+// than stored and discovered broken later:
+//
+//   - kind must be one of the two targets.NewExecutor knows; anything
+//     else yields "unknown target kind" at dispatch.
+//   - a remote needs both host and user, because
+//     RemoteExecutor.destination() builds user+"@"+host and ssh rejects
+//     a bare "@host".
+//   - a local must carry neither. Clearing them silently would hide a
+//     caller's misunderstanding until an attach-info response came back
+//     missing the fields they thought they had set.
+//
+// This lives here rather than on registry.Target because the codebase
+// has no Validate-method convention; if a second entry point (an admin
+// CLI) is ever added it should move down into registry so both share it.
+func validateTargetRequest(req targetRequest) (registry.TargetKind, string) {
+	if strings.TrimSpace(req.Name) == "" {
+		return "", "name is required"
+	}
+	switch registry.TargetKind(req.Kind) {
+	case registry.TargetKindLocal:
+		if req.Host != "" || req.User != "" {
+			return "", "host and user must be empty for a local target"
+		}
+		return registry.TargetKindLocal, ""
+	case registry.TargetKindRemote:
+		if req.Host == "" || req.User == "" {
+			return "", "host and user are required for a remote target"
+		}
+		return registry.TargetKindRemote, ""
+	default:
+		return "", fmt.Sprintf("kind must be %q or %q", registry.TargetKindLocal, registry.TargetKindRemote)
+	}
+}
+
+// decodeTargetRequest reads and validates a create/update body, writing
+// the error response itself and reporting whether the caller should
+// continue.
+func decodeTargetRequest(w http.ResponseWriter, r *http.Request) (targetRequest, registry.TargetKind, bool) {
+	var req targetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed request body")
+		return req, "", false
+	}
+	kind, problem := validateTargetRequest(req)
+	if problem != "" {
+		writeError(w, http.StatusBadRequest, problem)
+		return req, "", false
+	}
+	return req, kind, true
+}
+
+// handleCreateTarget registers an execution target. The id is minted
+// here rather than accepted from the client (as sessions already do):
+// workspaces reference targets by id, and letting a caller choose one
+// invites collisions and the hand-minted ids this endpoint exists to
+// replace.
+func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
+	req, kind, ok := decodeTargetRequest(w, r)
+	if !ok {
+		return
+	}
+
+	target := &registry.Target{
+		ID:        uuid.NewString(),
+		Name:      strings.TrimSpace(req.Name),
+		Kind:      kind,
+		Host:      req.Host,
+		User:      req.User,
+		SSHKeyRef: req.SSHKeyRef,
+	}
+	if err := s.targets.CreateTarget(r.Context(), target); err != nil {
+		if errors.Is(err, registry.ErrConflict) {
+			writeError(w, http.StatusConflict, "a target with that name already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not create target")
+		return
+	}
+	writeJSON(w, http.StatusCreated, newTargetResponse(target))
+}
+
+// handleListTargets is how a client discovers the server-assigned ids
+// it needs to attach a workspace to a target.
+func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
+	targets, err := s.targets.ListTargets(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list targets")
+		return
+	}
+	out := make([]targetResponse, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, newTargetResponse(t))
+	}
+	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out})
+}
+
+// handleUpdateTarget replaces a target's mutable fields wholesale. It is
+// the only correction path once any workspace references the target,
+// since DeleteTarget refuses with a conflict at that point.
+//
+// The stored row is re-read afterwards rather than returning the struct
+// passed to UpdateTarget: that call fills in UpdatedAt but not
+// CreatedAt, so only a read gives the client a canonical row.
+func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
+	req, kind, ok := decodeTargetRequest(w, r)
+	if !ok {
+		return
+	}
+
+	id := r.PathValue("id")
+	target := &registry.Target{
+		ID:        id,
+		Name:      strings.TrimSpace(req.Name),
+		Kind:      kind,
+		Host:      req.Host,
+		User:      req.User,
+		SSHKeyRef: req.SSHKeyRef,
+	}
+	if err := s.targets.UpdateTarget(r.Context(), target); err != nil {
+		switch {
+		case errors.Is(err, registry.ErrNotFound):
+			writeError(w, http.StatusNotFound, "no such target")
+		case errors.Is(err, registry.ErrConflict):
+			writeError(w, http.StatusConflict, "a target with that name already exists")
+		default:
+			writeError(w, http.StatusInternalServerError, "could not update target")
+		}
+		return
+	}
+
+	stored, err := s.targets.GetTarget(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read back updated target")
+		return
+	}
+	writeJSON(w, http.StatusOK, newTargetResponse(stored))
+}
+
+// handleDeleteTarget removes a target that nothing references — undoing
+// a mistaken registration. A target with workspaces attached is a
+// conflict, not a 500: the store's foreign key is doing its job and the
+// operator needs to be told which it is.
+func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
+	if err := s.targets.DeleteTarget(r.Context(), r.PathValue("id")); err != nil {
+		switch {
+		case errors.Is(err, registry.ErrNotFound):
+			writeError(w, http.StatusNotFound, "no such target")
+		case errors.Is(err, registry.ErrConflict):
+			writeError(w, http.StatusConflict, "target still has workspaces referencing it")
+		default:
+			writeError(w, http.StatusInternalServerError, "could not delete target")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type errorResponse struct {
