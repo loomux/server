@@ -473,6 +473,9 @@ type workspaceSummary struct {
 	RollingSummary string     `json:"rolling_summary"`
 	IsDynamic      bool       `json:"is_dynamic"`
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
+	// StatusReason says why the workspace is in its status, e.g. what
+	// made it failed (LOOM-77). Omitted when there's nothing to say.
+	StatusReason string `json:"status_reason,omitempty"`
 }
 
 type listWorkspacesResponse struct {
@@ -502,6 +505,7 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			RollingSummary: ws.RollingSummary,
 			IsDynamic:      ws.IsDynamic,
 			LastUsedAt:     ws.LastUsedAt,
+			StatusReason:   ws.StatusReason,
 		})
 	}
 	writeJSON(w, http.StatusOK, listWorkspacesResponse{Workspaces: out})
@@ -641,6 +645,14 @@ type conversationTask struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	// Command and ExitCode are a command task's (LOOM-71/72); the
+	// failure fields are a failed task's (LOOM-77). All omitted when
+	// empty.
+	Command       string `json:"command,omitempty"`
+	ExitCode      *int   `json:"exit_code,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+	ErrorClass    string `json:"error_class,omitempty"`
+	OutputTail    string `json:"output_tail,omitempty"`
 }
 
 type messageSummary struct {
@@ -681,15 +693,20 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		out = append(out, conversationTask{
-			ID:          t.ID,
-			WorkspaceID: t.WorkspaceID,
-			Kind:        string(t.Kind),
-			AgentType:   t.AgentType,
-			Status:      string(t.Status),
-			CreatedAt:   t.CreatedAt,
-			UpdatedAt:   t.UpdatedAt,
-			StartedAt:   t.StartedAt,
-			CompletedAt: t.CompletedAt,
+			ID:            t.ID,
+			WorkspaceID:   t.WorkspaceID,
+			Kind:          string(t.Kind),
+			AgentType:     t.AgentType,
+			Status:        string(t.Status),
+			CreatedAt:     t.CreatedAt,
+			UpdatedAt:     t.UpdatedAt,
+			StartedAt:     t.StartedAt,
+			CompletedAt:   t.CompletedAt,
+			Command:       t.Command,
+			ExitCode:      t.ExitCode,
+			FailureReason: t.FailureReason,
+			ErrorClass:    string(t.ErrorClass),
+			OutputTail:    t.OutputTail,
 		})
 	}
 
@@ -787,6 +804,9 @@ type taskUpdateEvent struct {
 	WorkspaceID string    `json:"workspace_id"`
 	Status      string    `json:"status"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// FailureReason/ErrorClass are set when Status is failed (LOOM-77).
+	FailureReason string `json:"failure_reason,omitempty"`
+	ErrorClass    string `json:"error_class,omitempty"`
 }
 
 // handleStream serves GET /api/v1/conversations/{id}/stream (LOOM-21):
@@ -872,10 +892,12 @@ func (s *Server) latestConversationTaskEvent(ctx context.Context, conversationID
 		return nil, nil
 	}
 	return &taskUpdateEvent{
-		TaskID:      latest.ID,
-		WorkspaceID: latest.WorkspaceID,
-		Status:      string(latest.Status),
-		UpdatedAt:   latest.UpdatedAt,
+		TaskID:        latest.ID,
+		WorkspaceID:   latest.WorkspaceID,
+		Status:        string(latest.Status),
+		UpdatedAt:     latest.UpdatedAt,
+		FailureReason: latest.FailureReason,
+		ErrorClass:    string(latest.ErrorClass),
 	}, nil
 }
 
@@ -1178,8 +1200,12 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 
 // targetAgentResponse is one recorded agent CLI probe result (LOOM-71).
 type targetAgentResponse struct {
-	AgentType string    `json:"agent_type"`
-	Available bool      `json:"available"`
+	AgentType string `json:"agent_type"`
+	Available bool   `json:"available"`
+	// Path is the absolute path the CLI resolved to, Version what it
+	// reported (LOOM-79); empty when unavailable.
+	Path      string    `json:"path,omitempty"`
+	Version   string    `json:"version,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
 }
 
@@ -1190,7 +1216,9 @@ type listTargetAgentsResponse struct {
 func newListTargetAgentsResponse(agents []*registry.TargetAgent) listTargetAgentsResponse {
 	out := make([]targetAgentResponse, 0, len(agents))
 	for _, a := range agents {
-		out = append(out, targetAgentResponse{AgentType: a.AgentType, Available: a.Available, CheckedAt: a.CheckedAt})
+		out = append(out, targetAgentResponse{
+			AgentType: a.AgentType, Available: a.Available, Path: a.Path, Version: a.Version, CheckedAt: a.CheckedAt,
+		})
 	}
 	return listTargetAgentsResponse{Agents: out}
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
 )
 
@@ -140,6 +141,21 @@ func TestDefaultAgentTypes(t *testing.T) {
 		if at.Install == nil || at.Install.Command != want.install || !strings.Contains(at.Install.Login, want.login) {
 			t.Errorf("%s Install = %+v, want command %q and a login step mentioning %q", name, at.Install, want.install, want.login)
 		}
+	}
+	// LOOM-79: both real agents run their version check (against the
+	// probed absolute path — see router.launchAgent).
+	for name, cmd := range map[string]string{"claude-code": "claude --version", "codex": "codex --version"} {
+		vc := agentTypes[name].VersionCheck
+		if vc == nil || vc.Command != cmd || vc.Parse == nil || vc.Min == "" {
+			t.Errorf("%s VersionCheck = %+v, want %q with a parser and a minimum", name, vc, cmd)
+			continue
+		}
+	}
+	if v, err := agentTypes["claude-code"].VersionCheck.Parse("2.1.287 (Claude Code)"); err != nil || router.CheckVersionRange(v, agentTypes["claude-code"].VersionCheck.Min, agentTypes["claude-code"].VersionCheck.Max) != nil {
+		t.Errorf("claude-code 2.1.287 (observed on a real target) fails its own version check: %q %v", v, err)
+	}
+	if v, err := agentTypes["codex"].VersionCheck.Parse("codex-cli 0.150.1"); err != nil || router.CheckVersionRange(v, agentTypes["codex"].VersionCheck.Min, agentTypes["codex"].VersionCheck.Max) != nil {
+		t.Errorf("codex 0.150.1 (observed on a real target) fails its own version check: %q %v", v, err)
 	}
 	if shell.Binary != "" || shell.Install != nil {
 		t.Errorf(`"" entry is probed or installable (%+v); it isn't a real agent`, shell)

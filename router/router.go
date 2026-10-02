@@ -160,7 +160,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		// target_id that doesn't resolve is left to provisionWorkspace,
 		// which refuses it (LOOM-64).
 		if target, terr := r.store.GetTarget(ctx, decision.NewWorkspace.TargetID); terr == nil {
-			if err := r.requireAgent(ctx, target, decision.AgentType); err != nil {
+			if _, err := r.requireAgent(ctx, target, decision.AgentType); err != nil {
 				var unavailable *AgentUnavailableError
 				if errors.As(err, &unavailable) {
 					spec := decision.NewWorkspace
@@ -292,15 +292,21 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	// was actually persisted. WithoutCancel so a wait that failed on ctx
 	// cancellation still gets the row marked and its status read.
 	log = log.With("workspace_id", ws.ID)
-	fail := func(stage string, taskID string, err error) {
+	//
+	// Why is recorded too (LOOM-77): on the task (reason, class, output
+	// tail) and on the workspace (status_reason).
+	fail := func(stage string, taskID string, failure registry.TaskFailure, err error) {
 		cleanupCtx := context.WithoutCancel(ctx)
 		if taskID != "" {
-			if ferr := r.orch.Fail(cleanupCtx, taskID, err.Error()); ferr != nil && !errors.Is(ferr, registry.ErrNotFound) {
-				log.Error("provisioning cleanup failed", "stage", "fail task", "task_id", taskID, "error", ferr)
+			if cur, gerr := r.store.GetTask(cleanupCtx, taskID); gerr == nil && !isTerminal(cur.Status) {
+				if ferr := r.orch.Fail(cleanupCtx, taskID, failure); ferr != nil {
+					log.Error("provisioning cleanup failed", "stage", "fail task", "task_id", taskID, "error", ferr)
+				}
 			}
 		}
 		if cur, gerr := r.store.GetWorkspace(cleanupCtx, ws.ID); gerr == nil {
 			cur.Status = registry.WorkspaceStatusFailed
+			cur.StatusReason = "provisioning failed at " + stage + ": " + failure.Reason
 			if uerr := r.store.UpdateWorkspace(cleanupCtx, cur); uerr != nil {
 				log.Error("provisioning cleanup failed", "stage", "mark workspace failed", "error", uerr)
 			}
@@ -321,7 +327,7 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		if task != nil {
 			taskID = task.ID
 		}
-		fail("launch", taskID, err)
+		fail("launch", taskID, taskFailure(registry.ErrorClassLaunchFailed, err, ""), err)
 		return "", fmt.Errorf("provision workspace: launch: %w", err)
 	}
 	// A provisioning script is the pane's own process, so it exiting is
@@ -332,17 +338,22 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	if err := r.orch.WaitForCompletion(ctx, task.ID); err != nil {
 		var exited *orchestrator.ProcessExitedError
 		if !errors.As(err, &exited) {
-			fail("wait for completion", task.ID, err)
+			fail("wait for completion", task.ID, taskFailure(registry.ErrorClassWaitFailed, err, ""), err)
 			return "", fmt.Errorf("provision workspace: wait for completion: %w", err)
 		}
 		if exited.Status != 0 {
-			err = fmt.Errorf("provisioning command exited with status %d: %s", exited.Status, quoteOutput(exited.Output))
-			fail("wait for completion", task.ID, err)
+			tail := quoteOutput(exited.Output)
+			err = fmt.Errorf("provisioning command exited with status %d: %s", exited.Status, tail)
+			fail("wait for completion", task.ID, registry.TaskFailure{
+				Class:      registry.ErrorClassProvisionFailed,
+				Reason:     fmt.Sprintf("provisioning command exited with status %d", exited.Status),
+				OutputTail: tail,
+			}, err)
 			return "", fmt.Errorf("provision workspace: %w", err)
 		}
 	}
 	if err := r.orch.Complete(ctx, task.ID, provisioningSummary); err != nil {
-		fail("complete", task.ID, err)
+		fail("complete", task.ID, taskFailure(registry.ErrorClassInternal, err, ""), err)
 		return "", fmt.Errorf("provision workspace: complete: %w", err)
 	}
 	log.Info("workspace provisioned", "task_id", task.ID)
@@ -368,10 +379,28 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	start := time.Now()
 	log := r.logger.With("conversation_id", conversationID, "workspace_id", workspaceID, "agent_type", agentType)
 	var taskID string
+	// failClass is what a failure from here on means for the task (LOOM-77):
+	// the deferred guard fails any task this turn reached that the error
+	// left non-terminal, with a reason — so no error path leaves a task
+	// running/awaiting-input with nothing recorded. A refusal because a
+	// human has taken the task over is not a failure of the task.
+	failClass := registry.ErrorClassInternal
 	defer func() {
 		var unavailable *AgentUnavailableError
-		if err != nil && !errors.As(err, &unavailable) {
-			log.Error("agent dispatch failed", "task_id", taskID, "error", err)
+		if err == nil || errors.As(err, &unavailable) {
+			return
+		}
+		log.Error("agent dispatch failed", "task_id", taskID, "error", err)
+		if taskID == "" || errors.Is(err, orchestrator.ErrHumanTakeover) {
+			return
+		}
+		cleanupCtx := context.WithoutCancel(ctx)
+		cur, gerr := r.store.GetTask(cleanupCtx, taskID)
+		if gerr != nil || isTerminal(cur.Status) || cur.Status == registry.TaskStatusHumanTakeover {
+			return
+		}
+		if ferr := r.orch.Fail(cleanupCtx, taskID, taskFailure(failClass, err, "")); ferr != nil {
+			log.Error("agent dispatch cleanup failed", "task_id", taskID, "error", ferr)
 		}
 	}()
 
@@ -392,7 +421,9 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 			// more-than-one-active-task guard once the fresh one below
 			// exists), then fall through to a fresh launch exactly as if
 			// no active task had been found at all.
-			if err := r.orch.Fail(ctx, task.ID, "session no longer exists"); err != nil {
+			if err := r.orch.Fail(ctx, task.ID, registry.TaskFailure{
+				Class: registry.ErrorClassSessionLost, Reason: "session no longer exists",
+			}); err != nil {
 				return "", fmt.Errorf("router: dispatch: %w", err)
 			}
 			task = nil
@@ -412,9 +443,11 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	// typing it into the pane: a freshly launched agent CLI runs
 	// interactively (spec §3) and has nothing to act on until its first
 	// message arrives, exactly like any later turn on the same task.
+	failClass = registry.ErrorClassSendFailed
 	if err := r.orch.SendMessage(ctx, task.ID, message); err != nil {
 		return "", fmt.Errorf("router: dispatch: send message: %w", err)
 	}
+	failClass = registry.ErrorClassWaitFailed
 	if err := r.orch.WaitForCompletion(ctx, task.ID); err != nil {
 		var exited *orchestrator.ProcessExitedError
 		if errors.As(err, &exited) {
@@ -423,6 +456,7 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		return "", fmt.Errorf("router: dispatch: wait for completion: %w", err)
 	}
 
+	failClass = registry.ErrorClassRelayFailed
 	exec, err := r.executorFor(ctx, task)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
@@ -437,6 +471,7 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		return "", fmt.Errorf("router: dispatch: relay: %w", err)
 	}
 
+	failClass = registry.ErrorClassInternal
 	if result.Done {
 		if err := r.orch.Complete(ctx, task.ID, result.Reply); err != nil {
 			return "", fmt.Errorf("router: dispatch: complete: %w", err)
@@ -463,7 +498,12 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 // PATH that the launch shell didn't.
 func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *orchestrator.ProcessExitedError) error {
 	cleanupCtx := context.WithoutCancel(ctx)
-	if err := r.orch.Fail(cleanupCtx, task.ID, "agent process exited"); err != nil {
+	output := r.redactSecrets(cleanupCtx, task.WorkspaceID, task.AgentType, quoteOutput(exited.Output))
+	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
+		Class:      registry.ErrorClassAgentExited,
+		Reason:     fmt.Sprintf("agent %q exited with status %d before finishing the turn", task.AgentType, exited.Status),
+		OutputTail: output,
+	}); err != nil {
 		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 	}
 	if exited.Status == 127 {
@@ -473,9 +513,21 @@ func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *o
 			})
 		}
 	}
-	output := r.redactSecrets(cleanupCtx, task.WorkspaceID, task.AgentType, quoteOutput(exited.Output))
 	return fmt.Errorf("router: dispatch: agent %q exited (status %d) before finishing the turn; its last output:\n%s",
 		task.AgentType, exited.Status, output)
+}
+
+// taskFailure builds a TaskFailure from err, classing an unreachable
+// target as such whatever stage it surfaced in.
+func taskFailure(class registry.ErrorClass, err error, outputTail string) registry.TaskFailure {
+	if errors.Is(err, targets.ErrUnreachable) {
+		class = registry.ErrorClassTargetUnreachable
+	}
+	return registry.TaskFailure{Class: class, Reason: err.Error(), OutputTail: outputTail}
+}
+
+func isTerminal(status registry.TaskStatus) bool {
+	return status == registry.TaskStatusCompleted || status == registry.TaskStatusFailed
 }
 
 // logTurn persists one turn's user/assistant message pair. Called only
@@ -535,7 +587,11 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 
 	// Probe before anything else touches the target for this agent
 	// (LOOM-71): an absent CLI becomes an install offer, not a session
-	// that dies at once.
+	// that dies at once. The probe resolves the CLI's absolute path
+	// (LOOM-79), which the version check and the launch then both use —
+	// so the version checked is the version that runs, whatever PATH the
+	// tmux session would have had.
+	var resolvedPath string
 	if entry.Binary != "" {
 		ws, err := r.store.GetWorkspace(ctx, workspaceID)
 		if err != nil {
@@ -545,13 +601,17 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		if err != nil {
 			return nil, fmt.Errorf("router: dispatch: %w", err)
 		}
-		if err := r.requireAgent(ctx, target, agentType); err != nil {
+		rec, err := r.requireAgent(ctx, target, agentType)
+		if err != nil {
 			return nil, fmt.Errorf("router: dispatch: %w", err)
 		}
+		resolvedPath = rec.Path
 	}
 
 	if entry.VersionCheck != nil {
-		if err := r.verifyAgentVersion(ctx, workspaceID, *entry.VersionCheck); err != nil {
+		vc := *entry.VersionCheck
+		vc.Command = withResolvedBinary(vc.Command, entry.Binary, resolvedPath)
+		if err := r.verifyAgentVersion(ctx, workspaceID, vc); err != nil {
 			return nil, fmt.Errorf("router: dispatch: %w", err)
 		}
 	}
@@ -571,7 +631,8 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		return nil, fmt.Errorf("router: dispatch: %w", err)
 	}
 
-	task, err := r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID, prefix+envPrefix+entry.LaunchTemplate)
+	task, err := r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID,
+		prefix+envPrefix+withResolvedBinary(entry.LaunchTemplate, entry.Binary, resolvedPath))
 	if err != nil {
 		return nil, fmt.Errorf("router: dispatch: launch: %w", err)
 	}

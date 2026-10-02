@@ -148,15 +148,19 @@ func (r *Router) runInstall(ctx context.Context, conversationID string, p pendin
 	}
 
 	entry, _ := r.agentTypes.Get(p.agentType)
-	available, err := r.probeAgent(ctx, target, p.agentType, entry)
+	rec, err := r.probeAgent(ctx, target, p.agentType, entry)
 	if err != nil {
 		return "", result.taskID, fmt.Errorf("install %s: %w", p.agentType, err)
 	}
-	if !available {
+	if !rec.Available {
 		return fmt.Sprintf("The install command finished (exit 0), but %s still isn't found on %s — it may have "+
 			"installed somewhere that isn't on the PATH. Last output:\n\n%s", entry.Binary, target.Name, output), result.taskID, nil
 	}
-	reply = fmt.Sprintf("Installed %s on %s (exit 0).", p.agentType, target.Name)
+	reply = fmt.Sprintf("Installed %s on %s (exit 0): %s", p.agentType, target.Name, rec.Path)
+	if rec.Version != "" {
+		reply += fmt.Sprintf(", %s", rec.Version)
+	}
+	reply += "."
 	if entry.Install != nil && entry.Install.Login != "" {
 		reply += fmt.Sprintf("\n\nOne more step before it can run: %s. Then send your request again.", entry.Install.Login)
 	} else {
@@ -195,6 +199,9 @@ func (r *Router) runCommandTask(ctx context.Context, workspaceID, conversationID
 	if err := r.orch.WaitForCompletion(waitCtx, task.ID); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return res, fmt.Errorf("still running after %s; left running in tmux session %s", timeout, task.TmuxSession)
+		}
+		if ferr := r.orch.Fail(context.WithoutCancel(ctx), task.ID, taskFailure(registry.ErrorClassWaitFailed, err, "")); ferr != nil {
+			r.logger.Error("command task cleanup failed", "task_id", task.ID, "error", ferr)
 		}
 		return res, fmt.Errorf("wait: %w", err)
 	}

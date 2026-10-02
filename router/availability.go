@@ -10,13 +10,22 @@ import (
 	"github.com/Loomux/server/registry"
 )
 
-// What an agent CLI probe prints. A sentinel rather than the exit status:
-// TargetExecutor.RunOnce reports a non-zero exit as an error, which would
-// leave "not installed" indistinguishable from "couldn't run the probe".
+// What an agent CLI probe prints: either the absent sentinel, or the
+// resolved absolute path and the first line of its --version. Sentinels
+// rather than the exit status: TargetExecutor.RunOnce reports a non-zero
+// exit as an error, which would leave "not installed" indistinguishable
+// from "couldn't run the probe".
 const (
-	agentProbePresent = "loomux-agent-present"
-	agentProbeAbsent  = "loomux-agent-absent"
+	agentProbePathPrefix    = "loomux-agent-path:"
+	agentProbeVersionPrefix = "loomux-agent-version:"
+	agentProbeAbsent        = "loomux-agent-absent"
 )
+
+// agentSearchDirs are where agent CLIs commonly install outside a
+// non-interactive shell's PATH (LOOM-79: on sc1, claude is only in
+// ~/.local/bin), checked when neither the login shell nor the plain PATH
+// finds the binary.
+var agentSearchDirs = []string{`$HOME/.local/bin`, `$HOME/.npm-global/bin`, `$HOME/bin`, `/usr/local/bin`, `/opt/homebrew/bin`}
 
 // AgentUnavailableError is returned when an agent-type's CLI isn't
 // installed on the target a dispatch needs it on (LOOM-71). Dispatch
@@ -32,67 +41,137 @@ func (e *AgentUnavailableError) Error() string {
 	return fmt.Sprintf("agent %q is not installed on target %q", e.AgentType, e.TargetName)
 }
 
-// agentProbeCommand checks for binary through POSIX sh whatever the
-// target's login shell is, printing one of the probe sentinels.
+// agentProbeCommand resolves binary to an absolute path on a target
+// (LOOM-79), in POSIX sh whatever the target's login shell is. It looks
+// where a person at that machine would find it first — their login
+// shell's PATH ($SHELL, then bash) — then the non-interactive PATH, then
+// agentSearchDirs; and reports the --version of exactly the path it found,
+// since that is the path the launch will run. Output: the absent sentinel,
+// or the path and version lines.
 func agentProbeCommand(binary string) string {
-	inner := "command -v " + shellQuote(binary) + " >/dev/null 2>&1 && echo " + agentProbePresent +
-		" || echo " + agentProbeAbsent
-	return "sh -c " + shellQuote(inner)
+	lookup := shellQuote("command -v " + shellQuote(binary))
+	var dirs []string
+	for _, d := range agentSearchDirs {
+		dirs = append(dirs, `"`+d+`"`)
+	}
+	script := `b=` + shellQuote(binary) + `
+p=
+for s in "${SHELL:-}" bash; do
+  [ -n "$s" ] && command -v "$s" >/dev/null 2>&1 || continue
+  p=$("$s" -lc ` + lookup + ` </dev/null 2>/dev/null | tail -n 1)
+  case "$p" in /*) break ;; *) p= ;; esac
+done
+if [ -z "$p" ]; then
+  p=$(command -v "$b" 2>/dev/null)
+  case "$p" in /*) ;; *) p= ;; esac
+fi
+if [ -z "$p" ]; then
+  for d in ` + strings.Join(dirs, " ") + `; do
+    if [ -x "$d/$b" ]; then p="$d/$b"; break; fi
+  done
+fi
+if [ -z "$p" ]; then echo ` + agentProbeAbsent + `; exit 0; fi
+if command -v timeout >/dev/null 2>&1; then t="timeout 10"; else t=; fi
+v=$($t "$p" --version </dev/null 2>&1 | head -n 1)
+echo "` + agentProbePathPrefix + `$p"
+echo "` + agentProbeVersionPrefix + `$v"
+`
+	return "sh -c " + shellQuote(script)
+}
+
+// parseAgentProbe reads agentProbeCommand's output.
+func parseAgentProbe(out string) (path, version string, err error) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == agentProbeAbsent:
+			return "", "", nil
+		case strings.HasPrefix(line, agentProbePathPrefix):
+			path = strings.TrimPrefix(line, agentProbePathPrefix)
+		case strings.HasPrefix(line, agentProbeVersionPrefix):
+			version = strings.TrimPrefix(line, agentProbeVersionPrefix)
+		}
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "", "", fmt.Errorf("unexpected output %q", out)
+	}
+	const maxVersion = 200
+	if len(version) > maxVersion {
+		version = version[:maxVersion]
+	}
+	return path, version, nil
+}
+
+// withResolvedBinary rewrites command — an agent-type's launch template or
+// version-check command — to run the probed absolute path instead of
+// binary looked up on PATH (LOOM-79). A command that doesn't start with
+// binary is returned unchanged, as is any command when nothing was
+// resolved.
+func withResolvedBinary(command, binary, path string) string {
+	if path == "" || binary == "" {
+		return command
+	}
+	if command == binary {
+		return shellQuote(path)
+	}
+	if strings.HasPrefix(command, binary+" ") {
+		return shellQuote(path) + command[len(binary):]
+	}
+	return command
 }
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// probeAgent checks whether agentType's CLI is on target and records the
-// answer (registry.TargetAgent). An agent-type with no Binary is never
-// probed and counts as available. A probe that fails to run — the target
-// unreachable, say — is an error and records nothing: "couldn't look" is
-// not "absent".
-func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentType string, entry AgentType) (bool, error) {
+// probeAgent resolves agentType's CLI on target and records the result
+// (registry.TargetAgent: availability, absolute path, version). An
+// agent-type with no Binary is never probed and counts as available, with
+// no path. A probe that fails to run — the target unreachable, say — is
+// an error and records nothing: "couldn't look" is not "absent".
+func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentType string, entry AgentType) (*registry.TargetAgent, error) {
 	if entry.Binary == "" {
-		return true, nil
+		return &registry.TargetAgent{TargetID: target.ID, AgentType: agentType, Available: true}, nil
 	}
 	exec, err := r.newExecutor(target)
 	if err != nil {
-		return false, fmt.Errorf("probe agent %q: %w", agentType, err)
+		return nil, fmt.Errorf("probe agent %q: %w", agentType, err)
 	}
 	out, err := exec.RunOnce(ctx, agentProbeCommand(entry.Binary))
 	if err != nil {
-		return false, fmt.Errorf("probe agent %q on target %q: %w", agentType, target.Name, err)
+		return nil, fmt.Errorf("probe agent %q on target %q: %w", agentType, target.Name, err)
 	}
-	var available bool
-	switch {
-	case strings.Contains(out, agentProbePresent):
-		available = true
-	case strings.Contains(out, agentProbeAbsent):
-	default:
-		return false, fmt.Errorf("probe agent %q on target %q: unexpected output %q", agentType, target.Name, out)
+	path, version, err := parseAgentProbe(out)
+	if err != nil {
+		return nil, fmt.Errorf("probe agent %q on target %q: %w", agentType, target.Name, err)
 	}
-	if err := r.store.SetTargetAgent(ctx, &registry.TargetAgent{
-		TargetID: target.ID, AgentType: agentType, Available: available, CheckedAt: time.Now().UTC(),
-	}); err != nil {
-		return false, fmt.Errorf("probe agent %q: record result: %w", agentType, err)
+	rec := &registry.TargetAgent{
+		TargetID: target.ID, AgentType: agentType, Available: path != "",
+		Path: path, Version: version, CheckedAt: time.Now().UTC(),
 	}
-	r.logger.Info("agent probed", "target_id", target.ID, "agent_type", agentType, "available", available)
-	return available, nil
+	if err := r.store.SetTargetAgent(ctx, rec); err != nil {
+		return nil, fmt.Errorf("probe agent %q: record result: %w", agentType, err)
+	}
+	r.logger.Info("agent probed", "target_id", target.ID, "agent_type", agentType, "available", rec.Available,
+		"path", path, "version", version)
+	return rec, nil
 }
 
-// requireAgent probes for agentType on target, returning an
-// *AgentUnavailableError if it isn't there.
-func (r *Router) requireAgent(ctx context.Context, target *registry.Target, agentType string) error {
+// requireAgent probes for agentType on target, returning its record, or
+// an *AgentUnavailableError if it isn't there.
+func (r *Router) requireAgent(ctx context.Context, target *registry.Target, agentType string) (*registry.TargetAgent, error) {
 	entry, err := r.agentTypes.Get(agentType)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	available, err := r.probeAgent(ctx, target, agentType, entry)
+	rec, err := r.probeAgent(ctx, target, agentType, entry)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !available {
-		return &AgentUnavailableError{AgentType: agentType, TargetID: target.ID, TargetName: target.Name}
+	if !rec.Available {
+		return nil, &AgentUnavailableError{AgentType: agentType, TargetID: target.ID, TargetName: target.Name}
 	}
-	return nil
+	return rec, nil
 }
 
 // RefreshTargetAgents re-probes every agent-type that declares a Binary
@@ -114,11 +193,11 @@ func (r *Router) RefreshTargetAgents(ctx context.Context, targetID string) ([]*r
 
 	out := make([]*registry.TargetAgent, 0, len(names))
 	for _, name := range names {
-		available, err := r.probeAgent(ctx, target, name, r.agentTypes[name])
+		rec, err := r.probeAgent(ctx, target, name, r.agentTypes[name])
 		if err != nil {
 			return nil, fmt.Errorf("router: refresh target agents: %w", err)
 		}
-		out = append(out, &registry.TargetAgent{TargetID: target.ID, AgentType: name, Available: available})
+		out = append(out, rec)
 	}
 	return out, nil
 }

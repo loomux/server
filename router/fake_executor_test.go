@@ -57,6 +57,11 @@ type fakeExecutor struct {
 	// per-command answer — e.g. an agent CLI probe that answers
 	// differently before and after an install.
 	runOnce func(command string) (string, error)
+	// captureFunc, when set, replaces capture with a fresh value per call
+	// (e.g. output that never goes quiet). onSendKeys, when set, runs
+	// after every successful SendKeys (e.g. to cancel a request mid-turn).
+	captureFunc func() string
+	onSendKeys  func()
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -106,6 +111,9 @@ func (e *fakeExecutor) SendKeys(ctx context.Context, target, keys string, enter 
 		return fmt.Errorf("fakeExecutor: no such session %q", target)
 	}
 	s.keys = append(s.keys, keys)
+	if e.onSendKeys != nil {
+		defer e.onSendKeys()
+	}
 	return nil
 }
 
@@ -120,6 +128,9 @@ func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, 
 	defer e.mu.Unlock()
 	if _, ok := e.sessions[target]; !ok {
 		return "", fmt.Errorf("fakeExecutor: no such session %q", target)
+	}
+	if e.captureFunc != nil {
+		return e.captureFunc(), nil
 	}
 	return e.capture, nil
 }
