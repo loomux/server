@@ -135,7 +135,7 @@ func TestDispatch_ProvisioningFailure_RecordsReasons(t *testing.T) {
 			Name: "ws", TargetID: target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://example.invalid/repo.git",
 		}}, nil
 	}
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err == nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "clone https://example.invalid/repo.git"); err == nil {
 		t.Fatal("Dispatch: got nil error")
 	}
 	if statusDuringProvisioning != registry.WorkspaceStatusProvisioning {

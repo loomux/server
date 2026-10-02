@@ -24,12 +24,14 @@ const defaultWorkspaceRoot = "loomux-workspaces"
 
 var (
 	workspaceSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	// gitRemoteURL accepts https:// and ssh:// URLs and scp-style
-	// user@host:path — never ext::, file:// or anything else git would
-	// treat as a transport that runs commands or reads the target's own
-	// files, and nothing a shell or git could take as an option.
-	gitRemoteURL = regexp.MustCompile(`^(https|ssh)://[A-Za-z0-9._~@:/%+-]+$`)
-	gitRemoteSCP = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._~/+-]+$`)
+	// gitRemoteURL accepts https:// and ssh:// URLs and gitRemoteSCP
+	// scp-style user@host:path — never ext::, file:// or anything else git
+	// would treat as a transport that runs commands or reads the target's
+	// own files. The user (if any) and host must each start with a letter
+	// or digit, and an scp-style path must not start with a dash, so no
+	// part can be read by git or ssh as an option (`-oProxyCommand=…`).
+	gitRemoteURL = regexp.MustCompile(`^(https|ssh)://(?:[A-Za-z0-9][A-Za-z0-9._~%+-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?(?:/[A-Za-z0-9._~%+@:/-]*)?$`)
+	gitRemoteSCP = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*:[A-Za-z0-9._~/+][A-Za-z0-9._~/+-]*$`)
 )
 
 // Validate rejects any spec provisioning can't safely act on. Its errors
@@ -85,6 +87,17 @@ func provisioningRecipe(target *registry.Target, spec ProvisionSpec) string {
 	b.WriteString(`case "$real" in "$r"/*) ;; *) echo "loomux: $p resolves to $real, outside the workspace root $r" >&2; exit 1 ;; esac` + "\n")
 	b.WriteString(`printf '` + provisionedPathPrefix + `%s\n' "$real"` + "\n")
 	return b.String()
+}
+
+// workspaceDisplayPath is where a workspace named name will be on target,
+// for showing to a person: the configured root, or ~/loomux-workspaces.
+// The recipe resolves (and confines) the real directory when it runs.
+func workspaceDisplayPath(target *registry.Target, name string) string {
+	root := "~/" + defaultWorkspaceRoot
+	if target.WorkspaceRoot != "" {
+		root = target.WorkspaceRoot
+	}
+	return root + "/" + name
 }
 
 // parseProvisionedPath reads the resolved directory a recipe printed, or

@@ -171,7 +171,15 @@ describes a new workspace only as structured data — a `name` (a slug,
 `[a-z0-9][a-z0-9-]*`, ≤63), a `kind` (`empty` | `git_clone` |
 `existing_dir`) and, for `git_clone`, a `git_remote` restricted to
 `https://`, `ssh://` or scp-style `user@server:path` (never `ext::`,
-`file://` or anything option-like). Go validates it before anything is
+`file://` or anything option-like: user and host must start with a letter
+or digit, an scp-style path must not start with `-`). A remote the user
+didn't type — the exact URL doesn't appear in their message, checked in
+Go — is never cloned without confirmation: the reply shows the remote,
+the target and the resulting path, and only a "yes" as the next message
+(the same deterministic, one-shot mechanism as install offers) clones it
+and carries the original request on. An agent started in a cloned
+repository runs whatever its own config declares, so the repository is
+the user's choice, not the router model's. Go validates it before anything is
 written, then builds the provisioning script itself, every value quoted:
 create/clone/adopt `<workspace_root>/<name>`, resolve it with symlinks
 followed (`pwd -P`), refuse it unless it is still inside the resolved root

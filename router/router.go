@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -109,10 +110,16 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	// answered here, before routing: the routing model plays no part in
 	// deciding that an install runs, nor in what it runs (LOOM-71).
 	if p, ok := r.pending.take(conversationID, time.Now()); ok {
-		if isConfirmation(message, p.agentType) {
+		if isConfirmation(message, p) {
+			if p.kind == pendingCloneRemote {
+				log.Info("clone confirmed", "target_id", p.targetID)
+				return r.act(ctx, log, conversationID, p.message, Decision{
+					Action: ActionProvisionWorkspace, AgentType: p.agentType, NewWorkspace: *p.provision,
+				}, true, start)
+			}
 			return r.confirmInstall(ctx, log, conversationID, message, p, start)
 		}
-		log.Info("install offer declined", "agent_type", p.agentType, "target_id", p.targetID)
+		log.Info("offer declined", "agent_type", p.agentType, "target_id", p.targetID)
 	}
 
 	workspaces, err := r.store.ListWorkspaces(ctx)
@@ -139,8 +146,16 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		return "", fmt.Errorf("router: dispatch: routing failed: %w", err)
 	}
 	logDecision(log, decision)
+	return r.act(ctx, log, conversationID, message, decision, false, start)
+}
 
+// act carries out a routing decision for message. cloneConfirmed is set
+// when the user has just confirmed cloning the decision's git remote
+// (see askToClone), so it isn't asked about again.
+func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, message string, decision Decision,
+	cloneConfirmed bool, start time.Time) (string, error) {
 	var workspaceID string
+	var err error
 	switch decision.Action {
 	case ActionAnswerDirectly:
 		if err := r.logTurn(ctx, conversationID, "", message, decision.DirectAnswer); err != nil {
@@ -159,6 +174,14 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		if err := decision.NewWorkspace.Validate(); err != nil {
 			log.Error("dispatch failed", "stage", "validate provisioning", "error", err)
 			return "", fmt.Errorf("router: dispatch: provision workspace: %w", err)
+		}
+		// A repository the routing model chose, rather than one the user
+		// typed, is never cloned — and an agent started in it, with
+		// whatever hooks its own config declares — without the user
+		// confirming it (LOOM-90 re-review).
+		if spec := decision.NewWorkspace; spec.Kind == ProvisionGitClone && !cloneConfirmed &&
+			!strings.Contains(message, spec.GitRemote) {
+			return r.askToClone(ctx, log, conversationID, message, decision, start)
 		}
 		// Probe for the agent before writing a workspace row, so a target
 		// without the agent's CLI gets an install offer instead of a
@@ -196,6 +219,37 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	}
 	log.Info("dispatch finished", "action", string(decision.Action), "workspace_id", workspaceID,
 		"duration_ms", time.Since(start).Milliseconds())
+	return reply, nil
+}
+
+// askToClone ends a turn whose decision would clone a repository the user
+// didn't name, showing what would be cloned, onto which target and where,
+// and registering the offer: a "yes" as the next message carries the
+// original request on (LOOM-90 re-review).
+func (r *Router) askToClone(ctx context.Context, log *slog.Logger, conversationID, message string, decision Decision,
+	start time.Time) (string, error) {
+	spec := decision.NewWorkspace
+	target, err := r.store.GetTarget(ctx, spec.TargetID)
+	if err != nil {
+		log.Error("dispatch failed", "stage", "resolve target", "target_id", spec.TargetID, "error", err)
+		return "", fmt.Errorf("router: dispatch: provision workspace: resolve target %q: %w", spec.TargetID, err)
+	}
+	r.pending.put(conversationID, pendingInstall{
+		kind:      pendingCloneRemote,
+		agentType: decision.AgentType,
+		targetID:  target.ID,
+		provision: &spec,
+		message:   message,
+		expires:   time.Now().Add(pendingTTL),
+	})
+	reply := fmt.Sprintf("To do this I'd clone a repository you didn't name:\n\n    %s\n\ninto %s on %s, "+
+		"and start %s there. Reply \"yes\" to go ahead. Any other reply cancels.",
+		spec.GitRemote, workspaceDisplayPath(target, spec.Name), target.Name, decision.AgentType)
+	if err := r.logTurn(ctx, conversationID, "", message, reply); err != nil {
+		log.Error("dispatch failed", "stage", "log turn", "error", err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+	log.Info("dispatch finished", "action", "clone_confirmation_requested", "duration_ms", time.Since(start).Milliseconds())
 	return reply, nil
 }
 

@@ -22,11 +22,24 @@ const pendingTTL = 15 * time.Minute
 // tmux session for a human to watch or attach to.
 const installTimeout = 10 * time.Minute
 
-// pendingInstall is an install offer awaiting the user's confirmation
-// (LOOM-71). Everything a confirmation will act on is fixed here when the
-// offer is made — the exact command shown to the user, and where it runs
-// — so the confirming message itself contributes nothing but "yes".
+// pendingKind is what a pending offer will do once confirmed.
+type pendingKind int
+
+const (
+	// pendingInstallAgent installs an agent CLI (LOOM-71).
+	pendingInstallAgent pendingKind = iota
+	// pendingCloneRemote clones a repository the user didn't name, then
+	// carries on with the request (LOOM-90 re-review).
+	pendingCloneRemote
+)
+
+// pendingInstall is an offer awaiting the user's confirmation — an agent
+// install (LOOM-71), or a clone of a repository the routing model chose.
+// Everything a confirmation will act on is fixed here when the offer is
+// made — what will run and where — so the confirming message itself
+// contributes nothing but "yes".
 type pendingInstall struct {
+	kind      pendingKind
 	agentType string
 	targetID  string
 	// command is the agent-type's AgentInstall.Command, as shown in the
@@ -38,7 +51,10 @@ type pendingInstall struct {
 	// needed.
 	workspaceID string
 	provision   *ProvisionSpec
-	expires     time.Time
+	// message is, for pendingCloneRemote, the request that will carry on
+	// once the clone is confirmed.
+	message string
+	expires time.Time
 }
 
 // pendingActions holds at most one offer per conversation, in memory. A
@@ -72,20 +88,31 @@ func (p *pendingActions) take(conversationID string, now time.Time) (pendingInst
 	return a, true
 }
 
-// isConfirmation reports whether message is an unambiguous yes to an
-// install offer for agentType. Deliberately a short fixed list matched
-// against the whole message, not something the routing model judges:
-// running an install is the one thing in a turn that must never happen on
-// a misread. Anything else — including a "yes, but…" — declines.
-func isConfirmation(message, agentType string) bool {
+// isConfirmation reports whether message is an unambiguous yes to offer p.
+// Deliberately a short fixed list matched against the whole message, not
+// something the routing model judges: running an install, or cloning a
+// repository the user didn't name, must never happen on a misread.
+// Anything else — including a "yes, but…" — declines.
+func isConfirmation(message string, p pendingInstall) bool {
 	m := strings.ToLower(strings.TrimSpace(message))
 	m = strings.TrimRight(m, ".!")
 	m = strings.Join(strings.Fields(strings.ReplaceAll(m, ",", " ")), " ")
 	switch m {
-	case "y", "yes", "yes please", "yep", "ok", "okay", "confirm", "confirmed", "go ahead", "do it",
-		"install", "install it", "yes install", "yes install it",
-		"install " + agentType, "yes install " + agentType:
+	case "y", "yes", "yes please", "yep", "ok", "okay", "confirm", "confirmed", "go ahead", "do it":
 		return true
+	}
+	switch p.kind {
+	case pendingInstallAgent:
+		switch m {
+		case "install", "install it", "yes install", "yes install it",
+			"install " + p.agentType, "yes install " + p.agentType:
+			return true
+		}
+	case pendingCloneRemote:
+		switch m {
+		case "clone", "clone it", "yes clone it":
+			return true
+		}
 	}
 	return false
 }

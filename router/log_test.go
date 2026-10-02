@@ -112,7 +112,7 @@ func TestDispatch_Logs_ProvisionAndAgentDispatch(t *testing.T) {
 			Action: router.ActionProvisionWorkspace,
 			NewWorkspace: router.ProvisionSpec{
 				Name:     "new-ws",
-				TargetID: target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://example.invalid/repo.git",
+				TargetID: target.ID, Kind: router.ProvisionEmpty,
 			},
 			AgentType: "claude-code",
 		}, nil

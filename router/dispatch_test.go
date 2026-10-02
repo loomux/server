@@ -221,7 +221,7 @@ func TestDispatch_ProvisionWorkspace(t *testing.T) {
 		return router.RelayResult{Reply: "provisioned and dispatched", Done: true}, nil
 	}
 
-	reply, err := r.Dispatch(context.Background(), "conv-1", "start a new workspace")
+	reply, err := r.Dispatch(context.Background(), "conv-1", "clone https://example.invalid/repo.git into a new workspace")
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestDispatch_ProvisioningFailure_LeavesWorkspaceRowInPlace(t *testing.T) {
 			Action: router.ActionProvisionWorkspace,
 			NewWorkspace: router.ProvisionSpec{
 				Name:     "doomed-ws",
-				TargetID: target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://example.invalid/repo.git",
+				TargetID: target.ID, Kind: router.ProvisionEmpty,
 			},
 			AgentType: "claude-code",
 		}, nil

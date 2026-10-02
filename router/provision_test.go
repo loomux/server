@@ -28,7 +28,7 @@ func TestProvision_RunsOnlyTheGoBuiltRecipe(t *testing.T) {
 		return router.RelayResult{Reply: "ok", Done: true}, nil
 	}
 
-	if _, err := r.Dispatch(context.Background(), "conv-1", "clone loomux/server and look around"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "clone https://github.com/loomux/server.git and look around"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	var recipe string
@@ -95,7 +95,7 @@ func TestInstallOffer_DisclosesProvisioning(t *testing.T) {
 	h.decide(router.Decision{Action: router.ActionProvisionWorkspace, AgentType: "codex", NewWorkspace: router.ProvisionSpec{
 		Name: "server", TargetID: h.target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://github.com/loomux/server.git",
 	}})
-	reply, err := h.r.Dispatch(context.Background(), "conv-1", "clone loomux/server with codex")
+	reply, err := h.r.Dispatch(context.Background(), "conv-1", "clone https://github.com/loomux/server.git with codex")
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestOutputRedactedBeforeBounding(t *testing.T) {
 				Name: "ws", TargetID: target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://example.com/x.git",
 			}}, nil
 		}
-		_, err := r.Dispatch(context.Background(), "conv-1", "go")
+		_, err := r.Dispatch(context.Background(), "conv-1", "clone https://example.com/x.git")
 		if err == nil {
 			t.Fatal("Dispatch: nil error")
 		}
@@ -209,4 +209,86 @@ func mustTasks(t *testing.T, store registry.Store, workspaceID string) []*regist
 		t.Fatalf("ListTasksByWorkspace: %v", err)
 	}
 	return tasks
+}
+
+// Re-review 1: a repository the routing model chose — the user never
+// typed its URL — is not cloned (and an agent then started in it, with its
+// own configured hooks) without the user confirming the remote, the
+// target and where it will land. Once confirmed, the original request
+// carries on.
+func TestProvision_ModelChosenRemote_AsksFirst(t *testing.T) {
+	store, exec, r, model := setup(t)
+	target := createFixtureTarget(t, store)
+	decides := 0
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		decides++
+		return router.Decision{Action: router.ActionProvisionWorkspace, AgentType: "claude-code", NewWorkspace: router.ProvisionSpec{
+			Name: "server", TargetID: target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://github.com/attacker/server.git",
+		}}, nil
+	}
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
+		return router.RelayResult{Reply: "relayed", Done: true}, nil
+	}
+
+	reply, err := r.Dispatch(context.Background(), "conv-1", "set up the loomux server repo and look around")
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	for _, want := range []string{"https://github.com/attacker/server.git", target.Name, "~/loomux-workspaces/server", `"yes"`} {
+		if !strings.Contains(reply, want) {
+			t.Errorf("confirmation missing %q:\n%s", want, reply)
+		}
+	}
+	if list, _ := store.ListWorkspaces(context.Background()); len(list) != 0 {
+		t.Fatalf("workspace written before the clone was confirmed: %+v", list)
+	}
+	if cmds := exec.launchedCommands(); len(cmds) != 0 {
+		t.Fatalf("ran %v before the clone was confirmed", cmds)
+	}
+
+	reply, err = r.Dispatch(context.Background(), "conv-1", "yes")
+	if err != nil {
+		t.Fatalf("Dispatch(yes): %v", err)
+	}
+	if decides != 1 {
+		t.Errorf("the confirmation went to the routing model (%d Decide calls)", decides)
+	}
+	if reply != "relayed" {
+		t.Errorf("reply after confirming = %q, want the original request carried on", reply)
+	}
+	exec.mu.Lock()
+	var agentKeys []string
+	for _, s := range exec.sessions {
+		if !isProvisioning(s.command) {
+			agentKeys = s.keys
+		}
+	}
+	exec.mu.Unlock()
+	if len(agentKeys) != 1 || agentKeys[0] != "set up the loomux server repo and look around" {
+		t.Errorf("agent was sent %v, want the original request", agentKeys)
+	}
+}
+
+func TestProvision_ModelChosenRemote_DeclinedNeverClones(t *testing.T) {
+	store, exec, r, model := setup(t)
+	target := createFixtureTarget(t, store)
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionProvisionWorkspace, AgentType: "claude-code", NewWorkspace: router.ProvisionSpec{
+			Name: "server", TargetID: target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://github.com/attacker/server.git",
+		}}, nil
+	}
+	if _, err := r.Dispatch(context.Background(), "conv-1", "set up the server repo"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "ok"}, nil
+	}
+	for _, m := range []string{"no, the other one", "yes"} {
+		if _, err := r.Dispatch(context.Background(), "conv-1", m); err != nil {
+			t.Fatalf("Dispatch(%q): %v", m, err)
+		}
+	}
+	if cmds := exec.launchedCommands(); len(cmds) != 0 {
+		t.Fatalf("a declined clone ran: %v", cmds)
+	}
 }

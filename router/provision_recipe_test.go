@@ -41,6 +41,15 @@ func TestProvisionSpecValidate(t *testing.T) {
 		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "https://example.com/a b"},
 		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "https://example.com/$(id)"},
 		{Name: "x", TargetID: "t", Kind: ProvisionEmpty, GitRemote: "https://github.com/x/y"},
+		// Option-like user or host parts (re-review): ssh would read them
+		// as options.
+		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "-u@h:p"},
+		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "--upload-pack@h:x"},
+		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "h@-oProxyCommand:x"},
+		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "ssh://-oProxyCommand/x"},
+		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "ssh://git@-oProxyCommand/x"},
+		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "https://-x.example.com/repo"},
+		{Name: "x", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "git@github.com:-oProxyCommand=x"},
 	}
 	for _, s := range bad {
 		if err := s.Validate(); err == nil {
