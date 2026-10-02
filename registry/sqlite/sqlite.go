@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -37,14 +38,32 @@ type Store struct {
 // WithMasterKey — most callers never touch credentials, so this is an
 // option, not a required parameter; a credential operation attempted
 // without one fails fast with a clear error instead.
+
+// sqliteBusyTimeout is the per-connection busy timeout applied to every
+// pooled SQLite connection. 5s is long enough to absorb the short races
+// between the background reaper and foreground Dispatch paths (LOOM-34)
+// while staying short enough to fail fast if a real deadlock occurs.
+const sqliteBusyTimeout = 5000
+
+// dsn builds a driver DSN that applies foreign-key enforcement and a busy
+// timeout on every connection the pool opens. Using DSN parameters instead
+// of db.Exec("PRAGMA ...") is required because PRAGMAs set via Exec only
+// affect the single connection the statement happens to run on (LOOM-67).
+func dsn(path string) string {
+	if path == "" {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return fmt.Sprintf("%s%s_foreign_keys=1&_busy_timeout=%d", path, sep, sqliteBusyTimeout)
+}
+
 func Open(path string, opts ...Option) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %s: %w", path, err)
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("sqlite: enable foreign_keys: %w", err)
 	}
 
 	goose.SetTableName("schema_migrations")
