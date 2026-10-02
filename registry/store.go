@@ -48,6 +48,11 @@ type Store interface {
 	// ListTasks's own "conversation isn't a stored entity" stance;
 	// there's nothing to 404 on at this layer.
 	ListMessagesByConversation(ctx context.Context, conversationID string) ([]*Message, error)
+	// ListConversationActivity returns one ConversationActivity per
+	// distinct conversation_id in the message log, in no particular
+	// order; an empty log returns an empty slice. It is how a
+	// conversation with no tasks at all is discovered (LOOM-62).
+	ListConversationActivity(ctx context.Context) ([]*ConversationActivity, error)
 
 	// CreateCredential, GetCredential, ListCredentials, and
 	// DeleteCredential are the vault (design spec §7's second half).

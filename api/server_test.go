@@ -973,6 +973,90 @@ func TestListConversations_Preview_TruncatesLongFirstMessageAndUsesEarliestNotLa
 	}
 }
 
+// listConversations is the GET /conversations round trip the LOOM-62
+// tests share.
+func listConversations(t *testing.T, srvURL string) []conversationSummary {
+	t.Helper()
+	token, _ := login(t, srvURL, testPassword)
+	resp := authedRequest(t, http.MethodGet, srvURL+"/api/v1/conversations", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var out struct {
+		Conversations []conversationSummary `json:"conversations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return out.Conversations
+}
+
+// TestListConversations_MessagesOnlyNoTasks_IsListed: a conversation made
+// only of answer_directly turns has messages but no tasks (LOOM-62). It
+// is listed as completed — nothing is running or waiting on the user —
+// with no workspace, its first message as preview, and its last message
+// as updated_at.
+func TestListConversations_MessagesOnlyNoTasks_IsListed(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	createTestMessage(t, store, "m1", "conv-direct-only", "", registry.MessageRoleUser, "what's up")
+	time.Sleep(10 * time.Millisecond)
+	createTestMessage(t, store, "m2", "conv-direct-only", "", registry.MessageRoleAssistant, "not much")
+
+	msgs, err := store.ListMessagesByConversation(context.Background(), "conv-direct-only")
+	if err != nil {
+		t.Fatalf("ListMessagesByConversation: %v", err)
+	}
+
+	got := listConversations(t, srv.URL)
+	if len(got) != 1 {
+		t.Fatalf("got %d conversations, want 1: %+v", len(got), got)
+	}
+	c := got[0]
+	if c.ConversationID != "conv-direct-only" || c.Preview != "what's up" || c.Status != "completed" || c.WorkspaceID != "" {
+		t.Fatalf("summary = %+v, want conv-direct-only, preview %q, status completed, no workspace", c, "what's up")
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, c.UpdatedAt)
+	if err != nil {
+		t.Fatalf("updated_at %q: %v", c.UpdatedAt, err)
+	}
+	if !updatedAt.Equal(msgs[1].CreatedAt) {
+		t.Fatalf("updated_at = %v, want the last message's created_at %v", c.UpdatedAt, msgs[1].CreatedAt)
+	}
+}
+
+// TestListConversations_RecencyCountsMessagesAsWellAsTasks: ordering is by
+// a conversation's latest activity, task update or logged message
+// alike — so a direct-answer-only conversation, and a task conversation
+// that later got a direct answer, both sort by their newest turn.
+func TestListConversations_RecencyCountsMessagesAsWellAsTasks(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	ws := createTestWorkspace(t, store, "ws1", registry.WorkspaceStatusIdle)
+
+	createTestTask(t, store, "task-a", ws.ID, "conv-task", registry.TaskStatusCompleted)
+	createTestMessage(t, store, "a1", "conv-task", "task-a", registry.MessageRoleUser, "task work")
+	time.Sleep(10 * time.Millisecond)
+	createTestMessage(t, store, "b1", "conv-direct", "", registry.MessageRoleUser, "quick question")
+	time.Sleep(10 * time.Millisecond)
+
+	got := listConversations(t, srv.URL)
+	if len(got) != 2 || got[0].ConversationID != "conv-direct" || got[1].ConversationID != "conv-task" {
+		t.Fatalf("order = %+v, want [conv-direct, conv-task]", got)
+	}
+
+	// A later direct-answer turn in the task conversation (no new task
+	// row) must move it back to the top, keeping its task's status and
+	// workspace.
+	createTestMessage(t, store, "a2", "conv-task", "", registry.MessageRoleUser, "follow-up answered directly")
+	got = listConversations(t, srv.URL)
+	if len(got) != 2 || got[0].ConversationID != "conv-task" {
+		t.Fatalf("order after follow-up = %+v, want conv-task first", got)
+	}
+	if got[0].Status != "completed" || got[0].WorkspaceID != ws.ID || got[0].Preview != "task work" {
+		t.Fatalf("conv-task summary = %+v, want its task's status/workspace and its first message as preview", got[0])
+	}
+}
+
 func TestListConversations_None_ReturnsEmptyList(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	token, _ := login(t, srv.URL, testPassword)

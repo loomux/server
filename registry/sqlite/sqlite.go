@@ -491,6 +491,35 @@ func (s *Store) ListMessagesByConversation(ctx context.Context, conversationID s
 	return out, nil
 }
 
+// ListConversationActivity takes each conversation's most recently
+// inserted message by rowid rather than MAX(created_at): created_at is
+// stored as driver-formatted text, where a lexical MAX can misorder
+// timestamps with differently trimmed fractional seconds. Messages are
+// append-only and stamped with the current time on insert, so the
+// highest rowid is the latest message.
+func (s *Store) ListConversationActivity(ctx context.Context) ([]*registry.ConversationActivity, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT conversation_id, created_at FROM messages
+		WHERE rowid IN (SELECT MAX(rowid) FROM messages GROUP BY conversation_id)`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list conversation activity: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*registry.ConversationActivity, 0)
+	for rows.Next() {
+		var a registry.ConversationActivity
+		if err := rows.Scan(&a.ConversationID, &a.LastMessageAt); err != nil {
+			return nil, fmt.Errorf("sqlite: list conversation activity: %w", err)
+		}
+		out = append(out, &a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list conversation activity: %w", err)
+	}
+	return out, nil
+}
+
 func scanMessage(row rowScanner) (*registry.Message, error) {
 	var m registry.Message
 	var taskID sql.NullString
