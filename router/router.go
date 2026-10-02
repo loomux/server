@@ -3,6 +3,8 @@ package router
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -39,6 +41,20 @@ type Router struct {
 	// agent-type's launch env (LOOM-32) without depending on the
 	// Detector itself.
 	markerDir string
+	// logger receives structured records for routing decisions,
+	// provisioning and agent dispatch (LOOM-63). Never nil — New
+	// defaults it to a discarding logger.
+	logger *slog.Logger
+}
+
+// Option configures optional Router behaviour (functional options, as
+// api.Option).
+type Option func(*Router)
+
+// WithLogger sets the logger Router reports routing decisions,
+// provisioning and dispatch to (LOOM-63). Without it nothing is logged.
+func WithLogger(l *slog.Logger) Option {
+	return func(r *Router) { r.logger = l }
 }
 
 // New constructs a Router. markerDir must be the same effective marker
@@ -48,8 +64,8 @@ type Router struct {
 // agent-type's hook script is told to touch a path completion.Detector
 // never watches.
 func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orchestrator.ExecutorFactory,
-	creds *credentials.Resolver, agentTypes AgentTypeRegistry, model RoutingModel, markerDir string) *Router {
-	return &Router{
+	creds *credentials.Resolver, agentTypes AgentTypeRegistry, model RoutingModel, markerDir string, opts ...Option) *Router {
+	r := &Router{
 		store:       store,
 		orch:        orch,
 		newExecutor: newExecutor,
@@ -57,7 +73,12 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 		agentTypes:  agentTypes,
 		model:       model,
 		markerDir:   markerDir,
+		logger:      slog.New(slog.DiscardHandler),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Dispatch runs one turn: routes message, resolves or provisions a
@@ -67,28 +88,42 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 // Returns the chat-appropriate reply. opts is passed through to the
 // routing model's Decide call unmodified (e.g. WithWorkspaceHint,
 // LOOM-46) — Router itself has no opinion on what to do with them.
+//
+// Each stage is logged (LOOM-63): dispatch start/finish, the routing
+// decision, provisioning, and the agent turn, with any failure at error
+// level. The message body itself is never logged — only its length.
 func (r *Router) Dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
+	start := time.Now()
+	log := r.logger.With("conversation_id", conversationID)
+	log.Info("dispatch started", "message_len", len(message))
+
 	workspaces, err := r.store.ListWorkspaces(ctx)
 	if err != nil {
+		log.Error("dispatch failed", "stage", "list workspaces", "error", err)
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
 	targets, err := r.store.ListTargets(ctx)
 	if err != nil {
+		log.Error("dispatch failed", "stage", "list targets", "error", err)
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
 	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces), snapshotTargets(targets), opts...)
 	if err != nil {
+		log.Error("routing failed", "error", err)
 		return "", fmt.Errorf("router: dispatch: routing failed: %w", err)
 	}
+	logDecision(log, decision)
 
 	var workspaceID string
 	switch decision.Action {
 	case ActionAnswerDirectly:
 		if err := r.logTurn(ctx, conversationID, "", message, decision.DirectAnswer); err != nil {
+			log.Error("dispatch failed", "stage", "log turn", "error", err)
 			return "", fmt.Errorf("router: dispatch: %w", err)
 		}
+		log.Info("dispatch finished", "action", string(decision.Action), "duration_ms", time.Since(start).Milliseconds())
 		return decision.DirectAnswer, nil
 
 	case ActionUseWorkspace:
@@ -101,10 +136,32 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		}
 
 	default:
+		log.Error("dispatch failed", "stage", "route", "action", string(decision.Action), "error", "unknown decision action")
 		return "", fmt.Errorf("router: dispatch: unknown decision action %q", decision.Action)
 	}
 
-	return r.dispatchToAgent(ctx, workspaceID, conversationID, decision.AgentType, message)
+	reply, err := r.dispatchToAgent(ctx, workspaceID, conversationID, decision.AgentType, message)
+	if err != nil {
+		return "", err
+	}
+	log.Info("dispatch finished", "action", string(decision.Action), "workspace_id", workspaceID,
+		"duration_ms", time.Since(start).Milliseconds())
+	return reply, nil
+}
+
+// logDecision records what the routing model decided: the action plus
+// whichever of workspace, agent type and new-workspace target/name it
+// carries. A direct answer's text is not logged — it is chat content.
+func logDecision(log *slog.Logger, d Decision) {
+	attrs := []any{"action", string(d.Action)}
+	switch d.Action {
+	case ActionUseWorkspace:
+		attrs = append(attrs, "workspace_id", d.WorkspaceID, "agent_type", d.AgentType)
+	case ActionProvisionWorkspace:
+		attrs = append(attrs, "agent_type", d.AgentType, "target_id", d.NewWorkspace.TargetID,
+			"workspace_name", d.NewWorkspace.Name)
+	}
+	log.Info("routing decision", attrs...)
 }
 
 // provisionWorkspace creates a new workspace row and runs its setup via
@@ -126,10 +183,13 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 // be orphaned. The Store's own referential integrity isn't relied on for
 // this; registry.Store is pluggable.
 func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, spec ProvisionSpec) (string, error) {
+	log := r.logger.With("conversation_id", conversationID, "target_id", spec.TargetID, "workspace_name", spec.Name)
 	if spec.TargetID == "" {
+		log.Error("provisioning failed", "stage", "resolve target", "error", "no target_id given")
 		return "", fmt.Errorf("provision workspace: no target_id given")
 	}
 	if _, err := r.store.GetTarget(ctx, spec.TargetID); err != nil {
+		log.Error("provisioning failed", "stage", "resolve target", "error", err)
 		return "", fmt.Errorf("provision workspace: resolve target %q: %w", spec.TargetID, err)
 	}
 
@@ -145,19 +205,32 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		IsDynamic:   true,
 	}
 	if err := r.store.CreateWorkspace(ctx, ws); err != nil {
+		log.Error("provisioning failed", "stage", "create workspace", "error", err)
 		return "", fmt.Errorf("provision workspace: %w", err)
 	}
 
+	// From here on a failure leaves the row behind in Provisioning (see
+	// above), so each failure record names it and its stuck status.
+	log = log.With("workspace_id", ws.ID)
+	stuck := func(stage string, err error) {
+		log.Error("provisioning failed", "stage", stage, "workspace_status", string(ws.Status), "error", err)
+	}
+	log.Info("provisioning workspace")
+
 	task, err := r.orch.Launch(ctx, ws.ID, conversationID, registry.TaskKindShell, "", spec.ProvisionCommand)
 	if err != nil {
+		stuck("launch", err)
 		return "", fmt.Errorf("provision workspace: launch: %w", err)
 	}
 	if err := r.orch.WaitForCompletion(ctx, task.ID); err != nil {
+		stuck("wait for completion", err)
 		return "", fmt.Errorf("provision workspace: wait for completion: %w", err)
 	}
 	if err := r.orch.Complete(ctx, task.ID, provisioningSummary); err != nil {
+		stuck("complete", err)
 		return "", fmt.Errorf("provision workspace: complete: %w", err)
 	}
+	log.Info("workspace provisioned", "task_id", task.ID)
 	return ws.ID, nil
 }
 
@@ -172,7 +245,20 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 // itself (not just the turn) is finished (spec §3 step 3), otherwise
 // just updating the rolling summary and leaving the task open
 // (registry.TaskStatusAwaitingInput) for a future turn.
-func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationID, agentType, message string) (string, error) {
+//
+// The turn is logged (LOOM-63) as "agent dispatch started"/"finished",
+// or "agent dispatch failed" at error level with whatever task it had
+// reached — a failure here can leave a task or workspace stuck.
+func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationID, agentType, message string) (reply string, err error) {
+	start := time.Now()
+	log := r.logger.With("conversation_id", conversationID, "workspace_id", workspaceID, "agent_type", agentType)
+	var taskID string
+	defer func() {
+		if err != nil {
+			log.Error("agent dispatch failed", "task_id", taskID, "error", err)
+		}
+	}()
+
 	task, err := r.findActiveTask(ctx, workspaceID, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
@@ -196,12 +282,15 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 			task = nil
 		}
 	}
+	resumed := task != nil
 	if task == nil {
 		task, err = r.launchAgent(ctx, workspaceID, conversationID, agentType)
 		if err != nil {
 			return "", err
 		}
 	}
+	taskID = task.ID
+	log.Info("agent dispatch started", "task_id", task.ID, "resumed", resumed)
 
 	// Every turn — the first as much as a follow-up — is delivered by
 	// typing it into the pane: a freshly launched agent CLI runs
@@ -240,6 +329,8 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
+	log.Info("agent dispatch finished", "task_id", task.ID, "task_done", result.Done,
+		"duration_ms", time.Since(start).Milliseconds())
 	return result.Reply, nil
 }
 

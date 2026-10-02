@@ -191,7 +191,9 @@ defaults for three of them.
 | `LOOMUX_STATIC_DIR` | `/srv/loomux/web` |
 
 **Optional:** `LOOMUX_SESSION_TTL`, `LOOMUX_MARKER_DIR`,
-`LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h), and the
+`LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
+`LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
+provisioning and dispatch — message bodies are never logged), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a
 startup error.
 
