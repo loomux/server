@@ -312,4 +312,9 @@ func TestDispatch_ProvisioningFailure_LeavesWorkspaceRowInPlace(t *testing.T) {
 	if len(list) != 1 || list[0].Name != "doomed-ws" {
 		t.Fatalf("ListWorkspaces = %+v, want the workspace row left in place after a provisioning failure", list)
 	}
+	// LOOM-71: kept for inspection, but marked failed — not idle, active or
+	// provisioning.
+	if list[0].Status != registry.WorkspaceStatusFailed {
+		t.Fatalf("workspace status = %q, want %q", list[0].Status, registry.WorkspaceStatusFailed)
+	}
 }

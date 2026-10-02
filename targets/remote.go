@@ -193,15 +193,12 @@ func (e *RemoteExecutor) RemoveFile(ctx context.Context, path string) error {
 }
 
 func (e *RemoteExecutor) NewSession(ctx context.Context, session, dir, command string) error {
-	args := []string{"new-session", "-d", "-s", session}
-	if dir != "" {
-		args = append(args, "-c", dir)
-	}
-	if command != "" {
-		args = append(args, command)
-	}
-	_, err := e.run(ctx, args...)
+	_, err := e.run(ctx, newSessionArgs(session, dir, command)...)
 	return err
+}
+
+func (e *RemoteExecutor) PaneExited(ctx context.Context, target string) (*PaneExit, error) {
+	return paneExited(ctx, e.run, target)
 }
 
 func (e *RemoteExecutor) HasSession(ctx context.Context, session string) (bool, error) {

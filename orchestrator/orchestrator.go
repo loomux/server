@@ -7,6 +7,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
@@ -20,13 +21,33 @@ var ErrHumanTakeover = errors.New("orchestrator: task is under human takeover")
 // task that has already completed or failed.
 var ErrTaskInactive = errors.New("orchestrator: task is not active")
 
+// ProcessExitedError is what a CompletionDetector returns when the
+// process a task's pane was running exits while it was waiting for a
+// turn to complete (LOOM-71) — an agent CLI that isn't installed, or one
+// that crashed. Output is the pane's final output (targets.PaneExit), so
+// the failure can be reported in the process's own words ("codex:
+// command not found") rather than as a missing pane. A TaskKindCommand
+// task never gets this: its process exiting is its completion.
+type ProcessExitedError struct {
+	// Status is the exit status, -1 if the process was killed by a
+	// signal.
+	Status int
+	Output string
+}
+
+func (e *ProcessExitedError) Error() string {
+	return fmt.Sprintf("process exited with status %d", e.Status)
+}
+
 // CompletionDetector learns when a task's current turn is done. The real
 // tiered strategy (native hooks / self-report / idle heuristic, design
 // spec §5) is a separate concern (LOOM-6) — this seam exists so
 // orchestrator internals never need to know which tier is active.
 type CompletionDetector interface {
 	// Wait blocks until task's current turn is judged complete, or ctx
-	// is done, whichever comes first.
+	// is done, whichever comes first. If the pane's process exits first
+	// it returns a *ProcessExitedError (except for a TaskKindCommand
+	// task, whose exit is its completion).
 	Wait(ctx context.Context, task *registry.Task) error
 }
 

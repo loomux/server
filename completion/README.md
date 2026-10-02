@@ -29,6 +29,11 @@ that would have blocked live SSH interaction with a running agent.
   with no `MarkerWatcher`/`Detector` instance at hand can still compute
   the exact same path (LOOM-32: `router.Router` needs this to build a
   launch command's env, before any watcher is involved).
+- Process exit (LOOM-71): `Detector.Wait` also polls
+  `TargetExecutor.PaneExited` alongside the marker/idle tier and returns
+  `*orchestrator.ProcessExitedError` (exit status + final output) if the
+  pane's process exits first. `TierExit` — every `registry.TaskKindCommand`
+  task — completes on the exit alone.
 - `idle.go` — `IdleWatcher`: tier 3, polling `TargetExecutor.CapturePane`
   and treating "no change for the configured idle timeout" as
   completion. Timing is abstracted behind a small `Clock`/`Ticker` pair

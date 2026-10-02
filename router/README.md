@@ -18,6 +18,13 @@ replies, and updating each workspace's rolling summary).
   truth. An entry keyed by `""` configures completion detection for
   shell-kind (provisioning) tasks, since `registry.Task.AgentType` is
   always empty for those.
+- `availability.go` / `confirm.go` — agent availability (LOOM-71): the
+  pre-launch `command -v` probe recorded per target (`registry.
+  TargetAgent`), `RefreshTargetAgents`, and the install offer: shown with
+  its exact command, run as a `command` task only when the conversation's
+  next message is an explicit, deterministically matched "yes" (design
+  spec §6 "Agent availability and install offers"). Also the bounded,
+  credential-redacted quoting of process output used in replies/errors.
 - `routing.go` — `RoutingModel` (the swappable seam), `Decision`,
   `WorkspaceSnapshot`, `ProvisionSpec`, `RelayResult`.
 - `router.go` — `Router`, the actual composition: `Dispatch` routes a

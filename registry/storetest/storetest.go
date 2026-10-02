@@ -22,7 +22,12 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TargetNotFound", func(t *testing.T) { testTargetNotFound(t, newStore(t)) })
 	t.Run("TargetDuplicateName", func(t *testing.T) { testTargetDuplicateName(t, newStore(t)) })
 
+	t.Run("TargetAgentUpsertAndList", func(t *testing.T) { testTargetAgentUpsertAndList(t, newStore(t)) })
+	t.Run("TargetAgentRequiresValidTarget", func(t *testing.T) { testTargetAgentRequiresValidTarget(t, newStore(t)) })
+	t.Run("TargetAgentDeletedWithTarget", func(t *testing.T) { testTargetAgentDeletedWithTarget(t, newStore(t)) })
+
 	t.Run("Workspace", func(t *testing.T) { testWorkspaceCRUD(t, newStore(t)) })
+	t.Run("WorkspaceStatusFailed", func(t *testing.T) { testWorkspaceStatusFailed(t, newStore(t)) })
 	t.Run("WorkspaceNotFound", func(t *testing.T) { testWorkspaceNotFound(t, newStore(t)) })
 	t.Run("WorkspaceDuplicateName", func(t *testing.T) { testWorkspaceDuplicateName(t, newStore(t)) })
 	t.Run("WorkspaceRequiresValidTarget", func(t *testing.T) { testWorkspaceRequiresValidTarget(t, newStore(t)) })
@@ -30,6 +35,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("WorkspaceTagsAndCapabilitiesRoundTrip", func(t *testing.T) { testWorkspaceTagsAndCapabilitiesRoundTrip(t, newStore(t)) })
 
 	t.Run("Task", func(t *testing.T) { testTaskCRUD(t, newStore(t)) })
+	t.Run("CommandTaskRoundTrip", func(t *testing.T) { testCommandTaskRoundTrip(t, newStore(t)) })
 	t.Run("TaskNotFound", func(t *testing.T) { testTaskNotFound(t, newStore(t)) })
 	t.Run("TaskRequiresValidWorkspace", func(t *testing.T) { testTaskRequiresValidWorkspace(t, newStore(t)) })
 	t.Run("TaskListByWorkspace", func(t *testing.T) { testTaskListByWorkspace(t, newStore(t)) })
@@ -956,5 +962,126 @@ func testConversationActivityEmpty(t *testing.T, s registry.Store) {
 	}
 	if got == nil || len(got) != 0 {
 		t.Fatalf("ListConversationActivity = %#v, want an empty non-nil slice", got)
+	}
+}
+
+func testTargetAgentUpsertAndList(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+
+	got, err := s.ListTargetAgents(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("ListTargetAgents (never probed): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListTargetAgents (never probed) = %v, want empty", got)
+	}
+
+	first := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	for _, a := range []*registry.TargetAgent{
+		{TargetID: target.ID, AgentType: "codex", Available: false, CheckedAt: first},
+		{TargetID: target.ID, AgentType: "claude-code", Available: true, CheckedAt: first},
+	} {
+		if err := s.SetTargetAgent(ctx, a); err != nil {
+			t.Fatalf("SetTargetAgent(%s): %v", a.AgentType, err)
+		}
+	}
+	// A later probe replaces the earlier result rather than adding a row.
+	second := first.Add(30 * time.Minute)
+	if err := s.SetTargetAgent(ctx, &registry.TargetAgent{TargetID: target.ID, AgentType: "codex", Available: true, CheckedAt: second}); err != nil {
+		t.Fatalf("SetTargetAgent(codex again): %v", err)
+	}
+
+	got, err = s.ListTargetAgents(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("ListTargetAgents: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListTargetAgents = %d rows, want 2", len(got))
+	}
+	if got[0].AgentType != "claude-code" || !got[0].Available || !got[0].CheckedAt.Equal(first) {
+		t.Errorf("row 0 = %+v, want claude-code available at %v", got[0], first)
+	}
+	if got[1].AgentType != "codex" || !got[1].Available || !got[1].CheckedAt.Equal(second) {
+		t.Errorf("row 1 = %+v, want codex available at %v (the newer probe)", got[1], second)
+	}
+}
+
+func testTargetAgentRequiresValidTarget(t *testing.T, s registry.Store) {
+	err := s.SetTargetAgent(context.Background(), &registry.TargetAgent{TargetID: "no-such-target", AgentType: "codex"})
+	if !errors.Is(err, registry.ErrConflict) {
+		t.Fatalf("SetTargetAgent on unknown target: err = %v, want ErrConflict", err)
+	}
+}
+
+func testTargetAgentDeletedWithTarget(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+	if err := s.SetTargetAgent(ctx, &registry.TargetAgent{TargetID: target.ID, AgentType: "codex", Available: true}); err != nil {
+		t.Fatalf("SetTargetAgent: %v", err)
+	}
+	if err := s.DeleteTarget(ctx, target.ID); err != nil {
+		t.Fatalf("DeleteTarget with only probe results: %v", err)
+	}
+	got, err := s.ListTargetAgents(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("ListTargetAgents after delete: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("probe results outlived their target: %v", got)
+	}
+}
+
+func testWorkspaceStatusFailed(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	ws.Status = registry.WorkspaceStatusFailed
+	if err := s.UpdateWorkspace(ctx, ws); err != nil {
+		t.Fatalf("UpdateWorkspace(status failed): %v", err)
+	}
+	got, err := s.GetWorkspace(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if got.Status != registry.WorkspaceStatusFailed {
+		t.Errorf("Status = %q, want failed", got.Status)
+	}
+}
+
+func testCommandTaskRoundTrip(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{
+		ID:             "command-task",
+		WorkspaceID:    ws.ID,
+		Kind:           registry.TaskKindCommand,
+		TmuxSession:    "loomux-command",
+		Status:         registry.TaskStatusRunning,
+		ConversationID: "conv",
+		Command:        "hostname && uptime",
+	}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	got, err := s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Kind != registry.TaskKindCommand || got.Command != "hostname && uptime" || got.ExitCode != nil {
+		t.Errorf("created task = %+v, want command kind, command recorded, no exit code yet", got)
+	}
+
+	code := 127
+	got.ExitCode = &code
+	got.Status = registry.TaskStatusFailed
+	if err := s.UpdateTask(ctx, got); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	got, err = s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask after update: %v", err)
+	}
+	if got.ExitCode == nil || *got.ExitCode != 127 {
+		t.Errorf("ExitCode = %v, want 127", got.ExitCode)
 	}
 }

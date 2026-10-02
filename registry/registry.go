@@ -75,6 +75,12 @@ const (
 	WorkspaceStatusActive       WorkspaceStatus = "active"
 	WorkspaceStatusProvisioning WorkspaceStatus = "provisioning"
 	WorkspaceStatusArchived     WorkspaceStatus = "archived"
+	// WorkspaceStatusFailed marks a workspace whose provisioning failed
+	// (LOOM-71). The row is kept for inspection rather than deleted, but
+	// it is never offered to the routing model again — dispatching into a
+	// workspace whose setup never finished would only fail later and
+	// less legibly.
+	WorkspaceStatusFailed WorkspaceStatus = "failed"
 )
 
 // Workspace is a directory (with an optional git remote) bound to exactly
@@ -105,6 +111,11 @@ type TaskKind string
 const (
 	TaskKindAgent TaskKind = "agent"
 	TaskKindShell TaskKind = "shell"
+	// TaskKindCommand is a one-shot command run as the pane's own process
+	// — an agent CLI install (LOOM-71), a direct shell command (LOOM-72).
+	// Its completion is the process exiting (completion.TierExit), never
+	// an idle heuristic, and the exit code is recorded on the task.
+	TaskKindCommand TaskKind = "command"
 )
 
 // TaskStatus tracks a task's current lifecycle state.
@@ -140,4 +151,23 @@ type Task struct {
 	// falls back to a fresh task (a new row, ReapedAt naturally nil)
 	// rather than clearing this one's marker in place.
 	ReapedAt *time.Time
+	// Command is what a TaskKindCommand task ran, verbatim. Empty for
+	// every other kind: an agent's launch command carries injected
+	// credentials (credentials.ShellEnvPrefix) and is never stored.
+	Command string
+	// ExitCode is a TaskKindCommand task's exit status once its process
+	// has exited; nil while it is still running or for any other kind.
+	ExitCode *int
+}
+
+// TargetAgent records whether an agent-type's CLI was found on a target
+// the last time Loomux probed for it (LOOM-71) — a `command -v` of the
+// CLI through the target's executor. Rows exist only for agent-types that
+// have been probed; no row means "unknown", not "absent". Refreshed on
+// every pre-launch probe and on demand.
+type TargetAgent struct {
+	TargetID  string
+	AgentType string
+	Available bool
+	CheckedAt time.Time
 }

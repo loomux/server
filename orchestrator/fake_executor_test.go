@@ -123,3 +123,9 @@ func (e *fakeExecutor) RemoveFile(ctx context.Context, path string) error       
 func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, error) {
 	return "", nil
 }
+
+// PaneExited always reports the pane still running: this package's tests
+// never exercise an exiting pane (completion.Detector does, LOOM-71).
+func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.PaneExit, error) {
+	return nil, nil
+}

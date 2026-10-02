@@ -473,3 +473,31 @@ func TestDecide_NoTargetsRegistered_ProvisionEscalates(t *testing.T) {
 		t.Errorf("Decide.DirectAnswer = %q, want %q", dec.DirectAnswer, "from escalation")
 	}
 }
+
+// TestDecideUserPrompt_TargetAgentAvailability proves each target's
+// recorded agent availability (LOOM-71) reaches the prompt — available,
+// not installed, or (when never probed) not mentioned as either — and the
+// system prompt tells the model what to do with it.
+func TestDecideUserPrompt_TargetAgentAvailability(t *testing.T) {
+	prompt := decideUserPrompt("hi", nil, []router.TargetSnapshot{
+		{ID: "t1", Name: "jet01", Kind: "remote", Agents: map[string]bool{"codex": false, "claude-code": true}},
+		{ID: "t2", Name: "bigbox", Kind: "remote"},
+	}, "")
+
+	for _, want := range []string{
+		"agents: claude-code: available, codex: not installed",
+		"agents: not checked yet",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Index(prompt, "claude-code: available") > strings.Index(prompt, "bigbox") {
+		t.Errorf("jet01's agents rendered under the wrong target:\n%s", prompt)
+	}
+	for _, want := range []string{"not installed", "offer to install"} {
+		if !strings.Contains(decideSystemPrompt, want) {
+			t.Errorf("system prompt doesn't explain agent availability (missing %q)", want)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 )
 
 // Tier identifies which completion-detection strategy applies. Native
@@ -30,6 +31,11 @@ const (
 	// completion (tier 3) — the true last resort per the design spec,
 	// not a default agents opt into by omission.
 	TierIdle
+	// TierExit completes when the pane's process exits (LOOM-71) — design
+	// spec §3's "completion for a Loomux-driven shell task is just script
+	// exit". It is not configured per agent-type: every
+	// registry.TaskKindCommand task uses it, and nothing else does.
+	TierExit
 )
 
 // AgentConfig is the minimal per-agent-type configuration completion
@@ -57,10 +63,12 @@ const (
 // Detector is the real tiered orchestrator.CompletionDetector
 // implementation.
 type Detector struct {
-	store   registry.Store
-	config  Config
-	markers *MarkerWatcher
-	idle    *IdleWatcher
+	store        registry.Store
+	newExecutor  orchestrator.ExecutorFactory
+	config       Config
+	markers      *MarkerWatcher
+	idle         *IdleWatcher
+	pollInterval time.Duration
 }
 
 // NewDetector constructs a Detector. markerDir is the base directory
@@ -70,32 +78,103 @@ type Detector struct {
 func NewDetector(store registry.Store, newExecutor orchestrator.ExecutorFactory, config Config, markerDir string) *Detector {
 	markerDir = MarkerDir(markerDir)
 	return &Detector{
-		store:   store,
-		config:  config,
-		markers: NewMarkerWatcher(newExecutor, markerDir, defaultPollInterval),
-		idle:    NewIdleWatcher(newExecutor, defaultPollInterval),
+		store:        store,
+		newExecutor:  newExecutor,
+		config:       config,
+		markers:      NewMarkerWatcher(newExecutor, markerDir, defaultPollInterval),
+		idle:         NewIdleWatcher(newExecutor, defaultPollInterval),
+		pollInterval: defaultPollInterval,
 	}
 }
 
 var _ orchestrator.CompletionDetector = (*Detector)(nil)
 
 // Wait resolves task's detection tier and dispatches to the matching
-// watcher.
+// watcher. For the marker and idle tiers it also watches the pane's
+// process (LOOM-71): if that exits first, nothing will ever signal the
+// turn complete — an agent CLI that isn't installed writes no marker —
+// so Wait returns an *orchestrator.ProcessExitedError at once instead of
+// hanging (marker) or reporting a dead pane's frozen output as a finished
+// turn (idle).
 func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 	target, cfg, tier, err := d.resolve(ctx, task)
 	if err != nil {
 		return fmt.Errorf("completion: wait: %w", err)
 	}
+	exec, err := d.newExecutor(target)
+	if err != nil {
+		return fmt.Errorf("completion: wait: %w", err)
+	}
+
+	if tier == TierExit {
+		return d.waitExit(ctx, exec, task)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	exited := make(chan *targets.PaneExit, 1)
+	go func() {
+		if exit := d.watchExit(ctx, exec, task); exit != nil {
+			exited <- exit
+			cancel()
+		}
+	}()
 
 	switch tier {
 	case TierMarker:
-		return d.markers.Wait(ctx, task, target)
+		err = d.markers.Wait(ctx, task, target)
 	default: // TierIdle
 		timeout := cfg.IdleTimeout
 		if timeout <= 0 {
 			timeout = defaultIdleTimeout
 		}
-		return d.idle.Wait(ctx, task, target, timeout)
+		err = d.idle.Wait(ctx, task, target, timeout)
+	}
+	select {
+	case exit := <-exited:
+		return &orchestrator.ProcessExitedError{Status: exit.Status, Output: exit.Output}
+	default:
+		return err
+	}
+}
+
+// waitExit is TierExit: poll until the pane's process has exited. Any
+// error checking is returned — this is the task's only completion signal.
+func (d *Detector) waitExit(ctx context.Context, exec targets.TargetExecutor, task *registry.Task) error {
+	ticker := time.NewTicker(d.pollInterval)
+	defer ticker.Stop()
+	for {
+		exit, err := exec.PaneExited(ctx, task.TmuxSession)
+		if err != nil {
+			return fmt.Errorf("completion: wait: %w", err)
+		}
+		if exit != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// watchExit polls alongside another tier's watcher until the pane's
+// process exits (returning how) or ctx is done (nil). Errors checking are
+// ignored: here the exit is only an extra signal, and the tier's own
+// watcher already reports a pane it can't reach in its own way.
+func (d *Detector) watchExit(ctx context.Context, exec targets.TargetExecutor, task *registry.Task) *targets.PaneExit {
+	ticker := time.NewTicker(d.pollInterval)
+	defer ticker.Stop()
+	for {
+		if exit, err := exec.PaneExited(ctx, task.TmuxSession); err == nil && exit != nil {
+			return exit
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -119,6 +198,9 @@ func (d *Detector) resolve(ctx context.Context, task *registry.Task) (*registry.
 		return nil, AgentConfig{}, 0, err
 	}
 
+	if task.Kind == registry.TaskKindCommand {
+		return target, AgentConfig{}, TierExit, nil
+	}
 	cfg, ok := d.config[task.AgentType]
 	if ok && cfg.Tier == TierMarker {
 		return target, cfg, TierMarker, nil

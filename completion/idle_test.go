@@ -40,6 +40,12 @@ func (e *scriptedExecutor) FileExists(context.Context, string) (bool, error) { r
 func (e *scriptedExecutor) RemoveFile(context.Context, string) error         { return nil }
 func (e *scriptedExecutor) RunOnce(context.Context, string) (string, error)  { return "", nil }
 
+// PaneExited reports the pane still running — IdleWatcher's own tests
+// are about output going quiet, not the process exiting.
+func (e *scriptedExecutor) PaneExited(context.Context, string) (*targets.PaneExit, error) {
+	return nil, nil
+}
+
 func (e *scriptedExecutor) CapturePane(context.Context, string) (string, error) {
 	e.mu.Lock()
 	i := e.calls

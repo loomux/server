@@ -172,6 +172,50 @@ func (s *Store) DeleteTarget(ctx context.Context, id string) error {
 	return requireRowAffected(res, "target", id)
 }
 
+// SetTargetAgent upserts one agent CLI probe result (LOOM-71).
+func (s *Store) SetTargetAgent(ctx context.Context, a *registry.TargetAgent) error {
+	if a.CheckedAt.IsZero() {
+		a.CheckedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO target_agents (target_id, agent_type, available, checked_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT (target_id, agent_type) DO UPDATE SET
+			available = excluded.available, checked_at = excluded.checked_at`,
+		a.TargetID, a.AgentType, a.Available, a.CheckedAt,
+	)
+	if isForeignKeyConstraintErr(err) {
+		return fmt.Errorf("%w: target %q does not exist", registry.ErrConflict, a.TargetID)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: set target agent: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT target_id, agent_type, available, checked_at FROM target_agents
+		WHERE target_id = ? ORDER BY agent_type`, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list target agents: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*registry.TargetAgent{}
+	for rows.Next() {
+		var a registry.TargetAgent
+		if err := rows.Scan(&a.TargetID, &a.AgentType, &a.Available, &a.CheckedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: list target agents: %w", err)
+		}
+		out = append(out, &a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list target agents: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Store) CreateWorkspace(ctx context.Context, w *registry.Workspace) error {
 	now := time.Now().UTC()
 	w.CreatedAt = now
@@ -334,10 +378,10 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tasks (
 			id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
-			created_at, updated_at, started_at, completed_at, reaped_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.WorkspaceID, string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
-		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt,
+		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.Command, t.ExitCode,
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: workspace %q does not exist", registry.ErrConflict, t.WorkspaceID)
@@ -350,7 +394,7 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 
 const taskColumns = `
 	id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
-	created_at, updated_at, started_at, completed_at, reaped_at`
+	created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code`
 
 func (s *Store) GetTask(ctx context.Context, id string) (*registry.Task, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = ?`, id)
@@ -390,10 +434,10 @@ func (s *Store) UpdateTask(ctx context.Context, t *registry.Task) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE tasks SET
 			kind = ?, agent_type = ?, tmux_session = ?, status = ?, conversation_id = ?,
-			updated_at = ?, started_at = ?, completed_at = ?, reaped_at = ?
+			updated_at = ?, started_at = ?, completed_at = ?, reaped_at = ?, command = ?, exit_code = ?
 		WHERE id = ?`,
 		string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
-		t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.ID,
+		t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.Command, t.ExitCode, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: update task: %w", err)
@@ -435,7 +479,7 @@ func scanTask(row rowScanner) (*registry.Task, error) {
 	var kind, status string
 	if err := row.Scan(
 		&t.ID, &t.WorkspaceID, &kind, &t.AgentType, &t.TmuxSession, &status, &t.ConversationID,
-		&t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.CompletedAt, &t.ReapedAt,
+		&t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.CompletedAt, &t.ReapedAt, &t.Command, &t.ExitCode,
 	); err != nil {
 		return nil, err
 	}

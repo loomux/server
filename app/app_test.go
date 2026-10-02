@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Loomux/server/completion"
@@ -124,6 +125,24 @@ func TestDefaultAgentTypes(t *testing.T) {
 	}
 	if codex.Tier != completion.TierMarker {
 		t.Errorf("codex Tier = %v, want TierMarker (mirrors claude-code's wiring level — see LOOM-22)", codex.Tier)
+	}
+
+	// LOOM-71: both real agents are probed for before launch, and carry an
+	// install recipe with the login step the CLI needs afterwards.
+	for name, want := range map[string]struct{ binary, install, login string }{
+		"claude-code": {"claude", "curl -fsSL https://claude.ai/install.sh | bash", "claude"},
+		"codex":       {"codex", "npm install -g @openai/codex", "codex login"},
+	} {
+		at := agentTypes[name]
+		if at.Binary != want.binary {
+			t.Errorf("%s Binary = %q, want %q", name, at.Binary, want.binary)
+		}
+		if at.Install == nil || at.Install.Command != want.install || !strings.Contains(at.Install.Login, want.login) {
+			t.Errorf("%s Install = %+v, want command %q and a login step mentioning %q", name, at.Install, want.install, want.login)
+		}
+	}
+	if shell.Binary != "" || shell.Install != nil {
+		t.Errorf(`"" entry is probed or installable (%+v); it isn't a real agent`, shell)
 	}
 }
 

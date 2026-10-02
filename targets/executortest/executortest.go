@@ -24,6 +24,88 @@ func Run(t *testing.T, newExecutor func(t *testing.T) targets.TargetExecutor) {
 	t.Run("SessionLifecycle", func(t *testing.T) { testSessionLifecycle(t, newExecutor(t)) })
 	t.Run("FileExistsLifecycle", func(t *testing.T) { testFileExistsLifecycle(t, newExecutor(t)) })
 	t.Run("RunOnce", func(t *testing.T) { testRunOnce(t, newExecutor(t)) })
+	t.Run("PaneSurvivesCommandExit", func(t *testing.T) { testPaneSurvivesCommandExit(t, newExecutor(t)) })
+}
+
+// testPaneSurvivesCommandExit covers LOOM-71: a session whose command
+// exits — an agent CLI that isn't installed, a one-shot command that
+// finished — must keep its pane (remain-on-exit), so its last output can
+// still be captured and its exit status read, instead of the session
+// vanishing and every later tmux call failing with "can't find pane".
+func testPaneSurvivesCommandExit(t *testing.T, exec targets.TargetExecutor) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name       string
+		command    string
+		wantStatus int
+		wantOutput string
+	}{
+		{"missing command", "loomux-no-such-cli-xyz", 127, "loomux-no-such-cli-xyz"},
+		{"clean exit", "echo loomux-done-marker", 0, "loomux-done-marker"},
+		{"non-zero exit", "echo loomux-failing; exit 3", 3, "loomux-failing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session := uniqueSessionName(t)
+			if err := exec.NewSession(ctx, session, "", "sh -c '"+strings.ReplaceAll(tc.command, "'", `'\''`)+"'"); err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
+
+			var exit *targets.PaneExit
+			var err error
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				exit, err = exec.PaneExited(ctx, session)
+				if err != nil {
+					t.Fatalf("PaneExited: %v", err)
+				}
+				if exit != nil {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if exit == nil {
+				t.Fatal("PaneExited never reported the command as exited")
+			}
+			if exit.Status != tc.wantStatus {
+				t.Errorf("exit status = %d, want %d", exit.Status, tc.wantStatus)
+			}
+			if !strings.Contains(exit.Output, tc.wantOutput) {
+				t.Errorf("exit output = %q, want it to contain %q", exit.Output, tc.wantOutput)
+			}
+			if strings.Contains(exit.Output, "Pane is dead") || strings.HasSuffix(exit.Output, "\n\n") {
+				t.Errorf("exit output = %q, want tmux's own dead-pane line and trailing blank lines trimmed", exit.Output)
+			}
+
+			alive, err := exec.HasSession(ctx, session)
+			if err != nil {
+				t.Fatalf("HasSession: %v", err)
+			}
+			if !alive {
+				t.Fatal("session vanished when its command exited; want the pane kept (remain-on-exit)")
+			}
+			if _, err := exec.CapturePane(ctx, session); err != nil {
+				t.Fatalf("CapturePane after exit: %v", err)
+			}
+		})
+	}
+
+	// A pane still running its command (here the default shell) has not
+	// exited.
+	session := uniqueSessionName(t)
+	if err := exec.NewSession(ctx, session, "", ""); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
+	exit, err := exec.PaneExited(ctx, session)
+	if err != nil {
+		t.Fatalf("PaneExited (live pane): %v", err)
+	}
+	if exit != nil {
+		t.Errorf("PaneExited reports a live shell as exited: %+v", exit)
+	}
 }
 
 // testRunOnce covers RunOnce's contract (design spec §10 axis 3 —
