@@ -76,10 +76,12 @@ type TaskLister interface {
 
 // MessageLister is the message-transcript slice of registry.Store this
 // package needs to extend conversation-detail (LOOM-18) with real chat
-// turns instead of only task-lifecycle rows (LOOM-31) — satisfied
+// turns instead of only task-lifecycle rows (LOOM-31), and to list
+// conversations that never touched a task (LOOM-62) — satisfied
 // structurally by any registry.Store, mirroring TaskLister.
 type MessageLister interface {
 	ListMessagesByConversation(ctx context.Context, conversationID string) ([]*registry.Message, error)
+	ListConversationActivity(ctx context.Context) ([]*registry.ConversationActivity, error)
 }
 
 // AttachInfoStore is the get-chain slice of registry.Store LOOM-20's
@@ -503,11 +505,9 @@ type conversationSummary struct {
 	// truncated to previewMaxRunes — a short snippet for a conversation
 	// list UI row, matching how most chat clients label a thread by its
 	// opening line rather than its most recent one (which is already
-	// visible as Status/UpdatedAt). Empty if the conversation somehow
-	// has no messages at all (shouldn't happen in practice: a
-	// conversation only appears here because it has at least one task,
-	// and every dispatched turn is logged — see logTurn — before this
-	// endpoint could see it).
+	// visible as Status/UpdatedAt). Empty only for a conversation with
+	// tasks but no logged message yet (a turn is logged — see logTurn —
+	// once its reply exists, so a first turn still in flight has none).
 	Preview string `json:"preview"`
 }
 
@@ -535,48 +535,76 @@ func firstMessagePreview(content string) string {
 // handleListConversations returns one summary row per distinct
 // conversation_id, sorted most-recently-updated first — the "which
 // conversation is active" overview. A conversation isn't a stored entity
-// (design spec has no such table); this groups TaskLister.ListTasks by
-// ConversationID, taking each conversation's most-recently-updated task
-// as representative, since the same conversation can span more than one
-// task (LOOM-13 continuation, or a later message routed to a different
-// workspace by the router). Preview (LOOM-45) is looked up per
-// conversation via MessageLister — one query per distinct conversation,
-// which is fine at this tool's expected scale (design spec: personal,
-// single-user) and mirrors handleGetConversation's own reliance on the
-// same interface rather than adding a new bulk-fetch method to Store.
+// (design spec has no such table), so it is assembled from both places
+// one leaves a trace:
+//
+//   - tasks: the conversation's most-recently-updated task supplies
+//     WorkspaceID and Status, since the same conversation can span more
+//     than one task (LOOM-13 continuation, or a later message routed to a
+//     different workspace by the router).
+//   - the message log: every logged turn, including answer_directly turns
+//     that create no task at all. A conversation made only of those
+//     (LOOM-62) has no task to describe it, so it is listed with no
+//     WorkspaceID and Status "completed" — every turn already has its
+//     reply; nothing is running or waiting on the user.
+//
+// UpdatedAt is the later of the latest task update and the latest
+// message, so a direct-answer follow-up in a task conversation still
+// counts as activity. Preview (LOOM-45) is looked up per conversation via
+// MessageLister — one query per distinct conversation, which is fine at
+// this tool's expected scale (design spec: personal, single-user) and
+// mirrors handleGetConversation's own reliance on the same interface.
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.tasks.ListTasks(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list conversations")
 		return
 	}
+	activity, err := s.messages.ListConversationActivity(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list conversations")
+		return
+	}
 
-	latest := make(map[string]*registry.Task, len(tasks))
+	summaries := make(map[string]*conversationSummary, len(activity))
 	for _, t := range tasks {
-		cur, ok := latest[t.ConversationID]
-		if !ok || t.UpdatedAt.After(cur.UpdatedAt) {
-			latest[t.ConversationID] = t
+		cur, ok := summaries[t.ConversationID]
+		if ok && !t.UpdatedAt.After(cur.UpdatedAt) {
+			continue
+		}
+		summaries[t.ConversationID] = &conversationSummary{
+			ConversationID: t.ConversationID,
+			WorkspaceID:    t.WorkspaceID,
+			Status:         string(t.Status),
+			UpdatedAt:      t.UpdatedAt,
+		}
+	}
+	for _, a := range activity {
+		cur, ok := summaries[a.ConversationID]
+		if !ok {
+			summaries[a.ConversationID] = &conversationSummary{
+				ConversationID: a.ConversationID,
+				Status:         string(registry.TaskStatusCompleted),
+				UpdatedAt:      a.LastMessageAt,
+			}
+			continue
+		}
+		if a.LastMessageAt.After(cur.UpdatedAt) {
+			cur.UpdatedAt = a.LastMessageAt
 		}
 	}
 
-	out := make([]conversationSummary, 0, len(latest))
-	for convID, t := range latest {
-		var preview string
+	out := make([]conversationSummary, 0, len(summaries))
+	for convID, c := range summaries {
 		messages, err := s.messages.ListMessagesByConversation(r.Context(), convID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list conversations")
 			return
 		}
 		if len(messages) > 0 {
-			preview = firstMessagePreview(messages[0].Content)
+			c.Preview = firstMessagePreview(messages[0].Content)
 		}
-		out = append(out, conversationSummary{
-			ConversationID: convID,
-			Preview:        preview,
-			WorkspaceID:    t.WorkspaceID,
-			Status:         string(t.Status),
-			UpdatedAt:      t.UpdatedAt,
-		})
+		out = append(out, *c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
 

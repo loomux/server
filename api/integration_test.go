@@ -218,6 +218,128 @@ func TestIntegration_DispatchThenConversationDetail_ShowsMessages(t *testing.T) 
 	}
 }
 
+// TestIntegration_DirectAnswerOnlyConversation_IsListedAndReadable is
+// LOOM-62's reproduction: on the live instance a conversation whose turns
+// were all answer_directly had its messages stored, yet
+// GET /conversations returned {"conversations":[]} — the listing was
+// built from task rows, and a direct answer creates none. Both turns go
+// through the real stack; the conversation must then be listed (with its
+// preview) and its detail must return every message.
+func TestIntegration_DirectAnswerOnlyConversation_IsListedAndReadable(t *testing.T) {
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion", "created": 1, "model": "test-model",
+			"choices": []map[string]any{{
+				"index": 0, "finish_reason": "tool_calls",
+				"message": map[string]any{
+					"role": "assistant",
+					"tool_calls": []map[string]any{{
+						"id": "call_1", "type": "function",
+						"function": map[string]any{
+							"name":      "route_decision",
+							"arguments": `{"action":"answer_directly","direct_answer":"a direct answer"}`,
+						},
+					}},
+				},
+			}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(llmSrv.Close)
+
+	realApp, err := app.Build(app.Config{
+		DBPath: filepath.Join(t.TempDir(), "test.db"),
+		Router: routerConfigFor(llmSrv.URL),
+	})
+	if err != nil {
+		t.Fatalf("app.Build: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := realApp.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	hash, err := api.HashPassword("integration-test-password")
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
+	httpSrv := httptest.NewServer(server)
+	t.Cleanup(httpSrv.Close)
+
+	token, status := doLogin(t, httpSrv.URL, "integration-test-password")
+	if status != http.StatusOK {
+		t.Fatalf("login status = %d, want %d", status, http.StatusOK)
+	}
+
+	// Two user turns, both answered directly — the live incident's shape.
+	for _, msg := range []string{"first question", "second question"} {
+		resp := postJSON(t, httpSrv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c-direct", "message": msg})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("dispatch %q status = %d, want %d", msg, resp.StatusCode, http.StatusOK)
+		}
+	}
+
+	var list struct {
+		Conversations []struct {
+			ConversationID string `json:"conversation_id"`
+			Preview        string `json:"preview"`
+		} `json:"conversations"`
+	}
+	getJSON(t, httpSrv.URL+"/api/v1/conversations", token, &list)
+	if len(list.Conversations) != 1 || list.Conversations[0].ConversationID != "c-direct" {
+		t.Fatalf("GET /conversations = %+v, want exactly c-direct", list.Conversations)
+	}
+	if list.Conversations[0].Preview != "first question" {
+		t.Fatalf("preview = %q, want %q", list.Conversations[0].Preview, "first question")
+	}
+
+	var detail struct {
+		Tasks    []any `json:"tasks"`
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	getJSON(t, httpSrv.URL+"/api/v1/conversations/c-direct", token, &detail)
+	if len(detail.Tasks) != 0 {
+		t.Fatalf("tasks = %+v, want none for a direct-answer-only conversation", detail.Tasks)
+	}
+	want := []string{"user:first question", "assistant:a direct answer", "user:second question", "assistant:a direct answer"}
+	if len(detail.Messages) != len(want) {
+		t.Fatalf("got %d messages, want %d: %+v", len(detail.Messages), len(want), detail.Messages)
+	}
+	for i, m := range detail.Messages {
+		if got := m.Role + ":" + m.Content; got != want[i] {
+			t.Errorf("messages[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+// getJSON GETs url with token and decodes a 200 response into out.
+func getJSON(t *testing.T, url, token string, out any) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d", url, resp.StatusCode, http.StatusOK)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		t.Fatalf("decode %s: %v", url, err)
+	}
+}
+
 func doLogin(t *testing.T, baseURL, password string) (token string, status int) {
 	t.Helper()
 	resp := postJSON(t, baseURL+"/api/v1/login", "", map[string]string{"password": password})

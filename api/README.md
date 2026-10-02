@@ -169,7 +169,12 @@ not engineering taste):
     by `conversation_id`, taking each conversation's most-recently-updated
     task as representative, since one conversation can span more than one
     task row (LOOM-13 continuation, or the router sending a later message
-    in the same conversation to a different workspace). `preview`
+    in the same conversation to a different workspace), and adds every
+    conversation in the message log via
+    `MessageLister.ListConversationActivity` (LOOM-62). A conversation of
+    only `answer_directly` turns has no task: it is listed with
+    `workspace_id: ""` and `status: "completed"`. `updated_at` is the later
+    of the latest task update and the latest message. `preview`
     (LOOM-45) is the conversation's first-ever message (via
     `MessageLister`, one lookup per distinct conversation), truncated to
     200 runes with a trailing "…" — the opening line for a conversation
@@ -307,6 +312,8 @@ against a fake `Dispatcher` and a real (temp-file) sqlite store for sessions, pl
  against real store fixtures) and
 `/api/v1/conversations` + `/api/v1/conversations/{id}` (auth required,
 empty-list, recency-sorted grouping across multiple conversations, a
+direct-answer-only (task-less) conversation being listed and recency
+counting messages as well as tasks (LOOM-62), a
 conversation spanning two workspaces returning chronological history,
 an unrelated conversation not leaking in, and unknown-id 404) and
 `/api/v1/tasks/{id}/attach-info` (auth required, unknown-task 404, and a

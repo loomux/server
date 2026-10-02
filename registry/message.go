@@ -26,3 +26,14 @@ type Message struct {
 	Content   string
 	CreatedAt time.Time
 }
+
+// ConversationActivity is one conversation's footprint in the message
+// log: every conversation with at least one logged turn has one, whether
+// or not it ever touched a task (an answer_directly-only conversation
+// has messages and no tasks — LOOM-62).
+type ConversationActivity struct {
+	ConversationID string
+	// LastMessageAt is the CreatedAt of the conversation's most recent
+	// message.
+	LastMessageAt time.Time
+}

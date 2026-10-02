@@ -43,6 +43,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("MessageListByConversationUnknownReturnsEmpty", func(t *testing.T) { testMessageListByConversationUnknownReturnsEmpty(t, newStore(t)) })
 	t.Run("MessageRequiresValidTaskWhenSet", func(t *testing.T) { testMessageRequiresValidTaskWhenSet(t, newStore(t)) })
 	t.Run("MessageSurvivesTaskDeletion", func(t *testing.T) { testMessageSurvivesTaskDeletion(t, newStore(t)) })
+	t.Run("ConversationActivity", func(t *testing.T) { testConversationActivity(t, newStore(t)) })
+	t.Run("ConversationActivityEmpty", func(t *testing.T) { testConversationActivityEmpty(t, newStore(t)) })
 
 	t.Run("Credential", func(t *testing.T) { testCredentialCRUD(t, newStore(t)) })
 	t.Run("CredentialNotFound", func(t *testing.T) { testCredentialNotFound(t, newStore(t)) })
@@ -897,5 +899,62 @@ func testSessionListEmpty(t *testing.T, s registry.Store) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("ListSessions on empty store = %+v, want empty", got)
+	}
+}
+
+// testConversationActivity: ListConversationActivity reports one row per
+// conversation that has any message — whether or not it ever touched a
+// task (LOOM-62: answer_directly-only conversations have none) — with
+// its latest message's created_at.
+func testConversationActivity(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	mk := func(id, conversationID string) {
+		t.Helper()
+		m := &registry.Message{ID: id, ConversationID: conversationID, Role: registry.MessageRoleUser, Content: id}
+		if err := s.CreateMessage(ctx, m); err != nil {
+			t.Fatalf("CreateMessage(%s): %v", id, err)
+		}
+	}
+	mk("a1", "conv-a")
+	time.Sleep(5 * time.Millisecond)
+	mk("b1", "conv-b")
+	time.Sleep(5 * time.Millisecond)
+	mk("a2", "conv-a")
+
+	latest := func(conversationID string) time.Time {
+		t.Helper()
+		msgs, err := s.ListMessagesByConversation(ctx, conversationID)
+		if err != nil || len(msgs) == 0 {
+			t.Fatalf("ListMessagesByConversation(%s) = %v, %v", conversationID, msgs, err)
+		}
+		return msgs[len(msgs)-1].CreatedAt
+	}
+	want := map[string]time.Time{"conv-a": latest("conv-a"), "conv-b": latest("conv-b")}
+
+	got, err := s.ListConversationActivity(ctx)
+	if err != nil {
+		t.Fatalf("ListConversationActivity: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ListConversationActivity = %+v, want one row each for %v", got, want)
+	}
+	for _, a := range got {
+		w, ok := want[a.ConversationID]
+		if !ok {
+			t.Fatalf("unexpected conversation %q", a.ConversationID)
+		}
+		if !a.LastMessageAt.Equal(w) {
+			t.Errorf("%s LastMessageAt = %v, want %v (its latest message)", a.ConversationID, a.LastMessageAt, w)
+		}
+	}
+}
+
+func testConversationActivityEmpty(t *testing.T, s registry.Store) {
+	got, err := s.ListConversationActivity(context.Background())
+	if err != nil {
+		t.Fatalf("ListConversationActivity: %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("ListConversationActivity = %#v, want an empty non-nil slice", got)
 	}
 }
