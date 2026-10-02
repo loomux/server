@@ -10,6 +10,7 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/health"
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
@@ -25,11 +26,12 @@ import (
 // Store for a client-facing layer (api.Server) that needs its own
 // session storage in the same database.
 type App struct {
-	router     *router.Router
-	store      *sqlite.Store
-	stopReaper context.CancelFunc
-	reaperDone chan struct{}
-	metrics    *metrics.Metrics
+	router        *router.Router
+	store         *sqlite.Store
+	stopReaper    context.CancelFunc
+	reaperDone    chan struct{}
+	metrics       *metrics.Metrics
+	healthChecker *health.Checker
 }
 
 // Dispatch routes one chat message through the full pipeline. See
@@ -65,6 +67,12 @@ func (a *App) Store() registry.Store {
 // expose it on a scraper port (LOOM-103).
 func (a *App) Metrics() *metrics.Metrics {
 	return a.metrics
+}
+
+// HealthChecker returns the deep-health checker for api.Server to expose
+// on /api/v1/health and /api/v1/health/deep (LOOM-105).
+func (a *App) HealthChecker() *health.Checker {
+	return a.healthChecker
 }
 
 // Close stops the background idle reaper (LOOM-16) and releases the
@@ -198,11 +206,17 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		reaper.Run(reaperCtx, interval)
 	}()
 
+	// Health probes bypass the metrics-wrapped executor so periodic
+	// liveness checks don't pollute the target operation latency/error
+	// counters (LOOM-105).
+	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr)
+
 	return &App{
-		router:     router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...),
-		store:      store,
-		stopReaper: stopReaper,
-		reaperDone: reaperDone,
-		metrics:    met,
+		router:        router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...),
+		store:         store,
+		stopReaper:    stopReaper,
+		reaperDone:    reaperDone,
+		metrics:       met,
+		healthChecker: healthChecker,
 	}, nil
 }

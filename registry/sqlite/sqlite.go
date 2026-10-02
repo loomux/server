@@ -90,6 +90,15 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// Ping verifies the database connection is alive. It satisfies both
+// registry.Store's implicit health contract and api/health's DB probe.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("sqlite: ping: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	now := time.Now().UTC()
 	t.CreatedAt = now
