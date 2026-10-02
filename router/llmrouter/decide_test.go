@@ -541,3 +541,62 @@ func TestDecide_ProvisionSpecValidated(t *testing.T) {
 		}
 	}
 }
+
+// TestDecide_RunCommand: run_command (LOOM-72) carries a registered
+// target_id and the command, passed through untouched.
+func TestDecide_RunCommand(t *testing.T) {
+	srv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+		"action":    "run_command",
+		"target_id": "target-1",
+		"command":   "hostname && uptime",
+	}))
+	m, err := New(Config{Primary: tierFor(srv, "test-model")}, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dec, err := m.Decide(context.Background(), "run `hostname && uptime` on jet01", nil,
+		[]router.TargetSnapshot{{ID: "target-1", Name: "jet01", Kind: "remote"}})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	want := router.Decision{Action: router.ActionRunCommand, TargetID: "target-1", Command: "hostname && uptime"}
+	if !reflect.DeepEqual(dec, want) {
+		t.Errorf("Decide = %+v, want %+v", dec, want)
+	}
+}
+
+// A run_command naming an unregistered target, or with no command, is a
+// validation failure — escalated, never acted on.
+func TestDecide_RunCommand_Invalid_Escalates(t *testing.T) {
+	for _, args := range []map[string]any{
+		{"action": "run_command", "target_id": "sc1", "command": "uptime"},
+		{"action": "run_command", "target_id": "target-1", "command": "  "},
+	} {
+		primarySrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, args))
+		escalationSrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+			"action": "answer_directly", "direct_answer": "from escalation",
+		}))
+		escalation := tierFor(escalationSrv, "escalation-model")
+		m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		dec, err := m.Decide(context.Background(), "run it", nil, []router.TargetSnapshot{{ID: "target-1", Name: "jet01", Kind: "remote"}})
+		if err != nil {
+			t.Fatalf("Decide: %v", err)
+		}
+		if dec.DirectAnswer != "from escalation" {
+			t.Errorf("args %v: Decide = %+v, want the escalation's answer", args, dec)
+		}
+	}
+}
+
+// The system prompt tells the model to copy commands verbatim and never
+// compose one unprompted.
+func TestDecideSystemPrompt_RunCommandRules(t *testing.T) {
+	for _, want := range []string{"run_command", "exactly as the user wrote it", "never invent"} {
+		if !strings.Contains(decideSystemPrompt, want) {
+			t.Errorf("system prompt missing %q", want)
+		}
+	}
+}

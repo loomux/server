@@ -25,6 +25,11 @@ replies, and updating each workspace's rolling summary).
   next message is an explicit, deterministically matched "yes" (design
   spec §6 "Agent availability and install offers"). Also the bounded,
   credential-redacted quoting of process output used in replies/errors.
+- `command.go` — direct shell commands (`ActionRunCommand`, LOOM-72):
+  `isVerbatim` (run at once only if the command is exactly a backtick span
+  of the message, otherwise confirm first via the same pending-offer
+  mechanism as installs), the per-target `shell@<target>` workspace, and
+  the verbatim, bounded, vault-redacted output reply.
 - `routing.go` — `RoutingModel` (the swappable seam), `Decision`,
   `WorkspaceSnapshot`, `ProvisionSpec`, `RelayResult`.
 - `router.go` — `Router`, the actual composition: `Dispatch` routes a

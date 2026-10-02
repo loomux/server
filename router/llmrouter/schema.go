@@ -33,7 +33,12 @@ const decideSystemPrompt = `You are Loomux's routing model. Given an incoming ch
 	`rather than run it. "not checked yet" means availability is unknown; Loomux checks before ` +
 	`launching. A new workspace is described only by its name, kind (empty, git_clone or ` +
 	`existing_dir) and, for git_clone, the git_remote URL: Loomux creates it under the target's ` +
-	`workspace root itself, so you never supply a path or any provisioning command.`
+	`workspace root itself, so you never supply a path or any provisioning command. ` +
+	`Choose "run_command" when the user asks to run a plain shell command on a machine ` +
+	`(no AI agent needed): set target_id to one of the listed targets and command to the command ` +
+	`exactly as the user wrote it, character for character — never invent, expand, combine or ` +
+	`"fix" a command. Only if the user describes what they want without giving the command may you ` +
+	`propose one in command; Loomux then shows it to the user and runs it only after they confirm.`
 
 // relayToolName is the single function Relay forces the model to call
 // via tool_choice, so it always returns both the condensed reply and
@@ -64,7 +69,7 @@ func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string) openai.ChatCo
 	properties := map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"enum":        []string{"answer_directly", "use_workspace", "provision_workspace"},
+			"enum":        []string{"answer_directly", "use_workspace", "provision_workspace", "run_command"},
 			"description": "What to do with the incoming message.",
 		},
 		"direct_answer": map[string]any{
@@ -75,6 +80,13 @@ func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string) openai.ChatCo
 			"Set when action == use_workspace: the ID of the workspace to dispatch to.", workspaceIDs),
 		"agent_type": enumStringProperty(
 			"Set when action == use_workspace or provision_workspace: which registered agent type to dispatch to.", agentTypes),
+		"target_id": enumStringProperty(
+			"Set when action == run_command: the ID of the registered target to run the command on.", targetIDs),
+		"command": map[string]any{
+			"type": "string",
+			"description": "Set when action == run_command: the shell command, exactly as the user wrote it. " +
+				"Never invent or alter a command.",
+		},
 		"new_workspace": map[string]any{
 			"type":        "object",
 			"description": "Set when action == provision_workspace: the new workspace to create.",

@@ -83,3 +83,42 @@ func TestIsConfirmation_Clone(t *testing.T) {
 		t.Error(`"clone it" confirmed an install`)
 	}
 }
+
+func TestIsConfirmation_Command(t *testing.T) {
+	cmd := pendingInstall{kind: pendingRunCommand, command: "uptime"}
+	for _, m := range []string{"yes", "run it", "Go ahead."} {
+		if !isConfirmation(m, cmd) {
+			t.Errorf("isConfirmation(%q, command) = false, want true", m)
+		}
+	}
+	// An install phrasing doesn't confirm a command, nor a command
+	// phrasing an install.
+	if isConfirmation("install it", cmd) {
+		t.Error(`"install it" confirmed a command`)
+	}
+	if isConfirmation("run it", pendingInstall{kind: pendingInstallAgent, agentType: "codex"}) {
+		t.Error(`"run it" confirmed an install`)
+	}
+}
+
+func TestIsVerbatim(t *testing.T) {
+	cases := []struct {
+		command, message string
+		want             bool
+	}{
+		{"hostname && uptime", "run `hostname && uptime` on jet01", true},
+		{"hostname && uptime", "run ` hostname && uptime ` on jet01", true},
+		{"df -h", "on jet01:\n```\ndf -h\n```", true},
+		{"df -h", "on jet01:\n```sh\ndf -h\n```", true},
+		{"hostname && uptime", "run hostname && uptime on jet01", false},
+		{"rm -rf /tmp/x", "don't run rm -rf /tmp/x there", false},
+		{"hostname && uptime", "run `hostname` then `uptime`", false},
+		{"hostname", "run `hostname && uptime`", false},
+		{"", "``", false},
+	}
+	for _, tc := range cases {
+		if got := isVerbatim(tc.command, tc.message); got != tc.want {
+			t.Errorf("isVerbatim(%q, %q) = %v, want %v", tc.command, tc.message, got, tc.want)
+		}
+	}
+}

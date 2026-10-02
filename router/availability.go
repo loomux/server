@@ -230,14 +230,19 @@ const (
 // quoteOutput keeps the end of output (where an error usually is) within
 // the quoted-output bounds, marking anything dropped.
 func quoteOutput(output string) string {
+	return boundOutput(output, quotedOutputMaxLines, quotedOutputMaxBytes)
+}
+
+// boundOutput keeps the last maxLines lines / maxBytes bytes of output.
+func boundOutput(output string, maxLines, maxBytes int) string {
 	output = strings.TrimRight(output, " \t\n")
 	truncated := false
-	if lines := strings.Split(output, "\n"); len(lines) > quotedOutputMaxLines {
-		output = strings.Join(lines[len(lines)-quotedOutputMaxLines:], "\n")
+	if lines := strings.Split(output, "\n"); len(lines) > maxLines {
+		output = strings.Join(lines[len(lines)-maxLines:], "\n")
 		truncated = true
 	}
-	if len(output) > quotedOutputMaxBytes {
-		output = output[len(output)-quotedOutputMaxBytes:]
+	if len(output) > maxBytes {
+		output = output[len(output)-maxBytes:]
 		truncated = true
 	}
 	if truncated {

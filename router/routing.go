@@ -13,6 +13,12 @@ const (
 	ActionUseWorkspace DecisionAction = "use_workspace"
 	// ActionProvisionWorkspace creates a new workspace before dispatching.
 	ActionProvisionWorkspace DecisionAction = "provision_workspace"
+	// ActionRunCommand runs a plain shell command on a target with no AI
+	// agent involved, relaying its output verbatim (LOOM-72). It runs at
+	// once only if Command is exactly what the user wrote in backticks;
+	// otherwise the user is asked to confirm the exact command first —
+	// see Router's runCommand.
+	ActionRunCommand DecisionAction = "run_command"
 )
 
 // WorkspaceSnapshot is the compact workspace projection design spec §6
@@ -93,6 +99,12 @@ type Decision struct {
 	// ActionProvisionWorkspace — which registered agent-type to
 	// dispatch to.
 	AgentType string
+
+	// TargetID and Command are set when Action == ActionRunCommand: the
+	// registered target to run on, and the command — copied from the
+	// user's message, never composed by the model if it can help it.
+	TargetID string
+	Command  string
 }
 
 // RelayResult is what RoutingModel.Relay returns.
