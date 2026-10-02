@@ -22,7 +22,7 @@ func TestDecide_AnswerDirectly(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	dec, err := m.Decide(context.Background(), "hi", nil)
+	dec, err := m.Decide(context.Background(), "hi", nil, nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestDecide_UseWorkspace(t *testing.T) {
 	}
 
 	workspaces := []router.WorkspaceSnapshot{{ID: "ws-1", Name: "Test", Description: "d"}}
-	dec, err := m.Decide(context.Background(), "do the thing", workspaces)
+	dec, err := m.Decide(context.Background(), "do the thing", workspaces, nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestDecide_WorkspaceHint_AppearsInPromptAdvisoryOnly(t *testing.T) {
 	}
 
 	workspaces := []router.WorkspaceSnapshot{{ID: "ws-hinted", Name: "Hinted"}, {ID: "ws-other", Name: "Other"}}
-	dec, err := m.Decide(context.Background(), "do the thing", workspaces, router.WithWorkspaceHint("ws-hinted"))
+	dec, err := m.Decide(context.Background(), "do the thing", workspaces, nil, router.WithWorkspaceHint("ws-hinted"))
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestDecide_ProvisionWorkspace(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	dec, err := m.Decide(context.Background(), "start a new project", nil)
+	dec, err := m.Decide(context.Background(), "start a new project", nil, []router.TargetSnapshot{{ID: "target-1", Name: "jet01", Kind: "local"}})
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestDecide_MalformedPrimary_EscalatesToHealthyEscalation(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	dec, err := m.Decide(context.Background(), "hi", nil)
+	dec, err := m.Decide(context.Background(), "hi", nil, nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestDecide_PrimaryTransportError_EscalatesToHealthyEscalation(t *testing.T)
 		t.Fatalf("New: %v", err)
 	}
 
-	dec, err := m.Decide(context.Background(), "hi", nil)
+	dec, err := m.Decide(context.Background(), "hi", nil, nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestDecide_BothTiersFail_ReturnsCombinedError(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	_, err = m.Decide(context.Background(), "hi", nil)
+	_, err = m.Decide(context.Background(), "hi", nil, nil)
 	if err == nil {
 		t.Fatal("Decide: want error, got nil")
 	}
@@ -209,7 +209,7 @@ func TestDecide_PrimaryFails_NoEscalationConfigured_SurfacesDirectly(t *testing.
 		t.Fatalf("New: %v", err)
 	}
 
-	_, err = m.Decide(context.Background(), "hi", nil)
+	_, err = m.Decide(context.Background(), "hi", nil, nil)
 	if err == nil {
 		t.Fatal("Decide: want error, got nil")
 	}
@@ -234,7 +234,7 @@ func TestDecide_PrimarySucceeds_EscalationNeverCalled(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	dec, err := m.Decide(context.Background(), "hi", nil)
+	dec, err := m.Decide(context.Background(), "hi", nil, nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestDecide_UnknownAgentType_EscalatesAsValidationFailure(t *testing.T) {
 	}
 
 	workspaces := []router.WorkspaceSnapshot{{ID: "ws-1"}}
-	dec, err := m.Decide(context.Background(), "hi", workspaces)
+	dec, err := m.Decide(context.Background(), "hi", workspaces, nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestDecide_UnknownWorkspaceID_EscalatesAsValidationFailure(t *testing.T) {
 	}
 
 	workspaces := []router.WorkspaceSnapshot{{ID: "ws-1"}}
-	dec, err := m.Decide(context.Background(), "hi", workspaces)
+	dec, err := m.Decide(context.Background(), "hi", workspaces, nil)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestDecide_NoToolCall_TreatedAsFailure(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	_, err = m.Decide(context.Background(), "hi", nil)
+	_, err = m.Decide(context.Background(), "hi", nil, nil)
 	if err == nil {
 		t.Fatal("Decide: want error, got nil")
 	}
@@ -326,5 +326,140 @@ func TestNew_EmptyAgentTypes_StillConstructs(t *testing.T) {
 	}
 	if m == nil {
 		t.Fatal("New returned nil Model with nil error")
+	}
+}
+
+// TestDecide_TargetsAppearInPrompt proves the registered targets reach
+// the actual LLM call (LOOM-64): before this, the routing model was
+// never told targets existed at all, so any target_id in a
+// provision_workspace decision was a guess.
+func TestDecide_TargetsAppearInPrompt(t *testing.T) {
+	var gotBody []byte
+	handler := toolCallHandler(t, decideToolName, map[string]any{
+		"action":        "answer_directly",
+		"direct_answer": "ok",
+	})
+	srv, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		handler(w, r)
+	})
+
+	m, err := New(Config{Primary: tierFor(srv, "test-model")}, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	targets := []router.TargetSnapshot{
+		{ID: "target-local", Name: "jet01", Kind: "local"},
+		{ID: "target-remote", Name: "bigbox", Kind: "remote", Host: "bigbox.example.invalid"},
+	}
+	if _, err := m.Decide(context.Background(), "hi", nil, targets); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	body := string(gotBody)
+	for _, want := range []string{"target-local", "jet01", "target-remote", "bigbox", "bigbox.example.invalid"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("request body does not mention %q: %s", want, body)
+		}
+	}
+}
+
+func TestDecide_UnknownTargetID_EscalatesAsValidationFailure(t *testing.T) {
+	primarySrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+		"action":     "provision_workspace",
+		"agent_type": "claude-code",
+		"new_workspace": map[string]any{
+			"name":      "new-ws",
+			"path":      "/path",
+			"target_id": "sc1",
+		},
+	}))
+	escalationSrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+		"action":        "answer_directly",
+		"direct_answer": "from escalation",
+	}))
+
+	escalation := tierFor(escalationSrv, "escalation-model")
+	m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	targets := []router.TargetSnapshot{{ID: "target-1", Name: "jet01", Kind: "local"}}
+	dec, err := m.Decide(context.Background(), "start a new project", nil, targets)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if dec.DirectAnswer != "from escalation" {
+		t.Errorf("Decide.DirectAnswer = %q, want %q", dec.DirectAnswer, "from escalation")
+	}
+}
+
+func TestDecide_EmptyTargetID_EscalatesAsValidationFailure(t *testing.T) {
+	primarySrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+		"action":     "provision_workspace",
+		"agent_type": "claude-code",
+		"new_workspace": map[string]any{
+			"name": "new-ws",
+			"path": "/path",
+		},
+	}))
+	escalationSrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+		"action":        "answer_directly",
+		"direct_answer": "from escalation",
+	}))
+
+	escalation := tierFor(escalationSrv, "escalation-model")
+	m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	targets := []router.TargetSnapshot{{ID: "target-1", Name: "jet01", Kind: "local"}}
+	dec, err := m.Decide(context.Background(), "start a new project", nil, targets)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if dec.DirectAnswer != "from escalation" {
+		t.Errorf("Decide.DirectAnswer = %q, want %q", dec.DirectAnswer, "from escalation")
+	}
+}
+
+// TestDecide_NoTargetsRegistered_ProvisionEscalates covers the degenerate
+// case: with no targets registered at all there is no valid target_id the
+// model could name, so a provision_workspace decision can never be acted
+// on — it must fail validation rather than reach Router.Dispatch.
+func TestDecide_NoTargetsRegistered_ProvisionEscalates(t *testing.T) {
+	primarySrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+		"action":     "provision_workspace",
+		"agent_type": "claude-code",
+		"new_workspace": map[string]any{
+			"name":      "new-ws",
+			"path":      "/path",
+			"target_id": "anything",
+		},
+	}))
+	escalationSrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+		"action":        "answer_directly",
+		"direct_answer": "from escalation",
+	}))
+
+	escalation := tierFor(escalationSrv, "escalation-model")
+	m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	dec, err := m.Decide(context.Background(), "start a new project", nil, nil)
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if dec.DirectAnswer != "from escalation" {
+		t.Errorf("Decide.DirectAnswer = %q, want %q", dec.DirectAnswer, "from escalation")
 	}
 }

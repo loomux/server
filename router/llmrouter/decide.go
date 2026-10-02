@@ -38,14 +38,15 @@ type decideArgumentsWorkspace struct {
 // invalid tool call) or the primary is unavailable. opts' WithWorkspaceHint
 // (LOOM-46), if set, is folded into the user prompt as advisory context —
 // it never bypasses the model's own workspace_id validation against
-// workspaces.
-func (m *Model) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot, opts ...router.DispatchOption) (router.Decision, error) {
+// workspaces. targets (LOOM-64) are listed in the prompt and bound
+// new_workspace.target_id the same way workspaces bound workspace_id.
+func (m *Model) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, opts ...router.DispatchOption) (router.Decision, error) {
 	var o router.DispatchOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
 
-	dec, err := m.decideWith(ctx, m.cfg.Primary, m.primaryTimeout, message, workspaces, o.WorkspaceHint)
+	dec, err := m.decideWith(ctx, m.cfg.Primary, m.primaryTimeout, message, workspaces, targets, o.WorkspaceHint)
 	if err == nil {
 		return dec, nil
 	}
@@ -53,7 +54,7 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 		return router.Decision{}, fmt.Errorf("llmrouter: decide: primary model: %w", err)
 	}
 
-	dec, err2 := m.decideWith(ctx, *m.cfg.Escalation, m.escalationTimeout, message, workspaces, o.WorkspaceHint)
+	dec, err2 := m.decideWith(ctx, *m.cfg.Escalation, m.escalationTimeout, message, workspaces, targets, o.WorkspaceHint)
 	if err2 != nil {
 		return router.Decision{}, fmt.Errorf(
 			"llmrouter: decide: primary model failed (%v); escalation model also failed: %w", err, err2)
@@ -61,7 +62,7 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 	return dec, nil
 }
 
-func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration, message string, workspaces []router.WorkspaceSnapshot, workspaceHint string) (router.Decision, error) {
+func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration, message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, workspaceHint string) (router.Decision, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -69,15 +70,19 @@ func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration
 	for i, ws := range workspaces {
 		workspaceIDs[i] = ws.ID
 	}
+	targetIDs := make([]string, len(targets))
+	for i, t := range targets {
+		targetIDs[i] = t.ID
+	}
 
 	client := buildClient(tier)
 	resp, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: tier.Model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(decideSystemPrompt),
-			openai.UserMessage(decideUserPrompt(message, workspaces, workspaceHint)),
+			openai.UserMessage(decideUserPrompt(message, workspaces, targets, workspaceHint)),
 		},
-		Tools: []openai.ChatCompletionToolUnionParam{buildDecideTool(m.agentTypes, workspaceIDs)},
+		Tools: []openai.ChatCompletionToolUnionParam{buildDecideTool(m.agentTypes, workspaceIDs, targetIDs)},
 		ToolChoice: openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
 			Name: decideToolName,
 		}),
@@ -99,15 +104,17 @@ func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration
 		return router.Decision{}, fmt.Errorf("unparseable tool call arguments: %w", err)
 	}
 
-	return m.validateDecision(args, workspaceIDs)
+	return m.validateDecision(args, workspaceIDs, targetIDs)
 }
 
 // validateDecision converts parsed tool-call arguments into a
 // router.Decision, rejecting anything Router.Dispatch couldn't act on
 // safely: an unknown action, an agent_type outside the caller-supplied
-// set, or a use_workspace decision naming a workspace_id that wasn't in
-// this call's workspace list.
-func (m *Model) validateDecision(args decideArguments, workspaceIDs []string) (router.Decision, error) {
+// set, a use_workspace decision naming a workspace_id that wasn't in
+// this call's workspace list, or a provision_workspace decision naming a
+// target_id that wasn't in this call's target list (LOOM-64) — which
+// includes any provision_workspace at all when no targets are registered.
+func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs []string) (router.Decision, error) {
 	action := router.DecisionAction(args.Action)
 	switch action {
 	case router.ActionAnswerDirectly:
@@ -128,6 +135,9 @@ func (m *Model) validateDecision(args decideArguments, workspaceIDs []string) (r
 	case router.ActionProvisionWorkspace:
 		if !m.isValidAgentType(args.AgentType) {
 			return router.Decision{}, fmt.Errorf("unknown agent_type %q", args.AgentType)
+		}
+		if args.NewWorkspace.TargetID == "" || !contains(targetIDs, args.NewWorkspace.TargetID) {
+			return router.Decision{}, fmt.Errorf("provision_workspace with unknown target_id %q", args.NewWorkspace.TargetID)
 		}
 		return router.Decision{
 			Action:    action,

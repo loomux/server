@@ -27,6 +27,18 @@ type WorkspaceSnapshot struct {
 	Capabilities []string
 }
 
+// TargetSnapshot is the compact projection of a registered execution
+// target (design spec §2) a routing call sees, so a provision_workspace
+// decision can name a real target_id instead of guessing one (LOOM-64).
+// Deliberately identifying fields only — never User or SSHKeyRef, which
+// are credential-adjacent and have no bearing on routing.
+type TargetSnapshot struct {
+	ID   string
+	Name string
+	Kind string
+	Host string
+}
+
 // ProvisionSpec describes a new dynamic workspace to create and set up
 // (design spec §2: workspaces are "provisioned on demand... via a
 // shell-kind pane that runs the provisioning script").
@@ -117,11 +129,13 @@ func WithWorkspaceHint(workspaceID string) DispatchOption {
 // test stand-in for tests that don't want a real model call in the loop.
 type RoutingModel interface {
 	// Decide returns a routing decision for an incoming chat message,
-	// given a compact snapshot of the existing workspace registry.
+	// given a compact snapshot of the existing workspace registry and of
+	// the registered execution targets a new workspace may be
+	// provisioned on (LOOM-64).
 	// opts carries optional advisory input such as WithWorkspaceHint
 	// (LOOM-46) — an implementation is free to ignore any option it
 	// doesn't understand.
-	Decide(ctx context.Context, message string, workspaces []WorkspaceSnapshot, opts ...DispatchOption) (Decision, error)
+	Decide(ctx context.Context, message string, workspaces []WorkspaceSnapshot, targets []TargetSnapshot, opts ...DispatchOption) (Decision, error)
 
 	// Relay condenses captured agent output into a RelayResult — see
 	// its doc comment for the Done distinction (design spec §3).

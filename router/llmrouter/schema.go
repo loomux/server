@@ -22,8 +22,10 @@ const decideSystemPrompt = `You are Loomux's routing model. Given an incoming ch
 	`"use_workspace" to dispatch the message to an existing workspace that fits it, filling in ` +
 	`workspace_id (must be one of the listed workspace IDs) and agent_type. Choose ` +
 	`"provision_workspace" when no existing workspace fits and a new one should be created, filling ` +
-	`in new_workspace and agent_type. Only use an agent_type from the list of registered agent types ` +
-	`given to you — never invent one.`
+	`in new_workspace and agent_type; new_workspace.target_id must be the ID of one of the listed ` +
+	`targets (the machines a workspace can be created on). Only use an agent_type from the list of ` +
+	`registered agent types given to you, and only a target_id from the list of targets given to ` +
+	`you — never invent either. If no targets are listed, a new workspace cannot be provisioned.`
 
 // relayToolName is the single function Relay forces the model to call
 // via tool_choice, so it always returns both the condensed reply and
@@ -46,10 +48,11 @@ const relaySystemPrompt = `You are Loomux's relay model. You are given the raw c
 // Flat rather than a conditional schema keyed on action — conditional
 // (if/then) JSON Schema support across OpenAI-compatible providers is
 // unverified, so cross-field consistency (e.g. use_workspace with an empty
-// workspace_id) is validated in Go after parsing instead. agentType and
-// workspace_id are enum-constrained to the caller-supplied valid sets when
-// non-empty — a cheap, high-value correctness win.
-func buildDecideTool(agentTypes, workspaceIDs []string) openai.ChatCompletionToolUnionParam {
+// workspace_id) is validated in Go after parsing instead. agentType,
+// workspace_id and new_workspace.target_id are enum-constrained to the
+// caller-supplied valid sets when non-empty — a cheap, high-value
+// correctness win.
+func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string) openai.ChatCompletionToolUnionParam {
 	properties := map[string]any{
 		"action": map[string]any{
 			"type":        "string",
@@ -68,9 +71,10 @@ func buildDecideTool(agentTypes, workspaceIDs []string) openai.ChatCompletionToo
 			"type":        "object",
 			"description": "Set when action == provision_workspace: the new workspace to create.",
 			"properties": map[string]any{
-				"name":              map[string]any{"type": "string"},
-				"path":              map[string]any{"type": "string"},
-				"target_id":         map[string]any{"type": "string"},
+				"name": map[string]any{"type": "string"},
+				"path": map[string]any{"type": "string"},
+				"target_id": enumStringProperty(
+					"The ID of the registered target to create the workspace on.", targetIDs),
 				"git_remote":        map[string]any{"type": "string"},
 				"description":       map[string]any{"type": "string"},
 				"provision_command": map[string]any{"type": "string"},
@@ -129,13 +133,13 @@ func enumStringProperty(description string, values []string) map[string]any {
 	return p
 }
 
-// decideUserPrompt renders the message and compact workspace registry
-// (design spec §6: tags/description/capabilities, not full history) as the
-// user turn. workspaceHint (LOOM-46), when non-empty, is appended as
+// decideUserPrompt renders the message, compact workspace registry
+// (design spec §6: tags/description/capabilities, not full history) and
+// registered targets (LOOM-64: id/name/kind/host only) as the user turn. workspaceHint (LOOM-46), when non-empty, is appended as
 // advisory context — the client's suggested workspace_id, which the
 // model may follow or disregard; it's never substituted for the model's
 // own use_workspace decision.
-func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, workspaceHint string) string {
+func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, workspaceHint string) string {
 	var b strings.Builder
 	b.WriteString("Message:\n")
 	b.WriteString(message)
@@ -146,6 +150,16 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, wor
 	for _, ws := range workspaces {
 		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  description: %s\n  tags: %s\n  capabilities: %s\n",
 			ws.ID, ws.Name, ws.Description, strings.Join(ws.Tags, ", "), strings.Join(ws.Capabilities, ", "))
+	}
+	b.WriteString("\nTargets:\n")
+	if len(targets) == 0 {
+		b.WriteString("(none)\n")
+	}
+	for _, t := range targets {
+		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n", t.ID, t.Name, t.Kind)
+		if t.Host != "" {
+			fmt.Fprintf(&b, "  host: %s\n", t.Host)
+		}
 	}
 	if workspaceHint != "" {
 		fmt.Fprintf(&b, "\nClient hint: the caller suggests this message likely belongs to workspace_id %q. "+

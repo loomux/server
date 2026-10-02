@@ -24,14 +24,19 @@ type StubRoutingModel struct {
 	// tests can assert an option reached the routing model without
 	// DecideFunc itself needing to know about the variadic tail.
 	LastDecideOptions router.DispatchOptions
+	// LastDecideTargets captures the target snapshot passed to the most
+	// recent Decide call, so tests can assert what the router model was
+	// told about registered targets without widening DecideFunc.
+	LastDecideTargets []router.TargetSnapshot
 }
 
-func (m *StubRoutingModel) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot, opts ...router.DispatchOption) (router.Decision, error) {
+func (m *StubRoutingModel) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, opts ...router.DispatchOption) (router.Decision, error) {
 	var o router.DispatchOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
 	m.LastDecideOptions = o
+	m.LastDecideTargets = targets
 	return m.DecideFunc(ctx, message, workspaces)
 }
 
