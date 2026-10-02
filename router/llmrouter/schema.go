@@ -2,6 +2,7 @@ package llmrouter
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -25,7 +26,12 @@ const decideSystemPrompt = `You are Loomux's routing model. Given an incoming ch
 	`in new_workspace and agent_type; new_workspace.target_id must be the ID of one of the listed ` +
 	`targets (the machines a workspace can be created on). Only use an agent_type from the list of ` +
 	`registered agent types given to you, and only a target_id from the list of targets given to ` +
-	`you — never invent either. If no targets are listed, a new workspace cannot be provisioned.`
+	`you — never invent either. If no targets are listed, a new workspace cannot be provisioned. ` +
+	`Each target lists which agent types are installed on it: prefer an agent_type that is ` +
+	`"available" on the target the work will run on, and don't choose one marked "not installed" ` +
+	`there unless the user explicitly asked for that agent — Loomux will then offer to install it ` +
+	`rather than run it. "not checked yet" means availability is unknown; Loomux checks before ` +
+	`launching.`
 
 // relayToolName is the single function Relay forces the model to call
 // via tool_choice, so it always returns both the condensed reply and
@@ -133,9 +139,32 @@ func enumStringProperty(description string, values []string) map[string]any {
 	return p
 }
 
+// renderAgents lists a target's recorded agent availability (LOOM-71) in
+// a stable order, e.g. "claude-code: available, codex: not installed".
+func renderAgents(agents map[string]bool) string {
+	if len(agents) == 0 {
+		return "not checked yet"
+	}
+	names := make([]string, 0, len(agents))
+	for name := range agents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, len(names))
+	for i, name := range names {
+		state := "not installed"
+		if agents[name] {
+			state = "available"
+		}
+		parts[i] = name + ": " + state
+	}
+	return strings.Join(parts, ", ")
+}
+
 // decideUserPrompt renders the message, compact workspace registry
 // (design spec §6: tags/description/capabilities, not full history) and
-// registered targets (LOOM-64: id, name and kind only) as the user turn.
+// registered targets (LOOM-64: id, name and kind only — plus each one's
+// recorded agent availability, LOOM-71) as the user turn.
 // workspaceHint (LOOM-46), when non-empty, is appended as advisory
 // context — the client's suggested workspace_id, which the model may
 // follow or disregard; it's never substituted for the model's own
@@ -157,7 +186,7 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 		b.WriteString("(none)\n")
 	}
 	for _, t := range targets {
-		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n", t.ID, t.Name, t.Kind)
+		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n  agents: %s\n", t.ID, t.Name, t.Kind, renderAgents(t.Agents))
 	}
 	if workspaceHint != "" {
 		fmt.Fprintf(&b, "\nClient hint: the caller suggests this message likely belongs to workspace_id %q. "+
