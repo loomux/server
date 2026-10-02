@@ -160,6 +160,17 @@ func TestDefaultAgentTypes(t *testing.T) {
 	if shell.Binary != "" || shell.Install != nil {
 		t.Errorf(`"" entry is probed or installable (%+v); it isn't a real agent`, shell)
 	}
+
+	// LOOM-75: a TierMarker agent-type waits for a marker, so Loomux must
+	// inject what writes it — nothing on the target does.
+	for name, at := range map[string]router.AgentType{"claude-code": claude, "codex": codex} {
+		if len(at.CompletionHookArgs) == 0 {
+			t.Errorf("%s CompletionHookArgs empty: its marker would never be written", name)
+		}
+		if at.VersionCheck == nil {
+			t.Errorf("%s VersionCheck nil: a CLI too old for the hook flag wouldn't fail fast", name)
+		}
+	}
 }
 
 func TestDispatchableAgentTypeNames_ExcludesEmptyKey(t *testing.T) {

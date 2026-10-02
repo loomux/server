@@ -2,27 +2,64 @@ package completion
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 )
 
-// MarkerDir resolves the effective marker directory: configured
-// unchanged if non-empty, else the same $TMPDIR/loomux/completion-markers
-// default NewDetector has always fallen back to (same convention family
-// as LOOM-4's $TMPDIR/loomux/ssh-cm for SSH ControlPath). Exported
-// (LOOM-32) so a caller that needs the real effective directory — e.g.
-// router.Router, to compute a per-task marker path for env-var
-// injection — can resolve exactly what NewDetector itself will resolve,
-// without constructing a Detector first.
-func MarkerDir(configured string) string {
+// defaultMarkerDirScript creates the default marker directory on the
+// target, as the target's own user, and prints its path. Default because
+// LOOMUX_MARKER_DIR is unset (LOOM-75 review). It lives under $HOME rather
+// than a fixed /tmp path: on a shared target another user could create
+// /tmp/loomux/... first, so the hook's mkdir fails and turns hang, or
+// write markers there that end turns early. The script refuses a
+// symlink, or a directory it doesn't own, and tightens the mode to 0700.
+// $HOME rather than $XDG_RUNTIME_DIR: the tmux server that runs the agent
+// and the ssh session that runs this script can see different
+// XDG_RUNTIME_DIR values, and both sides must agree on the path. Wrapped
+// in sh -c because a target's login shell can be fish (sc1). No
+// backslashes: fish's single quotes would read them as escapes.
+const defaultMarkerDirScript = `d="${HOME:?}/.cache/loomux/completion-markers"
+umask 077
+mkdir -p "$d" 2>/dev/null
+if [ -L "$d" ] || [ ! -d "$d" ] || [ ! -O "$d" ]; then
+  echo "marker dir $d is not a directory owned by $(id -un)" >&2
+  exit 1
+fi
+chmod 700 "$d" && echo "$d"
+`
+
+// ResolveMarkerDir returns the marker directory to use on the target
+// behind exec. A configured directory (LOOMUX_MARKER_DIR) is returned
+// verbatim, without touching the target. On a shared target, configure
+// only a directory that belongs to the target user. With nothing
+// configured, the per-user default is created and checked on the target
+// (defaultMarkerDirScript). Both router (to tell the launched agent its
+// LOOMUX_MARKER_PATH) and MarkerWatcher (to watch for it) resolve it this
+// way, so they agree on the path.
+func ResolveMarkerDir(ctx context.Context, exec interface {
+	RunOnce(ctx context.Context, command string) (string, error)
+}, configured string) (string, error) {
 	if configured != "" {
-		return configured
+		return configured, nil
 	}
-	return filepath.Join(os.TempDir(), "loomux", "completion-markers")
+	out, err := exec.RunOnce(ctx, "sh -c "+shellQuote(defaultMarkerDirScript))
+	if err != nil {
+		return "", fmt.Errorf("completion: marker dir: %s: %w", strings.TrimSpace(out), err)
+	}
+	dir := strings.TrimSpace(out)
+	if !strings.HasPrefix(dir, "/") || strings.Contains(dir, "\n") {
+		return "", fmt.Errorf("completion: marker dir: unexpected output %q", out)
+	}
+	return dir, nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // MarkerPath returns the deterministic marker file path for a task ID
@@ -51,8 +88,9 @@ type MarkerWatcher struct {
 	pollInterval time.Duration
 }
 
-// NewMarkerWatcher constructs a MarkerWatcher. dir is the base directory
-// marker files live under.
+// NewMarkerWatcher constructs a MarkerWatcher. dir is the configured
+// marker directory; empty means the per-user default, resolved on each
+// task's target by ResolveMarkerDir.
 func NewMarkerWatcher(newExecutor orchestrator.ExecutorFactory, dir string, pollInterval time.Duration) *MarkerWatcher {
 	return &MarkerWatcher{newExecutor: newExecutor, dir: dir, pollInterval: pollInterval}
 }
@@ -73,7 +111,11 @@ func (w *MarkerWatcher) Wait(ctx context.Context, task *registry.Task, target *r
 	if err != nil {
 		return err
 	}
-	path := w.MarkerPath(task.ID)
+	dir, err := ResolveMarkerDir(ctx, exec, w.dir)
+	if err != nil {
+		return err
+	}
+	path := MarkerPath(dir, task.ID)
 
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()

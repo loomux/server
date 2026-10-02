@@ -93,19 +93,37 @@ credential-specific in its mechanism) containing:
 - `LOOMUX_TASK_ID` — always, regardless of tier. Cheap, and generically
   useful to any hook needing task-scoped behavior beyond just markers.
 - `LOOMUX_MARKER_PATH` — only when `entry.Tier == completion.TierMarker`,
-  computed via `completion.MarkerPath(r.markerDir, taskID)`. `r.markerDir`
-  is threaded into `router.New` from `app.build`, which resolves
-  `completion.MarkerDir(cfg.MarkerDir)` once and passes the *same*
-  resolved value to both the real `completion.Detector` and `Router` — a
+  computed via `completion.MarkerPath(dir, taskID)`. `dir` is
+  `r.markerDir` (the configured `LOOMUX_MARKER_DIR`), or, when that is
+  empty, the per-user `0700` default that `completion.ResolveMarkerDir`
+  creates on the target. `app.build` passes the *same* configured value
+  to both the real `completion.Detector` and `Router`, and both resolve
+  an empty one with the same function — a
   hook told to touch a path the Detector never watches would be a silent
   no-op, so this single-resolution discipline is what keeps them
   necessarily in agreement.
 
-Wiring an actual hook script (a Claude Code `Stop` hook touching
-`$LOOMUX_MARKER_PATH`, or a Codex `notify` entry doing the same) is the
-target machine's own CLI config, not something this repo manages — same
-precedent as OAuth-CLI credentials (design spec §7). This package's
-responsibility ends at guaranteeing the env var is present and correct.
+## Injecting the completion hook at launch (LOOM-75)
+
+The env var alone did nothing: no target had a hook that reads it
+(probed 2026-10-02 — none on sc1, no agent config at all on jet01), so
+every TierMarker turn would have waited forever. Loomux now owns the hook
+too. `AgentType.CompletionHookArgs` are appended to `LaunchTemplate` on
+every launch (`AgentType.launchCommand`, each argument shell-quoted as
+one word), and the adapters in package `agents` set them:
+
+- `claude-code`: `--settings '{"hooks":{"Stop":[…]}}'`. Claude Code layers
+  `--settings` over the user's own settings for this process only, and
+  runs hooks from every layer, so the user's own hooks still run.
+- `codex`: `-c notify=["sh","-c","…","loomux-notify"]`. The script touches
+  the marker only for `agent-turn-complete` events. This replaces the
+  user's own `notify` for that process (Codex has a single notify
+  program).
+
+Both hooks `mkdir -p` the marker's directory first (nothing creates it on
+a target), and do nothing when `LOOMUX_MARKER_PATH` is unset. The user's
+agent config files on the target are never read or written; targets can
+be shared work hosts.
 
 ## Agent-adapter versioning (design spec §10 axis 3, LOOM-17)
 
@@ -129,17 +147,14 @@ case; `CheckVersionRange`/`compareVersions` do the actual comparison
 (component-wise on dotted numbers — not full semver, no pre-release/
 build metadata, which is more than this needs).
 
-**Deliberately not wired into `app.DefaultAgentTypes()`'s production
-`"claude-code"` entry.** The mechanism is built and verified against the
-real `claude` binary (`router/version_check_integration_test.go`,
-running the actual installed CLI, not a fake), but picking the actual
-supported version floor for production is a policy call this ticket
-didn't have grounds to make — it's only ever been checked against the one
-version installed in this environment. Wiring in an unverified `Min`
-would either silently block real usage (set too high) or provide false
-confidence (set too low, or matching only what happens to be installed
-right now). Worth its own decision once there's real signal about what
-range Loomux actually needs to support.
+**Wired into both production adapters since LOOM-75.** The injected
+completion hook gave the first concrete reason for a floor: a CLI that
+lacks the hook flag would leave the marker wait hanging. `agents` sets
+`Min` to the oldest release each launch was verified against with a
+real turn (claude 2.1.x, codex 0.150), and `VersionCheck.Requires`
+names the feature, so a below-minimum CLI fails the dispatch with
+"agent version too old for completion hooks (…)". The error wraps
+`ErrVersionTooOld`.
 
 Whether to cache a version check per target+agent-type (avoiding a fresh
 `RunOnce` — an SSH round-trip for a remote target — on every single

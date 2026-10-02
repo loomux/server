@@ -46,8 +46,9 @@ message directly, bypassing HTTP/auth entirely, for local debugging).
   deliberately excluded from what's offered to the router model as a
   real agent-type choice.
 
-  `build` resolves the effective marker directory exactly once
-  (`completion.MarkerDir(cfg.MarkerDir)`) and passes that same value to
+  `build` passes the configured marker directory (`cfg.MarkerDir`;
+  empty means each target's per-user default, which both sides resolve
+  with `completion.ResolveMarkerDir`) unchanged to
   both `completion.NewDetector` and `router.New` — the two halves of
   LOOM-32's fix (see `router/README.md`'s "Getting a task ID into a
   launched agent" section) that must agree on where marker files live:

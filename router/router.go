@@ -67,8 +67,8 @@ func WithLogger(l *slog.Logger) Option {
 
 // New constructs a Router. markerDir must be the same effective marker
 // directory the CompletionDetector behind orch was constructed with
-// (typically completion.MarkerDir(cfg.MarkerDir), resolved once by the
-// caller and passed to both) — a mismatch would mean a TierMarker
+// (the configured LOOMUX_MARKER_DIR, or "" for each target's per-user
+// default, which both resolve via completion.ResolveMarkerDir) — a mismatch would mean a TierMarker
 // agent-type's hook script is told to touch a path completion.Detector
 // never watches.
 func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orchestrator.ExecutorFactory,
@@ -626,13 +626,13 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	}
 
 	taskID := uuid.NewString()
-	envPrefix, err := r.agentEnvPrefix(taskID, entry)
+	envPrefix, err := r.agentEnvPrefix(ctx, workspaceID, taskID, entry)
 	if err != nil {
 		return nil, fmt.Errorf("router: dispatch: %w", err)
 	}
 
 	task, err := r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID,
-		prefix+envPrefix+withResolvedBinary(entry.LaunchTemplate, entry.Binary, resolvedPath))
+		prefix+envPrefix+withResolvedBinary(entry.launchCommand(), entry.Binary, resolvedPath))
 	if err != nil {
 		return nil, fmt.Errorf("router: dispatch: launch: %w", err)
 	}
@@ -649,10 +649,20 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 // behavior; LOOMUX_MARKER_PATH only when Tier == TierMarker, since it's
 // meaningless otherwise and completion.MarkerWatcher never watches for
 // it under any other tier.
-func (r *Router) agentEnvPrefix(taskID string, entry AgentType) (string, error) {
+func (r *Router) agentEnvPrefix(ctx context.Context, workspaceID, taskID string, entry AgentType) (string, error) {
 	env := map[string]string{"LOOMUX_TASK_ID": taskID}
 	if entry.Tier == completion.TierMarker {
-		env["LOOMUX_MARKER_PATH"] = completion.MarkerPath(r.markerDir, taskID)
+		dir := r.markerDir
+		if dir == "" {
+			exec, err := r.executorForWorkspace(ctx, workspaceID)
+			if err != nil {
+				return "", err
+			}
+			if dir, err = completion.ResolveMarkerDir(ctx, exec, ""); err != nil {
+				return "", err
+			}
+		}
+		env["LOOMUX_MARKER_PATH"] = completion.MarkerPath(dir, taskID)
 	}
 	return credentials.ShellEnvPrefix(env)
 }
@@ -675,6 +685,9 @@ func (r *Router) verifyAgentVersion(ctx context.Context, workspaceID string, vc 
 		return fmt.Errorf("version check: parse output of %q: %w", vc.Command, err)
 	}
 	if err := CheckVersionRange(version, vc.Min, vc.Max); err != nil {
+		if vc.Requires != "" && errors.Is(err, ErrVersionTooOld) {
+			return fmt.Errorf("version check: agent version too old for %s: %w", vc.Requires, err)
+		}
 		return fmt.Errorf("version check: %w", err)
 	}
 	return nil

@@ -71,12 +71,10 @@ type Detector struct {
 	pollInterval time.Duration
 }
 
-// NewDetector constructs a Detector. markerDir is the base directory
-// marker files live under; if empty, it defaults to
-// $TMPDIR/loomux/completion-markers (same convention family as LOOM-4's
-// $TMPDIR/loomux/ssh-cm for SSH ControlPath).
+// NewDetector constructs a Detector. markerDir is the configured marker
+// directory (LOOMUX_MARKER_DIR); empty means the per-user default that
+// ResolveMarkerDir creates on each task's target.
 func NewDetector(store registry.Store, newExecutor orchestrator.ExecutorFactory, config Config, markerDir string) *Detector {
-	markerDir = MarkerDir(markerDir)
 	return &Detector{
 		store:        store,
 		newExecutor:  newExecutor,

@@ -163,8 +163,15 @@ Completion markers do **not** need a volume. `completion.MarkerWatcher`
 checks for them through the *target's* executor, so for a remote target the
 marker lives on the remote host, not in this container
 (`router/router.go` sets `LOOMUX_MARKER_PATH` in the launched agent's
-environment). The default `/tmp/loomux/completion-markers` is valid on both
-sides.
+environment, and the agent's launch flags install the hook that touches
+it; see `agents/README.md`). With `LOOMUX_MARKER_DIR` unset, each target
+uses a per-user directory, `$HOME/.cache/loomux/completion-markers`.
+Loomux creates it there as `0700` and refuses to use it if it's a
+symlink or owned by someone else. A fixed `/tmp` path would be
+predictable on a shared target: another user could create it first, so
+turns hang, or plant markers that end turns early. If you set
+`LOOMUX_MARKER_DIR`, it's used verbatim on every target and isn't
+checked, so point it at a directory only the target user can write.
 
 ## Configuration
 
