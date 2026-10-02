@@ -567,6 +567,10 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		if errors.As(err, &exited) {
 			return "", r.agentExited(ctx, task, exited)
 		}
+		var timeout *orchestrator.TurnTimeoutError
+		if errors.As(err, &timeout) {
+			return "", r.turnTimedOut(ctx, task, timeout, time.Since(start))
+		}
 		return "", fmt.Errorf("router: dispatch: wait for completion: %w", err)
 	}
 
@@ -631,6 +635,28 @@ func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *o
 	}
 	return fmt.Errorf("router: dispatch: agent %q exited (status %d) before finishing the turn; its last output:\n%s",
 		task.AgentType, exited.Status, output)
+}
+
+// turnTimedOut handles a turn that hit its bound (LOOM-76): the task is
+// failed with class timeout — its pane left running, as for any failure,
+// so the human the error points at can attach and see what it's stuck on
+// — and the error names the agent, target, elapsed time and session.
+// The target's name, never its host: this error is also logged.
+func (r *Router) turnTimedOut(ctx context.Context, task *registry.Task, timeout *orchestrator.TurnTimeoutError, elapsed time.Duration) error {
+	cleanupCtx := context.WithoutCancel(ctx)
+	targetName := "its target"
+	if ws, err := r.store.GetWorkspace(cleanupCtx, task.WorkspaceID); err == nil {
+		if target, err := r.store.GetTarget(cleanupCtx, ws.TargetID); err == nil {
+			targetName = target.Name
+		}
+	}
+	reason := fmt.Sprintf("agent %q on %s timed out after %s: %s", task.AgentType, targetName,
+		elapsed.Round(time.Second), timeout)
+	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{Class: registry.ErrorClassTimeout, Reason: reason}); err != nil {
+		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
+	}
+	return fmt.Errorf("router: dispatch: %s. It's still running — attach on %s with `tmux attach -t %s` to see it: %w",
+		reason, targetName, task.TmuxSession, timeout)
 }
 
 // taskFailure builds a TaskFailure from err, classing an unreachable

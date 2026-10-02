@@ -85,7 +85,7 @@ func TestDetector_LocalMarkerConfiguredTaskUsesMarkerTier(t *testing.T) {
 	task := &registry.Task{ID: uuid.NewString(), WorkspaceID: ws.ID, AgentType: "claude-code", TmuxSession: "sess"}
 
 	markerDir := t.TempDir()
-	cfg := completion.Config{"claude-code": {Tier: completion.TierMarker}}
+	cfg := completion.Config{"claude-code": {Tier: completion.TierMarker, NoProgressTimeout: -1}}
 	factory := func(*registry.Target) (targets.TargetExecutor, error) {
 		return &capturePaneForbiddenExecutor{TargetExecutor: targets.NewLocalExecutor(), t: t}, nil
 	}
@@ -125,7 +125,7 @@ func TestDetector_RemoteMarkerConfiguredTaskUsesMarkerTier(t *testing.T) {
 
 	server := sshtest.Start(t)
 	markerDir := t.TempDir()
-	cfg := completion.Config{"claude-code": {Tier: completion.TierMarker}}
+	cfg := completion.Config{"claude-code": {Tier: completion.TierMarker, NoProgressTimeout: -1}}
 	factory := func(*registry.Target) (targets.TargetExecutor, error) {
 		real := targets.NewRemoteExecutor(server.Host, "loomux-test",
 			targets.WithPort(server.Port),

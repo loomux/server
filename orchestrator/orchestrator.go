@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
@@ -37,6 +38,34 @@ type ProcessExitedError struct {
 
 func (e *ProcessExitedError) Error() string {
 	return fmt.Sprintf("process exited with status %d", e.Status)
+}
+
+// TimeoutReason says which bound a timed-out turn hit (LOOM-76).
+type TimeoutReason string
+
+const (
+	// TimeoutMaxTurnDuration: the turn ran longer than its agent-type's
+	// maximum.
+	TimeoutMaxTurnDuration TimeoutReason = "max_turn_duration"
+	// TimeoutNoProgress: the agent's pane didn't change for its
+	// agent-type's no-progress timeout while no completion signal came —
+	// most likely blocked on a prompt.
+	TimeoutNoProgress TimeoutReason = "no_progress"
+)
+
+// TurnTimeoutError is what a CompletionDetector returns when a turn hits
+// one of its bounds (LOOM-76) rather than completing. The task's pane is
+// still there: nothing about a timeout tears it down.
+type TurnTimeoutError struct {
+	Reason TimeoutReason
+	Limit  time.Duration
+}
+
+func (e *TurnTimeoutError) Error() string {
+	if e.Reason == TimeoutNoProgress {
+		return fmt.Sprintf("no progress for %s with no completion signal (likely waiting on a prompt)", e.Limit)
+	}
+	return fmt.Sprintf("the turn ran past its %s limit", e.Limit)
 }
 
 // CompletionDetector learns when a task's current turn is done. The real

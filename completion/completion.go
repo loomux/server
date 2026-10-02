@@ -9,6 +9,7 @@ package completion
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -48,6 +49,16 @@ type AgentConfig struct {
 	// IdleTimeout is only meaningful when Tier == TierIdle. Zero means
 	// "use the package default."
 	IdleTimeout time.Duration
+	// MaxTurnDuration bounds one turn (LOOM-76): past it, Wait gives up
+	// with an *orchestrator.TurnTimeoutError, the pane left running. Zero
+	// means the package default (an hour); negative means unbounded.
+	// Doesn't apply to TierExit, whose callers bound their own waits.
+	MaxTurnDuration time.Duration
+	// NoProgressTimeout, for TierMarker only, ends a turn whose pane
+	// hasn't changed at all for this long while no marker came — an
+	// agent blocked on an approval prompt, say (LOOM-76). Zero means the
+	// package default (ten minutes); negative disables it.
+	NoProgressTimeout time.Duration
 }
 
 // Config maps agent-type name to its AgentConfig. An agent-type with no
@@ -58,6 +69,14 @@ type Config map[string]AgentConfig
 const (
 	defaultIdleTimeout  = 30 * time.Second
 	defaultPollInterval = 250 * time.Millisecond
+	// LOOM-76 defaults: generous enough for real work, finite so a stuck
+	// turn surfaces instead of holding the request open indefinitely.
+	defaultMaxTurnDuration   = time.Hour
+	defaultNoProgressTimeout = 10 * time.Minute
+	// defaultProgressPollInterval is how often the no-progress check
+	// captures the pane — far less often than marker polling, since over
+	// SSH each capture is a round trip.
+	defaultProgressPollInterval = 5 * time.Second
 )
 
 // Detector is the real tiered orchestrator.CompletionDetector
@@ -69,20 +88,36 @@ type Detector struct {
 	markers      *MarkerWatcher
 	idle         *IdleWatcher
 	pollInterval time.Duration
+	// progressPollInterval paces the no-progress check (LOOM-76).
+	progressPollInterval time.Duration
+}
+
+// DetectorOption configures a Detector.
+type DetectorOption func(*Detector)
+
+// WithProgressPollInterval overrides how often the no-progress check
+// (LOOM-76) captures the pane. Mainly for tests.
+func WithProgressPollInterval(d time.Duration) DetectorOption {
+	return func(det *Detector) { det.progressPollInterval = d }
 }
 
 // NewDetector constructs a Detector. markerDir is the configured marker
 // directory (LOOMUX_MARKER_DIR); empty means the per-user default that
 // ResolveMarkerDir creates on each task's target.
-func NewDetector(store registry.Store, newExecutor orchestrator.ExecutorFactory, config Config, markerDir string) *Detector {
-	return &Detector{
-		store:        store,
-		newExecutor:  newExecutor,
-		config:       config,
-		markers:      NewMarkerWatcher(newExecutor, markerDir, defaultPollInterval),
-		idle:         NewIdleWatcher(newExecutor, defaultPollInterval),
-		pollInterval: defaultPollInterval,
+func NewDetector(store registry.Store, newExecutor orchestrator.ExecutorFactory, config Config, markerDir string, opts ...DetectorOption) *Detector {
+	d := &Detector{
+		store:                store,
+		newExecutor:          newExecutor,
+		config:               config,
+		markers:              NewMarkerWatcher(newExecutor, markerDir, defaultPollInterval),
+		idle:                 NewIdleWatcher(newExecutor, defaultPollInterval),
+		pollInterval:         defaultPollInterval,
+		progressPollInterval: defaultProgressPollInterval,
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 var _ orchestrator.CompletionDetector = (*Detector)(nil)
@@ -108,31 +143,91 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 		return d.waitExit(ctx, exec, task)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// The turn's bounds (LOOM-76) cancel waitCtx with a TurnTimeoutError
+	// as the cause, telling them apart from the caller cancelling.
+	waitCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	if limit := orDefault(cfg.MaxTurnDuration, defaultMaxTurnDuration); limit > 0 {
+		timer := time.AfterFunc(limit, func() {
+			cancel(&orchestrator.TurnTimeoutError{Reason: orchestrator.TimeoutMaxTurnDuration, Limit: limit})
+		})
+		defer timer.Stop()
+	}
+	if limit := orDefault(cfg.NoProgressTimeout, defaultNoProgressTimeout); tier == TierMarker && limit > 0 {
+		go d.watchProgress(waitCtx, exec, task, limit, cancel)
+	}
 	exited := make(chan *targets.PaneExit, 1)
 	go func() {
-		if exit := d.watchExit(ctx, exec, task); exit != nil {
+		if exit := d.watchExit(waitCtx, exec, task); exit != nil {
 			exited <- exit
-			cancel()
+			cancel(nil)
 		}
 	}()
 
 	switch tier {
 	case TierMarker:
-		err = d.markers.Wait(ctx, task, target)
+		err = d.markers.Wait(waitCtx, task, target)
 	default: // TierIdle
 		timeout := cfg.IdleTimeout
 		if timeout <= 0 {
 			timeout = defaultIdleTimeout
 		}
-		err = d.idle.Wait(ctx, task, target, timeout)
+		err = d.idle.Wait(waitCtx, task, target, timeout)
 	}
 	select {
 	case exit := <-exited:
 		return &orchestrator.ProcessExitedError{Status: exit.Status, Output: exit.Output}
 	default:
-		return err
+	}
+	if err != nil && ctx.Err() == nil {
+		var timeout *orchestrator.TurnTimeoutError
+		if errors.As(context.Cause(waitCtx), &timeout) {
+			return timeout
+		}
+	}
+	return err
+}
+
+// orDefault resolves a LOOM-76 bound: zero means def, negative disabled
+// (returned as 0).
+func orDefault(d, def time.Duration) time.Duration {
+	switch {
+	case d == 0:
+		return def
+	case d < 0:
+		return 0
+	}
+	return d
+}
+
+// watchProgress ends the wait (via cancel) once the pane's contents have
+// been unchanged for limit. Capture errors are ignored: this is only an
+// extra bound, and the tier's own watcher reports a pane it can't reach.
+func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, limit time.Duration,
+	cancel context.CancelCauseFunc) {
+	ticker := time.NewTicker(d.progressPollInterval)
+	defer ticker.Stop()
+	var last string
+	var lastChange time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		out, err := exec.CapturePane(ctx, task.TmuxSession)
+		if err != nil {
+			continue
+		}
+		now := time.Now()
+		if lastChange.IsZero() || out != last {
+			last, lastChange = out, now
+			continue
+		}
+		if now.Sub(lastChange) >= limit {
+			cancel(&orchestrator.TurnTimeoutError{Reason: orchestrator.TimeoutNoProgress, Limit: limit})
+			return
+		}
 	}
 }
 
