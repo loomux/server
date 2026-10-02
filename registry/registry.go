@@ -101,8 +101,12 @@ type Workspace struct {
 	// RollingSummary is replaced (never appended to) on each update — see
 	// SetWorkspaceRollingSummary.
 	RollingSummary string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// StatusReason says why the workspace is in its Status when that
+	// isn't self-explanatory — e.g. what made it failed (LOOM-77). Empty
+	// otherwise.
+	StatusReason string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // TaskKind identifies what a tmux pane is running.
@@ -158,6 +162,51 @@ type Task struct {
 	// ExitCode is a TaskKindCommand task's exit status once its process
 	// has exited; nil while it is still running or for any other kind.
 	ExitCode *int
+	// FailureReason, ErrorClass and OutputTail say why a
+	// TaskStatusFailed task failed (LOOM-77): a human-readable reason, a
+	// stable machine-readable class, and the last of the pane's output
+	// when there was any (bounded, credentials redacted). Empty for a task
+	// that hasn't failed.
+	FailureReason string
+	ErrorClass    ErrorClass
+	OutputTail    string
+}
+
+// ErrorClass is a stable, machine-readable category for a task failure
+// (LOOM-77) — what a client switches on to render a failure, where
+// FailureReason is the text it shows.
+type ErrorClass string
+
+const (
+	// ErrorClassLaunchFailed: the task's tmux session could not be
+	// started.
+	ErrorClassLaunchFailed ErrorClass = "launch_failed"
+	// ErrorClassTargetUnreachable: the target couldn't be reached.
+	ErrorClassTargetUnreachable ErrorClass = "target_unreachable"
+	// ErrorClassSendFailed: the turn's message could not be delivered.
+	ErrorClassSendFailed ErrorClass = "send_failed"
+	// ErrorClassAgentExited: the agent CLI's process exited mid-turn.
+	ErrorClassAgentExited ErrorClass = "agent_exited"
+	// ErrorClassProvisionFailed: a provisioning script exited non-zero.
+	ErrorClassProvisionFailed ErrorClass = "provision_failed"
+	// ErrorClassWaitFailed: waiting for the turn to complete failed or
+	// was abandoned (e.g. the request was cancelled).
+	ErrorClassWaitFailed ErrorClass = "wait_failed"
+	// ErrorClassRelayFailed: the finished turn's output could not be
+	// captured or relayed.
+	ErrorClassRelayFailed ErrorClass = "relay_failed"
+	// ErrorClassSessionLost: the task's session was gone (reaped,
+	// crashed, killed) when the next message arrived.
+	ErrorClassSessionLost ErrorClass = "session_lost"
+	// ErrorClassInternal: anything else.
+	ErrorClassInternal ErrorClass = "internal"
+)
+
+// TaskFailure is what a failing task records (see Task.FailureReason).
+type TaskFailure struct {
+	Class      ErrorClass
+	Reason     string
+	OutputTail string
 }
 
 // TargetAgent records whether an agent-type's CLI was found on a target
@@ -169,5 +218,11 @@ type TargetAgent struct {
 	TargetID  string
 	AgentType string
 	Available bool
+	// Path is the absolute path the CLI resolved to on the target, and
+	// Version the first line its --version printed (LOOM-79). Launches
+	// use Path, so the version recorded is the version that runs. Empty
+	// when unavailable.
+	Path      string
+	Version   string
 	CheckedAt time.Time
 }

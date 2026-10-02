@@ -178,11 +178,12 @@ func (s *Store) SetTargetAgent(ctx context.Context, a *registry.TargetAgent) err
 		a.CheckedAt = time.Now().UTC()
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO target_agents (target_id, agent_type, available, checked_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO target_agents (target_id, agent_type, available, path, version, checked_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (target_id, agent_type) DO UPDATE SET
-			available = excluded.available, checked_at = excluded.checked_at`,
-		a.TargetID, a.AgentType, a.Available, a.CheckedAt,
+			available = excluded.available, path = excluded.path, version = excluded.version,
+			checked_at = excluded.checked_at`,
+		a.TargetID, a.AgentType, a.Available, a.Path, a.Version, a.CheckedAt,
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: target %q does not exist", registry.ErrConflict, a.TargetID)
@@ -195,7 +196,7 @@ func (s *Store) SetTargetAgent(ctx context.Context, a *registry.TargetAgent) err
 
 func (s *Store) ListTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT target_id, agent_type, available, checked_at FROM target_agents
+		SELECT target_id, agent_type, available, path, version, checked_at FROM target_agents
 		WHERE target_id = ? ORDER BY agent_type`, targetID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list target agents: %w", err)
@@ -205,7 +206,7 @@ func (s *Store) ListTargetAgents(ctx context.Context, targetID string) ([]*regis
 	out := []*registry.TargetAgent{}
 	for rows.Next() {
 		var a registry.TargetAgent
-		if err := rows.Scan(&a.TargetID, &a.AgentType, &a.Available, &a.CheckedAt); err != nil {
+		if err := rows.Scan(&a.TargetID, &a.AgentType, &a.Available, &a.Path, &a.Version, &a.CheckedAt); err != nil {
 			return nil, fmt.Errorf("sqlite: list target agents: %w", err)
 		}
 		out = append(out, &a)
@@ -231,10 +232,10 @@ func (s *Store) CreateWorkspace(ctx context.Context, w *registry.Workspace) erro
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO workspaces (
 			id, name, path, target_id, git_remote, tags, description, capabilities,
-			status, is_dynamic, last_used_at, rolling_summary, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			status, is_dynamic, last_used_at, rolling_summary, status_reason, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.ID, w.Name, w.Path, w.TargetID, w.GitRemote, string(tags), w.Description, string(caps),
-		string(w.Status), w.IsDynamic, w.LastUsedAt, w.RollingSummary, w.CreatedAt, w.UpdatedAt,
+		string(w.Status), w.IsDynamic, w.LastUsedAt, w.RollingSummary, w.StatusReason, w.CreatedAt, w.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: workspace name %q already exists", registry.ErrConflict, w.Name)
@@ -250,7 +251,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, w *registry.Workspace) erro
 
 const workspaceColumns = `
 	id, name, path, target_id, git_remote, tags, description, capabilities,
-	status, is_dynamic, last_used_at, rolling_summary, created_at, updated_at`
+	status, is_dynamic, last_used_at, rolling_summary, status_reason, created_at, updated_at`
 
 func (s *Store) GetWorkspace(ctx context.Context, id string) (*registry.Workspace, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+workspaceColumns+` FROM workspaces WHERE id = ?`, id)
@@ -310,10 +311,10 @@ func (s *Store) UpdateWorkspace(ctx context.Context, w *registry.Workspace) erro
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE workspaces SET
 			name = ?, path = ?, target_id = ?, git_remote = ?, tags = ?, description = ?,
-			capabilities = ?, status = ?, is_dynamic = ?, last_used_at = ?, updated_at = ?
+			capabilities = ?, status = ?, is_dynamic = ?, last_used_at = ?, status_reason = ?, updated_at = ?
 		WHERE id = ?`,
 		w.Name, w.Path, w.TargetID, w.GitRemote, string(tags), w.Description,
-		string(caps), string(w.Status), w.IsDynamic, w.LastUsedAt, w.UpdatedAt, w.ID,
+		string(caps), string(w.Status), w.IsDynamic, w.LastUsedAt, w.StatusReason, w.UpdatedAt, w.ID,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: workspace name %q already exists", registry.ErrConflict, w.Name)
@@ -357,7 +358,7 @@ func scanWorkspace(row rowScanner) (*registry.Workspace, error) {
 	var status, tags, caps string
 	if err := row.Scan(
 		&w.ID, &w.Name, &w.Path, &w.TargetID, &w.GitRemote, &tags, &w.Description, &caps,
-		&status, &w.IsDynamic, &w.LastUsedAt, &w.RollingSummary, &w.CreatedAt, &w.UpdatedAt,
+		&status, &w.IsDynamic, &w.LastUsedAt, &w.RollingSummary, &w.StatusReason, &w.CreatedAt, &w.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -378,10 +379,12 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO tasks (
 			id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
-			created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code,
+			failure_reason, error_class, output_tail
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.WorkspaceID, string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
 		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.Command, t.ExitCode,
+		t.FailureReason, string(t.ErrorClass), t.OutputTail,
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: workspace %q does not exist", registry.ErrConflict, t.WorkspaceID)
@@ -394,7 +397,8 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 
 const taskColumns = `
 	id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
-	created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code`
+	created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code,
+	failure_reason, error_class, output_tail`
 
 func (s *Store) GetTask(ctx context.Context, id string) (*registry.Task, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = ?`, id)
@@ -434,10 +438,12 @@ func (s *Store) UpdateTask(ctx context.Context, t *registry.Task) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE tasks SET
 			kind = ?, agent_type = ?, tmux_session = ?, status = ?, conversation_id = ?,
-			updated_at = ?, started_at = ?, completed_at = ?, reaped_at = ?, command = ?, exit_code = ?
+			updated_at = ?, started_at = ?, completed_at = ?, reaped_at = ?, command = ?, exit_code = ?,
+			failure_reason = ?, error_class = ?, output_tail = ?
 		WHERE id = ?`,
 		string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
-		t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.Command, t.ExitCode, t.ID,
+		t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.Command, t.ExitCode,
+		t.FailureReason, string(t.ErrorClass), t.OutputTail, t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: update task: %w", err)
@@ -476,13 +482,15 @@ func (s *Store) ListTasks(ctx context.Context) ([]*registry.Task, error) {
 
 func scanTask(row rowScanner) (*registry.Task, error) {
 	var t registry.Task
-	var kind, status string
+	var kind, status, errorClass string
 	if err := row.Scan(
 		&t.ID, &t.WorkspaceID, &kind, &t.AgentType, &t.TmuxSession, &status, &t.ConversationID,
 		&t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.CompletedAt, &t.ReapedAt, &t.Command, &t.ExitCode,
+		&t.FailureReason, &errorClass, &t.OutputTail,
 	); err != nil {
 		return nil, err
 	}
+	t.ErrorClass = registry.ErrorClass(errorClass)
 	t.Kind = registry.TaskKind(kind)
 	t.Status = registry.TaskStatus(status)
 	return &t, nil

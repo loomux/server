@@ -23,6 +23,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TargetDuplicateName", func(t *testing.T) { testTargetDuplicateName(t, newStore(t)) })
 
 	t.Run("TargetAgentUpsertAndList", func(t *testing.T) { testTargetAgentUpsertAndList(t, newStore(t)) })
+	t.Run("TargetAgentPathAndVersion", func(t *testing.T) { testTargetAgentPathAndVersion(t, newStore(t)) })
 	t.Run("TargetAgentRequiresValidTarget", func(t *testing.T) { testTargetAgentRequiresValidTarget(t, newStore(t)) })
 	t.Run("TargetAgentDeletedWithTarget", func(t *testing.T) { testTargetAgentDeletedWithTarget(t, newStore(t)) })
 
@@ -36,6 +37,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 
 	t.Run("Task", func(t *testing.T) { testTaskCRUD(t, newStore(t)) })
 	t.Run("CommandTaskRoundTrip", func(t *testing.T) { testCommandTaskRoundTrip(t, newStore(t)) })
+	t.Run("TaskFailureRoundTrip", func(t *testing.T) { testTaskFailureRoundTrip(t, newStore(t)) })
+	t.Run("WorkspaceStatusReasonRoundTrip", func(t *testing.T) { testWorkspaceStatusReasonRoundTrip(t, newStore(t)) })
 	t.Run("TaskNotFound", func(t *testing.T) { testTaskNotFound(t, newStore(t)) })
 	t.Run("TaskRequiresValidWorkspace", func(t *testing.T) { testTaskRequiresValidWorkspace(t, newStore(t)) })
 	t.Run("TaskListByWorkspace", func(t *testing.T) { testTaskListByWorkspace(t, newStore(t)) })
@@ -1083,5 +1086,62 @@ func testCommandTaskRoundTrip(t *testing.T, s registry.Store) {
 	}
 	if got.ExitCode == nil || *got.ExitCode != 127 {
 		t.Errorf("ExitCode = %v, want 127", got.ExitCode)
+	}
+}
+
+func testTaskFailureRoundTrip(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{ID: "failing", WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "codex",
+		TmuxSession: "sess", Status: registry.TaskStatusRunning, ConversationID: "c"}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	task.Status = registry.TaskStatusFailed
+	task.FailureReason = "agent exited with status 127"
+	task.ErrorClass = registry.ErrorClassAgentExited
+	task.OutputTail = "sh: 1: codex: not found"
+	if err := s.UpdateTask(ctx, task); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	got, err := s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.FailureReason != task.FailureReason || got.ErrorClass != registry.ErrorClassAgentExited || got.OutputTail != task.OutputTail {
+		t.Errorf("failure after round trip = %q / %q / %q", got.FailureReason, got.ErrorClass, got.OutputTail)
+	}
+}
+
+func testWorkspaceStatusReasonRoundTrip(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	ws.Status = registry.WorkspaceStatusFailed
+	ws.StatusReason = "provisioning command exited with status 3"
+	if err := s.UpdateWorkspace(ctx, ws); err != nil {
+		t.Fatalf("UpdateWorkspace: %v", err)
+	}
+	got, err := s.GetWorkspace(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if got.StatusReason != ws.StatusReason {
+		t.Errorf("StatusReason = %q, want %q", got.StatusReason, ws.StatusReason)
+	}
+}
+
+func testTargetAgentPathAndVersion(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+	if err := s.SetTargetAgent(ctx, &registry.TargetAgent{TargetID: target.ID, AgentType: "claude-code", Available: true,
+		Path: "/home/u/.local/bin/claude", Version: "2.1.251 (Claude Code)"}); err != nil {
+		t.Fatalf("SetTargetAgent: %v", err)
+	}
+	got, err := s.ListTargetAgents(ctx, target.ID)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("ListTargetAgents = %v, %v", got, err)
+	}
+	if got[0].Path != "/home/u/.local/bin/claude" || got[0].Version != "2.1.251 (Claude Code)" {
+		t.Errorf("path/version = %q / %q", got[0].Path, got[0].Version)
 	}
 }
