@@ -11,6 +11,7 @@ package app
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -47,6 +48,10 @@ type Config struct {
 	// ReapInterval is how often the idle reaper sweeps. Same zero-means-
 	// default handling as ReapIdleThreshold.
 	ReapInterval time.Duration
+	// Logger receives the router's structured records (LOOM-63). Nil —
+	// as in tests that construct Config directly — means nothing is
+	// logged; LoadConfig always sets one.
+	Logger *slog.Logger
 }
 
 const (
@@ -55,6 +60,7 @@ const (
 	envMasterKey         = "LOOMUX_MASTER_KEY"
 	envReapIdleThreshold = "LOOMUX_REAP_IDLE_THRESHOLD"
 	envReapInterval      = "LOOMUX_REAP_INTERVAL"
+	envLogLevel          = "LOOMUX_LOG_LEVEL"
 
 	defaultDBPath = "loomux.db"
 
@@ -106,6 +112,13 @@ func LoadConfig() (Config, error) {
 		reapInterval = d
 	}
 
+	var logLevel slog.Level
+	if raw := os.Getenv(envLogLevel); raw != "" {
+		if err := logLevel.UnmarshalText([]byte(raw)); err != nil {
+			return Config{}, fmt.Errorf("app: %s must be debug, info, warn or error: %w", envLogLevel, err)
+		}
+	}
+
 	return Config{
 		DBPath:            dbPath,
 		MarkerDir:         os.Getenv(envMarkerDir),
@@ -113,5 +126,7 @@ func LoadConfig() (Config, error) {
 		Router:            routerCfg,
 		ReapIdleThreshold: reapIdleThreshold,
 		ReapInterval:      reapInterval,
+		// JSON on stderr: one record per line, for the container log.
+		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil
 }

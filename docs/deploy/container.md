@@ -191,9 +191,22 @@ defaults for three of them.
 | `LOOMUX_STATIC_DIR` | `/srv/loomux/web` |
 
 **Optional:** `LOOMUX_SESSION_TTL`, `LOOMUX_MARKER_DIR`,
-`LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h), and the
+`LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
+`LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
+provisioning and dispatch — see below), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a
 startup error.
+
+**What the logs contain.** Chat message bodies, direct answers and relayed
+agent output are never logged (only a message's length). But treat the log
+as sensitive anyway:
+
+- **Error text is logged verbatim** on failure records. That includes SSH
+  stderr from a remote target (`targets` wraps it into `ErrUnreachable`),
+  which can name internal hosts, users and paths, and error bodies returned
+  by the router-model provider's API.
+- **`workspace_name` is chosen by the router model** for a new workspace,
+  and can echo words from the user's message.
 
 ## Health probes
 
