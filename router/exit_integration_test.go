@@ -27,18 +27,19 @@ import (
 func TestIntegration_ProcessExit(t *testing.T) {
 	cases := []struct {
 		name          string
-		provision     string
+		provision     router.ProvisionKind
 		agentLaunch   string
 		wantErr       []string
 		wantWSStatus  registry.WorkspaceStatus
 		wantProvTasks registry.TaskStatus
 	}{
-		{name: "provision exits 0", provision: "echo provisioned", agentLaunch: `sh -c 'echo agent-output; sleep 30'`,
+		{name: "provision exits 0", provision: router.ProvisionEmpty, agentLaunch: `sh -c 'echo agent-output; sleep 30'`,
 			wantWSStatus: registry.WorkspaceStatusIdle, wantProvTasks: registry.TaskStatusCompleted},
-		{name: "provision exits non-zero", provision: "echo cloning; echo 'fatal: repo not found' >&2; exit 3",
-			wantErr: []string{"status 3", "fatal: repo not found"}, wantWSStatus: registry.WorkspaceStatusFailed,
+		// existing_dir of a directory that isn't there: the recipe exits 1.
+		{name: "provision exits non-zero", provision: router.ProvisionExistingDir,
+			wantErr: []string{"status 1", "no directory"}, wantWSStatus: registry.WorkspaceStatusFailed,
 			wantProvTasks: registry.TaskStatusFailed},
-		{name: "agent not installed", provision: "true", agentLaunch: "loomux-no-such-agent-cli",
+		{name: "agent not installed", provision: router.ProvisionEmpty, agentLaunch: "loomux-no-such-agent-cli",
 			wantErr:      []string{"status 127", "loomux-no-such-agent-cli"},
 			wantWSStatus: registry.WorkspaceStatusIdle, wantProvTasks: registry.TaskStatusCompleted},
 	}
@@ -46,7 +47,7 @@ func TestIntegration_ProcessExit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newTestStore(t)
 			ctx := context.Background()
-			target := &registry.Target{ID: uuid.NewString(), Name: "local", Kind: registry.TargetKindLocal}
+			target := &registry.Target{ID: uuid.NewString(), Name: "local", Kind: registry.TargetKindLocal, WorkspaceRoot: t.TempDir()}
 			if err := store.CreateTarget(ctx, target); err != nil {
 				t.Fatalf("CreateTarget: %v", err)
 			}
@@ -60,11 +61,10 @@ func TestIntegration_ProcessExit(t *testing.T) {
 			markerDir := t.TempDir()
 			detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
 			orch := orchestrator.New(store, targets.NewExecutor, detector)
-			wsPath := t.TempDir()
 			model := &routertest.StubRoutingModel{
 				DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 					return router.Decision{Action: router.ActionProvisionWorkspace, AgentType: "agent", NewWorkspace: router.ProvisionSpec{
-						Name: "ws", Path: wsPath, TargetID: target.ID, ProvisionCommand: "sh -c " + shellQuote(tc.provision),
+						Name: "ws", TargetID: target.ID, Kind: tc.provision,
 					}}, nil
 				},
 				RelayFunc: func(ctx context.Context, captured string) (router.RelayResult, error) {
@@ -113,8 +113,8 @@ func TestIntegration_ProcessExit(t *testing.T) {
 				t.Fatalf("ListTasksByWorkspace = %v, %v", tasks, err)
 			}
 			prov := tasks[0]
-			if prov.Kind != registry.TaskKindShell || prov.Status != tc.wantProvTasks {
-				t.Errorf("provisioning task = %+v, want shell task %q", prov, tc.wantProvTasks)
+			if prov.Kind != registry.TaskKindCommand || prov.Status != tc.wantProvTasks {
+				t.Errorf("provisioning task = %+v, want command task %q", prov, tc.wantProvTasks)
 			}
 			if prov.Status == registry.TaskStatusCompleted {
 				if alive, _ := exec.HasSession(ctx, prov.TmuxSession); alive {

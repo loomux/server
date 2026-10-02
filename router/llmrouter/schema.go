@@ -31,7 +31,9 @@ const decideSystemPrompt = `You are Loomux's routing model. Given an incoming ch
 	`"available" on the target the work will run on, and don't choose one marked "not installed" ` +
 	`there unless the user explicitly asked for that agent — Loomux will then offer to install it ` +
 	`rather than run it. "not checked yet" means availability is unknown; Loomux checks before ` +
-	`launching.`
+	`launching. A new workspace is described only by its name, kind (empty, git_clone or ` +
+	`existing_dir) and, for git_clone, the git_remote URL: Loomux creates it under the target's ` +
+	`workspace root itself, so you never supply a path or any provisioning command.`
 
 // relayToolName is the single function Relay forces the model to call
 // via tool_choice, so it always returns both the condensed reply and
@@ -77,13 +79,23 @@ func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string) openai.ChatCo
 			"type":        "object",
 			"description": "Set when action == provision_workspace: the new workspace to create.",
 			"properties": map[string]any{
-				"name": map[string]any{"type": "string"},
-				"path": map[string]any{"type": "string"},
+				"name": map[string]any{
+					"type":        "string",
+					"pattern":     "^[a-z0-9][a-z0-9-]{0,62}$",
+					"description": "Workspace name, also its directory under the target's workspace root: lowercase letters, digits and dashes.",
+				},
+				"kind": map[string]any{
+					"type":        "string",
+					"enum":        []string{"empty", "git_clone", "existing_dir"},
+					"description": "empty: a new empty directory; git_clone: clone git_remote; existing_dir: a directory that already exists under the workspace root.",
+				},
 				"target_id": enumStringProperty(
 					"The ID of the registered target to create the workspace on.", targetIDs),
-				"git_remote":        map[string]any{"type": "string"},
-				"description":       map[string]any{"type": "string"},
-				"provision_command": map[string]any{"type": "string"},
+				"git_remote": map[string]any{
+					"type":        "string",
+					"description": "Only for kind git_clone: an https:// or ssh:// repository URL, or scp-style git@server:owner/repo.",
+				},
+				"description": map[string]any{"type": "string"},
 				"tags": map[string]any{
 					"type":  "array",
 					"items": map[string]any{"type": "string"},

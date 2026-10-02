@@ -45,19 +45,35 @@ type TargetSnapshot struct {
 	Agents map[string]bool
 }
 
-// ProvisionSpec describes a new dynamic workspace to create and set up
-// (design spec §2: workspaces are "provisioned on demand... via a
-// shell-kind pane that runs the provisioning script").
+// ProvisionKind is how a new dynamic workspace's directory comes to be
+// (LOOM-90).
+type ProvisionKind string
+
+const (
+	// ProvisionEmpty creates an empty directory.
+	ProvisionEmpty ProvisionKind = "empty"
+	// ProvisionGitClone clones GitRemote into a new directory.
+	ProvisionGitClone ProvisionKind = "git_clone"
+	// ProvisionExistingDir adopts a directory that already exists under
+	// the workspace root.
+	ProvisionExistingDir ProvisionKind = "existing_dir"
+)
+
+// ProvisionSpec describes a new dynamic workspace to create (design spec
+// §2). It is structured data only (LOOM-90): Loomux builds the commands
+// that set the workspace up itself, from these validated fields (see
+// provisioningRecipe) — no command or path from the routing model is ever
+// run or used. The workspace's directory is <target's workspace
+// root>/<Name>.
 type ProvisionSpec struct {
+	// Name is the workspace's name and its directory under the workspace
+	// root: a slug, [a-z0-9][a-z0-9-]*, at most 63 characters.
 	Name        string
-	Path        string
 	TargetID    string
-	GitRemote   string
+	Kind        ProvisionKind
+	GitRemote   string // required for ProvisionGitClone, and only then
 	Description string
 	Tags        []string
-	// ProvisionCommand is run via a shell-kind orchestrator.Launch to
-	// set the workspace up (e.g. cloning a repo).
-	ProvisionCommand string
 }
 
 // Decision is what a RoutingModel returns for an incoming message.

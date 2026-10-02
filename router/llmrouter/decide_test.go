@@ -2,6 +2,7 @@ package llmrouter
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"reflect"
@@ -100,13 +101,12 @@ func TestDecide_ProvisionWorkspace(t *testing.T) {
 		"action":     "provision_workspace",
 		"agent_type": "claude-code",
 		"new_workspace": map[string]any{
-			"name":              "new-ws",
-			"path":              "/path",
-			"target_id":         "target-1",
-			"git_remote":        "git@example.com:foo/bar.git",
-			"description":       "a new workspace",
-			"tags":              []string{"a", "b"},
-			"provision_command": "git clone ...",
+			"name":        "new-ws",
+			"target_id":   "target-1",
+			"kind":        "git_clone",
+			"git_remote":  "git@example.com:foo/bar.git",
+			"description": "a new workspace",
+			"tags":        []string{"a", "b"},
 		},
 	}))
 
@@ -123,8 +123,8 @@ func TestDecide_ProvisionWorkspace(t *testing.T) {
 		Action:    router.ActionProvisionWorkspace,
 		AgentType: "claude-code",
 		NewWorkspace: router.ProvisionSpec{
-			Name: "new-ws", Path: "/path", TargetID: "target-1", GitRemote: "git@example.com:foo/bar.git",
-			Description: "a new workspace", Tags: []string{"a", "b"}, ProvisionCommand: "git clone ...",
+			Name: "new-ws", TargetID: "target-1", Kind: router.ProvisionGitClone, GitRemote: "git@example.com:foo/bar.git",
+			Description: "a new workspace", Tags: []string{"a", "b"},
 		},
 	}
 	if !reflect.DeepEqual(dec, want) {
@@ -385,7 +385,7 @@ func TestDecide_UnknownTargetID_EscalatesAsValidationFailure(t *testing.T) {
 		"agent_type": "claude-code",
 		"new_workspace": map[string]any{
 			"name":      "new-ws",
-			"path":      "/path",
+			"kind":      "empty",
 			"target_id": "sc1",
 		},
 	}))
@@ -416,7 +416,7 @@ func TestDecide_EmptyTargetID_EscalatesAsValidationFailure(t *testing.T) {
 		"agent_type": "claude-code",
 		"new_workspace": map[string]any{
 			"name": "new-ws",
-			"path": "/path",
+			"kind": "empty",
 		},
 	}))
 	escalationSrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
@@ -450,7 +450,7 @@ func TestDecide_NoTargetsRegistered_ProvisionEscalates(t *testing.T) {
 		"agent_type": "claude-code",
 		"new_workspace": map[string]any{
 			"name":      "new-ws",
-			"path":      "/path",
+			"kind":      "empty",
 			"target_id": "anything",
 		},
 	}))
@@ -498,6 +498,46 @@ func TestDecideUserPrompt_TargetAgentAvailability(t *testing.T) {
 	for _, want := range []string{"not installed", "offer to install"} {
 		if !strings.Contains(decideSystemPrompt, want) {
 			t.Errorf("system prompt doesn't explain agent availability (missing %q)", want)
+		}
+	}
+}
+
+// TestDecide_ProvisionSpecValidated (LOOM-90): a provision_workspace
+// whose spec isn't something Loomux can safely provision — a path-like
+// name, an unknown kind, a dangerous git remote — is a validation
+// failure, escalated, never acted on; and the schema offers no free-form
+// command or path at all.
+func TestDecide_ProvisionSpecValidated(t *testing.T) {
+	for _, ws := range []map[string]any{
+		{"name": "../../.ssh", "target_id": "target-1", "kind": "empty"},
+		{"name": "x", "target_id": "target-1", "kind": "shell"},
+		{"name": "x", "target_id": "target-1", "kind": "git_clone", "git_remote": "ext::sh -c touch% /tmp/pwn"},
+	} {
+		primarySrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+			"action": "provision_workspace", "agent_type": "claude-code", "new_workspace": ws,
+		}))
+		escalationSrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+			"action": "answer_directly", "direct_answer": "from escalation",
+		}))
+		escalation := tierFor(escalationSrv, "escalation-model")
+		m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		dec, err := m.Decide(context.Background(), "go", nil, []router.TargetSnapshot{{ID: "target-1", Name: "jet01", Kind: "remote"}})
+		if err != nil {
+			t.Fatalf("Decide: %v", err)
+		}
+		if dec.DirectAnswer != "from escalation" {
+			t.Errorf("new_workspace %v: Decide = %+v, want rejected and escalated", ws, dec)
+		}
+	}
+
+	tool := buildDecideTool([]string{"claude-code"}, nil, []string{"target-1"})
+	raw, _ := json.Marshal(tool)
+	for _, gone := range []string{"provision_command", `"path"`} {
+		if strings.Contains(string(raw), gone) {
+			t.Errorf("decide tool schema still offers %s", gone)
 		}
 	}
 }

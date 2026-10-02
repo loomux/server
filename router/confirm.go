@@ -93,12 +93,24 @@ func isConfirmation(message, agentType string) bool {
 // installOffer is the reply for an agent CLI missing from its target. With
 // a recipe it shows the exact command and login step and registers the
 // offer; without one it just explains.
-func (r *Router) installOffer(conversationID string, unavailable *AgentUnavailableError, workspaceID string, provision *ProvisionSpec) string {
+//
+// The offer discloses everything a "yes" will run (LOOM-90 review): when
+// the original turn would also have provisioned a workspace, that
+// provisioning recipe is shown in full alongside the install command.
+func (r *Router) installOffer(ctx context.Context, conversationID string, unavailable *AgentUnavailableError, workspaceID string, provision *ProvisionSpec) (string, error) {
 	entry, _ := r.agentTypes.Get(unavailable.AgentType)
 	if entry.Install == nil || entry.Install.Command == "" {
 		return fmt.Sprintf("%s isn't installed on %s, and Loomux has no install recipe for it. "+
 			"Install it on %s yourself, then send your request again.",
-			unavailable.AgentType, unavailable.TargetName, unavailable.TargetName)
+			unavailable.AgentType, unavailable.TargetName, unavailable.TargetName), nil
+	}
+	var recipe string
+	if provision != nil {
+		target, err := r.store.GetTarget(ctx, unavailable.TargetID)
+		if err != nil {
+			return "", err
+		}
+		recipe = provisioningRecipe(target, *provision)
 	}
 	r.pending.put(conversationID, pendingInstall{
 		agentType:   unavailable.AgentType,
@@ -110,12 +122,27 @@ func (r *Router) installOffer(conversationID string, unavailable *AgentUnavailab
 	})
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s isn't installed on %s, so I can't start it there.\n\n", unavailable.AgentType, unavailable.TargetName)
-	fmt.Fprintf(&b, "I can install it by running this on %s:\n\n    %s\n\n", unavailable.TargetName, entry.Install.Command)
+	if recipe != "" {
+		fmt.Fprintf(&b, "If you go ahead, I'll first set up workspace %s on %s by running:\n\n%s\n",
+			provision.Name, unavailable.TargetName, indent(recipe))
+		fmt.Fprintf(&b, "and then install %s there by running:\n\n    %s\n\n", unavailable.AgentType, entry.Install.Command)
+	} else {
+		fmt.Fprintf(&b, "I can install it by running this on %s:\n\n    %s\n\n", unavailable.TargetName, entry.Install.Command)
+	}
 	if entry.Install.Login != "" {
 		fmt.Fprintf(&b, "After installing, it needs a one-time login before it can run: %s.\n\n", entry.Install.Login)
 	}
-	b.WriteString(`Reply "yes" to install it now. Any other reply cancels.`)
-	return b.String()
+	b.WriteString(`Reply "yes" to go ahead. Any other reply cancels.`)
+	return b.String(), nil
+}
+
+// indent indents every line of text by four spaces, as a code block.
+func indent(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "    " + l
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // runInstall carries out a confirmed install offer: provisions the
@@ -141,7 +168,7 @@ func (r *Router) runInstall(ctx context.Context, conversationID string, p pendin
 	if err != nil {
 		return "", result.taskID, fmt.Errorf("install %s: %w", p.agentType, err)
 	}
-	output := quoteOutput(result.output)
+	output := quoteOutput(r.redactAllSecrets(ctx, result.output))
 	if result.exitCode != 0 {
 		return fmt.Sprintf("Installing %s on %s failed (exit %d). Last output:\n\n%s",
 			p.agentType, target.Name, result.exitCode, output), result.taskID, nil
@@ -172,8 +199,20 @@ func (r *Router) runInstall(ctx context.Context, conversationID string, p pendin
 // commandResult is a finished command task's outcome.
 type commandResult struct {
 	taskID   string
+	session  string
 	exitCode int
 	output   string
+}
+
+// stillRunningError is runCommandTask giving up waiting on a command that
+// hasn't exited; the command is left running in session.
+type stillRunningError struct {
+	timeout time.Duration
+	session string
+}
+
+func (e *stillRunningError) Error() string {
+	return fmt.Sprintf("still running after %s; left running in tmux session %s", e.timeout, e.session)
 }
 
 // runCommandTask runs command in workspaceID's directory as a one-shot
@@ -192,13 +231,13 @@ func (r *Router) runCommandTask(ctx context.Context, workspaceID, conversationID
 		}
 		return res, fmt.Errorf("launch: %w", err)
 	}
-	res := commandResult{taskID: task.ID}
+	res := commandResult{taskID: task.ID, session: task.TmuxSession}
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := r.orch.WaitForCompletion(waitCtx, task.ID); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return res, fmt.Errorf("still running after %s; left running in tmux session %s", timeout, task.TmuxSession)
+			return res, &stillRunningError{timeout: timeout, session: task.TmuxSession}
 		}
 		if ferr := r.orch.Fail(context.WithoutCancel(ctx), task.ID, taskFailure(registry.ErrorClassWaitFailed, err, "")); ferr != nil {
 			r.logger.Error("command task cleanup failed", "task_id", task.ID, "error", ferr)
