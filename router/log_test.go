@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
@@ -318,5 +320,45 @@ func TestWithLogger_Nil_KeepsDefault(t *testing.T) {
 	}
 	if _, err := r.Dispatch(context.Background(), "conv-1", "hi"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
+	}
+}
+
+// TestDispatch_Logs_NeverIncludeTargetHost guards the decision to keep
+// internal hostnames out of what leaves the server's control (LOOM-64):
+// a full provision + agent dispatch on a remote target logs it by
+// target_id only — never its host or user.
+func TestDispatch_Logs_NeverIncludeTargetHost(t *testing.T) {
+	store, _, r, model, logs := setupLogged(t)
+	remote := &registry.Target{
+		ID:        uuid.NewString(),
+		Name:      "bigbox",
+		Kind:      registry.TargetKindRemote,
+		Host:      "bigbox.tailnet.example.invalid",
+		User:      "loomux-remote-user",
+		SSHKeyRef: "vault:bigbox-key",
+	}
+	if err := store.CreateTarget(context.Background(), remote); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{
+			Action:       router.ActionProvisionWorkspace,
+			NewWorkspace: router.ProvisionSpec{Name: "remote-ws", Path: "/tmp/remote-ws", TargetID: remote.ID, ProvisionCommand: "true"},
+			AgentType:    "claude-code",
+		}, nil
+	}
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
+		return router.RelayResult{Reply: "done", Done: true}, nil
+	}
+
+	if _, err := r.Dispatch(context.Background(), "conv-1", "hi"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	assertAttr(t, logs.find(t, "provisioning workspace"), "target_id", remote.ID)
+	for _, unwanted := range []string{remote.Host, remote.User, remote.SSHKeyRef} {
+		if strings.Contains(logs.buf.String(), unwanted) {
+			t.Errorf("logs contain %q: %s", unwanted, logs.buf.String())
+		}
 	}
 }
