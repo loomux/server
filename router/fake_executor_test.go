@@ -41,6 +41,12 @@ type fakeExecutor struct {
 	// instead of blocking forever (no real hook script runs against
 	// this fake).
 	fileExists bool
+	// captureErr, when set, is returned by CapturePane — failing the
+	// idle detector's Wait mid-turn. killErr, when set, is returned by
+	// KillSession — failing orchestrator.Complete. Both let a test fail
+	// provisioning *after* the session launched (LOOM-63 review).
+	captureErr error
+	killErr    error
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -97,6 +103,9 @@ func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, 
 	if e.unreachable {
 		return "", targets.ErrUnreachable
 	}
+	if e.captureErr != nil {
+		return "", e.captureErr
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if _, ok := e.sessions[target]; !ok {
@@ -108,6 +117,9 @@ func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, 
 func (e *fakeExecutor) KillSession(ctx context.Context, session string) error {
 	if e.unreachable {
 		return targets.ErrUnreachable
+	}
+	if e.killErr != nil {
+		return e.killErr
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
