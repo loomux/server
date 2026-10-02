@@ -27,9 +27,15 @@ Three mechanisms cover the database:
 These steps assume you have access to a consistent backup file (either from
 `/backup` in the running cluster or from PBS).
 
-1. Stop `loomuxd` so nothing writes to the database while you restore:
+1. Suspend Flux for the loomux workloads, then stop `loomuxd` so nothing writes to
+   the database while you restore. **Suspend first:** the Deployment is GitOps-managed
+   with `replicas: 1`, so Flux scales it straight back up on its next reconcile
+   (within ~10 minutes) — mid-restore, if you skip this. (Learned the hard way during
+   the 2026-10-02 orphan-row cleanup.)
    ```bash
+   flux suspend kustomization services -n flux-system
    kubectl -n loomux scale deployment loomuxd --replicas=0
+   kubectl -n loomux wait --for=delete pod -l app=loomuxd --timeout=180s
    ```
 
 2. Start a debug pod that mounts both the data and backup PVCs:
@@ -63,13 +69,20 @@ These steps assume you have access to a consistent backup file (either from
    ```bash
    ls -la /backup/
    sqlite3 /backup/loomux-YYYYMMDD-HHMMSS.db "PRAGMA integrity_check;"
+   cp -p /data/loomux.db /data/loomux.db.pre-restore-$(date +%Y%m%d-%H%M%S)  # keep what you're replacing
    cp /backup/loomux-YYYYMMDD-HHMMSS.db /data/loomux.db
+   rm -f /data/loomux.db-wal /data/loomux.db-shm   # stale WAL/SHM from the old DB must not be replayed onto the restored one
+   # The debug pod runs as root: restore the ownership/mode loomuxd (uid 10001, fsGroup 10001) needs,
+   # or it starts but can't write ("attempt to write a readonly database").
+   chown 1000:10001 /data/loomux.db && chmod 664 /data/loomux.db
+   ls -la /data/
    ```
 
-4. Exit the debug pod and scale `loomuxd` back up:
+4. Exit the debug pod, scale `loomuxd` back up, and resume Flux:
    ```bash
    kubectl -n loomux scale deployment loomuxd --replicas=1
    kubectl -n loomux rollout status deployment/loomuxd
+   flux resume kustomization services -n flux-system
    ```
 
 5. Check that the pod starts cleanly and migrations run without errors:
