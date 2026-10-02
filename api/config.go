@@ -34,6 +34,12 @@ type Config struct {
 	// path" without trying to open it, and that's Server's job, not
 	// LoadConfig's.
 	StaticDir string
+	// MetricsAddr is the address the Prometheus metrics scraper listens
+	// on (LOOM-103). Empty disables the endpoint entirely. The default
+	// binds to loopback only (127.0.0.1:9090); production deployments that
+	// need in-cluster scraping must set this explicitly to ":9090" or a
+	// pod IP.
+	MetricsAddr string
 }
 
 const (
@@ -41,8 +47,10 @@ const (
 	envAddr         = "LOOMUX_HTTP_ADDR"
 	envSessionTTL   = "LOOMUX_SESSION_TTL"
 	envStaticDir    = "LOOMUX_STATIC_DIR"
+	envMetricsAddr  = "LOOMUX_METRICS_ADDR"
 
-	defaultAddr = ":8080"
+	defaultAddr        = ":8080"
+	defaultMetricsAddr = "127.0.0.1:9090"
 )
 
 // LoadConfig reads Config from the environment, failing fast on a
@@ -71,5 +79,12 @@ func LoadConfig() (Config, error) {
 		ttl = d
 	}
 
-	return Config{PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl, StaticDir: os.Getenv(envStaticDir)}, nil
+	metricsAddr := defaultMetricsAddr
+	if raw, ok := os.LookupEnv(envMetricsAddr); ok {
+		// Explicitly set, even to "", means the caller chose the value.
+		// An empty string disables the metrics endpoint.
+		metricsAddr = raw
+	}
+
+	return Config{PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl, StaticDir: os.Getenv(envStaticDir), MetricsAddr: metricsAddr}, nil
 }

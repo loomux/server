@@ -18,7 +18,9 @@ func (o *Orchestrator) Takeover(ctx context.Context, taskID string) error {
 	if task.Status == registry.TaskStatusCompleted || task.Status == registry.TaskStatusFailed {
 		return ErrTaskInactive
 	}
+	prevStatus := task.Status
 	task.Status = registry.TaskStatusHumanTakeover
+	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
 	if err := o.store.UpdateTask(ctx, task); err != nil {
 		return fmt.Errorf("orchestrator: takeover: %w", err)
 	}
@@ -36,7 +38,9 @@ func (o *Orchestrator) Release(ctx context.Context, taskID string) error {
 	if task.Status == registry.TaskStatusCompleted || task.Status == registry.TaskStatusFailed {
 		return ErrTaskInactive
 	}
+	prevStatus := task.Status
 	task.Status = registry.TaskStatusAwaitingInput
+	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
 	if err := o.store.UpdateTask(ctx, task); err != nil {
 		return fmt.Errorf("orchestrator: release: %w", err)
 	}

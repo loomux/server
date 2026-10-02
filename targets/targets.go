@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/registry"
 )
 
@@ -90,12 +91,20 @@ type PaneExit struct {
 }
 
 // NewExecutor constructs the TargetExecutor appropriate for t.Kind.
+// Metrics are disabled; use NewExecutorWithMetrics to instrument calls.
 func NewExecutor(t *registry.Target) (TargetExecutor, error) {
+	return NewExecutorWithMetrics(t, nil)
+}
+
+// NewExecutorWithMetrics constructs the TargetExecutor appropriate for
+// t.Kind and wraps it with Prometheus instrumentation when met is non-nil
+// (LOOM-103).
+func NewExecutorWithMetrics(t *registry.Target, met *metrics.Metrics) (TargetExecutor, error) {
 	switch t.Kind {
 	case registry.TargetKindLocal:
-		return NewLocalExecutor(), nil
+		return newMetricsExecutor(NewLocalExecutor(), met, string(t.Kind), t.Name), nil
 	case registry.TargetKindRemote:
-		return NewRemoteExecutor(t.Host, t.User), nil
+		return newMetricsExecutor(NewRemoteExecutor(t.Host, t.User), met, string(t.Kind), t.Name), nil
 	default:
 		return nil, fmt.Errorf("targets: unknown target kind %q", t.Kind)
 	}

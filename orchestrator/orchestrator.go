@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -91,9 +92,32 @@ type Orchestrator struct {
 	store       registry.Store
 	newExecutor ExecutorFactory
 	detector    CompletionDetector
+	metrics     *metrics.Metrics
+}
+
+// Option configures an Orchestrator constructed via New.
+type Option func(*Orchestrator)
+
+// WithMetrics sets the Prometheus metrics bundle the orchestrator should
+// record into (LOOM-103). A nil value is accepted and ignored.
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(o *Orchestrator) { o.metrics = m }
 }
 
 // New constructs an Orchestrator.
-func New(store registry.Store, newExecutor ExecutorFactory, detector CompletionDetector) *Orchestrator {
-	return &Orchestrator{store: store, newExecutor: newExecutor, detector: detector}
+func New(store registry.Store, newExecutor ExecutorFactory, detector CompletionDetector, opts ...Option) *Orchestrator {
+	o := &Orchestrator{store: store, newExecutor: newExecutor, detector: detector}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return o
+}
+
+// recordTaskTransition records a task status change in metrics. from may
+// be empty for newly created tasks.
+func (o *Orchestrator) recordTaskTransition(from, to string, kind registry.TaskKind) {
+	if o.metrics == nil {
+		return
+	}
+	o.metrics.RecordTaskTransition(from, to, string(kind))
 }

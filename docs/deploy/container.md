@@ -196,6 +196,7 @@ defaults for three of them.
 | `LOOMUX_HTTP_ADDR` | `:8080` |
 | `LOOMUX_DB_PATH` | `/var/lib/loomux/loomux.db` (the default is relative to CWD, so setting it explicitly matters) |
 | `LOOMUX_STATIC_DIR` | `/srv/loomux/web` |
+| `LOOMUX_METRICS_ADDR` | `127.0.0.1:9090` (loopback only) |
 
 **Optional:** `LOOMUX_SESSION_TTL`, `LOOMUX_MARKER_DIR`,
 `LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
@@ -210,6 +211,31 @@ malformed value, an unknown key, or an unknown agent type is a startup
 error. Defaults and what each flag permits: `agents/README.md`. The
 effective profile per agent type is logged at startup as
 `agent launch profile`.
+
+## Metrics (LOOM-103)
+
+`loomuxd` exposes Prometheus metrics on `LOOMUX_METRICS_ADDR` (default
+`127.0.0.1:9090`, path `/metrics`). The default binds to loopback only so
+a standalone or host-networked container does not accidentally expose an
+unauthenticated metrics endpoint on all interfaces. Set it explicitly to
+`:9090` (all interfaces) when Prometheus scrapes it in-cluster via a
+ServiceMonitor. An explicitly empty value (`LOOMUX_METRICS_ADDR=""`)
+disables the endpoint entirely. The metrics carry no conversation/task IDs
+or message content. Key series:
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `loomux_dispatch_total` | `action`, `outcome`, `error_class` | Dispatch outcomes |
+| `loomux_dispatch_stage_seconds` | `stage` | Latency per dispatch stage |
+| `loomux_routing_decisions_total` | `action` | Router decisions |
+| `loomux_router_calls_total` | `op`, `tier`, `outcome` | LLM calls |
+| `loomux_router_call_seconds` | `op` | LLM call latency |
+| `loomux_router_tokens_total` | `tier`, `kind` | Token consumption |
+| `loomux_router_escalations_total` | `op` | Primary->escalation fallbacks |
+| `loomux_tasks` | `status` | Task count by status |
+| `loomux_target_up` | `target`, `kind` | Target reachability |
+| `loomux_target_op_seconds` | `kind`, `op` | Target operation latency |
+| `loomux_reaper_tasks_reaped_total` | — | Idle sessions torn down |
 
 **What the logs contain.** Chat message bodies, direct answers and relayed
 agent output are never logged (only a message's length). But treat the log
