@@ -65,8 +65,13 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 		ConversationID: conversationID,
 		StartedAt:      &now,
 	}
-	if kind == registry.TaskKindAgent {
+	switch kind {
+	case registry.TaskKindAgent:
 		task.AgentType = agentType
+	case registry.TaskKindCommand:
+		// Only a command task records what it ran (LOOM-71): an agent's
+		// launch command carries injected credentials and is never stored.
+		task.Command = command
 	}
 
 	if err := o.store.CreateTask(ctx, task); err != nil {
@@ -178,6 +183,47 @@ func (o *Orchestrator) Complete(ctx context.Context, taskID, summary string) err
 	ws.Status = registry.WorkspaceStatusIdle
 	if err := o.store.UpdateWorkspace(ctx, ws); err != nil {
 		return fmt.Errorf("orchestrator: complete: %w", err)
+	}
+	return nil
+}
+
+// FinishCommand records a TaskKindCommand task's exit code once its
+// process has exited (completion.TierExit), tears its pane down and marks
+// it completed — a non-zero exit is still a command that ran to the end,
+// so the code, not the status, says how it went. Unlike Complete it
+// leaves the workspace's rolling summary alone: a command's output goes
+// back to chat, it isn't a summary of the workspace's work.
+func (o *Orchestrator) FinishCommand(ctx context.Context, taskID string, exitCode int) error {
+	task, err := o.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: finish command: %w", err)
+	}
+	if task.Kind != registry.TaskKindCommand {
+		return fmt.Errorf("orchestrator: finish command: task %q is a %s task, not a command", taskID, task.Kind)
+	}
+	exec, err := o.executorFor(ctx, task)
+	if err != nil {
+		return fmt.Errorf("orchestrator: finish command: %w", err)
+	}
+	if err := exec.KillSession(ctx, task.TmuxSession); err != nil {
+		return fmt.Errorf("orchestrator: finish command: %w", err)
+	}
+
+	now := time.Now().UTC()
+	task.Status = registry.TaskStatusCompleted
+	task.CompletedAt = &now
+	task.ExitCode = &exitCode
+	if err := o.store.UpdateTask(ctx, task); err != nil {
+		return fmt.Errorf("orchestrator: finish command: %w", err)
+	}
+
+	ws, err := o.store.GetWorkspace(ctx, task.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: finish command: %w", err)
+	}
+	ws.Status = registry.WorkspaceStatusIdle
+	if err := o.store.UpdateWorkspace(ctx, ws); err != nil {
+		return fmt.Errorf("orchestrator: finish command: %w", err)
 	}
 	return nil
 }

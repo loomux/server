@@ -505,3 +505,84 @@ func TestTakeover_RefusesWhenInactive(t *testing.T) {
 		t.Fatalf("Takeover on a completed task: err = %v, want ErrTaskInactive", err)
 	}
 }
+
+// A command task (LOOM-71) records exactly what it ran; an agent task
+// never does — its launch command carries injected credentials.
+func TestLaunch_RecordsCommandForCommandTasksOnly(t *testing.T) {
+	store, ws, _, _, o := setup(t)
+	ctx := context.Background()
+
+	cmdTask, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindCommand, "", "npm install -g @openai/codex")
+	if err != nil {
+		t.Fatalf("Launch(command): %v", err)
+	}
+	got, err := store.GetTask(ctx, cmdTask.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Kind != registry.TaskKindCommand || got.Command != "npm install -g @openai/codex" {
+		t.Errorf("command task = %+v, want kind command with its command recorded", got)
+	}
+
+	agentTask, err := o.Launch(ctx, ws.ID, "conv-2", registry.TaskKindAgent, "codex", "OPENAI_API_KEY='secret' codex")
+	if err != nil {
+		t.Fatalf("Launch(agent): %v", err)
+	}
+	got, err = store.GetTask(ctx, agentTask.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Command != "" {
+		t.Errorf("agent task recorded its launch command %q; it must never be stored", got.Command)
+	}
+}
+
+// FinishCommand records a command task's exit code — a non-zero one is
+// still a finished command, not a Loomux failure — tears its (dead) pane
+// down, and leaves the workspace's rolling summary alone: a command's
+// output is relayed to chat, not folded into the workspace's summary.
+func TestFinishCommand(t *testing.T) {
+	store, ws, exec, _, o := setup(t)
+	ctx := context.Background()
+	if err := store.SetWorkspaceRollingSummary(ctx, ws.ID, "earlier summary"); err != nil {
+		t.Fatalf("SetWorkspaceRollingSummary: %v", err)
+	}
+
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindCommand, "", "false")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if err := o.FinishCommand(ctx, task.ID, 1); err != nil {
+		t.Fatalf("FinishCommand: %v", err)
+	}
+
+	got, err := store.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != registry.TaskStatusCompleted || got.ExitCode == nil || *got.ExitCode != 1 || got.CompletedAt == nil {
+		t.Errorf("task after FinishCommand = %+v (exit %v), want completed with exit code 1", got, got.ExitCode)
+	}
+	if exec.sessionFor(task.TmuxSession).alive {
+		t.Error("FinishCommand left the pane alive")
+	}
+	gotWS, err := store.GetWorkspace(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if gotWS.Status != registry.WorkspaceStatusIdle || gotWS.RollingSummary != "earlier summary" {
+		t.Errorf("workspace after FinishCommand = status %q summary %q, want idle and summary untouched", gotWS.Status, gotWS.RollingSummary)
+	}
+}
+
+func TestFinishCommand_RefusesNonCommandTask(t *testing.T) {
+	_, ws, _, _, o := setup(t)
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindAgent, "codex", "codex")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if err := o.FinishCommand(ctx, task.ID, 0); err == nil {
+		t.Error("FinishCommand on an agent task: want error, got nil")
+	}
+}
