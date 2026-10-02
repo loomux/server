@@ -189,6 +189,12 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTasksByWorkspace (after fallback): %v", err)
 	}
+	// The fresh session is still open (done: false). Kill it: its agent
+	// exits after 30s, and a pane outlives its process (remain-on-exit,
+	// LOOM-71), so it would otherwise outlive the test.
+	for _, tk := range tasksAfter {
+		_ = realExec.KillSession(context.Background(), tk.TmuxSession)
+	}
 	if len(tasksAfter) != 2 {
 		t.Fatalf("ListTasksByWorkspace = %+v, want 2 tasks (the reaped one, now Failed, plus a fresh one)", tasksAfter)
 	}

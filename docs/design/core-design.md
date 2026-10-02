@@ -123,14 +123,21 @@ Conceptual schema:
 - `workspaces`: id, name, path, target_id (FK), git remote (nullable),
   short domain tags + description (what the router matches requests
   against), capabilities (MCPs/tools available there), status
-  (idle/active/provisioning/archived), `is_dynamic` (pre-registered vs.
+  (idle/active/provisioning/archived/failed — `failed` is a workspace whose
+  provisioning failed: kept for inspection, never offered to the router
+  again; LOOM-71), `is_dynamic` (pre-registered vs.
   auto-provisioned on demand), last-used timestamp, `rolling_summary`
   (a single text field, *replaced* — not appended — after each completed
   task, so it stays lightweight by design and never grows into a log)
-- `tasks`: id, workspace_id (FK), pane `kind` (`agent`/`shell`), agent_type
-  (nullable for shell panes), tmux session/window name, status
+- `tasks`: id, workspace_id (FK), pane `kind` (`agent`/`shell`/`command`),
+  agent_type (nullable for shell panes), tmux session/window name, status
   (running/awaiting-input/human-takeover/completed/failed), timestamps,
-  the chat conversation it belongs to
+  the chat conversation it belongs to; for a `command` task, the command it
+  ran verbatim and its exit code (LOOM-71)
+- `target_agents`: target_id (FK, cascade), agent_type, available,
+  checked_at — the last result of probing a target for an agent-type's CLI
+  (LOOM-71, see §6 "Agent availability"). No row means "never checked",
+  not "absent".
 
 **Entity IDs are strings (UUIDs), not backend-native autoincrement
 integers** — ratified during LOOM-3's implementation. Keeps IDs stable and
@@ -155,6 +162,22 @@ Every tmux pane Loomux manages is one of two kinds:
   giving a human a raw shell in a workspace on request. Completion for a
   Loomux-driven `shell` task is just script exit; for a human-requested one,
   it's the human closing it.
+- **`command`** (LOOM-71) — a one-shot command run as the pane's own
+  process: an agent CLI install, or (LOOM-72) a direct shell command. Its
+  completion is the process exiting, never an idle heuristic; the command
+  and its exit code are recorded on the task, and the pane is torn down once
+  its output has been read.
+
+**A pane outlives its process** (LOOM-71/LOOM-74). Every session is created
+with tmux `remain-on-exit` set in the same tmux invocation as `new-session`,
+so a command that exits — a finished provisioning script, an agent CLI that
+isn't installed, a crash — leaves a dead pane whose exit status
+(`#{pane_dead_status}`) and final output (including scrollback, where tmux
+pushes a fast command's output) can still be read. Before this, such a
+session vanished with its process and every later tmux call failed with
+"can't find pane". Whoever owns the session still kills it: on completion
+as before, and a failed task's dead pane is left for inspection like any
+other failure.
 
 Lifecycle for an `agent` task:
 
@@ -211,6 +234,14 @@ separately, in three tiers (strongest first):
    neither hooks nor tool-use capability to self-report at all. Explicitly
    the weakest signal in the system and not the default path.
 
+**Process exit** (LOOM-71) runs alongside whichever tier applies: if the
+pane's process exits before the tier signals, nothing ever will (a CLI
+that isn't installed writes no marker), so the wait ends at once with the
+exit status and final output. For a provisioning script exit 0 is success
+and anything else a failure; for an interactive agent any exit mid-turn is
+a failure, reported in the process's own words. A `command` task uses exit
+as its *only* signal (`TierExit`).
+
 Prompt-pattern matching against the rendered terminal UI (regex over
 `capture-pane` output looking for a tool's own "ready" prompt) was
 considered and rejected as a primary mechanism — live TUIs (spinners,
@@ -234,8 +265,43 @@ vendor. Its responsibilities:
   credential references are never included: the routing prompt goes to a
   third-party model vendor. The chosen `target_id` is validated against
   that list, and re-resolved before any workspace row is written (LOOM-64).
+  Each target also carries its recorded agent availability (which agent
+  CLIs were found there, which weren't, or "not checked yet"), so the
+  router prefers an agent that is actually installed (LOOM-71).
 - **Relay**: condense/summarize captured agent output into a chat-appropriate
   reply, and update the workspace's rolling summary.
+
+**Agent availability and install offers (LOOM-71).** An agent-type may
+declare the `Binary` its CLI runs as and an `Install` recipe (a fixed
+install command plus the login step the CLI needs afterwards). Before a
+workspace is provisioned for an agent, and before any fresh agent launch,
+Loomux probes the target (`command -v <binary>` through the target's
+executor, via POSIX `sh`) and records the result in `target_agents`; the
+recorded results can also be listed and refreshed on demand
+(`GET /api/v1/targets/{id}/agents`, `POST .../agents/refresh`). A probe
+that can't run (target unreachable) is an error, never "absent".
+
+When the agent is absent the turn ends with a reply instead of a failure —
+and before any workspace row or session exists, so nothing is left stuck:
+the exact install command and login step, and an invitation to reply
+"yes". Safety model:
+
+- The command that would run is the agent-type's configured recipe. The
+  router model never supplies, edits or chooses it.
+- The install runs only if the conversation's **very next** message is an
+  explicit confirmation — a short fixed list of whole-message answers
+  ("yes", "install it", "install codex", …) matched deterministically,
+  without consulting the router model. Anything else, including "yes,
+  but…", cancels the offer. Offers live in memory for at most 15 minutes
+  and are one-shot; a restart forgets them (fails closed).
+- A confirmed install runs as a tracked `command` task (in the workspace the
+  original request targeted, provisioning it first if needed), its exit
+  code and output relayed back, the target re-probed afterwards. Loomux
+  never performs the login step itself.
+- Output quoted back into chat or an error (an install's output, an exited
+  agent's last words) is bounded (last 40 lines / 4 KB) and has every
+  credential value the vault would inject for that workspace + agent
+  replaced with `[redacted]`.
 
 Any number of agent-types can be registered; each supplies a launch command
 template and a completion-detection adapter (§5, tier 1 or 2 config).
@@ -310,6 +376,14 @@ Four independent axes:
 - **Target unreachable** (SSH connection fails): task marked `failed`,
   workspace status reverts to idle, a clear error surfaces to chat — never
   a silent hang.
+- **Agent CLI missing or exiting at once** (LOOM-71): probed for before
+  launch and answered with an install offer (§6); if it still exits
+  mid-turn, the task is `failed` and the error quotes its last output
+  (e.g. `codex: command not found`, exit 127), credentials redacted.
+- **Provisioning failure**: the workspace row is kept for inspection but
+  marked `failed` — never left `active`/`provisioning` — and excluded from
+  routing. A provisioning script's non-zero exit is reported with its
+  output.
 - **Agent crash/hang**: if no completion signal arrives within a generous
   timeout (accounting for tier-3 idle fallback), the task is marked
   `failed` and surfaced to chat. The pane is **not** auto-torn-down on

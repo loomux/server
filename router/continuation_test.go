@@ -10,6 +10,7 @@ import (
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
+	"github.com/Loomux/server/targets"
 )
 
 // TestDispatch_NotDone_KeepsTaskOpenForFollowUp is LOOM-13's core case
@@ -333,4 +334,56 @@ type noopDetector struct{}
 func (noopDetector) Wait(ctx context.Context, task *registry.Task) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// TestDispatch_AgentDiedBetweenTurns_FallsBackToFreshLaunch: since panes
+// outlive their process (remain-on-exit, LOOM-71), an agent that exited
+// after a turn leaves a session that still exists but is dead. That must
+// count as gone — the stale task failed, its dead pane killed, a fresh
+// launch made — not have the next message typed into a dead pane.
+func TestDispatch_AgentDiedBetweenTurns_FallsBackToFreshLaunch(t *testing.T) {
+	store, exec, r, model := setup(t)
+	ws := createFixtureWorkspace(t, store)
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+	}
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
+		return router.RelayResult{Reply: "turn done", Done: false}, nil
+	}
+	if _, err := r.Dispatch(context.Background(), "conv-1", "start"); err != nil {
+		t.Fatalf("Dispatch (turn 1): %v", err)
+	}
+	tasks, _ := store.ListTasksByWorkspace(context.Background(), ws.ID)
+	if len(tasks) != 1 {
+		t.Fatalf("tasks after turn 1 = %+v", tasks)
+	}
+	dead := tasks[0]
+
+	// The first session's process has since exited; a fresh one won't.
+	deadSession := dead.TmuxSession
+	exec.mu.Lock()
+	exec.sessions[deadSession].command = "dead-agent"
+	exec.mu.Unlock()
+	exec.paneExit = func(command string) *targets.PaneExit {
+		if command == "dead-agent" {
+			return &targets.PaneExit{Status: 0, Output: "bye"}
+		}
+		return nil
+	}
+
+	if _, err := r.Dispatch(context.Background(), "conv-1", "keep going"); err != nil {
+		t.Fatalf("Dispatch (turn 2): %v", err)
+	}
+	if s := exec.sessionFor(deadSession); s.alive || len(s.keys) != 1 {
+		t.Errorf("dead session: alive=%v keys=%v; want it killed, with turn 2 never typed into it", s.alive, s.keys)
+	}
+	tasks, _ = store.ListTasksByWorkspace(context.Background(), ws.ID)
+	if len(tasks) != 2 {
+		t.Fatalf("tasks after turn 2 = %+v, want the dead one plus a fresh one", tasks)
+	}
+	for _, tk := range tasks {
+		if tk.ID == dead.ID && tk.Status != registry.TaskStatusFailed {
+			t.Errorf("dead task status = %q, want failed", tk.Status)
+		}
+	}
 }

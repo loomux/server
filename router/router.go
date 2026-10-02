@@ -654,12 +654,32 @@ func (r *Router) findActiveTask(ctx context.Context, workspaceID, conversationID
 // reasons outside Router's control (the idle reaper, LOOM-16; a crash; a
 // human manually killing it) and treats that as recoverable via a fresh
 // launch, not an error.
+//
+// A session whose pane process has exited counts as gone too (LOOM-71):
+// panes outlive their process (remain-on-exit), so an agent that quit
+// after its last turn leaves a dead pane that still "exists". That dead
+// pane is killed here — its task is about to be failed and replaced, and
+// typing the next message into it would only fail.
 func (r *Router) sessionIsLive(ctx context.Context, task *registry.Task) (bool, error) {
 	exec, err := r.executorFor(ctx, task)
 	if err != nil {
 		return false, err
 	}
-	return exec.HasSession(ctx, task.TmuxSession)
+	live, err := exec.HasSession(ctx, task.TmuxSession)
+	if err != nil || !live {
+		return false, err
+	}
+	exit, err := exec.PaneExited(ctx, task.TmuxSession)
+	if err != nil {
+		return false, err
+	}
+	if exit != nil {
+		if err := exec.KillSession(ctx, task.TmuxSession); err != nil {
+			r.logger.Error("could not kill dead agent session", "task_id", task.ID, "error", err)
+		}
+		return false, nil
+	}
+	return true, nil
 }
 
 // executorFor resolves the TargetExecutor for the target a task's
