@@ -199,3 +199,49 @@ func TestAdapters_VersionFloorsAreTheVerifiedOnes(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudeCode_Profile pins the unattended defaults (LOOM-78):
+// acceptEdits (file edits in the workspace without asking; shell
+// commands and other tools still ask), no per-launch trust mechanism,
+// and the first prompt as an argument.
+func TestClaudeCode_Profile(t *testing.T) {
+	p := agents.ClaudeCode().Profile
+	if got := strings.Join(p.PermissionArgs, " "); got != "--permission-mode acceptEdits" {
+		t.Errorf("PermissionArgs = %q", got)
+	}
+	if p.TrustArgs != nil {
+		t.Error("TrustArgs set: Claude Code has no per-launch trust flag, and ~/.claude.json must not be edited")
+	}
+	if !p.PromptAsArg {
+		t.Error("PromptAsArg = false, want the first prompt passed as an argument")
+	}
+}
+
+func TestCodex_Profile(t *testing.T) {
+	p := agents.Codex().Profile
+	if got := strings.Join(p.PermissionArgs, " "); got != "--ask-for-approval on-request --sandbox workspace-write" {
+		t.Errorf("PermissionArgs = %q", got)
+	}
+	if !p.PromptAsArg {
+		t.Error("PromptAsArg = false, want the first prompt passed as an argument")
+	}
+	if p.TrustArgs == nil {
+		t.Fatal("TrustArgs nil: codex stops at its trust screen without a per-launch projects override")
+	}
+	// A path with a dot, a quote and a backslash: the dotted -c key form
+	// (projects."<dir>".trust_level) splits on the dot, so the override
+	// must be an inline table with the path as a quoted TOML key.
+	args := p.TrustArgs(`/srv/ws/my.repo "x"\y`)
+	want := []string{"-c", `projects={"/srv/ws/my.repo \"x\"\\y"={trust_level="trusted"}}`}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("TrustArgs = %q, want %q", args, want)
+	}
+}
+
+func TestCodex_TrustArgsEscapeControlCharacters(t *testing.T) {
+	args := agents.Codex().Profile.TrustArgs("/ws/a\nb\tc")
+	want := `projects={"/ws/a\u000Ab\u0009c"={trust_level="trusted"}}`
+	if len(args) != 2 || args[1] != want {
+		t.Fatalf("TrustArgs = %q, want [-c %s]", args, want)
+	}
+}

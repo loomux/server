@@ -41,6 +41,10 @@ type AgentType struct {
 	// someone else. Each element is shell-quoted as one word. Empty means
 	// the agent signals some other way (or, for TierIdle, not at all).
 	CompletionHookArgs []string
+	// Profile is how the CLI is started unattended: permission/sandbox
+	// flags, workspace pre-trust, first prompt as an argument (LOOM-78).
+	// The zero value adds nothing to the command.
+	Profile LaunchProfile
 	// Binary is the agent CLI's executable name. When set, the target is
 	// probed for it (`command -v`) before every fresh launch and before a
 	// workspace is provisioned for it, and the result is recorded per
@@ -106,12 +110,24 @@ func (r AgentTypeRegistry) LaunchCommand(agentType string) (string, error) {
 }
 
 // launchCommand is the agent CLI invocation launchAgent runs (before any
-// env prefix): LaunchTemplate followed by CompletionHookArgs, each
-// argument shell-quoted.
-func (at AgentType) launchCommand() string {
+// env prefix), each argument shell-quoted: LaunchTemplate, the profile's
+// permission args, its trust args for workspaceDir, CompletionHookArgs,
+// then — when the profile passes the first prompt as an argument and
+// there is one — "--" and the prompt. "--" keeps a message that starts
+// with "-" from being read as a flag.
+func (at AgentType) launchCommand(workspaceDir, prompt string) string {
+	args := append([]string{}, at.Profile.PermissionArgs...)
+	if at.Profile.TrustArgs != nil {
+		args = append(args, at.Profile.TrustArgs(workspaceDir)...)
+	}
+	args = append(args, at.CompletionHookArgs...)
+	if at.Profile.PromptAsArg && prompt != "" {
+		args = append(args, "--", prompt)
+	}
+
 	var b strings.Builder
 	b.WriteString(at.LaunchTemplate)
-	for _, arg := range at.CompletionHookArgs {
+	for _, arg := range args {
 		b.WriteByte(' ')
 		b.WriteString(shellQuote(arg))
 	}

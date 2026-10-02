@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/Loomux/server/agents"
 	"github.com/Loomux/server/completion"
@@ -122,6 +123,20 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if cfg.MasterKey != nil {
 		opts = append(opts, sqlite.WithMasterKey(cfg.MasterKey))
 	}
+	// Before the store opens, so a bad override leaves nothing to clean up.
+	if err := agentTypes.ApplyProfileOverrides(cfg.AgentProfiles); err != nil {
+		return nil, fmt.Errorf("app: %s: %w", envAgentProfiles, err)
+	}
+	if cfg.Logger != nil {
+		names := dispatchableAgentTypeNames(agentTypes)
+		sort.Strings(names)
+		for _, name := range names {
+			p := agentTypes[name].Profile
+			cfg.Logger.Info("agent launch profile", "agent_type", name,
+				"permission_args", p.PermissionArgs, "pre_trust", p.TrustArgs != nil, "prompt_as_arg", p.PromptAsArg)
+		}
+	}
+
 	store, err := sqlite.Open(cfg.DBPath, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("app: open store: %w", err)
