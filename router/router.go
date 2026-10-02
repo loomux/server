@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,11 +17,11 @@ import (
 	"github.com/Loomux/server/targets"
 )
 
-// provisioningSummary is applied via orchestrator.Complete after a
-// dynamic workspace's shell-kind provisioning task goes idle. Not run
-// through RoutingModel.Relay — that's for condensing agent output
-// specifically (design spec §6), not a provisioning script's.
-const provisioningSummary = "workspace provisioned"
+// provisionTimeout bounds how long provisioning — a clone, say — may run
+// before the workspace is failed (LOOM-90; LOOM-60's bounded
+// provisioning). The recipe is left running in its session for a human to
+// inspect.
+const provisionTimeout = 10 * time.Minute
 
 // Router composes the workspace registry, orchestrator, completion
 // detection (via the orchestrator it wraps), and credential vault into
@@ -109,10 +110,16 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	// answered here, before routing: the routing model plays no part in
 	// deciding that an install runs, nor in what it runs (LOOM-71).
 	if p, ok := r.pending.take(conversationID, time.Now()); ok {
-		if isConfirmation(message, p.agentType) {
+		if isConfirmation(message, p) {
+			if p.kind == pendingCloneRemote {
+				log.Info("clone confirmed", "target_id", p.targetID)
+				return r.act(ctx, log, conversationID, p.message, Decision{
+					Action: ActionProvisionWorkspace, AgentType: p.agentType, NewWorkspace: *p.provision,
+				}, true, start)
+			}
 			return r.confirmInstall(ctx, log, conversationID, message, p, start)
 		}
-		log.Info("install offer declined", "agent_type", p.agentType, "target_id", p.targetID)
+		log.Info("offer declined", "agent_type", p.agentType, "target_id", p.targetID)
 	}
 
 	workspaces, err := r.store.ListWorkspaces(ctx)
@@ -139,8 +146,16 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		return "", fmt.Errorf("router: dispatch: routing failed: %w", err)
 	}
 	logDecision(log, decision)
+	return r.act(ctx, log, conversationID, message, decision, false, start)
+}
 
+// act carries out a routing decision for message. cloneConfirmed is set
+// when the user has just confirmed cloning the decision's git remote
+// (see askToClone), so it isn't asked about again.
+func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, message string, decision Decision,
+	cloneConfirmed bool, start time.Time) (string, error) {
 	var workspaceID string
+	var err error
 	switch decision.Action {
 	case ActionAnswerDirectly:
 		if err := r.logTurn(ctx, conversationID, "", message, decision.DirectAnswer); err != nil {
@@ -154,6 +169,20 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		workspaceID = decision.WorkspaceID
 
 	case ActionProvisionWorkspace:
+		// The spec is the routing model's: validated before anything —
+		// even an install offer that would carry it — happens (LOOM-90).
+		if err := decision.NewWorkspace.Validate(); err != nil {
+			log.Error("dispatch failed", "stage", "validate provisioning", "error", err)
+			return "", fmt.Errorf("router: dispatch: provision workspace: %w", err)
+		}
+		// A repository the routing model chose, rather than one the user
+		// typed, is never cloned — and an agent started in it, with
+		// whatever hooks its own config declares — without the user
+		// confirming it (LOOM-90 re-review).
+		if spec := decision.NewWorkspace; spec.Kind == ProvisionGitClone && !cloneConfirmed &&
+			!strings.Contains(message, spec.GitRemote) {
+			return r.askToClone(ctx, log, conversationID, message, decision, start)
+		}
 		// Probe for the agent before writing a workspace row, so a target
 		// without the agent's CLI gets an install offer instead of a
 		// workspace whose first launch can only fail (LOOM-71). A
@@ -193,12 +222,47 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	return reply, nil
 }
 
+// askToClone ends a turn whose decision would clone a repository the user
+// didn't name, showing what would be cloned, onto which target and where,
+// and registering the offer: a "yes" as the next message carries the
+// original request on (LOOM-90 re-review).
+func (r *Router) askToClone(ctx context.Context, log *slog.Logger, conversationID, message string, decision Decision,
+	start time.Time) (string, error) {
+	spec := decision.NewWorkspace
+	target, err := r.store.GetTarget(ctx, spec.TargetID)
+	if err != nil {
+		log.Error("dispatch failed", "stage", "resolve target", "target_id", spec.TargetID, "error", err)
+		return "", fmt.Errorf("router: dispatch: provision workspace: resolve target %q: %w", spec.TargetID, err)
+	}
+	r.pending.put(conversationID, pendingInstall{
+		kind:      pendingCloneRemote,
+		agentType: decision.AgentType,
+		targetID:  target.ID,
+		provision: &spec,
+		message:   message,
+		expires:   time.Now().Add(pendingTTL),
+	})
+	reply := fmt.Sprintf("To do this I'd clone a repository you didn't name:\n\n    %s\n\ninto %s on %s, "+
+		"and start %s there. Reply \"yes\" to go ahead. Any other reply cancels.",
+		spec.GitRemote, workspaceDisplayPath(target, spec.Name), target.Name, decision.AgentType)
+	if err := r.logTurn(ctx, conversationID, "", message, reply); err != nil {
+		log.Error("dispatch failed", "stage", "log turn", "error", err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+	log.Info("dispatch finished", "action", "clone_confirmation_requested", "duration_ms", time.Since(start).Milliseconds())
+	return reply, nil
+}
+
 // replyWithOffer ends a turn whose agent isn't installed on its target
 // with an install offer (or, for an agent-type with no recipe, an
 // explanation) instead of an error (LOOM-71).
 func (r *Router) replyWithOffer(ctx context.Context, log *slog.Logger, conversationID, message string,
 	unavailable *AgentUnavailableError, workspaceID string, provision *ProvisionSpec, start time.Time) (string, error) {
-	reply := r.installOffer(conversationID, unavailable, workspaceID, provision)
+	reply, err := r.installOffer(ctx, conversationID, unavailable, workspaceID, provision)
+	if err != nil {
+		log.Error("dispatch failed", "stage", "install offer", "error", err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
 	if err := r.logTurn(ctx, conversationID, "", message, reply); err != nil {
 		log.Error("dispatch failed", "stage", "log turn", "error", err)
 		return "", fmt.Errorf("router: dispatch: %w", err)
@@ -264,15 +328,23 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		log.Error("provisioning failed", "stage", "resolve target", "error", "no target_id given")
 		return "", fmt.Errorf("provision workspace: no target_id given")
 	}
-	if _, err := r.store.GetTarget(ctx, spec.TargetID); err != nil {
+	target, err := r.store.GetTarget(ctx, spec.TargetID)
+	if err != nil {
 		log.Error("provisioning failed", "stage", "resolve target", "error", err)
 		return "", fmt.Errorf("provision workspace: resolve target %q: %w", spec.TargetID, err)
 	}
+	// The spec comes from the routing model: validated here, before any
+	// row is written, whatever the model's own validation did (LOOM-90).
+	if err := spec.Validate(); err != nil {
+		log.Error("provisioning failed", "stage", "validate", "error", err)
+		return "", fmt.Errorf("provision workspace: %w", err)
+	}
 
+	// Path stays empty until the recipe reports the directory it
+	// resolved inside the workspace root.
 	ws := &registry.Workspace{
 		ID:          uuid.NewString(),
 		Name:        spec.Name,
-		Path:        spec.Path,
 		TargetID:    spec.TargetID,
 		GitRemote:   spec.GitRemote,
 		Description: spec.Description,
@@ -294,11 +366,12 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	log = log.With("workspace_id", ws.ID)
 	//
 	// Why is recorded too (LOOM-77): on the task (reason, class, output
-	// tail) and on the workspace (status_reason).
+	// tail) and on the workspace (status_reason). A task that already
+	// ended — a recipe that ran to a non-zero exit — is failed regardless.
 	fail := func(stage string, taskID string, failure registry.TaskFailure, err error) {
 		cleanupCtx := context.WithoutCancel(ctx)
 		if taskID != "" {
-			if cur, gerr := r.store.GetTask(cleanupCtx, taskID); gerr == nil && !isTerminal(cur.Status) {
+			if cur, gerr := r.store.GetTask(cleanupCtx, taskID); gerr == nil && cur.Status != registry.TaskStatusFailed {
 				if ferr := r.orch.Fail(cleanupCtx, taskID, failure); ferr != nil {
 					log.Error("provisioning cleanup failed", "stage", "fail task", "task_id", taskID, "error", ferr)
 				}
@@ -319,44 +392,55 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		}
 		log.Error("provisioning failed", attrs...)
 	}
-	log.Info("provisioning workspace")
 
-	task, err := r.orch.Launch(ctx, ws.ID, conversationID, registry.TaskKindShell, "", spec.ProvisionCommand)
+	// The recipe is the pane's own process, run as a command task: its
+	// exit is its completion (status 0 success, anything else a failure
+	// reported in its own output), recorded with the exact script that
+	// ran, and bounded — a clone that hangs fails the workspace rather
+	// than the turn waiting forever (LOOM-60).
+	recipe := provisioningRecipe(target, spec)
+	log.Info("provisioning workspace", "kind", string(spec.Kind))
+	res, err := r.runCommandTask(ctx, ws.ID, conversationID, recipe, provisionTimeout)
 	if err != nil {
-		taskID := ""
-		if task != nil {
-			taskID = task.ID
+		var running *stillRunningError
+		class := registry.ErrorClassWaitFailed
+		if errors.As(err, &running) {
+			class = registry.ErrorClassProvisionFailed
+		} else if res.taskID == "" {
+			class = registry.ErrorClassLaunchFailed
 		}
-		fail("launch", taskID, taskFailure(registry.ErrorClassLaunchFailed, err, ""), err)
-		return "", fmt.Errorf("provision workspace: launch: %w", err)
+		fail("run", res.taskID, taskFailure(class, err, ""), err)
+		return "", fmt.Errorf("provision workspace: %w", err)
 	}
-	// A provisioning script is the pane's own process, so it exiting is
-	// the clearest completion there is: status 0 is success, anything
-	// else a failure reported with the script's own output. A script that
-	// keeps running (or an empty command's interactive shell) completes
-	// by going idle, as before.
-	if err := r.orch.WaitForCompletion(ctx, task.ID); err != nil {
-		var exited *orchestrator.ProcessExitedError
-		if !errors.As(err, &exited) {
-			fail("wait for completion", task.ID, taskFailure(registry.ErrorClassWaitFailed, err, ""), err)
-			return "", fmt.Errorf("provision workspace: wait for completion: %w", err)
-		}
-		if exited.Status != 0 {
-			tail := quoteOutput(exited.Output)
-			err = fmt.Errorf("provisioning command exited with status %d: %s", exited.Status, tail)
-			fail("wait for completion", task.ID, registry.TaskFailure{
-				Class:      registry.ErrorClassProvisionFailed,
-				Reason:     fmt.Sprintf("provisioning command exited with status %d", exited.Status),
-				OutputTail: tail,
-			}, err)
-			return "", fmt.Errorf("provision workspace: %w", err)
-		}
+	if res.exitCode != 0 {
+		tail := quoteOutput(r.redactAllSecrets(ctx, res.output))
+		err := fmt.Errorf("provisioning exited with status %d: %s", res.exitCode, tail)
+		fail("run", res.taskID, registry.TaskFailure{
+			Class:      registry.ErrorClassProvisionFailed,
+			Reason:     fmt.Sprintf("provisioning exited with status %d", res.exitCode),
+			OutputTail: tail,
+		}, err)
+		return "", fmt.Errorf("provision workspace: %w", err)
 	}
-	if err := r.orch.Complete(ctx, task.ID, provisioningSummary); err != nil {
-		fail("complete", task.ID, taskFailure(registry.ErrorClassInternal, err, ""), err)
-		return "", fmt.Errorf("provision workspace: complete: %w", err)
+	path := parseProvisionedPath(res.output)
+	if path == "" {
+		fail("run", res.taskID, taskFailure(registry.ErrorClassProvisionFailed, errNoProvisionedPath, ""), errNoProvisionedPath)
+		return "", fmt.Errorf("provision workspace: %w", errNoProvisionedPath)
 	}
-	log.Info("workspace provisioned", "task_id", task.ID)
+
+	cur, err := r.store.GetWorkspace(ctx, ws.ID)
+	if err != nil {
+		fail("record path", "", taskFailure(registry.ErrorClassInternal, err, ""), err)
+		return "", fmt.Errorf("provision workspace: %w", err)
+	}
+	cur.Path = path
+	cur.Status = registry.WorkspaceStatusIdle
+	cur.StatusReason = ""
+	if err := r.store.UpdateWorkspace(ctx, cur); err != nil {
+		fail("record path", "", taskFailure(registry.ErrorClassInternal, err, ""), err)
+		return "", fmt.Errorf("provision workspace: %w", err)
+	}
+	log.Info("workspace provisioned", "task_id", res.taskID)
 	return ws.ID, nil
 }
 
@@ -503,7 +587,9 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 // PATH that the launch shell didn't.
 func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *orchestrator.ProcessExitedError) error {
 	cleanupCtx := context.WithoutCancel(ctx)
-	output := r.redactSecrets(cleanupCtx, task.WorkspaceID, task.AgentType, quoteOutput(exited.Output))
+	// Redact before bounding: cut first, a secret straddling the cut
+	// would survive as an unrecognisable tail.
+	output := quoteOutput(r.redactSecrets(cleanupCtx, task.WorkspaceID, task.AgentType, exited.Output))
 	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
 		Class:      registry.ErrorClassAgentExited,
 		Reason:     fmt.Sprintf("agent %q exited with status %d before finishing the turn", task.AgentType, exited.Status),

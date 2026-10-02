@@ -95,9 +95,9 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	t.CreatedAt = now
 	t.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.CreatedAt, t.UpdatedAt,
+		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.CreatedAt, t.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -110,7 +110,7 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 
 func (s *Store) GetTarget(ctx context.Context, id string) (*registry.Target, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, kind, host, user, ssh_key_ref, created_at, updated_at
+		SELECT id, name, kind, host, user, ssh_key_ref, workspace_root, created_at, updated_at
 		FROM targets WHERE id = ?`, id)
 	t, err := scanTarget(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -124,7 +124,7 @@ func (s *Store) GetTarget(ctx context.Context, id string) (*registry.Target, err
 
 func (s *Store) ListTargets(ctx context.Context) ([]*registry.Target, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, kind, host, user, ssh_key_ref, created_at, updated_at
+		SELECT id, name, kind, host, user, ssh_key_ref, workspace_root, created_at, updated_at
 		FROM targets ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list targets: %w", err)
@@ -148,9 +148,9 @@ func (s *Store) ListTargets(ctx context.Context) ([]*registry.Target, error) {
 func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 	t.UpdatedAt = time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, updated_at = ?
+		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, updated_at = ?
 		WHERE id = ?`,
-		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.UpdatedAt, t.ID,
+		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.UpdatedAt, t.ID,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -779,7 +779,7 @@ type rowScanner interface {
 func scanTarget(row rowScanner) (*registry.Target, error) {
 	var t registry.Target
 	var kind string
-	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.Kind = registry.TargetKind(kind)

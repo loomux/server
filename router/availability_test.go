@@ -127,7 +127,7 @@ func (h *availabilityHarness) provisionDecision(agentType string) router.Decisio
 		Action:    router.ActionProvisionWorkspace,
 		AgentType: agentType,
 		NewWorkspace: router.ProvisionSpec{
-			Name: "hostname_uptime", Path: "/tmp/hu", TargetID: h.target.ID, ProvisionCommand: "mkdir -p /tmp/hu",
+			Name: "hostname-uptime", TargetID: h.target.ID, Kind: router.ProvisionEmpty,
 		},
 	}
 }
@@ -192,12 +192,10 @@ func TestDispatch_InstallRunsOnExplicitConfirmation(t *testing.T) {
 	h := newAvailabilityHarness(t)
 	h.decide(h.provisionDecision("codex"))
 	h.exec.paneExit = func(command string) *targets.PaneExit {
-		switch command {
-		case codexInstall:
+		switch {
+		case command == codexInstall:
 			h.probes.install("codex")
 			return &targets.PaneExit{Status: 0, Output: "added 1 package in 3s"}
-		case "mkdir -p /tmp/hu":
-			return &targets.PaneExit{Status: 0}
 		}
 		return nil
 	}
@@ -296,7 +294,7 @@ func TestDispatch_InstallNotRunWithoutExplicitConfirmation(t *testing.T) {
 // target before a fresh launch; a confirmed install then runs there.
 func TestDispatch_UseWorkspaceWithAbsentAgent_OffersThenInstallsInThatWorkspace(t *testing.T) {
 	h := newAvailabilityHarness(t)
-	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", Path: "/srv/x", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
 	if err := h.store.CreateWorkspace(context.Background(), ws); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
@@ -362,7 +360,7 @@ func TestDispatch_AbsentAgentWithoutInstallRecipe(t *testing.T) {
 func TestDispatch_AgentExitsAtOnce_ReadableErrorWithoutSecrets(t *testing.T) {
 	h := newAvailabilityHarness(t)
 	h.probes.install("codex")
-	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", Path: "/srv/x", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
 	if err := h.store.CreateWorkspace(context.Background(), ws); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
@@ -405,8 +403,8 @@ func TestDispatch_ProvisioningExitsNonZero_WorkspaceFailed(t *testing.T) {
 	h.probes.install("codex")
 	h.decide(h.provisionDecision("codex"))
 	h.exec.paneExit = func(command string) *targets.PaneExit {
-		if command == "mkdir -p /tmp/hu" {
-			return &targets.PaneExit{Status: 1, Output: "mkdir: cannot create directory '/tmp/hu': Permission denied"}
+		if isProvisioning(command) {
+			return &targets.PaneExit{Status: 1, Output: "mkdir: cannot create directory '/srv/hu': Permission denied"}
 		}
 		return nil
 	}
@@ -443,9 +441,6 @@ func TestDispatch_ProvisioningExitsZero_Succeeds(t *testing.T) {
 	h.probes.install("codex")
 	h.decide(h.provisionDecision("codex"))
 	h.exec.paneExit = func(command string) *targets.PaneExit {
-		if command == "mkdir -p /tmp/hu" {
-			return &targets.PaneExit{Status: 0}
-		}
 		return nil
 	}
 
@@ -540,7 +535,7 @@ func TestDispatch_ProbeUnreachable_IsAnErrorNotAnOffer(t *testing.T) {
 func TestDispatch_LaunchesProbedAbsolutePath(t *testing.T) {
 	h := newAvailabilityHarness(t)
 	h.probes.install("codex")
-	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", Path: "/srv/x", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
 	if err := h.store.CreateWorkspace(context.Background(), ws); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
@@ -577,7 +572,7 @@ func TestDispatch_VersionCheckRunsProbedPath(t *testing.T) {
 		}
 		return probe(command)
 	}
-	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", Path: "/srv/x", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
 	if err := h.store.CreateWorkspace(context.Background(), ws); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}

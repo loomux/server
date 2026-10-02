@@ -62,10 +62,8 @@ func TestDispatch_ProvisionUnknownTarget_WritesNoWorkspaceRow(t *testing.T) {
 				return router.Decision{
 					Action: router.ActionProvisionWorkspace,
 					NewWorkspace: router.ProvisionSpec{
-						Name:             "orphan-ws",
-						Path:             "/tmp/orphan-ws",
-						TargetID:         tc.targetID,
-						ProvisionCommand: "true",
+						Name:     "orphan-ws",
+						TargetID: tc.targetID, Kind: router.ProvisionEmpty,
 					},
 					AgentType: "claude-code",
 				}, nil

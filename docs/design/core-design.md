@@ -98,6 +98,15 @@ of reaching other hosts in this ecosystem (`ssh wyzer`, `ssh jet01`, etc.)
 and requires nothing extra installed on the target beyond SSH access and
 tmux.
 
+**Everything Loomux runs on a target is POSIX sh, and only POSIX sh parses
+it** (LOOM-90 review). A session's command is handed to tmux in argv form
+(`sh -c <command>`), so tmux execs it rather than passing it to the
+target's `default-shell`; and anything sent over SSH is a script on
+stdin to `/bin/sh` — the remote user's login shell only ever parses the
+word `/bin/sh`. Without this, a non-POSIX shell (fish, the default shell
+on some of our machines) re-parsing POSIX-quoted text can end a quoted
+string early and run what was meant to be data.
+
 A future companion-daemon implementation (a small persistent process on the
 remote target exposing a structured RPC surface instead of raw SSH+tmux
 command strings) is a second implementation of the same interface, not a
@@ -119,7 +128,8 @@ exactly one target, tracked in a storage-backend-agnostic registry.
 Conceptual schema:
 
 - `targets`: id, name, kind (`local`/`remote`), connection info (host, user,
-  key reference)
+  key reference), `workspace_root` (where dynamic workspaces go; absolute,
+  clean, not `/`; empty = `$HOME/loomux-workspaces` on the target — LOOM-90)
 - `workspaces`: id, name, path, target_id (FK), git remote (nullable),
   short domain tags + description (what the router matches requests
   against), capabilities (MCPs/tools available there), status
@@ -154,8 +164,32 @@ with the shared test suite (see Testing strategy below).
 
 Workspaces are either **fixed** (pre-registered, e.g. mirroring today's
 theWyseKube/jetone-infra/scds-infra/command-center split) or **dynamic**
-(provisioned on demand — e.g. cloning a new repo — via a `shell`-kind pane
-that runs the provisioning script and inserts the registry row on success).
+(provisioned on demand — e.g. cloning a new repo).
+
+**Provisioning runs nothing the router model wrote** (LOOM-90). The router
+describes a new workspace only as structured data — a `name` (a slug,
+`[a-z0-9][a-z0-9-]*`, ≤63), a `kind` (`empty` | `git_clone` |
+`existing_dir`) and, for `git_clone`, a `git_remote` restricted to
+`https://`, `ssh://` or scp-style `user@server:path` (never `ext::`,
+`file://` or anything option-like: user and host must start with a letter
+or digit, an scp-style path must not start with `-`). A remote the user
+didn't type — the exact URL doesn't appear in their message, checked in
+Go — is never cloned without confirmation: the reply shows the remote,
+the target and the resulting path, and only a "yes" as the next message
+(the same deterministic, one-shot mechanism as install offers) clones it
+and carries the original request on. An agent started in a cloned
+repository runs whatever its own config declares, so the repository is
+the user's choice, not the router model's. Go validates it before anything is
+written, then builds the provisioning script itself, every value quoted:
+create/clone/adopt `<workspace_root>/<name>`, resolve it with symlinks
+followed (`pwd -P`), refuse it unless it is still inside the resolved root
+(so a symlink can't hand an agent `~/.ssh`), and print the resolved
+directory — which becomes the workspace's path, so the agent starts in a
+directory that exists and is confined. The script runs as a `command` task
+(its exact text and exit code recorded), bounded at 10 minutes; any
+failure leaves the workspace `failed` with a reason, its output redacted.
+Arbitrary commands go only through `run_command` (§6), with its
+verbatim-or-confirmed safety model.
 
 ### 3. Pane kinds and agent lifecycle
 
@@ -296,6 +330,10 @@ recorded results can also be listed and refreshed on demand
 (`GET /api/v1/targets/{id}/agents`, `POST .../agents/refresh`). A probe
 that can't run (target unreachable) is an error, never "absent".
 
+If the turn would also have provisioned a workspace, the offer shows that
+provisioning script in full too: a "yes" runs nothing the offer didn't
+show.
+
 When the agent is absent the turn ends with a reply instead of a failure —
 and before any workspace row or session exists, so nothing is left stuck:
 the exact install command and login step, and an invitation to reply
@@ -313,10 +351,12 @@ the exact install command and login step, and an invitation to reply
   original request targeted, provisioning it first if needed), its exit
   code and output relayed back, the target re-probed afterwards. Loomux
   never performs the login step itself.
-- Output quoted back into chat or an error (an install's output, an exited
-  agent's last words) is bounded (last 40 lines / 4 KB) and has every
-  credential value the vault would inject for that workspace + agent
-  replaced with `[redacted]`.
+- Output quoted back into chat or an error (an install's output, a failed
+  provisioning's, an exited agent's last words) has credential values
+  replaced with `[redacted]` — every vault value for install/provisioning
+  output, the values injected for that workspace + agent for an agent's —
+  *before* it is bounded (last 40 lines / 4 KB), so a secret straddling
+  the cut can't survive as a tail.
 
 Any number of agent-types can be registered; each supplies a launch command
 template and a completion-detection adapter (§5, tier 1 or 2 config).

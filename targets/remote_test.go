@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	osexec "os/exec"
 	"testing"
 
 	"github.com/Loomux/server/targets"
@@ -31,6 +32,20 @@ func newTestRemoteExecutor(t *testing.T, server *sshtest.Server) *targets.Remote
 
 func TestRemoteExecutor(t *testing.T) {
 	server := sshtest.Start(t)
+	executortest.Run(t, func(t *testing.T) targets.TargetExecutor {
+		return newTestRemoteExecutor(t, server)
+	})
+}
+
+// TestRemoteExecutor_FishLoginShell runs the whole contract against a
+// remote user whose login shell is fish (LOOM-90 review): nothing Loomux
+// sends may depend on the login shell parsing POSIX sh.
+func TestRemoteExecutor_FishLoginShell(t *testing.T) {
+	fish, err := osexec.LookPath("fish")
+	if err != nil {
+		t.Skip("fish not installed")
+	}
+	server := sshtest.StartWithLoginShell(t, fish)
 	executortest.Run(t, func(t *testing.T) targets.TargetExecutor {
 		return newTestRemoteExecutor(t, server)
 	})

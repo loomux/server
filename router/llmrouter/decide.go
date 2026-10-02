@@ -22,14 +22,15 @@ type decideArguments struct {
 	NewWorkspace decideArgumentsWorkspace `json:"new_workspace"`
 }
 
+// decideArgumentsWorkspace is structured data only (LOOM-90): no command
+// and no path — Loomux builds provisioning itself from these fields.
 type decideArgumentsWorkspace struct {
-	Name             string   `json:"name"`
-	Path             string   `json:"path"`
-	TargetID         string   `json:"target_id"`
-	GitRemote        string   `json:"git_remote"`
-	Description      string   `json:"description"`
-	Tags             []string `json:"tags"`
-	ProvisionCommand string   `json:"provision_command"`
+	Name        string   `json:"name"`
+	TargetID    string   `json:"target_id"`
+	Kind        string   `json:"kind"`
+	GitRemote   string   `json:"git_remote"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
 }
 
 // Decide implements router.RoutingModel. It tries the primary tier first,
@@ -139,19 +140,18 @@ func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs [
 		if args.NewWorkspace.TargetID == "" || !contains(targetIDs, args.NewWorkspace.TargetID) {
 			return router.Decision{}, fmt.Errorf("provision_workspace with unknown target_id %q", args.NewWorkspace.TargetID)
 		}
-		return router.Decision{
-			Action:    action,
-			AgentType: args.AgentType,
-			NewWorkspace: router.ProvisionSpec{
-				Name:             args.NewWorkspace.Name,
-				Path:             args.NewWorkspace.Path,
-				TargetID:         args.NewWorkspace.TargetID,
-				GitRemote:        args.NewWorkspace.GitRemote,
-				Description:      args.NewWorkspace.Description,
-				Tags:             args.NewWorkspace.Tags,
-				ProvisionCommand: args.NewWorkspace.ProvisionCommand,
-			},
-		}, nil
+		spec := router.ProvisionSpec{
+			Name:        args.NewWorkspace.Name,
+			TargetID:    args.NewWorkspace.TargetID,
+			Kind:        router.ProvisionKind(args.NewWorkspace.Kind),
+			GitRemote:   args.NewWorkspace.GitRemote,
+			Description: args.NewWorkspace.Description,
+			Tags:        args.NewWorkspace.Tags,
+		}
+		if err := spec.Validate(); err != nil {
+			return router.Decision{}, fmt.Errorf("provision_workspace: %w", err)
+		}
+		return router.Decision{Action: action, AgentType: args.AgentType, NewWorkspace: spec}, nil
 
 	default:
 		return router.Decision{}, fmt.Errorf("unknown action %q", args.Action)

@@ -7,3 +7,7 @@ const (
 	AgentProbeVersionPrefix = agentProbeVersionPrefix
 	AgentProbeAbsent        = agentProbeAbsent
 )
+
+// ProvisioningMarker starts every provisioning recipe; tests use it to
+// recognise one.
+const ProvisioningMarker = provisioningMarker

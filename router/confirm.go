@@ -22,11 +22,24 @@ const pendingTTL = 15 * time.Minute
 // tmux session for a human to watch or attach to.
 const installTimeout = 10 * time.Minute
 
-// pendingInstall is an install offer awaiting the user's confirmation
-// (LOOM-71). Everything a confirmation will act on is fixed here when the
-// offer is made — the exact command shown to the user, and where it runs
-// — so the confirming message itself contributes nothing but "yes".
+// pendingKind is what a pending offer will do once confirmed.
+type pendingKind int
+
+const (
+	// pendingInstallAgent installs an agent CLI (LOOM-71).
+	pendingInstallAgent pendingKind = iota
+	// pendingCloneRemote clones a repository the user didn't name, then
+	// carries on with the request (LOOM-90 re-review).
+	pendingCloneRemote
+)
+
+// pendingInstall is an offer awaiting the user's confirmation — an agent
+// install (LOOM-71), or a clone of a repository the routing model chose.
+// Everything a confirmation will act on is fixed here when the offer is
+// made — what will run and where — so the confirming message itself
+// contributes nothing but "yes".
 type pendingInstall struct {
+	kind      pendingKind
 	agentType string
 	targetID  string
 	// command is the agent-type's AgentInstall.Command, as shown in the
@@ -38,7 +51,10 @@ type pendingInstall struct {
 	// needed.
 	workspaceID string
 	provision   *ProvisionSpec
-	expires     time.Time
+	// message is, for pendingCloneRemote, the request that will carry on
+	// once the clone is confirmed.
+	message string
+	expires time.Time
 }
 
 // pendingActions holds at most one offer per conversation, in memory. A
@@ -72,20 +88,31 @@ func (p *pendingActions) take(conversationID string, now time.Time) (pendingInst
 	return a, true
 }
 
-// isConfirmation reports whether message is an unambiguous yes to an
-// install offer for agentType. Deliberately a short fixed list matched
-// against the whole message, not something the routing model judges:
-// running an install is the one thing in a turn that must never happen on
-// a misread. Anything else — including a "yes, but…" — declines.
-func isConfirmation(message, agentType string) bool {
+// isConfirmation reports whether message is an unambiguous yes to offer p.
+// Deliberately a short fixed list matched against the whole message, not
+// something the routing model judges: running an install, or cloning a
+// repository the user didn't name, must never happen on a misread.
+// Anything else — including a "yes, but…" — declines.
+func isConfirmation(message string, p pendingInstall) bool {
 	m := strings.ToLower(strings.TrimSpace(message))
 	m = strings.TrimRight(m, ".!")
 	m = strings.Join(strings.Fields(strings.ReplaceAll(m, ",", " ")), " ")
 	switch m {
-	case "y", "yes", "yes please", "yep", "ok", "okay", "confirm", "confirmed", "go ahead", "do it",
-		"install", "install it", "yes install", "yes install it",
-		"install " + agentType, "yes install " + agentType:
+	case "y", "yes", "yes please", "yep", "ok", "okay", "confirm", "confirmed", "go ahead", "do it":
 		return true
+	}
+	switch p.kind {
+	case pendingInstallAgent:
+		switch m {
+		case "install", "install it", "yes install", "yes install it",
+			"install " + p.agentType, "yes install " + p.agentType:
+			return true
+		}
+	case pendingCloneRemote:
+		switch m {
+		case "clone", "clone it", "yes clone it":
+			return true
+		}
 	}
 	return false
 }
@@ -93,12 +120,24 @@ func isConfirmation(message, agentType string) bool {
 // installOffer is the reply for an agent CLI missing from its target. With
 // a recipe it shows the exact command and login step and registers the
 // offer; without one it just explains.
-func (r *Router) installOffer(conversationID string, unavailable *AgentUnavailableError, workspaceID string, provision *ProvisionSpec) string {
+//
+// The offer discloses everything a "yes" will run (LOOM-90 review): when
+// the original turn would also have provisioned a workspace, that
+// provisioning recipe is shown in full alongside the install command.
+func (r *Router) installOffer(ctx context.Context, conversationID string, unavailable *AgentUnavailableError, workspaceID string, provision *ProvisionSpec) (string, error) {
 	entry, _ := r.agentTypes.Get(unavailable.AgentType)
 	if entry.Install == nil || entry.Install.Command == "" {
 		return fmt.Sprintf("%s isn't installed on %s, and Loomux has no install recipe for it. "+
 			"Install it on %s yourself, then send your request again.",
-			unavailable.AgentType, unavailable.TargetName, unavailable.TargetName)
+			unavailable.AgentType, unavailable.TargetName, unavailable.TargetName), nil
+	}
+	var recipe string
+	if provision != nil {
+		target, err := r.store.GetTarget(ctx, unavailable.TargetID)
+		if err != nil {
+			return "", err
+		}
+		recipe = provisioningRecipe(target, *provision)
 	}
 	r.pending.put(conversationID, pendingInstall{
 		agentType:   unavailable.AgentType,
@@ -110,12 +149,27 @@ func (r *Router) installOffer(conversationID string, unavailable *AgentUnavailab
 	})
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s isn't installed on %s, so I can't start it there.\n\n", unavailable.AgentType, unavailable.TargetName)
-	fmt.Fprintf(&b, "I can install it by running this on %s:\n\n    %s\n\n", unavailable.TargetName, entry.Install.Command)
+	if recipe != "" {
+		fmt.Fprintf(&b, "If you go ahead, I'll first set up workspace %s on %s by running:\n\n%s\n",
+			provision.Name, unavailable.TargetName, indent(recipe))
+		fmt.Fprintf(&b, "and then install %s there by running:\n\n    %s\n\n", unavailable.AgentType, entry.Install.Command)
+	} else {
+		fmt.Fprintf(&b, "I can install it by running this on %s:\n\n    %s\n\n", unavailable.TargetName, entry.Install.Command)
+	}
 	if entry.Install.Login != "" {
 		fmt.Fprintf(&b, "After installing, it needs a one-time login before it can run: %s.\n\n", entry.Install.Login)
 	}
-	b.WriteString(`Reply "yes" to install it now. Any other reply cancels.`)
-	return b.String()
+	b.WriteString(`Reply "yes" to go ahead. Any other reply cancels.`)
+	return b.String(), nil
+}
+
+// indent indents every line of text by four spaces, as a code block.
+func indent(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "    " + l
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // runInstall carries out a confirmed install offer: provisions the
@@ -141,7 +195,7 @@ func (r *Router) runInstall(ctx context.Context, conversationID string, p pendin
 	if err != nil {
 		return "", result.taskID, fmt.Errorf("install %s: %w", p.agentType, err)
 	}
-	output := quoteOutput(result.output)
+	output := quoteOutput(r.redactAllSecrets(ctx, result.output))
 	if result.exitCode != 0 {
 		return fmt.Sprintf("Installing %s on %s failed (exit %d). Last output:\n\n%s",
 			p.agentType, target.Name, result.exitCode, output), result.taskID, nil
@@ -172,8 +226,20 @@ func (r *Router) runInstall(ctx context.Context, conversationID string, p pendin
 // commandResult is a finished command task's outcome.
 type commandResult struct {
 	taskID   string
+	session  string
 	exitCode int
 	output   string
+}
+
+// stillRunningError is runCommandTask giving up waiting on a command that
+// hasn't exited; the command is left running in session.
+type stillRunningError struct {
+	timeout time.Duration
+	session string
+}
+
+func (e *stillRunningError) Error() string {
+	return fmt.Sprintf("still running after %s; left running in tmux session %s", e.timeout, e.session)
 }
 
 // runCommandTask runs command in workspaceID's directory as a one-shot
@@ -192,13 +258,13 @@ func (r *Router) runCommandTask(ctx context.Context, workspaceID, conversationID
 		}
 		return res, fmt.Errorf("launch: %w", err)
 	}
-	res := commandResult{taskID: task.ID}
+	res := commandResult{taskID: task.ID, session: task.TmuxSession}
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := r.orch.WaitForCompletion(waitCtx, task.ID); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return res, fmt.Errorf("still running after %s; left running in tmux session %s", timeout, task.TmuxSession)
+			return res, &stillRunningError{timeout: timeout, session: task.TmuxSession}
 		}
 		if ferr := r.orch.Fail(context.WithoutCancel(ctx), task.ID, taskFailure(registry.ErrorClassWaitFailed, err, "")); ferr != nil {
 			r.logger.Error("command task cleanup failed", "task_id", task.ID, "error", ferr)

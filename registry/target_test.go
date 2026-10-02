@@ -60,6 +60,30 @@ func TestTargetValidate(t *testing.T) {
 			wantErr: "host and user are required for a remote target",
 		},
 		{
+			name:   "absolute workspace root",
+			target: registry.Target{Name: "x", Kind: registry.TargetKindLocal, WorkspaceRoot: "/srv/loomux"},
+		},
+		{
+			name:    "relative workspace root",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindLocal, WorkspaceRoot: "work"},
+			wantErr: "workspace_root must be an absolute path",
+		},
+		{
+			name:    "tilde workspace root",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindLocal, WorkspaceRoot: "~/work"},
+			wantErr: "workspace_root must be an absolute path",
+		},
+		{
+			name:    "unclean workspace root",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindLocal, WorkspaceRoot: "/srv/../etc"},
+			wantErr: "workspace_root must be a clean path (no ., .. or trailing /)",
+		},
+		{
+			name:    "filesystem root as workspace root",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindLocal, WorkspaceRoot: "/"},
+			wantErr: "workspace_root must not be /",
+		},
+		{
 			name:    "remote without host",
 			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, User: "u"},
 			wantErr: "host and user are required for a remote target",

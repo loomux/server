@@ -121,7 +121,7 @@ func TestDispatch_ProvisioningFailure_RecordsReasons(t *testing.T) {
 	target := createFixtureTarget(t, store)
 	var statusDuringProvisioning registry.WorkspaceStatus
 	exec.paneExit = func(command string) *targets.PaneExit {
-		if command == "git clone nowhere" {
+		if isProvisioning(command) {
 			list, _ := store.ListWorkspaces(context.Background())
 			if len(list) == 1 {
 				statusDuringProvisioning = list[0].Status
@@ -132,10 +132,10 @@ func TestDispatch_ProvisioningFailure_RecordsReasons(t *testing.T) {
 	}
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{Action: router.ActionProvisionWorkspace, AgentType: "claude-code", NewWorkspace: router.ProvisionSpec{
-			Name: "ws", Path: "/tmp/ws", TargetID: target.ID, ProvisionCommand: "git clone nowhere",
+			Name: "ws", TargetID: target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://example.invalid/repo.git",
 		}}, nil
 	}
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err == nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "clone https://example.invalid/repo.git"); err == nil {
 		t.Fatal("Dispatch: got nil error")
 	}
 	if statusDuringProvisioning != registry.WorkspaceStatusProvisioning {

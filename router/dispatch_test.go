@@ -45,7 +45,7 @@ func createFixtureTarget(t *testing.T, store registry.Store) *registry.Target {
 func createFixtureWorkspace(t *testing.T, store registry.Store) *registry.Workspace {
 	t.Helper()
 	target := createFixtureTarget(t, store)
-	ws := &registry.Workspace{ID: uuid.NewString(), Name: "fixture-ws-" + t.Name(), Path: "/fixture", TargetID: target.ID, Status: registry.WorkspaceStatusIdle}
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "fixture-ws-" + t.Name(), TargetID: target.ID, Status: registry.WorkspaceStatusIdle}
 	if err := store.CreateWorkspace(context.Background(), ws); err != nil {
 		t.Fatalf("fixture CreateWorkspace: %v", err)
 	}
@@ -211,10 +211,8 @@ func TestDispatch_ProvisionWorkspace(t *testing.T) {
 		return router.Decision{
 			Action: router.ActionProvisionWorkspace,
 			NewWorkspace: router.ProvisionSpec{
-				Name:             "new-ws",
-				Path:             "/tmp/new-ws",
-				TargetID:         target.ID,
-				ProvisionCommand: "git clone https://example.invalid/repo .",
+				Name:     "new-ws",
+				TargetID: target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://example.invalid/repo.git",
 			},
 			AgentType: "claude-code",
 		}, nil
@@ -223,7 +221,7 @@ func TestDispatch_ProvisionWorkspace(t *testing.T) {
 		return router.RelayResult{Reply: "provisioned and dispatched", Done: true}, nil
 	}
 
-	reply, err := r.Dispatch(context.Background(), "conv-1", "start a new workspace")
+	reply, err := r.Dispatch(context.Background(), "conv-1", "clone https://example.invalid/repo.git into a new workspace")
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -292,10 +290,8 @@ func TestDispatch_ProvisioningFailure_LeavesWorkspaceRowInPlace(t *testing.T) {
 		return router.Decision{
 			Action: router.ActionProvisionWorkspace,
 			NewWorkspace: router.ProvisionSpec{
-				Name:             "doomed-ws",
-				Path:             "/tmp/doomed-ws",
-				TargetID:         target.ID,
-				ProvisionCommand: "git clone https://example.invalid/repo .",
+				Name:     "doomed-ws",
+				TargetID: target.ID, Kind: router.ProvisionEmpty,
 			},
 			AgentType: "claude-code",
 		}, nil

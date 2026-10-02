@@ -14,6 +14,7 @@ import (
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
+	"github.com/Loomux/server/targets"
 )
 
 // secretishMessage stands in for a chat message body. LOOM-63: message
@@ -110,10 +111,8 @@ func TestDispatch_Logs_ProvisionAndAgentDispatch(t *testing.T) {
 		return router.Decision{
 			Action: router.ActionProvisionWorkspace,
 			NewWorkspace: router.ProvisionSpec{
-				Name:             "new-ws",
-				Path:             "/tmp/new-ws",
-				TargetID:         target.ID,
-				ProvisionCommand: "git clone https://example.invalid/repo .",
+				Name:     "new-ws",
+				TargetID: target.ID, Kind: router.ProvisionEmpty,
 			},
 			AgentType: "claude-code",
 		}, nil
@@ -173,7 +172,7 @@ func TestDispatch_Logs_ProvisioningFailure_AtError(t *testing.T) {
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{
 			Action:       router.ActionProvisionWorkspace,
-			NewWorkspace: router.ProvisionSpec{Name: "doomed-ws", Path: "/tmp/doomed", TargetID: target.ID, ProvisionCommand: "true"},
+			NewWorkspace: router.ProvisionSpec{Name: "doomed-ws", TargetID: target.ID, Kind: router.ProvisionEmpty},
 			AgentType:    "claude-code",
 		}, nil
 	}
@@ -203,7 +202,7 @@ func TestDispatch_Logs_UnresolvableTarget_AtError(t *testing.T) {
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{
 			Action:       router.ActionProvisionWorkspace,
-			NewWorkspace: router.ProvisionSpec{Name: "x", Path: "/x", TargetID: "sc1", ProvisionCommand: "true"},
+			NewWorkspace: router.ProvisionSpec{Name: "x", TargetID: "sc1", Kind: router.ProvisionEmpty},
 			AgentType:    "claude-code",
 		}, nil
 	}
@@ -263,18 +262,26 @@ func TestDispatch_Logs_AgentDispatchFailure_AtError(t *testing.T) {
 }
 
 // TestDispatch_Logs_ProvisioningFailure_AfterLaunch_ReportsPersistedStatus
-// covers the stages after the provisioning session started. By then
-// orchestrator.Launch has persisted the workspace as active, so the
-// failure record must report the row's actual status rather than the
-// router's stale "provisioning" copy (LOOM-63 review).
+// covers failures after the provisioning session started: the failure
+// record must report the row's actual persisted status (failed), not the
+// router's stale "provisioning" copy (LOOM-63 review). Provisioning is a
+// command task (LOOM-90), so it fails by exiting non-zero, or by its
+// teardown failing.
 func TestDispatch_Logs_ProvisioningFailure_AfterLaunch_ReportsPersistedStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		stage     string
 		breakExec func(*fakeExecutor)
 	}{
-		{name: "wait", stage: "wait for completion", breakExec: func(e *fakeExecutor) { e.captureErr = errors.New("capture broke") }},
-		{name: "complete", stage: "complete", breakExec: func(e *fakeExecutor) { e.killErr = errors.New("kill broke") }},
+		{name: "non-zero exit", stage: "run", breakExec: func(e *fakeExecutor) {
+			e.paneExit = func(command string) *targets.PaneExit {
+				if isProvisioning(command) {
+					return &targets.PaneExit{Status: 1, Output: "boom"}
+				}
+				return nil
+			}
+		}},
+		{name: "teardown", stage: "run", breakExec: func(e *fakeExecutor) { e.killErr = errors.New("kill broke") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, exec, r, model, logs := setupLogged(t)
@@ -283,7 +290,7 @@ func TestDispatch_Logs_ProvisioningFailure_AfterLaunch_ReportsPersistedStatus(t 
 			model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 				return router.Decision{
 					Action:       router.ActionProvisionWorkspace,
-					NewWorkspace: router.ProvisionSpec{Name: "stuck-ws", Path: "/tmp/stuck", TargetID: target.ID, ProvisionCommand: "true"},
+					NewWorkspace: router.ProvisionSpec{Name: "stuck-ws", TargetID: target.ID, Kind: router.ProvisionEmpty},
 					AgentType:    "claude-code",
 				}, nil
 			}
@@ -343,7 +350,7 @@ func TestDispatch_Logs_NeverIncludeTargetHost(t *testing.T) {
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{
 			Action:       router.ActionProvisionWorkspace,
-			NewWorkspace: router.ProvisionSpec{Name: "remote-ws", Path: "/tmp/remote-ws", TargetID: remote.ID, ProvisionCommand: "true"},
+			NewWorkspace: router.ProvisionSpec{Name: "remote-ws", TargetID: remote.ID, Kind: router.ProvisionEmpty},
 			AgentType:    "claude-code",
 		}, nil
 	}

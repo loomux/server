@@ -260,6 +260,23 @@ func (r *Router) redactSecrets(ctx context.Context, workspaceID, agentType, text
 	return redactValues(text, secrets)
 }
 
+// redactAllSecrets replaces every credential value in the vault — any
+// scope, any agent type — with a placeholder: for output from something
+// that ran with no credentials injected (a provisioning recipe, an
+// install) but could still print one. If the vault can't be read, the
+// output is withheld rather than shown unscrubbed.
+func (r *Router) redactAllSecrets(ctx context.Context, text string) string {
+	creds, err := r.store.ListCredentials(ctx)
+	if err != nil {
+		return "[output withheld: credentials could not be read to redact it]"
+	}
+	values := make(map[string]string, len(creds))
+	for _, c := range creds {
+		values[c.ID] = c.Value
+	}
+	return redactValues(text, values)
+}
+
 func redactValues(text string, secrets map[string]string) string {
 	for _, v := range secrets {
 		if len(v) >= 6 {

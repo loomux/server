@@ -464,3 +464,33 @@ func TestCreateTarget_NoToken_DoesNotWrite(t *testing.T) {
 		t.Errorf("store has %d targets, want 0 — unauthenticated request must not write", len(targets))
 	}
 }
+
+// TestCreateTarget_WorkspaceRoot (LOOM-90): the root dynamic workspaces
+// are confined to round-trips, and one that isn't an absolute, clean path
+// is rejected at registration.
+func TestCreateTarget_WorkspaceRoot(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/targets", token,
+		[]byte(`{"name":"jet01","kind":"local","workspace_root":"/srv/loomux"}`))
+	defer resp.Body.Close()
+	var created struct {
+		WorkspaceRoot string `json:"workspace_root"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: status %d, %v", resp.StatusCode, err)
+	}
+	if created.WorkspaceRoot != "/srv/loomux" {
+		t.Errorf("workspace_root = %q, want it round-tripped", created.WorkspaceRoot)
+	}
+
+	for _, root := range []string{"~", "relative", "/srv/../etc", "/"} {
+		bad := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/targets", token,
+			[]byte(`{"name":"x-`+root+`","kind":"local","workspace_root":"`+root+`"}`))
+		if bad.StatusCode != http.StatusBadRequest {
+			t.Errorf("workspace_root %q: status %d, want 400", root, bad.StatusCode)
+		}
+		bad.Body.Close()
+	}
+}

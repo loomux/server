@@ -7,15 +7,16 @@ import (
 )
 
 func TestIsConfirmation(t *testing.T) {
+	install := pendingInstall{kind: pendingInstallAgent, agentType: "codex"}
 	for _, m := range []string{"yes", "Yes", " YES! ", "y", "yes please", "ok", "go ahead", "do it",
 		"install it", "Yes, install it.", "install codex", "yes install codex"} {
-		if !isConfirmation(m, "codex") {
+		if !isConfirmation(m, install) {
 			t.Errorf("isConfirmation(%q) = false, want true", m)
 		}
 	}
 	for _, m := range []string{"", "no", "nope", "yes but use claude", "install claude-code", "maybe",
 		"sure, after lunch", "yes; rm -rf /", "can you install it on bigbox instead"} {
-		if isConfirmation(m, "codex") {
+		if isConfirmation(m, install) {
 			t.Errorf("isConfirmation(%q) = true, want false", m)
 		}
 	}
@@ -65,5 +66,20 @@ func TestRedactValues(t *testing.T) {
 	got := redactValues("key sk-abc123 and abc", map[string]string{"K": "sk-abc123", "SHORT": "abc"})
 	if got != "key [redacted] and abc" {
 		t.Errorf("redactValues = %q", got)
+	}
+}
+
+func TestIsConfirmation_Clone(t *testing.T) {
+	clone := pendingInstall{kind: pendingCloneRemote}
+	for _, m := range []string{"yes", "clone it", "Go ahead."} {
+		if !isConfirmation(m, clone) {
+			t.Errorf("isConfirmation(%q, clone) = false, want true", m)
+		}
+	}
+	if isConfirmation("install it", clone) {
+		t.Error(`"install it" confirmed a clone`)
+	}
+	if isConfirmation("clone it", pendingInstall{kind: pendingInstallAgent, agentType: "codex"}) {
+		t.Error(`"clone it" confirmed an install`)
 	}
 }

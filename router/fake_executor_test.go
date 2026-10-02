@@ -3,9 +3,11 @@ package router_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/targets"
 )
 
@@ -188,10 +190,29 @@ func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.
 	if !ok {
 		return nil, fmt.Errorf("fakeExecutor: no such session %q", target)
 	}
-	if e.paneExit == nil {
-		return nil, nil
+	var exit *targets.PaneExit
+	if e.paneExit != nil {
+		exit = e.paneExit(sess.command)
 	}
-	return e.paneExit(sess.command), nil
+	if exit == nil && isProvisioning(sess.command) {
+		// A provisioning recipe always exits (LOOM-90); unless a test
+		// says otherwise it succeeds, reporting the directory it made.
+		exit = &targets.PaneExit{Status: 0, Output: "loomux-workspace-path:" + fakeWorkspacePath(sess.command)}
+	}
+	return exit, nil
+}
+
+// isProvisioning reports whether command is a provisioning recipe.
+func isProvisioning(command string) bool {
+	return strings.HasPrefix(command, router.ProvisioningMarker)
+}
+
+// fakeWorkspacePath is where the fake "provisions" the workspace a recipe
+// names: /fake-root/<name>.
+func fakeWorkspacePath(recipe string) string {
+	first, _, _ := strings.Cut(recipe, "\n")
+	fields := strings.Fields(first)
+	return "/fake-root/" + fields[len(fields)-1]
 }
 
 // launchedCommands lists every session's launch command, in no
