@@ -52,9 +52,14 @@ type Router struct {
 type Option func(*Router)
 
 // WithLogger sets the logger Router reports routing decisions,
-// provisioning and dispatch to (LOOM-63). Without it nothing is logged.
+// provisioning and dispatch to (LOOM-63). Without it, or with a nil
+// logger, nothing is logged.
 func WithLogger(l *slog.Logger) Option {
-	return func(r *Router) { r.logger = l }
+	return func(r *Router) {
+		if l != nil {
+			r.logger = l
+		}
+	}
 }
 
 // New constructs a Router. markerDir must be the same effective marker
@@ -209,11 +214,21 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		return "", fmt.Errorf("provision workspace: %w", err)
 	}
 
-	// From here on a failure leaves the row behind in Provisioning (see
-	// above), so each failure record names it and its stuck status.
+	// From here on a failure leaves the row behind (see above), so each
+	// failure record names it and its status. The status is re-read
+	// rather than taken from ws: once Launch has started the session the
+	// orchestrator persists the row as active, so the local copy's
+	// "provisioning" would misreport it. WithoutCancel so a wait that
+	// failed on ctx cancellation still gets its status read.
 	log = log.With("workspace_id", ws.ID)
 	stuck := func(stage string, err error) {
-		log.Error("provisioning failed", "stage", stage, "workspace_status", string(ws.Status), "error", err)
+		attrs := []any{"stage", stage, "error", err}
+		if cur, gerr := r.store.GetWorkspace(context.WithoutCancel(ctx), ws.ID); gerr == nil {
+			attrs = append(attrs, "workspace_status", string(cur.Status))
+		} else {
+			attrs = append(attrs, "workspace_status_error", gerr)
+		}
+		log.Error("provisioning failed", attrs...)
 	}
 	log.Info("provisioning workspace")
 

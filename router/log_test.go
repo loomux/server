@@ -187,7 +187,9 @@ func TestDispatch_Logs_ProvisioningFailure_AtError(t *testing.T) {
 	rec := logs.find(t, "provisioning failed")
 	assertAttr(t, rec, "level", "ERROR")
 	assertAttr(t, rec, "workspace_id", list[0].ID)
-	assertAttr(t, rec, "workspace_status", string(registry.WorkspaceStatusProvisioning))
+	// The row's persisted status, not the router's local copy: a failed
+	// launch has orchestrator.failTask revert it to idle.
+	assertAttr(t, rec, "workspace_status", string(list[0].Status))
 	if rec["error"] == nil || rec["error"] == "" {
 		t.Errorf("provisioning failed: missing error: %v", rec)
 	}
@@ -256,4 +258,65 @@ func TestDispatch_Logs_AgentDispatchFailure_AtError(t *testing.T) {
 		t.Errorf("agent dispatch failed: error = %v, want it to carry the cause", rec["error"])
 	}
 	logs.assertNoMessageBody(t)
+}
+
+// TestDispatch_Logs_ProvisioningFailure_AfterLaunch_ReportsPersistedStatus
+// covers the stages after the provisioning session started. By then
+// orchestrator.Launch has persisted the workspace as active, so the
+// failure record must report the row's actual status rather than the
+// router's stale "provisioning" copy (LOOM-63 review).
+func TestDispatch_Logs_ProvisioningFailure_AfterLaunch_ReportsPersistedStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		stage     string
+		breakExec func(*fakeExecutor)
+	}{
+		{name: "wait", stage: "wait for completion", breakExec: func(e *fakeExecutor) { e.captureErr = errors.New("capture broke") }},
+		{name: "complete", stage: "complete", breakExec: func(e *fakeExecutor) { e.killErr = errors.New("kill broke") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, exec, r, model, logs := setupLogged(t)
+			target := createFixtureTarget(t, store)
+			tc.breakExec(exec)
+			model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+				return router.Decision{
+					Action:       router.ActionProvisionWorkspace,
+					NewWorkspace: router.ProvisionSpec{Name: "stuck-ws", Path: "/tmp/stuck", TargetID: target.ID, ProvisionCommand: "true"},
+					AgentType:    "claude-code",
+				}, nil
+			}
+
+			if _, err := r.Dispatch(context.Background(), "conv-1", secretishMessage); err == nil {
+				t.Fatalf("Dispatch: got nil error")
+			}
+			list, err := store.ListWorkspaces(context.Background())
+			if err != nil || len(list) != 1 {
+				t.Fatalf("ListWorkspaces = %v, %v; want the stuck row", list, err)
+			}
+			persisted := string(list[0].Status)
+			if persisted == string(registry.WorkspaceStatusProvisioning) {
+				t.Fatalf("precondition: row status is still provisioning; this test needs a post-launch failure")
+			}
+
+			rec := logs.find(t, "provisioning failed")
+			assertAttr(t, rec, "level", "ERROR")
+			assertAttr(t, rec, "stage", tc.stage)
+			assertAttr(t, rec, "workspace_id", list[0].ID)
+			assertAttr(t, rec, "workspace_status", persisted)
+			logs.assertNoMessageBody(t)
+		})
+	}
+}
+
+// TestWithLogger_Nil_KeepsDefault: WithLogger(nil) must not leave the
+// Router with a nil logger that panics on first use.
+func TestWithLogger_Nil_KeepsDefault(t *testing.T) {
+	store := newTestStore(t)
+	_, r, model := newRouter(t, store, router.WithLogger(nil))
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "ok"}, nil
+	}
+	if _, err := r.Dispatch(context.Background(), "conv-1", "hi"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
 }
