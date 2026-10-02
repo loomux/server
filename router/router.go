@@ -160,7 +160,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		// target_id that doesn't resolve is left to provisionWorkspace,
 		// which refuses it (LOOM-64).
 		if target, terr := r.store.GetTarget(ctx, decision.NewWorkspace.TargetID); terr == nil {
-			if err := r.requireAgent(ctx, target, decision.AgentType); err != nil {
+			if _, err := r.requireAgent(ctx, target, decision.AgentType); err != nil {
 				var unavailable *AgentUnavailableError
 				if errors.As(err, &unavailable) {
 					spec := decision.NewWorkspace
@@ -587,7 +587,11 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 
 	// Probe before anything else touches the target for this agent
 	// (LOOM-71): an absent CLI becomes an install offer, not a session
-	// that dies at once.
+	// that dies at once. The probe resolves the CLI's absolute path
+	// (LOOM-79), which the version check and the launch then both use —
+	// so the version checked is the version that runs, whatever PATH the
+	// tmux session would have had.
+	var resolvedPath string
 	if entry.Binary != "" {
 		ws, err := r.store.GetWorkspace(ctx, workspaceID)
 		if err != nil {
@@ -597,13 +601,17 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		if err != nil {
 			return nil, fmt.Errorf("router: dispatch: %w", err)
 		}
-		if err := r.requireAgent(ctx, target, agentType); err != nil {
+		rec, err := r.requireAgent(ctx, target, agentType)
+		if err != nil {
 			return nil, fmt.Errorf("router: dispatch: %w", err)
 		}
+		resolvedPath = rec.Path
 	}
 
 	if entry.VersionCheck != nil {
-		if err := r.verifyAgentVersion(ctx, workspaceID, *entry.VersionCheck); err != nil {
+		vc := *entry.VersionCheck
+		vc.Command = withResolvedBinary(vc.Command, entry.Binary, resolvedPath)
+		if err := r.verifyAgentVersion(ctx, workspaceID, vc); err != nil {
 			return nil, fmt.Errorf("router: dispatch: %w", err)
 		}
 	}
@@ -623,7 +631,8 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		return nil, fmt.Errorf("router: dispatch: %w", err)
 	}
 
-	task, err := r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID, prefix+envPrefix+entry.LaunchTemplate)
+	task, err := r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID,
+		prefix+envPrefix+withResolvedBinary(entry.LaunchTemplate, entry.Binary, resolvedPath))
 	if err != nil {
 		return nil, fmt.Errorf("router: dispatch: launch: %w", err)
 	}

@@ -21,6 +21,9 @@ import (
 
 const codexInstall = "npm install -g @openai/codex"
 
+// fakeBinDir is where the scripted probe "finds" installed agent CLIs.
+const fakeBinDir = "/opt/fake/bin/"
+
 // availabilityAgentTypes registers a probed, installable "codex" agent
 // type (LOOM-71) alongside the fast-idle shell entry. Probing is opt-in
 // per agent type via Binary, so every other test's agent types stay
@@ -55,8 +58,9 @@ func (p *probeScript) runOnce(command string) (string, error) {
 	}
 	p.probes++
 	for bin, ok := range p.installed {
-		if ok && strings.Contains(command, "'"+bin+"'") {
-			return router.AgentProbePresent + "\n", nil
+		if ok && strings.Contains(command, "b='\\''"+bin+"'\\''") {
+			return router.AgentProbePathPrefix + fakeBinDir + bin + "\n" +
+				router.AgentProbeVersionPrefix + bin + " 1.2.3\n", nil
 		}
 	}
 	return router.AgentProbeAbsent + "\n", nil
@@ -80,11 +84,20 @@ type availabilityHarness struct {
 
 func newAvailabilityHarness(t *testing.T) *availabilityHarness {
 	t.Helper()
+	return newAvailabilityHarnessWith(t, nil)
+}
+
+// newAvailabilityHarnessWith lets a test adjust the agent types first.
+func newAvailabilityHarnessWith(t *testing.T, adjust func(router.AgentTypeRegistry)) *availabilityHarness {
+	t.Helper()
 	store := newTestStore(t)
 	exec := newFakeExecutor()
 	probes := &probeScript{installed: map[string]bool{}}
 	exec.runOnce = probes.runOnce
 	agentTypes := availabilityAgentTypes()
+	if adjust != nil {
+		adjust(agentTypes)
+	}
 	markerDir := t.TempDir()
 	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, exec.factory(), detector)
@@ -360,7 +373,7 @@ func TestDispatch_AgentExitsAtOnce_ReadableErrorWithoutSecrets(t *testing.T) {
 	}
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 	h.exec.paneExit = func(command string) *targets.PaneExit {
-		if strings.HasSuffix(command, "codex") {
+		if strings.Contains(command, fakeBinDir+"codex") {
 			return &targets.PaneExit{Status: 1, Output: "error: invalid api key sk-live-very-secret\ncodex: exiting"}
 		}
 		return nil
@@ -517,5 +530,63 @@ func TestDispatch_ProbeUnreachable_IsAnErrorNotAnOffer(t *testing.T) {
 	}
 	if rec := h.agentRecord(t, "codex"); rec != nil {
 		t.Errorf("an unreachable probe recorded availability: %+v", rec)
+	}
+}
+
+// LOOM-79: a probe resolves the agent CLI to an absolute path and records
+// it with the version that path reports; the launch then runs exactly that
+// path, so a target's non-interactive PATH (or a second install elsewhere)
+// can't make the launch run a different binary than the one probed.
+func TestDispatch_LaunchesProbedAbsolutePath(t *testing.T) {
+	h := newAvailabilityHarness(t)
+	h.probes.install("codex")
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", Path: "/srv/x", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
+	if err := h.store.CreateWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
+
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	cmds := h.exec.launchedCommands()
+	if len(cmds) != 1 || !strings.HasSuffix(cmds[0], "'"+fakeBinDir+"codex'") {
+		t.Errorf("launched %v, want the agent started by its probed absolute path", cmds)
+	}
+	rec := h.agentRecord(t, "codex")
+	if rec == nil || rec.Path != fakeBinDir+"codex" || rec.Version != "codex 1.2.3" {
+		t.Errorf("recorded = %+v, want path and version from the probe", rec)
+	}
+}
+
+// LOOM-79: the version check runs against the same probed path the launch
+// will use, so the version it accepts is the version that runs.
+func TestDispatch_VersionCheckRunsProbedPath(t *testing.T) {
+	var versionCommands []string
+	h := newAvailabilityHarnessWith(t, func(at router.AgentTypeRegistry) {
+		codex := at["codex"]
+		codex.VersionCheck = &router.VersionCheck{Command: "codex --version", Parse: router.ExtractDottedVersion, Min: "1.0.0"}
+		at["codex"] = codex
+	})
+	h.probes.install("codex")
+	probe := h.exec.runOnce
+	h.exec.runOnce = func(command string) (string, error) {
+		if strings.HasSuffix(command, "--version") && !strings.Contains(command, "command -v") {
+			versionCommands = append(versionCommands, command)
+			return "codex-cli 1.2.3\n", nil
+		}
+		return probe(command)
+	}
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", Path: "/srv/x", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
+	if err := h.store.CreateWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
+
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(versionCommands) != 1 || versionCommands[0] != "'"+fakeBinDir+"codex' --version" {
+		t.Errorf("version check ran %v, want the probed path's --version", versionCommands)
 	}
 }

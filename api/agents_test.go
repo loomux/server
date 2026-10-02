@@ -17,6 +17,8 @@ import (
 type targetAgentJSON struct {
 	AgentType string    `json:"agent_type"`
 	Available bool      `json:"available"`
+	Path      string    `json:"path"`
+	Version   string    `json:"version"`
 	CheckedAt time.Time `json:"checked_at"`
 }
 
@@ -82,7 +84,8 @@ func TestListTargetAgents(t *testing.T) {
 // prober and returns the fresh results.
 func TestRefreshTargetAgents(t *testing.T) {
 	prober := &fakeProber{result: []*registry.TargetAgent{
-		{TargetID: "t1", AgentType: "claude-code", Available: true, CheckedAt: time.Now()},
+		{TargetID: "t1", AgentType: "claude-code", Available: true, Path: "/home/u/.local/bin/claude",
+			Version: "2.1.287 (Claude Code)", CheckedAt: time.Now()},
 	}}
 	srv, _, _ := newTestServer(t, api.WithAgentProber(prober))
 	token, _ := login(t, srv.URL, testPassword)
@@ -95,7 +98,8 @@ func TestRefreshTargetAgents(t *testing.T) {
 	if len(prober.calls) != 1 || prober.calls[0] != "t1" {
 		t.Errorf("prober calls = %v, want one for t1", prober.calls)
 	}
-	if got := decodeAgents(t, resp); len(got) != 1 || got[0].AgentType != "claude-code" || !got[0].Available {
+	if got := decodeAgents(t, resp); len(got) != 1 || got[0].AgentType != "claude-code" || !got[0].Available ||
+		got[0].Path != "/home/u/.local/bin/claude" || got[0].Version != "2.1.287 (Claude Code)" {
 		t.Errorf("agents = %+v", got)
 	}
 }

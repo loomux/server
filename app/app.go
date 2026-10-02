@@ -92,6 +92,11 @@ func DefaultAgentTypes() router.AgentTypeRegistry {
 			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
 			LaunchTemplate: "claude",
 			Binary:         "claude",
+			// Checked against the probed absolute path (LOOM-79). The floor
+			// is deliberately permissive — the 1.x line is where the Stop
+			// hook TierMarker relies on exists — until a real
+			// incompatibility gives a reason to tighten it.
+			VersionCheck: &router.VersionCheck{Command: "claude --version", Parse: router.ExtractDottedVersion, Min: "1.0.0"},
 			Install: &router.AgentInstall{
 				// Anthropic's native installer: puts claude in ~/.local/bin,
 				// no Node.js needed.
@@ -104,6 +109,9 @@ func DefaultAgentTypes() router.AgentTypeRegistry {
 			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
 			LaunchTemplate: "codex",
 			Binary:         "codex",
+			// As claude-code's: a permissive floor, run against the probed
+			// path. Targets have been seen running 0.150–0.159.
+			VersionCheck: &router.VersionCheck{Command: "codex --version", Parse: router.ExtractDottedVersion, Min: "0.100.0"},
 			Install: &router.AgentInstall{
 				// Needs Node.js and npm on the target; on a target without
 				// them the install fails and its output says so.

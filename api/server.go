@@ -1200,8 +1200,12 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 
 // targetAgentResponse is one recorded agent CLI probe result (LOOM-71).
 type targetAgentResponse struct {
-	AgentType string    `json:"agent_type"`
-	Available bool      `json:"available"`
+	AgentType string `json:"agent_type"`
+	Available bool   `json:"available"`
+	// Path is the absolute path the CLI resolved to, Version what it
+	// reported (LOOM-79); empty when unavailable.
+	Path      string    `json:"path,omitempty"`
+	Version   string    `json:"version,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
 }
 
@@ -1212,7 +1216,9 @@ type listTargetAgentsResponse struct {
 func newListTargetAgentsResponse(agents []*registry.TargetAgent) listTargetAgentsResponse {
 	out := make([]targetAgentResponse, 0, len(agents))
 	for _, a := range agents {
-		out = append(out, targetAgentResponse{AgentType: a.AgentType, Available: a.Available, CheckedAt: a.CheckedAt})
+		out = append(out, targetAgentResponse{
+			AgentType: a.AgentType, Available: a.Available, Path: a.Path, Version: a.Version, CheckedAt: a.CheckedAt,
+		})
 	}
 	return listTargetAgentsResponse{Agents: out}
 }

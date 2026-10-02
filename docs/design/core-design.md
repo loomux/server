@@ -125,7 +125,8 @@ Conceptual schema:
   against), capabilities (MCPs/tools available there), status
   (idle/active/provisioning/archived/failed — `failed` is a workspace whose
   provisioning failed: kept for inspection, never offered to the router
-  again; LOOM-71), `is_dynamic` (pre-registered vs.
+  again; LOOM-71), `status_reason` (why it's in that status — e.g. what
+  made it `failed`; LOOM-77), `is_dynamic` (pre-registered vs.
   auto-provisioned on demand), last-used timestamp, `rolling_summary`
   (a single text field, *replaced* — not appended — after each completed
   task, so it stays lightweight by design and never grows into a log)
@@ -133,9 +134,14 @@ Conceptual schema:
   agent_type (nullable for shell panes), tmux session/window name, status
   (running/awaiting-input/human-takeover/completed/failed), timestamps,
   the chat conversation it belongs to; for a `command` task, the command it
-  ran verbatim and its exit code (LOOM-71)
-- `target_agents`: target_id (FK, cascade), agent_type, available,
-  checked_at — the last result of probing a target for an agent-type's CLI
+  ran verbatim and its exit code (LOOM-71); for a `failed` task,
+  `failure_reason`, a stable `error_class` (`launch_failed`,
+  `target_unreachable`, `send_failed`, `agent_exited`, `provision_failed`,
+  `wait_failed`, `relay_failed`, `session_lost`, `internal`) and
+  `output_tail` (bounded, credentials redacted) — LOOM-77
+- `target_agents`: target_id (FK, cascade), agent_type, available, the
+  absolute `path` the CLI resolved to and the `version` it reported
+  (LOOM-79), checked_at — the last result of probing a target for an agent-type's CLI
   (LOOM-71, see §6 "Agent availability"). No row means "never checked",
   not "absent".
 
@@ -276,7 +282,16 @@ declare the `Binary` its CLI runs as and an `Install` recipe (a fixed
 install command plus the login step the CLI needs afterwards). Before a
 workspace is provisioned for an agent, and before any fresh agent launch,
 Loomux probes the target (`command -v <binary>` through the target's
-executor, via POSIX `sh`) and records the result in `target_agents`; the
+executor, via POSIX `sh`) and records the result in `target_agents`.
+The probe resolves an **absolute path** (LOOM-79), looking where a person
+at that machine would find the CLI — their login shell's PATH, then the
+non-interactive PATH, then common install dirs (`~/.local/bin`,
+`~/.npm-global/bin`, `~/bin`, `/usr/local/bin`) — and records the
+`--version` of exactly that path. The version check (§10 axis 3, now
+configured for both real agent-types) and the launch then both run that
+path, so a non-interactive SSH PATH that lacks `~/.local/bin`, or a second
+install elsewhere, can't make the launch run a different binary than the
+one probed and checked. The
 recorded results can also be listed and refreshed on demand
 (`GET /api/v1/targets/{id}/agents`, `POST .../agents/refresh`). A probe
 that can't run (target unreachable) is an error, never "absent".
@@ -381,9 +396,17 @@ Four independent axes:
   mid-turn, the task is `failed` and the error quotes its last output
   (e.g. `codex: command not found`, exit 127), credentials redacted.
 - **Provisioning failure**: the workspace row is kept for inspection but
-  marked `failed` — never left `active`/`provisioning` — and excluded from
-  routing. A provisioning script's non-zero exit is reported with its
-  output.
+  marked `failed` — never left `active`/`provisioning` — with a
+  `status_reason`, and excluded from routing. A provisioning script's
+  non-zero exit is reported with its output. While provisioning runs the
+  workspace stays `provisioning`: starting its session doesn't make it
+  `active` (LOOM-77).
+- **Every dispatch error after a task exists fails that task** with a
+  reason and error class (LOOM-77) — a failed send, an abandoned or broken
+  wait (including the request being cancelled), a capture/relay failure —
+  so nothing is left `running` with no explanation. A refusal because a
+  human has taken the task over is not a failure. Failing a task returns
+  an `active` workspace to `idle`; any other workspace status is kept.
 - **Agent crash/hang**: if no completion signal arrives within a generous
   timeout (accounting for tier-3 idle fallback), the task is marked
   `failed` and surfaced to chat. The pane is **not** auto-torn-down on
