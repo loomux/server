@@ -3,7 +3,12 @@
 // §2, §8.
 package registry
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
 
 // TargetKind identifies where a target's tmux sessions run.
 type TargetKind string
@@ -23,6 +28,43 @@ type Target struct {
 	SSHKeyRef string // reference/identifier only; actual secret material lives in the credential vault (§7)
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// Validate enforces the invariants the execution layer assumes but
+// cannot itself check at registration time, so a target that could never
+// be dispatched to is rejected at whichever entry point registers it
+// (the HTTP API today; an admin CLI would share this — LOOM-65) rather
+// than stored and discovered broken later:
+//
+//   - Name must be non-blank.
+//   - Kind must be one of the two targets.NewExecutor knows; anything
+//     else yields "unknown target kind" at dispatch.
+//   - a remote needs both Host and User, because
+//     RemoteExecutor.destination() builds user+"@"+host and ssh rejects
+//     a bare "@host".
+//   - a local must carry neither. Clearing them silently would hide a
+//     caller's misunderstanding until an attach-info response came back
+//     missing the fields they thought they had set.
+//
+// Every non-nil error is a validation failure whose text is safe to show
+// to the caller as-is.
+func (t *Target) Validate() error {
+	if strings.TrimSpace(t.Name) == "" {
+		return errors.New("name is required")
+	}
+	switch t.Kind {
+	case TargetKindLocal:
+		if t.Host != "" || t.User != "" {
+			return errors.New("host and user must be empty for a local target")
+		}
+	case TargetKindRemote:
+		if t.Host == "" || t.User == "" {
+			return errors.New("host and user are required for a remote target")
+		}
+	default:
+		return fmt.Errorf("kind must be %q or %q", TargetKindLocal, TargetKindRemote)
+	}
+	return nil
 }
 
 // WorkspaceStatus tracks a workspace's current lifecycle state.

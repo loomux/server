@@ -1013,58 +1013,29 @@ type listTargetsResponse struct {
 	Targets []targetResponse `json:"targets"`
 }
 
-// validateTargetRequest enforces the invariants the execution layer
-// assumes but cannot itself check at registration time, so a target
-// that could never be dispatched to is rejected at the boundary rather
-// than stored and discovered broken later:
-//
-//   - kind must be one of the two targets.NewExecutor knows; anything
-//     else yields "unknown target kind" at dispatch.
-//   - a remote needs both host and user, because
-//     RemoteExecutor.destination() builds user+"@"+host and ssh rejects
-//     a bare "@host".
-//   - a local must carry neither. Clearing them silently would hide a
-//     caller's misunderstanding until an attach-info response came back
-//     missing the fields they thought they had set.
-//
-// This lives here rather than on registry.Target because the codebase
-// has no Validate-method convention; if a second entry point (an admin
-// CLI) is ever added it should move down into registry so both share it.
-func validateTargetRequest(req targetRequest) (registry.TargetKind, string) {
-	if strings.TrimSpace(req.Name) == "" {
-		return "", "name is required"
-	}
-	switch registry.TargetKind(req.Kind) {
-	case registry.TargetKindLocal:
-		if req.Host != "" || req.User != "" {
-			return "", "host and user must be empty for a local target"
-		}
-		return registry.TargetKindLocal, ""
-	case registry.TargetKindRemote:
-		if req.Host == "" || req.User == "" {
-			return "", "host and user are required for a remote target"
-		}
-		return registry.TargetKindRemote, ""
-	default:
-		return "", fmt.Sprintf("kind must be %q or %q", registry.TargetKindLocal, registry.TargetKindRemote)
-	}
-}
-
-// decodeTargetRequest reads and validates a create/update body, writing
-// the error response itself and reporting whether the caller should
+// decodeTargetRequest reads a create/update body into a registry.Target
+// (ID left for the caller to set) and validates it with Target.Validate —
+// the one validation path every entry point shares (LOOM-65). It writes
+// the error response itself and reports whether the caller should
 // continue.
-func decodeTargetRequest(w http.ResponseWriter, r *http.Request) (targetRequest, registry.TargetKind, bool) {
+func decodeTargetRequest(w http.ResponseWriter, r *http.Request) (*registry.Target, bool) {
 	var req targetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed request body")
-		return req, "", false
+		return nil, false
 	}
-	kind, problem := validateTargetRequest(req)
-	if problem != "" {
-		writeError(w, http.StatusBadRequest, problem)
-		return req, "", false
+	target := &registry.Target{
+		Name:      strings.TrimSpace(req.Name),
+		Kind:      registry.TargetKind(req.Kind),
+		Host:      req.Host,
+		User:      req.User,
+		SSHKeyRef: req.SSHKeyRef,
 	}
-	return req, kind, true
+	if err := target.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	return target, true
 }
 
 // handleCreateTarget registers an execution target. The id is minted
@@ -1073,19 +1044,11 @@ func decodeTargetRequest(w http.ResponseWriter, r *http.Request) (targetRequest,
 // invites collisions and the hand-minted ids this endpoint exists to
 // replace.
 func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
-	req, kind, ok := decodeTargetRequest(w, r)
+	target, ok := decodeTargetRequest(w, r)
 	if !ok {
 		return
 	}
-
-	target := &registry.Target{
-		ID:        uuid.NewString(),
-		Name:      strings.TrimSpace(req.Name),
-		Kind:      kind,
-		Host:      req.Host,
-		User:      req.User,
-		SSHKeyRef: req.SSHKeyRef,
-	}
+	target.ID = uuid.NewString()
 	if err := s.targets.CreateTarget(r.Context(), target); err != nil {
 		if errors.Is(err, registry.ErrConflict) {
 			writeError(w, http.StatusConflict, "a target with that name already exists")
@@ -1120,20 +1083,12 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 // passed to UpdateTarget: that call fills in UpdatedAt but not
 // CreatedAt, so only a read gives the client a canonical row.
 func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
-	req, kind, ok := decodeTargetRequest(w, r)
+	target, ok := decodeTargetRequest(w, r)
 	if !ok {
 		return
 	}
-
 	id := r.PathValue("id")
-	target := &registry.Target{
-		ID:        id,
-		Name:      strings.TrimSpace(req.Name),
-		Kind:      kind,
-		Host:      req.Host,
-		User:      req.User,
-		SSHKeyRef: req.SSHKeyRef,
-	}
+	target.ID = id
 	if err := s.targets.UpdateTarget(r.Context(), target); err != nil {
 		switch {
 		case errors.Is(err, registry.ErrNotFound):
