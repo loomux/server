@@ -326,8 +326,9 @@ vendor. Its responsibilities:
     *whole message* is the user ordering exactly that command on exactly
     that target, in one of two shapes parsed in Go — ``run `<cmd>` on
     <target>`` or ``run on <target>:`` followed by a fenced block (optional
-    "please", trailing punctuation, any case) — and the parsed command and
-    target name equal the router's `command` and the name of its
+    "please", trailing punctuation, "run"/"on" in any case) — and the parsed
+    command equals the router's `command` and the target name is exactly
+    (case included — target names are case-sensitive) the name of its
     `target_id`. Anything else — a question about a command ("what does
     `rm -rf x` do?"), a command inside pasted logs or a README, a negation,
     a command the model wrote, completed or combined, a target the user

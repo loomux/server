@@ -75,11 +75,12 @@ func parseRunRequest(message string) (command, target string, ok bool) {
 }
 
 // orderedVerbatim reports whether message is the user ordering exactly
-// this command on exactly this target — checked in Go, never taken from
+// this command on exactly this target (by exact name: target names are
+// case-sensitive) — checked in Go, never taken from
 // the routing model.
 func orderedVerbatim(message, command string, target *registry.Target) bool {
 	cmd, name, ok := parseRunRequest(message)
-	return ok && cmd == strings.TrimSpace(command) && strings.EqualFold(name, target.Name)
+	return ok && cmd == strings.TrimSpace(command) && name == target.Name
 }
 
 // runCommand handles a run_command decision (LOOM-72). Safety model:

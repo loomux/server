@@ -275,3 +275,29 @@ func TestDispatch_RunCommand_TargetMustBeNamedByUser(t *testing.T) {
 		t.Errorf("reply = %q, want a confirmation naming the target it would actually run on", reply)
 	}
 }
+
+// Re-review 3: target names are case-sensitive (targets.name is UNIQUE
+// as written), so "JET01" doesn't name the target "jet01": confirm first.
+func TestDispatch_RunCommand_TargetNameIsCaseSensitive(t *testing.T) {
+	h := newCommandHarness(t)
+	h.decideCommand("uptime") // the harness target is "jet01"
+	h.outputs["uptime"] = "up"
+
+	reply, err := h.r.Dispatch(context.Background(), "conv-1", "run `uptime` on JET01")
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if cmds := h.exec.launchedCommands(); len(cmds) != 0 {
+		t.Fatalf("ran %v on jet01 for a message naming JET01", cmds)
+	}
+	if !strings.Contains(reply, `"yes"`) || !strings.Contains(reply, "jet01") {
+		t.Errorf("reply = %q, want a confirmation naming jet01", reply)
+	}
+
+	if _, err := h.r.Dispatch(context.Background(), "conv-2", "run `uptime` on jet01"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if cmds := h.exec.launchedCommands(); len(cmds) != 1 {
+		t.Errorf("exact-case target name didn't run at once: %v", cmds)
+	}
+}
