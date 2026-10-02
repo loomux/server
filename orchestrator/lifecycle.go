@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -79,11 +80,17 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 	}
 
 	if err := exec.NewSession(ctx, task.TmuxSession, ws.Path, command); err != nil {
-		_ = o.failTask(ctx, task) // best-effort; original err is what matters to the caller
+		// best-effort; original err is what matters to the caller
+		_ = o.failTask(ctx, task, failureFor(registry.ErrorClassLaunchFailed, "start session", err))
 		return task, fmt.Errorf("orchestrator: launch: %w", err)
 	}
 
-	ws.Status = registry.WorkspaceStatusActive
+	// A provisioning workspace stays provisioning while its setup runs:
+	// the router owns that status (→ idle on success, → failed
+	// otherwise, LOOM-77) — "active" would claim it's ready and busy.
+	if ws.Status != registry.WorkspaceStatusProvisioning {
+		ws.Status = registry.WorkspaceStatusActive
+	}
 	ws.LastUsedAt = &now
 	if err := o.store.UpdateWorkspace(ctx, ws); err != nil {
 		return task, fmt.Errorf("orchestrator: launch: %w", err)
@@ -114,7 +121,7 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 	}
 
 	if err := exec.SendKeys(ctx, task.TmuxSession, message, true); err != nil {
-		_ = o.failTask(ctx, task)
+		_ = o.failTask(ctx, task, failureFor(registry.ErrorClassSendFailed, "send message", err))
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
 
@@ -228,19 +235,25 @@ func (o *Orchestrator) FinishCommand(ctx context.Context, taskID string, exitCod
 	return nil
 }
 
-// Fail marks a task failed without tearing down its session — the spec
-// leaves a failed pane alive for inspection via attach, since teardown
-// is for successful/explicit completion, not silent cleanup of something
-// that went wrong. reason is accepted for API stability (e.g. a future
-// idle-timeout failure from the real completion detector) but isn't
-// persisted yet: registry.Task has no failure-reason field in the
-// current schema.
-func (o *Orchestrator) Fail(ctx context.Context, taskID, reason string) error {
+// Fail marks a task failed, recording why (LOOM-77), without tearing
+// down its session — the spec leaves a failed pane alive for inspection
+// via attach, since teardown is for successful/explicit completion, not
+// silent cleanup of something that went wrong.
+func (o *Orchestrator) Fail(ctx context.Context, taskID string, failure registry.TaskFailure) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: fail: %w", err)
 	}
-	return o.failTask(ctx, task)
+	return o.failTask(ctx, task, failure)
+}
+
+// failureFor builds the TaskFailure for an operation that failed with
+// err, classing an unreachable target as such whatever the operation.
+func failureFor(class registry.ErrorClass, op string, err error) registry.TaskFailure {
+	if errors.Is(err, targets.ErrUnreachable) {
+		class = registry.ErrorClassTargetUnreachable
+	}
+	return registry.TaskFailure{Class: class, Reason: op + ": " + err.Error()}
 }
 
 // Reap tears down an idle task's session (design spec's continuation
@@ -302,13 +315,18 @@ func (o *Orchestrator) executorFor(ctx context.Context, task *registry.Task) (ta
 	return o.newExecutor(target)
 }
 
-// failTask transitions task to Failed and its workspace back to Idle.
-// Shared by the public Fail and by Launch/SendMessage's internal
+// failTask transitions task to Failed, recording failure, and an active
+// workspace back to Idle — a workspace in any other status (provisioning,
+// failed, archived) keeps it: its status is about the workspace, not this
+// one task. Shared by the public Fail and by Launch/SendMessage's internal
 // auto-fail-on-executor-error path.
-func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task) error {
+func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task, failure registry.TaskFailure) error {
 	now := time.Now().UTC()
 	task.Status = registry.TaskStatusFailed
 	task.CompletedAt = &now
+	task.FailureReason = failure.Reason
+	task.ErrorClass = failure.Class
+	task.OutputTail = failure.OutputTail
 	if err := o.store.UpdateTask(ctx, task); err != nil {
 		return err
 	}
@@ -316,6 +334,9 @@ func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task) error 
 	ws, err := o.store.GetWorkspace(ctx, task.WorkspaceID)
 	if err != nil {
 		return err
+	}
+	if ws.Status != registry.WorkspaceStatusActive {
+		return nil
 	}
 	ws.Status = registry.WorkspaceStatusIdle
 	return o.store.UpdateWorkspace(ctx, ws)

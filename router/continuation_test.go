@@ -282,6 +282,15 @@ func TestDispatch_ActiveTaskUnderTakeover_RefusesRatherThanDoubleLaunch(t *testi
 	if len(exec.sessions) != 1 {
 		t.Fatalf("sessions = %+v, want still exactly 1 (no second session launched)", exec.sessions)
 	}
+	// LOOM-77: a refusal under takeover is not a task failure — the human
+	// still has it.
+	stored, err := store.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Status != registry.TaskStatusHumanTakeover {
+		t.Fatalf("task status after a refused dispatch = %q, want still %q", stored.Status, registry.TaskStatusHumanTakeover)
+	}
 }
 
 // TestDispatch_MoreThanOneActiveTaskForSameConversation_Errors defends

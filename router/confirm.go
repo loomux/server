@@ -196,6 +196,9 @@ func (r *Router) runCommandTask(ctx context.Context, workspaceID, conversationID
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return res, fmt.Errorf("still running after %s; left running in tmux session %s", timeout, task.TmuxSession)
 		}
+		if ferr := r.orch.Fail(context.WithoutCancel(ctx), task.ID, taskFailure(registry.ErrorClassWaitFailed, err, "")); ferr != nil {
+			r.logger.Error("command task cleanup failed", "task_id", task.ID, "error", ferr)
+		}
 		return res, fmt.Errorf("wait: %w", err)
 	}
 

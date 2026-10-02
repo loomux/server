@@ -211,6 +211,9 @@ func TestLaunchAutoFailsOnUnreachable(t *testing.T) {
 	if stored.CompletedAt == nil {
 		t.Fatalf("task CompletedAt is nil after auto-fail")
 	}
+	if stored.ErrorClass != registry.ErrorClassTargetUnreachable || stored.FailureReason == "" {
+		t.Fatalf("auto-fail recorded class %q reason %q, want target_unreachable with a reason", stored.ErrorClass, stored.FailureReason)
+	}
 
 	updatedWS, wsErr := store.GetWorkspace(ctx, ws.ID)
 	if wsErr != nil {
@@ -416,7 +419,9 @@ func TestFail(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 
-	if err := o.Fail(ctx, task.ID, "agent crashed"); err != nil {
+	if err := o.Fail(ctx, task.ID, registry.TaskFailure{
+		Class: registry.ErrorClassAgentExited, Reason: "agent crashed", OutputTail: "segfault",
+	}); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 
@@ -426,6 +431,10 @@ func TestFail(t *testing.T) {
 	}
 	if stored.Status != registry.TaskStatusFailed {
 		t.Fatalf("Status = %q, want %q", stored.Status, registry.TaskStatusFailed)
+	}
+	// LOOM-77: the reason is persisted, not just accepted.
+	if stored.FailureReason != "agent crashed" || stored.ErrorClass != registry.ErrorClassAgentExited || stored.OutputTail != "segfault" {
+		t.Fatalf("failure = %q / %q / %q, want it persisted", stored.FailureReason, stored.ErrorClass, stored.OutputTail)
 	}
 	if stored.CompletedAt == nil {
 		t.Fatalf("CompletedAt is nil")
@@ -584,5 +593,52 @@ func TestFinishCommand_RefusesNonCommandTask(t *testing.T) {
 	}
 	if err := o.FinishCommand(ctx, task.ID, 0); err == nil {
 		t.Error("FinishCommand on an agent task: want error, got nil")
+	}
+}
+
+// TestLaunch_LeavesProvisioningWorkspaceProvisioning (LOOM-77): the
+// router owns a provisioning workspace's status (provisioning → idle on
+// success, → failed otherwise); starting its provisioning session must
+// not flip it to active, as it used to.
+func TestLaunch_LeavesProvisioningWorkspaceProvisioning(t *testing.T) {
+	store, ws, _, _, o := setup(t)
+	ctx := context.Background()
+	ws.Status = registry.WorkspaceStatusProvisioning
+	if err := store.UpdateWorkspace(ctx, ws); err != nil {
+		t.Fatalf("UpdateWorkspace: %v", err)
+	}
+	if _, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindShell, "", "git clone x"); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	got, err := store.GetWorkspace(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace: %v", err)
+	}
+	if got.Status != registry.WorkspaceStatusProvisioning {
+		t.Fatalf("workspace status = %q, want still provisioning", got.Status)
+	}
+}
+
+// TestFail_DoesNotRevertFailedWorkspace: failing a task only returns an
+// active workspace to idle; a workspace already marked failed (or still
+// provisioning) keeps its status.
+func TestFail_DoesNotRevertFailedWorkspace(t *testing.T) {
+	store, ws, _, _, o := setup(t)
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindShell, "", "")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	cur, _ := store.GetWorkspace(ctx, ws.ID)
+	cur.Status = registry.WorkspaceStatusFailed
+	if err := store.UpdateWorkspace(ctx, cur); err != nil {
+		t.Fatalf("UpdateWorkspace: %v", err)
+	}
+	if err := o.Fail(ctx, task.ID, registry.TaskFailure{Class: registry.ErrorClassInternal, Reason: "x"}); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	got, _ := store.GetWorkspace(ctx, ws.ID)
+	if got.Status != registry.WorkspaceStatusFailed {
+		t.Fatalf("workspace status = %q, want failed kept", got.Status)
 	}
 }
