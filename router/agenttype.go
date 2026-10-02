@@ -7,6 +7,7 @@ package router
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Loomux/server/completion"
 )
@@ -31,6 +32,15 @@ type AgentType struct {
 	// agent-type (design spec §10 axis 3). nil means no check is
 	// enforced.
 	VersionCheck *VersionCheck
+	// CompletionHookArgs are extra CLI arguments, appended after
+	// LaunchTemplate on every launch, that make the agent CLI itself
+	// touch $LOOMUX_MARKER_PATH when a turn finishes (LOOM-75) — e.g.
+	// claude's --settings carrying a Stop hook, codex's -c notify=…. They
+	// are scoped to the one launched process: nothing is written to the
+	// target's own agent config, which on a shared host belongs to
+	// someone else. Each element is shell-quoted as one word. Empty means
+	// the agent signals some other way (or, for TierIdle, not at all).
+	CompletionHookArgs []string
 	// Binary is the agent CLI's executable name. When set, the target is
 	// probed for it (`command -v`) before every fresh launch and before a
 	// workspace is provisioned for it, and the result is recorded per
@@ -93,4 +103,17 @@ func (r AgentTypeRegistry) LaunchCommand(agentType string) (string, error) {
 		return "", err
 	}
 	return at.LaunchTemplate, nil
+}
+
+// launchCommand is the agent CLI invocation launchAgent runs (before any
+// env prefix): LaunchTemplate followed by CompletionHookArgs, each
+// argument shell-quoted.
+func (at AgentType) launchCommand() string {
+	var b strings.Builder
+	b.WriteString(at.LaunchTemplate)
+	for _, arg := range at.CompletionHookArgs {
+		b.WriteByte(' ')
+		b.WriteString(shellQuote(arg))
+	}
+	return b.String()
 }

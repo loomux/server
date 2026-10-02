@@ -23,12 +23,15 @@ that would have blocked live SSH interaction with a running agent.
   through `TargetExecutor.FileExists`/`RemoveFile` for both local and
   remote targets — one code path either way (LOOM-11), so it needs an
   `ExecutorFactory` the same way `IdleWatcher` already does. Also
-  exports two pure, package-level functions — `MarkerDir` (the
-  configured-or-default directory logic `NewDetector` itself uses) and
-  `MarkerPath` (the `dir/taskID.done` naming convention) — so a caller
-  with no `MarkerWatcher`/`Detector` instance at hand can still compute
-  the exact same path (LOOM-32: `router.Router` needs this to build a
-  launch command's env, before any watcher is involved).
+  exports `MarkerPath` (the `dir/taskID.done` naming convention) and
+  `ResolveMarkerDir` (configured `LOOMUX_MARKER_DIR` verbatim, else the
+  per-user default `$HOME/.cache/loomux/completion-markers`, created
+  0700 *on the target* and refused if it's a symlink or not owned by the
+  target user). `router.Router` uses both to build a launch command's
+  env and `MarkerWatcher` uses them to watch, so they always agree on
+  the path. The default is no longer a fixed `/tmp/loomux/...`: on a
+  shared target another user could create that first, or plant markers
+  in it (LOOM-75 review).
 - Process exit (LOOM-71): `Detector.Wait` also polls
   `TargetExecutor.PaneExited` alongside the marker/idle tier and returns
   `*orchestrator.ProcessExitedError` (exit status + final output) if the
@@ -57,10 +60,13 @@ a task's ID *before* building its launch command (rather than letting
 declared-but-nonfunctional until now — see `router/README.md`'s own
 section), and embeds it — plus, for a TierMarker agent-type, this
 package's own `MarkerPath` for that ID — as `LOOMUX_TASK_ID`/
-`LOOMUX_MARKER_PATH` env vars. A hook/notify script configured on the
-target (the agent CLI's own config, not something this repo manages —
-same precedent as OAuth-CLI credentials, design spec §7) reads those to
-know which file to touch on completion.
+`LOOMUX_MARKER_PATH` env vars. The hook that reads them and touches the
+marker is injected by Loomux on the same command line (LOOM-75): each
+adapter in package `agents` supplies `CompletionHookArgs` (claude:
+`--settings` with a `Stop` hook; codex: `-c notify=…`). Nothing has to be
+configured on the target, and the target's own agent config is never
+modified. Router creates the marker directory before launch (above). The hook
+re-creates it (umask 077) if it's been removed.
 
 Run `go test ./...` from the repo root to run the full suite, including
 an integration test that drives the idle heuristic against a real local

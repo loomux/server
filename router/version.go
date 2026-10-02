@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -23,7 +24,15 @@ type VersionCheck struct {
 	Min string
 	// Max is the exclusive upper bound; empty means no upper bound.
 	Max string
+	// Requires names what Min exists for (e.g. "completion hooks
+	// (--settings)"), so a too-old CLI fails with "agent version too old
+	// for <Requires>" rather than a bare range error (LOOM-75). Optional.
+	Requires string
 }
+
+// ErrVersionTooOld is wrapped by CheckVersionRange's below-minimum
+// error, so callers can tell "too old" from "too new" or "unparseable".
+var ErrVersionTooOld = errors.New("agent version below the supported minimum")
 
 // ExtractDottedVersion is a reusable VersionCheck.Parse: it finds the
 // first dotted-number sequence in output (e.g. "2.1.251" out of
@@ -51,7 +60,7 @@ func CheckVersionRange(version, min, max string) error {
 			return err
 		}
 		if cmp < 0 {
-			return fmt.Errorf("version %s is below the minimum %s", version, min)
+			return fmt.Errorf("version %s is below the minimum %s: %w", version, min, ErrVersionTooOld)
 		}
 	}
 	if max != "" {

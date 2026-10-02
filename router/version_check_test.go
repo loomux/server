@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +141,34 @@ func TestDispatch_NoVersionCheck_NeverCallsRunOnce(t *testing.T) {
 
 	if _, err := r.Dispatch(context.Background(), "conv-1", "hi"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
+	}
+}
+
+// TestDispatch_VersionTooOld_NamesRequirement: a CLI too old for what
+// Loomux injects at launch (LOOM-75's completion hook) fails fast with a
+// message saying what it's too old for, not just a bare range error.
+func TestDispatch_VersionTooOld_NamesRequirement(t *testing.T) {
+	store, exec, r, model := setupWithVersionCheck(t, router.VersionCheck{
+		Command:  "claude --version",
+		Parse:    router.ExtractDottedVersion,
+		Min:      "9.9.9",
+		Requires: "completion hooks (--settings)",
+	})
+	ws := createFixtureWorkspace(t, store)
+	exec.runOnceOutput = "2.1.251 (Claude Code)"
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+	}
+
+	_, err := r.Dispatch(context.Background(), "conv-1", "hi")
+	if err == nil {
+		t.Fatal("Dispatch: want error, got nil")
+	}
+	want := "agent version too old for completion hooks (--settings)"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err, want)
+	}
+	if !errors.Is(err, router.ErrVersionTooOld) {
+		t.Fatalf("error = %v, want errors.Is(err, router.ErrVersionTooOld)", err)
 	}
 }

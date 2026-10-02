@@ -590,3 +590,29 @@ func TestDispatch_VersionCheckRunsProbedPath(t *testing.T) {
 		t.Errorf("version check ran %v, want the probed path's --version", versionCommands)
 	}
 }
+
+// LOOM-75 x LOOM-79: the completion hook args survive the switch to the
+// probed absolute path — the path replaces only the binary, never the
+// arguments after it.
+func TestDispatch_ProbedPathKeepsCompletionHookArgs(t *testing.T) {
+	h := newAvailabilityHarnessWith(t, func(at router.AgentTypeRegistry) {
+		codex := at["codex"]
+		codex.CompletionHookArgs = []string{"-c", `notify=["sh"]`}
+		at["codex"] = codex
+	})
+	h.probes.install("codex")
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", Path: "/srv/x", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
+	if err := h.store.CreateWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
+
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	cmds := h.exec.launchedCommands()
+	want := "'" + fakeBinDir + `codex' '-c' 'notify=["sh"]'`
+	if len(cmds) != 1 || !strings.HasSuffix(cmds[0], want) {
+		t.Errorf("launched %v, want suffix %q", cmds, want)
+	}
+}

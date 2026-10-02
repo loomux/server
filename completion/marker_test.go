@@ -78,29 +78,6 @@ func TestMarkerPath_PackageFuncMatchesWatcherMethod(t *testing.T) {
 	}
 }
 
-// TestMarkerDir_ReturnsConfiguredWhenNonEmpty proves completion.MarkerDir
-// (LOOM-32 — extracted from NewDetector's own defaulting logic so router
-// can resolve the same effective directory without constructing a
-// Detector) passes a non-empty configured value through unchanged.
-func TestMarkerDir_ReturnsConfiguredWhenNonEmpty(t *testing.T) {
-	got := completion.MarkerDir("/configured/marker/dir")
-	want := "/configured/marker/dir"
-	if got != want {
-		t.Fatalf("MarkerDir(%q) = %q, want %q", want, got, want)
-	}
-}
-
-// TestMarkerDir_DefaultsWhenEmpty proves an empty configured value
-// resolves to the same $TMPDIR/loomux/completion-markers convention
-// NewDetector has always defaulted to.
-func TestMarkerDir_DefaultsWhenEmpty(t *testing.T) {
-	got := completion.MarkerDir("")
-	want := filepath.Join(os.TempDir(), "loomux", "completion-markers")
-	if got != want {
-		t.Fatalf("MarkerDir(\"\") = %q, want %q", got, want)
-	}
-}
-
 func TestMarkerWatcher_RemovesMarkerAfterDetection(t *testing.T) {
 	dir := t.TempDir()
 	w := completion.NewMarkerWatcher(localExecutorFactory(), dir, 20*time.Millisecond)

@@ -190,3 +190,82 @@ func TestLaunchAgent_MintsDistinctTaskIDsAcrossLaunches(t *testing.T) {
 		t.Fatalf("both launches got the same task ID %q, want distinct IDs", tasks[0].ID)
 	}
 }
+
+// TestDispatch_CompletionHookArgsAppendedToLaunchCommand proves an
+// agent-type's CompletionHookArgs (LOOM-75) reach the launched command
+// after its LaunchTemplate, each shell-quoted as a single word — the
+// claude --settings value is JSON full of quotes and spaces.
+func TestDispatch_CompletionHookArgsAppendedToLaunchCommand(t *testing.T) {
+	store := newTestStore(t)
+	ws := createFixtureWorkspace(t, store)
+	exec := newFakeExecutor()
+	exec.fileExists = true
+	markerDir := t.TempDir()
+	agentTypes := markerTierAgentTypes()
+	cc := agentTypes["claude-code"]
+	cc.CompletionHookArgs = []string{"--settings", `{"a": "it's \"x\""}`}
+	agentTypes["claude-code"] = cc
+	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir)
+	orch := orchestrator.New(store, exec.factory(), detector)
+	model := &routertest.StubRoutingModel{
+		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+			return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+		},
+		RelayFunc: func(ctx context.Context, captured string) (router.RelayResult, error) {
+			return router.RelayResult{Reply: "done", Done: true}, nil
+		},
+	}
+	r := router.New(store, orch, exec.factory(), credentials.NewResolver(store), agentTypes, model, markerDir)
+
+	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	var sess *fakeSession
+	for _, s := range exec.sessions {
+		sess = s
+	}
+	if sess == nil {
+		t.Fatal("no session launched")
+	}
+	want := `claude '--settings' '{"a": "it'\''s \"x\""}'`
+	if !strings.HasSuffix(sess.command, want) {
+		t.Fatalf("command = %q, want suffix %q", sess.command, want)
+	}
+}
+
+// With no marker dir configured, the launch resolves the per-user default
+// on the target (completion.ResolveMarkerDir) and tells the agent a path
+// under it, rather than a shared, predictable /tmp path (LOOM-75 review).
+func TestDispatch_TierMarker_DefaultMarkerDirResolvedOnTarget(t *testing.T) {
+	store := newTestStore(t)
+	ws := createFixtureWorkspace(t, store)
+	exec := newFakeExecutor()
+	exec.fileExists = true
+	exec.runOnceOutput = "/home/agentuser/.cache/loomux/completion-markers\n"
+	agentTypes := markerTierAgentTypes()
+	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), "")
+	orch := orchestrator.New(store, exec.factory(), detector)
+	model := &routertest.StubRoutingModel{
+		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+			return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+		},
+		RelayFunc: func(ctx context.Context, captured string) (router.RelayResult, error) {
+			return router.RelayResult{Reply: "done", Done: true}, nil
+		},
+	}
+	r := router.New(store, orch, exec.factory(), credentials.NewResolver(store), agentTypes, model, "")
+
+	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	var sess *fakeSession
+	for _, s := range exec.sessions {
+		sess = s
+	}
+	if sess == nil {
+		t.Fatal("no session launched")
+	}
+	if !strings.Contains(sess.command, "LOOMUX_MARKER_PATH='/home/agentuser/.cache/loomux/completion-markers/") {
+		t.Fatalf("command = %q, want a marker path under the target's per-user dir", sess.command)
+	}
+}

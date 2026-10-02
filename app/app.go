@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Loomux/server/agents"
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/orchestrator"
@@ -67,20 +68,15 @@ func (a *App) Close() error {
 
 // DefaultAgentTypes is the production registered-agent-type set:
 // "claude-code" and "codex" (LOOM-22 — proves the agent-type interface
-// generalizes beyond a single CLI). Both declare Tier: TierMarker,
-// mirroring each other exactly: Codex CLI has a completion-signal
-// mechanism roughly analogous to Claude Code's Stop hook (either an
-// experimental per-turn Stop hook, or the simpler long-standing `notify`
-// config key). Both entries' TierMarker declaration is now actually
-// backed by per-task marker-path injection (LOOM-32 — router.launchAgent
-// mints the task ID before building the launch command and embeds it,
-// plus the marker path, as LOOMUX_TASK_ID/LOOMUX_MARKER_PATH env vars),
-// closing the gap LOOM-22 first flagged: a hook/notify script configured
-// on the target (outside Loomux's own responsibility, same as any other
-// OAuth-CLI local config — design spec §7) can read those to know which
-// marker file to touch on completion. The "" entry configures completion
-// detection for shell-kind (provisioning) tasks only (router/agenttype.go's
-// own doc comment) — it is never a real dispatchable agent type and is
+// generalizes beyond a single CLI), both built by package agents. Both
+// are TierMarker, and Loomux owns the whole completion path (LOOM-75):
+// router.launchAgent tells the launched process its marker path
+// (LOOMUX_MARKER_PATH, LOOM-32), and each adapter's CompletionHookArgs
+// install the hook that touches it — claude's Stop hook via --settings,
+// codex's notify via -c — per launch, with nothing configured on the
+// target beforehand. The "" entry configures completion detection for
+// shell-kind (provisioning) tasks only (router/agenttype.go's own doc
+// comment) — it is never a real dispatchable agent type and is
 // deliberately excluded from what's offered to the router model by
 // dispatchableAgentTypeNames below.
 func DefaultAgentTypes() router.AgentTypeRegistry {
@@ -88,38 +84,8 @@ func DefaultAgentTypes() router.AgentTypeRegistry {
 		"": router.AgentType{
 			AgentConfig: completion.AgentConfig{Tier: completion.TierIdle},
 		},
-		"claude-code": router.AgentType{
-			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
-			LaunchTemplate: "claude",
-			Binary:         "claude",
-			// Checked against the probed absolute path (LOOM-79). The floor
-			// is deliberately permissive — the 1.x line is where the Stop
-			// hook TierMarker relies on exists — until a real
-			// incompatibility gives a reason to tighten it.
-			VersionCheck: &router.VersionCheck{Command: "claude --version", Parse: router.ExtractDottedVersion, Min: "1.0.0"},
-			Install: &router.AgentInstall{
-				// Anthropic's native installer: puts claude in ~/.local/bin,
-				// no Node.js needed.
-				Command: "curl -fsSL https://claude.ai/install.sh | bash",
-				Login: "attach to the target and run `claude` once to complete its /login, or store an " +
-					"ANTHROPIC_API_KEY credential for the claude-code agent type",
-			},
-		},
-		"codex": router.AgentType{
-			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
-			LaunchTemplate: "codex",
-			Binary:         "codex",
-			// As claude-code's: a permissive floor, run against the probed
-			// path. Targets have been seen running 0.150–0.159.
-			VersionCheck: &router.VersionCheck{Command: "codex --version", Parse: router.ExtractDottedVersion, Min: "0.100.0"},
-			Install: &router.AgentInstall{
-				// Needs Node.js and npm on the target; on a target without
-				// them the install fails and its output says so.
-				Command: "npm install -g @openai/codex",
-				Login: "attach to the target and run `codex login`, or store an OPENAI_API_KEY credential " +
-					"for the codex agent type",
-			},
-		},
+		"claude-code": agents.ClaudeCode(),
+		"codex":       agents.Codex(),
 	}
 }
 
@@ -161,12 +127,12 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		return nil, fmt.Errorf("app: open store: %w", err)
 	}
 
-	// Resolved once and passed to both the detector and the router, so
-	// they necessarily agree on where a TierMarker agent-type's marker
-	// files live (LOOM-32) — router.launchAgent computes the path a
-	// launched process is told to touch; completion.Detector is what
-	// actually watches for it.
-	markerDir := completion.MarkerDir(cfg.MarkerDir)
+	// Passed to both the detector and the router, so they agree on where
+	// a TierMarker agent-type's marker files live (LOOM-32): router.
+	// launchAgent tells the launched process the path, completion.Detector
+	// watches it. Empty means each target's per-user default, which both
+	// resolve the same way (completion.ResolveMarkerDir).
+	markerDir := cfg.MarkerDir
 	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, targets.NewExecutor, detector)
 	creds := credentials.NewResolver(store)
