@@ -47,11 +47,16 @@ type fakeExecutor struct {
 	// provisioning *after* the session launched (LOOM-63 review).
 	captureErr error
 	killErr    error
-	// paneExit, when set, is what PaneExited reports for every session —
-	// simulating a launched process (an agent CLI that isn't installed, a
-	// one-shot command) having exited, LOOM-71. nil means "still
-	// running", every existing test's behavior.
-	paneExit *targets.PaneExit
+	// paneExit, when set, is called with a session's launch command and
+	// returns what PaneExited reports for it — simulating that process
+	// (an agent CLI that isn't installed, a provisioning script, a
+	// one-shot command) having exited, LOOM-71. nil, or a nil return,
+	// means "still running": every pre-LOOM-71 test's behavior.
+	paneExit func(command string) *targets.PaneExit
+	// runOnce, when set, replaces runOnceOutput/runOnceErr with a
+	// per-command answer — e.g. an agent CLI probe that answers
+	// differently before and after an install.
+	runOnce func(command string) (string, error)
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -156,6 +161,9 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 	if e.unreachable {
 		return "", targets.ErrUnreachable
 	}
+	if e.runOnce != nil {
+		return e.runOnce(command)
+	}
 	return e.runOnceOutput, e.runOnceErr
 }
 
@@ -165,8 +173,24 @@ func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if _, ok := e.sessions[target]; !ok {
+	sess, ok := e.sessions[target]
+	if !ok {
 		return nil, fmt.Errorf("fakeExecutor: no such session %q", target)
 	}
-	return e.paneExit, nil
+	if e.paneExit == nil {
+		return nil, nil
+	}
+	return e.paneExit(sess.command), nil
+}
+
+// launchedCommands lists every session's launch command, in no
+// particular order.
+func (e *fakeExecutor) launchedCommands() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, s := range e.sessions {
+		out = append(out, s.command)
+	}
+	return out
 }

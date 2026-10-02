@@ -31,6 +31,29 @@ type AgentType struct {
 	// agent-type (design spec §10 axis 3). nil means no check is
 	// enforced.
 	VersionCheck *VersionCheck
+	// Binary is the agent CLI's executable name. When set, the target is
+	// probed for it (`command -v`) before every fresh launch and before a
+	// workspace is provisioned for it, and the result is recorded per
+	// target (LOOM-71). Empty means the agent-type is never probed.
+	Binary string
+	// Install, if set, is how to put the CLI on a target that lacks it —
+	// offered to the user, and run only on their explicit confirmation.
+	Install *AgentInstall
+}
+
+// AgentInstall is an agent-type's install recipe (LOOM-71). Both fields
+// are fixed configuration: the routing model never supplies or alters
+// either, so what an install confirmation runs is exactly what the offer
+// showed.
+type AgentInstall struct {
+	// Command installs the CLI. It runs verbatim on the target as a
+	// tracked command task (registry.TaskKindCommand).
+	Command string
+	// Login is the human step the CLI needs after installing before it
+	// can run unattended (e.g. "run `codex login` on the target"), told
+	// to the user alongside the offer and again after a successful
+	// install. Loomux never performs it.
+	Login string
 }
 
 // AgentTypeRegistry maps agent-type name to its AgentType entry. An

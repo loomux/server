@@ -38,6 +38,11 @@ type TargetSnapshot struct {
 	ID   string
 	Name string
 	Kind string
+	// Agents is each probed agent-type's recorded availability on this
+	// target (LOOM-71): true if its CLI was found, false if not. An
+	// agent-type never probed here is absent from the map — unknown, not
+	// unavailable.
+	Agents map[string]bool
 }
 
 // ProvisionSpec describes a new dynamic workspace to create and set up

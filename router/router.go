@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -45,6 +46,8 @@ type Router struct {
 	// provisioning and agent dispatch (LOOM-63). Never nil — New
 	// defaults it to a discarding logger.
 	logger *slog.Logger
+	// pending holds install offers awaiting confirmation (LOOM-71).
+	pending pendingActions
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -102,6 +105,16 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	log := r.logger.With("conversation_id", conversationID)
 	log.Info("dispatch started", "message_len", len(message))
 
+	// An install offer made on this conversation's previous turn is
+	// answered here, before routing: the routing model plays no part in
+	// deciding that an install runs, nor in what it runs (LOOM-71).
+	if p, ok := r.pending.take(conversationID, time.Now()); ok {
+		if isConfirmation(message, p.agentType) {
+			return r.confirmInstall(ctx, log, conversationID, message, p, start)
+		}
+		log.Info("install offer declined", "agent_type", p.agentType, "target_id", p.targetID)
+	}
+
 	workspaces, err := r.store.ListWorkspaces(ctx)
 	if err != nil {
 		log.Error("dispatch failed", "stage", "list workspaces", "error", err)
@@ -114,7 +127,13 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
-	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces), snapshotTargets(targets), opts...)
+	targetSnapshots, err := r.snapshotTargets(ctx, targets)
+	if err != nil {
+		log.Error("dispatch failed", "stage", "list target agents", "error", err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+
+	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces), targetSnapshots, opts...)
 	if err != nil {
 		log.Error("routing failed", "error", err)
 		return "", fmt.Errorf("router: dispatch: routing failed: %w", err)
@@ -135,6 +154,22 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		workspaceID = decision.WorkspaceID
 
 	case ActionProvisionWorkspace:
+		// Probe for the agent before writing a workspace row, so a target
+		// without the agent's CLI gets an install offer instead of a
+		// workspace whose first launch can only fail (LOOM-71). A
+		// target_id that doesn't resolve is left to provisionWorkspace,
+		// which refuses it (LOOM-64).
+		if target, terr := r.store.GetTarget(ctx, decision.NewWorkspace.TargetID); terr == nil {
+			if err := r.requireAgent(ctx, target, decision.AgentType); err != nil {
+				var unavailable *AgentUnavailableError
+				if errors.As(err, &unavailable) {
+					spec := decision.NewWorkspace
+					return r.replyWithOffer(ctx, log, conversationID, message, unavailable, "", &spec, start)
+				}
+				log.Error("dispatch failed", "stage", "probe agent", "error", err)
+				return "", fmt.Errorf("router: dispatch: %w", err)
+			}
+		}
 		workspaceID, err = r.provisionWorkspace(ctx, conversationID, decision.NewWorkspace)
 		if err != nil {
 			return "", fmt.Errorf("router: dispatch: %w", err)
@@ -147,9 +182,45 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 
 	reply, err := r.dispatchToAgent(ctx, workspaceID, conversationID, decision.AgentType, message)
 	if err != nil {
+		var unavailable *AgentUnavailableError
+		if errors.As(err, &unavailable) {
+			return r.replyWithOffer(ctx, log, conversationID, message, unavailable, workspaceID, nil, start)
+		}
 		return "", err
 	}
 	log.Info("dispatch finished", "action", string(decision.Action), "workspace_id", workspaceID,
+		"duration_ms", time.Since(start).Milliseconds())
+	return reply, nil
+}
+
+// replyWithOffer ends a turn whose agent isn't installed on its target
+// with an install offer (or, for an agent-type with no recipe, an
+// explanation) instead of an error (LOOM-71).
+func (r *Router) replyWithOffer(ctx context.Context, log *slog.Logger, conversationID, message string,
+	unavailable *AgentUnavailableError, workspaceID string, provision *ProvisionSpec, start time.Time) (string, error) {
+	reply := r.installOffer(conversationID, unavailable, workspaceID, provision)
+	if err := r.logTurn(ctx, conversationID, "", message, reply); err != nil {
+		log.Error("dispatch failed", "stage", "log turn", "error", err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+	log.Info("dispatch finished", "action", "agent_unavailable", "agent_type", unavailable.AgentType,
+		"target_id", unavailable.TargetID, "duration_ms", time.Since(start).Milliseconds())
+	return reply, nil
+}
+
+// confirmInstall runs a confirmed install offer as the turn (LOOM-71).
+func (r *Router) confirmInstall(ctx context.Context, log *slog.Logger, conversationID, message string, p pendingInstall, start time.Time) (string, error) {
+	log.Info("install confirmed", "agent_type", p.agentType, "target_id", p.targetID)
+	reply, taskID, err := r.runInstall(ctx, conversationID, p)
+	if err != nil {
+		log.Error("dispatch failed", "stage", "install agent", "task_id", taskID, "error", err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+	if err := r.logTurn(ctx, conversationID, taskID, message, reply); err != nil {
+		log.Error("dispatch failed", "stage", "log turn", "error", err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+	log.Info("dispatch finished", "action", "install_agent", "task_id", taskID,
 		"duration_ms", time.Since(start).Milliseconds())
 	return reply, nil
 }
@@ -214,16 +285,28 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		return "", fmt.Errorf("provision workspace: %w", err)
 	}
 
-	// From here on a failure leaves the row behind (see above), so each
-	// failure record names it and its status. The status is re-read
-	// rather than taken from ws: once Launch has started the session the
-	// orchestrator persists the row as active, so the local copy's
-	// "provisioning" would misreport it. WithoutCancel so a wait that
-	// failed on ctx cancellation still gets its status read.
+	// From here on a failure leaves the row behind (see above), marked
+	// failed (LOOM-71) — never left active or provisioning, and no longer
+	// offered to the routing model. Each failure record names the row and
+	// its status, re-read rather than taken from ws so it reports what
+	// was actually persisted. WithoutCancel so a wait that failed on ctx
+	// cancellation still gets the row marked and its status read.
 	log = log.With("workspace_id", ws.ID)
-	stuck := func(stage string, err error) {
+	fail := func(stage string, taskID string, err error) {
+		cleanupCtx := context.WithoutCancel(ctx)
+		if taskID != "" {
+			if ferr := r.orch.Fail(cleanupCtx, taskID, err.Error()); ferr != nil && !errors.Is(ferr, registry.ErrNotFound) {
+				log.Error("provisioning cleanup failed", "stage", "fail task", "task_id", taskID, "error", ferr)
+			}
+		}
+		if cur, gerr := r.store.GetWorkspace(cleanupCtx, ws.ID); gerr == nil {
+			cur.Status = registry.WorkspaceStatusFailed
+			if uerr := r.store.UpdateWorkspace(cleanupCtx, cur); uerr != nil {
+				log.Error("provisioning cleanup failed", "stage", "mark workspace failed", "error", uerr)
+			}
+		}
 		attrs := []any{"stage", stage, "error", err}
-		if cur, gerr := r.store.GetWorkspace(context.WithoutCancel(ctx), ws.ID); gerr == nil {
+		if cur, gerr := r.store.GetWorkspace(cleanupCtx, ws.ID); gerr == nil {
 			attrs = append(attrs, "workspace_status", string(cur.Status))
 		} else {
 			attrs = append(attrs, "workspace_status_error", gerr)
@@ -234,15 +317,32 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 
 	task, err := r.orch.Launch(ctx, ws.ID, conversationID, registry.TaskKindShell, "", spec.ProvisionCommand)
 	if err != nil {
-		stuck("launch", err)
+		taskID := ""
+		if task != nil {
+			taskID = task.ID
+		}
+		fail("launch", taskID, err)
 		return "", fmt.Errorf("provision workspace: launch: %w", err)
 	}
+	// A provisioning script is the pane's own process, so it exiting is
+	// the clearest completion there is: status 0 is success, anything
+	// else a failure reported with the script's own output. A script that
+	// keeps running (or an empty command's interactive shell) completes
+	// by going idle, as before.
 	if err := r.orch.WaitForCompletion(ctx, task.ID); err != nil {
-		stuck("wait for completion", err)
-		return "", fmt.Errorf("provision workspace: wait for completion: %w", err)
+		var exited *orchestrator.ProcessExitedError
+		if !errors.As(err, &exited) {
+			fail("wait for completion", task.ID, err)
+			return "", fmt.Errorf("provision workspace: wait for completion: %w", err)
+		}
+		if exited.Status != 0 {
+			err = fmt.Errorf("provisioning command exited with status %d: %s", exited.Status, quoteOutput(exited.Output))
+			fail("wait for completion", task.ID, err)
+			return "", fmt.Errorf("provision workspace: %w", err)
+		}
 	}
 	if err := r.orch.Complete(ctx, task.ID, provisioningSummary); err != nil {
-		stuck("complete", err)
+		fail("complete", task.ID, err)
 		return "", fmt.Errorf("provision workspace: complete: %w", err)
 	}
 	log.Info("workspace provisioned", "task_id", task.ID)
@@ -269,7 +369,8 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	log := r.logger.With("conversation_id", conversationID, "workspace_id", workspaceID, "agent_type", agentType)
 	var taskID string
 	defer func() {
-		if err != nil {
+		var unavailable *AgentUnavailableError
+		if err != nil && !errors.As(err, &unavailable) {
 			log.Error("agent dispatch failed", "task_id", taskID, "error", err)
 		}
 	}()
@@ -315,6 +416,10 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		return "", fmt.Errorf("router: dispatch: send message: %w", err)
 	}
 	if err := r.orch.WaitForCompletion(ctx, task.ID); err != nil {
+		var exited *orchestrator.ProcessExitedError
+		if errors.As(err, &exited) {
+			return "", r.agentExited(ctx, task, exited)
+		}
 		return "", fmt.Errorf("router: dispatch: wait for completion: %w", err)
 	}
 
@@ -347,6 +452,30 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	log.Info("agent dispatch finished", "task_id", task.ID, "task_done", result.Done,
 		"duration_ms", time.Since(start).Milliseconds())
 	return result.Reply, nil
+}
+
+// agentExited handles an agent CLI whose process ended mid-turn (LOOM-71):
+// the task is failed (its pane left for inspection, as for any failure)
+// and the error quotes the process's last output — "codex: command not
+// found" rather than "can't find pane" — with credential values scrubbed.
+// Exit status 127 is the shell's "command not found", so it also records
+// the agent as unavailable on the target: the probe found something on
+// PATH that the launch shell didn't.
+func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *orchestrator.ProcessExitedError) error {
+	cleanupCtx := context.WithoutCancel(ctx)
+	if err := r.orch.Fail(cleanupCtx, task.ID, "agent process exited"); err != nil {
+		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
+	}
+	if exited.Status == 127 {
+		if ws, err := r.store.GetWorkspace(cleanupCtx, task.WorkspaceID); err == nil {
+			_ = r.store.SetTargetAgent(cleanupCtx, &registry.TargetAgent{
+				TargetID: ws.TargetID, AgentType: task.AgentType, Available: false, CheckedAt: time.Now().UTC(),
+			})
+		}
+	}
+	output := r.redactSecrets(cleanupCtx, task.WorkspaceID, task.AgentType, quoteOutput(exited.Output))
+	return fmt.Errorf("router: dispatch: agent %q exited (status %d) before finishing the turn; its last output:\n%s",
+		task.AgentType, exited.Status, output)
 }
 
 // logTurn persists one turn's user/assistant message pair. Called only
@@ -402,6 +531,23 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	entry, err := r.agentTypes.Get(agentType)
 	if err != nil {
 		return nil, fmt.Errorf("router: dispatch: %w", err)
+	}
+
+	// Probe before anything else touches the target for this agent
+	// (LOOM-71): an absent CLI becomes an install offer, not a session
+	// that dies at once.
+	if entry.Binary != "" {
+		ws, err := r.store.GetWorkspace(ctx, workspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("router: dispatch: %w", err)
+		}
+		target, err := r.store.GetTarget(ctx, ws.TargetID)
+		if err != nil {
+			return nil, fmt.Errorf("router: dispatch: %w", err)
+		}
+		if err := r.requireAgent(ctx, target, agentType); err != nil {
+			return nil, fmt.Errorf("router: dispatch: %w", err)
+		}
 	}
 
 	if entry.VersionCheck != nil {
@@ -541,30 +687,42 @@ func (r *Router) executorForWorkspace(ctx context.Context, workspaceID string) (
 }
 
 // snapshotTargets projects registered targets into the TargetSnapshot
-// shape the routing model sees: id, name and kind only (no Host, User or
-// SSHKeyRef — see TargetSnapshot).
-func snapshotTargets(targets []*registry.Target) []TargetSnapshot {
+// shape the routing model sees: id, name, kind and recorded agent
+// availability (LOOM-71) — no Host, User or SSHKeyRef, see
+// TargetSnapshot.
+func (r *Router) snapshotTargets(ctx context.Context, targets []*registry.Target) ([]TargetSnapshot, error) {
 	out := make([]TargetSnapshot, len(targets))
 	for i, t := range targets {
+		agents, err := r.agentAvailability(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
 		out[i] = TargetSnapshot{
-			ID:   t.ID,
-			Name: t.Name,
-			Kind: string(t.Kind),
+			ID:     t.ID,
+			Name:   t.Name,
+			Kind:   string(t.Kind),
+			Agents: agents,
 		}
 	}
-	return out
+	return out, nil
 }
 
+// snapshotWorkspaces projects the registry for the routing model, leaving
+// out failed workspaces (LOOM-71): one whose provisioning never finished
+// can't be dispatched into usefully.
 func snapshotWorkspaces(workspaces []*registry.Workspace) []WorkspaceSnapshot {
-	out := make([]WorkspaceSnapshot, len(workspaces))
-	for i, ws := range workspaces {
-		out[i] = WorkspaceSnapshot{
+	out := make([]WorkspaceSnapshot, 0, len(workspaces))
+	for _, ws := range workspaces {
+		if ws.Status == registry.WorkspaceStatusFailed {
+			continue
+		}
+		out = append(out, WorkspaceSnapshot{
 			ID:           ws.ID,
 			Name:         ws.Name,
 			Description:  ws.Description,
 			Tags:         ws.Tags,
 			Capabilities: ws.Capabilities,
-		}
+		})
 	}
 	return out
 }
