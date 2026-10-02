@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 	"github.com/Loomux/server/version"
 )
 
@@ -108,6 +109,16 @@ type TargetStore interface {
 	ListTargets(ctx context.Context) ([]*registry.Target, error)
 	UpdateTarget(ctx context.Context, t *registry.Target) error
 	DeleteTarget(ctx context.Context, id string) error
+	// ListTargetAgents backs GET /targets/{id}/agents (LOOM-71): the
+	// recorded agent CLI availability on a target.
+	ListTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error)
+}
+
+// AgentProber re-probes a target for every probe-able agent CLI and
+// records the results (LOOM-71) — satisfied by *app.App. Optional: with
+// none configured (WithAgentProber), the refresh endpoint answers 501.
+type AgentProber interface {
+	RefreshTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error)
 }
 
 // defaultSessionTTL is the sliding-expiration window: a session stays
@@ -150,6 +161,7 @@ type Server struct {
 	messages           MessageLister
 	attachInfo         AttachInfoStore
 	targets            TargetStore
+	agentProber        AgentProber
 	passwordHash       []byte
 	sessionTTL         time.Duration
 	loginThrottle      *loginThrottle
@@ -195,6 +207,12 @@ func WithStaticDir(dir string) Option {
 	return func(s *Server) { s.staticDir = dir }
 }
 
+// WithAgentProber enables POST /api/v1/targets/{id}/agents/refresh
+// (LOOM-71).
+func WithAgentProber(p AgentProber) Option {
+	return func(s *Server) { s.agentProber = p }
+}
+
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
@@ -234,6 +252,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/targets", s.requireAuth(s.handleListTargets))
 	mux.HandleFunc("PUT /api/v1/targets/{id}", s.requireAuth(s.handleUpdateTarget))
 	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
+	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
+	mux.HandleFunc("POST /api/v1/targets/{id}/agents/refresh", s.requireAuth(s.handleRefreshTargetAgents))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	s.mux = mux
 	return s
@@ -1154,6 +1174,69 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// targetAgentResponse is one recorded agent CLI probe result (LOOM-71).
+type targetAgentResponse struct {
+	AgentType string    `json:"agent_type"`
+	Available bool      `json:"available"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+type listTargetAgentsResponse struct {
+	Agents []targetAgentResponse `json:"agents"`
+}
+
+func newListTargetAgentsResponse(agents []*registry.TargetAgent) listTargetAgentsResponse {
+	out := make([]targetAgentResponse, 0, len(agents))
+	for _, a := range agents {
+		out = append(out, targetAgentResponse{AgentType: a.AgentType, Available: a.Available, CheckedAt: a.CheckedAt})
+	}
+	return listTargetAgentsResponse{Agents: out}
+}
+
+// handleListTargetAgents returns which agent CLIs were found on a target
+// the last time it was probed. An agent type never probed there is
+// simply absent from the list.
+func (s *Server) handleListTargetAgents(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.targets.GetTarget(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no such target")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not read target")
+		return
+	}
+	agents, err := s.targets.ListTargetAgents(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list target agents")
+		return
+	}
+	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))
+}
+
+// handleRefreshTargetAgents probes the target now for every agent CLI
+// Loomux knows how to look for, records and returns the results. A target
+// that can't be reached is 502: the request was fine, the target wasn't.
+func (s *Server) handleRefreshTargetAgents(w http.ResponseWriter, r *http.Request) {
+	if s.agentProber == nil {
+		writeError(w, http.StatusNotImplemented, "agent probing is not configured on this server")
+		return
+	}
+	agents, err := s.agentProber.RefreshTargetAgents(r.Context(), r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, registry.ErrNotFound):
+			writeError(w, http.StatusNotFound, "no such target")
+		case errors.Is(err, targets.ErrUnreachable):
+			writeError(w, http.StatusBadGateway, "could not reach the target to probe it")
+		default:
+			writeError(w, http.StatusInternalServerError, "could not probe target agents")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))
 }
 
 type errorResponse struct {

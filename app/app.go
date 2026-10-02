@@ -41,6 +41,13 @@ func (a *App) Dispatch(ctx context.Context, conversationID, message, workspaceHi
 	return a.router.Dispatch(ctx, conversationID, message, opts...)
 }
 
+// RefreshTargetAgents re-probes a target for every agent CLI with a
+// declared Binary and records the results (LOOM-71) — see
+// router.Router.RefreshTargetAgents. Satisfies api.AgentProber.
+func (a *App) RefreshTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error) {
+	return a.router.RefreshTargetAgents(ctx, targetID)
+}
+
 // Store returns the underlying registry.Store — e.g. for api.Server's
 // session storage, which must live in the same database as everything
 // else rather than a second, separately managed connection.
@@ -84,10 +91,26 @@ func DefaultAgentTypes() router.AgentTypeRegistry {
 		"claude-code": router.AgentType{
 			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
 			LaunchTemplate: "claude",
+			Binary:         "claude",
+			Install: &router.AgentInstall{
+				// Anthropic's native installer: puts claude in ~/.local/bin,
+				// no Node.js needed.
+				Command: "curl -fsSL https://claude.ai/install.sh | bash",
+				Login: "attach to the target and run `claude` once to complete its /login, or store an " +
+					"ANTHROPIC_API_KEY credential for the claude-code agent type",
+			},
 		},
 		"codex": router.AgentType{
 			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
 			LaunchTemplate: "codex",
+			Binary:         "codex",
+			Install: &router.AgentInstall{
+				// Needs Node.js and npm on the target; on a target without
+				// them the install fails and its output says so.
+				Command: "npm install -g @openai/codex",
+				Login: "attach to the target and run `codex login`, or store an OPENAI_API_KEY credential " +
+					"for the codex agent type",
+			},
 		},
 	}
 }
