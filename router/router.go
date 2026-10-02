@@ -434,8 +434,9 @@ func (r *Router) executorForWorkspace(ctx context.Context, workspaceID string) (
 	return r.newExecutor(target)
 }
 
-// snapshotTargets projects registered targets into the non-secret
-// TargetSnapshot shape the routing model sees (no User, no SSHKeyRef).
+// snapshotTargets projects registered targets into the TargetSnapshot
+// shape the routing model sees: id, name and kind only (no Host, User or
+// SSHKeyRef — see TargetSnapshot).
 func snapshotTargets(targets []*registry.Target) []TargetSnapshot {
 	out := make([]TargetSnapshot, len(targets))
 	for i, t := range targets {
@@ -443,7 +444,6 @@ func snapshotTargets(targets []*registry.Target) []TargetSnapshot {
 			ID:   t.ID,
 			Name: t.Name,
 			Kind: string(t.Kind),
-			Host: t.Host,
 		}
 	}
 	return out

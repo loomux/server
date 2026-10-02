@@ -30,13 +30,14 @@ type WorkspaceSnapshot struct {
 // TargetSnapshot is the compact projection of a registered execution
 // target (design spec §2) a routing call sees, so a provision_workspace
 // decision can name a real target_id instead of guessing one (LOOM-64).
-// Deliberately identifying fields only — never User or SSHKeyRef, which
-// are credential-adjacent and have no bearing on routing.
+// Deliberately id, name and kind only: the snapshot is sent to a
+// third-party router-model vendor, so Host (an internal hostname), User
+// and SSHKeyRef never go into it — none of them is needed to choose a
+// target.
 type TargetSnapshot struct {
 	ID   string
 	Name string
 	Kind string
-	Host string
 }
 
 // ProvisionSpec describes a new dynamic workspace to create and set up

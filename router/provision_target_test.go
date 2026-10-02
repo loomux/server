@@ -2,6 +2,8 @@ package router_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -101,8 +103,7 @@ func TestDispatch_ProvisionUnknownTarget_WritesNoWorkspaceRow(t *testing.T) {
 }
 
 // TestDispatch_PassesRegisteredTargetsToModel proves the routing model is
-// told which targets exist (LOOM-64) — and only their non-secret
-// identifying fields.
+// told which targets exist (LOOM-64) — and only their id, name and kind.
 func TestDispatch_PassesRegisteredTargetsToModel(t *testing.T) {
 	store, _, r, model := setup(t)
 	remote := &registry.Target{
@@ -124,9 +125,17 @@ func TestDispatch_PassesRegisteredTargetsToModel(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	want := []router.TargetSnapshot{{ID: remote.ID, Name: "bigbox", Kind: "remote", Host: "bigbox.example.invalid"}}
 	got := model.LastDecideTargets
-	if len(got) != 1 || got[0] != want[0] {
-		t.Fatalf("LastDecideTargets = %+v, want %+v", got, want)
+	if len(got) != 1 || got[0].ID != remote.ID || got[0].Name != "bigbox" || got[0].Kind != "remote" {
+		t.Fatalf("LastDecideTargets = %+v, want one snapshot of %s (bigbox, remote)", got, remote.ID)
+	}
+	// Formatted with %+v so this keeps checking whatever fields
+	// TargetSnapshot grows: the snapshot is what reaches the third-party
+	// router vendor, so host, user and key ref must not be in it.
+	rendered := fmt.Sprintf("%+v", got)
+	for _, unwanted := range []string{"bigbox.example.invalid", "loomux", "vault:bigbox-key"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Errorf("target snapshot carries %q, want only id/name/kind: %s", unwanted, rendered)
+		}
 	}
 }

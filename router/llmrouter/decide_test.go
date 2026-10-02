@@ -333,6 +333,8 @@ func TestNew_EmptyAgentTypes_StillConstructs(t *testing.T) {
 // the actual LLM call (LOOM-64): before this, the routing model was
 // never told targets existed at all, so any target_id in a
 // provision_workspace decision was a guess.
+//
+// And only what the model needs to choose one: id, name and kind.
 func TestDecide_TargetsAppearInPrompt(t *testing.T) {
 	var gotBody []byte
 	handler := toolCallHandler(t, decideToolName, map[string]any{
@@ -355,16 +357,24 @@ func TestDecide_TargetsAppearInPrompt(t *testing.T) {
 
 	targets := []router.TargetSnapshot{
 		{ID: "target-local", Name: "jet01", Kind: "local"},
-		{ID: "target-remote", Name: "bigbox", Kind: "remote", Host: "bigbox.example.invalid"},
+		{ID: "target-remote", Name: "bigbox", Kind: "remote"},
 	}
 	if _, err := m.Decide(context.Background(), "hi", nil, targets); err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
 
 	body := string(gotBody)
-	for _, want := range []string{"target-local", "jet01", "target-remote", "bigbox", "bigbox.example.invalid"} {
+	for _, want := range []string{"target-local", "jet01", "local", "target-remote", "bigbox", "remote"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("request body does not mention %q: %s", want, body)
+		}
+	}
+	// The prompt goes to a third-party router vendor: targets are named
+	// by id, name and kind only. Hosts (internal tailnet hostnames),
+	// users and SSH key refs never leave the server.
+	for _, unwanted := range []string{"bigbox.example.invalid", "host:", "user:", "ssh_key_ref"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("request body mentions %q, want it kept out of the router prompt: %s", unwanted, body)
 		}
 	}
 }
