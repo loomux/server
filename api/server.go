@@ -1045,26 +1045,30 @@ func bearerToken(r *http.Request) (string, bool) {
 // and a client needs it back to round-trip a PUT without silently
 // clearing the field.
 type targetResponse struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	Host      string    `json:"host"`
-	User      string    `json:"user"`
-	SSHKeyRef string    `json:"ssh_key_ref"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Host      string `json:"host"`
+	User      string `json:"user"`
+	SSHKeyRef string `json:"ssh_key_ref"`
+	// WorkspaceRoot bounds where dynamic workspaces are provisioned
+	// (LOOM-90); empty means $HOME/loomux-workspaces on the target.
+	WorkspaceRoot string    `json:"workspace_root"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func newTargetResponse(t *registry.Target) targetResponse {
 	return targetResponse{
-		ID:        t.ID,
-		Name:      t.Name,
-		Kind:      string(t.Kind),
-		Host:      t.Host,
-		User:      t.User,
-		SSHKeyRef: t.SSHKeyRef,
-		CreatedAt: t.CreatedAt,
-		UpdatedAt: t.UpdatedAt,
+		ID:            t.ID,
+		Name:          t.Name,
+		Kind:          string(t.Kind),
+		Host:          t.Host,
+		User:          t.User,
+		SSHKeyRef:     t.SSHKeyRef,
+		WorkspaceRoot: t.WorkspaceRoot,
+		CreatedAt:     t.CreatedAt,
+		UpdatedAt:     t.UpdatedAt,
 	}
 }
 
@@ -1072,11 +1076,12 @@ func newTargetResponse(t *registry.Target) targetResponse {
 // field: ids are server-minted (see handleCreateTarget), so a client
 // that sends one has it ignored rather than silently honoured.
 type targetRequest struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Host      string `json:"host"`
-	User      string `json:"user"`
-	SSHKeyRef string `json:"ssh_key_ref"`
+	Name          string `json:"name"`
+	Kind          string `json:"kind"`
+	Host          string `json:"host"`
+	User          string `json:"user"`
+	SSHKeyRef     string `json:"ssh_key_ref"`
+	WorkspaceRoot string `json:"workspace_root"`
 }
 
 type listTargetsResponse struct {
@@ -1095,11 +1100,12 @@ func decodeTargetRequest(w http.ResponseWriter, r *http.Request) (*registry.Targ
 		return nil, false
 	}
 	target := &registry.Target{
-		Name:      strings.TrimSpace(req.Name),
-		Kind:      registry.TargetKind(req.Kind),
-		Host:      req.Host,
-		User:      req.User,
-		SSHKeyRef: req.SSHKeyRef,
+		Name:          strings.TrimSpace(req.Name),
+		Kind:          registry.TargetKind(req.Kind),
+		Host:          req.Host,
+		User:          req.User,
+		SSHKeyRef:     req.SSHKeyRef,
+		WorkspaceRoot: req.WorkspaceRoot,
 	}
 	if err := target.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

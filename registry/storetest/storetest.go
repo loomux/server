@@ -106,9 +106,10 @@ func testTargetCRUD(t *testing.T, s registry.Store) {
 	ctx := context.Background()
 
 	target := &registry.Target{
-		ID:   "11111111-1111-1111-1111-111111111111",
-		Name: "local",
-		Kind: registry.TargetKindLocal,
+		ID:            "11111111-1111-1111-1111-111111111111",
+		Name:          "local",
+		Kind:          registry.TargetKindLocal,
+		WorkspaceRoot: "/srv/loomux",
 	}
 	if err := s.CreateTarget(ctx, target); err != nil {
 		t.Fatalf("CreateTarget: %v", err)
@@ -117,6 +118,9 @@ func testTargetCRUD(t *testing.T, s registry.Store) {
 	got, err := s.GetTarget(ctx, target.ID)
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
+	}
+	if got.WorkspaceRoot != "/srv/loomux" {
+		t.Fatalf("WorkspaceRoot = %q, want it persisted", got.WorkspaceRoot)
 	}
 	if got.Name != target.Name || got.Kind != target.Kind {
 		t.Fatalf("GetTarget = %+v, want name=%q kind=%q", got, target.Name, target.Kind)

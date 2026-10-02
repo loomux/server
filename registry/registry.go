@@ -6,6 +6,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 )
@@ -26,8 +27,14 @@ type Target struct {
 	Host      string // empty for local
 	User      string // empty for local
 	SSHKeyRef string // reference/identifier only; actual secret material lives in the credential vault (§7)
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// WorkspaceRoot is the directory every dynamic workspace on this
+	// target is provisioned under (LOOM-90): an absolute, clean path.
+	// Empty means $HOME/loomux-workspaces on the target. Provisioning
+	// refuses any workspace whose resolved directory — symlinks followed —
+	// isn't inside it.
+	WorkspaceRoot string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // Validate enforces the invariants the execution layer assumes but
@@ -42,6 +49,8 @@ type Target struct {
 //   - a remote needs both Host and User, because
 //     RemoteExecutor.destination() builds user+"@"+host and ssh rejects
 //     a bare "@host".
+//   - WorkspaceRoot, if set, must be an absolute, clean path other than
+//     "/" — it bounds where an agent can be given write access.
 //   - a local must carry neither. Clearing them silently would hide a
 //     caller's misunderstanding until an attach-info response came back
 //     missing the fields they thought they had set.
@@ -63,6 +72,16 @@ func (t *Target) Validate() error {
 		}
 	default:
 		return fmt.Errorf("kind must be %q or %q", TargetKindLocal, TargetKindRemote)
+	}
+	if t.WorkspaceRoot != "" {
+		switch {
+		case !path.IsAbs(t.WorkspaceRoot):
+			return errors.New("workspace_root must be an absolute path")
+		case path.Clean(t.WorkspaceRoot) != t.WorkspaceRoot:
+			return errors.New("workspace_root must be a clean path (no ., .. or trailing /)")
+		case t.WorkspaceRoot == "/":
+			return errors.New("workspace_root must not be /")
+		}
 	}
 	return nil
 }
