@@ -8,9 +8,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Loomux/server/completion"
-	"github.com/Loomux/server/credentials"
-	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
@@ -37,14 +34,7 @@ func (s *createWorkspaceRecorder) CreateWorkspace(ctx context.Context, ws *regis
 func setupRecording(t *testing.T) (*createWorkspaceRecorder, *fakeExecutor, *router.Router, *routertest.StubRoutingModel) {
 	t.Helper()
 	store := &createWorkspaceRecorder{Store: newTestStore(t)}
-	exec := newFakeExecutor()
-	agentTypes := shortIdleAgentTypes("claude")
-	markerDir := t.TempDir()
-	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir)
-	orch := orchestrator.New(store, exec.factory(), detector)
-	resolver := credentials.NewResolver(store)
-	model := &routertest.StubRoutingModel{}
-	r := router.New(store, orch, exec.factory(), resolver, agentTypes, model, markerDir)
+	exec, r, model := newRouter(t, store)
 	return store, exec, r, model
 }
 

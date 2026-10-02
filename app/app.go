@@ -154,6 +154,11 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if interval == 0 {
 		interval = defaultReapInterval
 	}
+	var routerOpts []router.Option
+	if cfg.Logger != nil {
+		routerOpts = append(routerOpts, router.WithLogger(cfg.Logger))
+	}
+
 	reaper := orchestrator.NewReaper(orch, threshold)
 	reaperCtx, stopReaper := context.WithCancel(context.Background())
 	reaperDone := make(chan struct{})
@@ -163,7 +168,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}()
 
 	return &App{
-		router:     router.New(store, orch, targets.NewExecutor, creds, agentTypes, model, markerDir),
+		router:     router.New(store, orch, targets.NewExecutor, creds, agentTypes, model, markerDir, routerOpts...),
 		store:      store,
 		stopReaper: stopReaper,
 		reaperDone: reaperDone,

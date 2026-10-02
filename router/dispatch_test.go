@@ -71,6 +71,15 @@ func shortIdleAgentTypes(launchCommand string) router.AgentTypeRegistry {
 func setup(t *testing.T) (registry.Store, *fakeExecutor, *router.Router, *routertest.StubRoutingModel) {
 	t.Helper()
 	store := newTestStore(t)
+	exec, r, model := newRouter(t, store)
+	return store, exec, r, model
+}
+
+// newRouter wires a Router around store exactly as setup does, passing
+// opts through to router.New — for tests that need to wrap the store or
+// supply an Option (e.g. WithLogger).
+func newRouter(t *testing.T, store registry.Store, opts ...router.Option) (*fakeExecutor, *router.Router, *routertest.StubRoutingModel) {
+	t.Helper()
 	exec := newFakeExecutor()
 	agentTypes := shortIdleAgentTypes("claude")
 	markerDir := t.TempDir()
@@ -78,8 +87,8 @@ func setup(t *testing.T) (registry.Store, *fakeExecutor, *router.Router, *router
 	orch := orchestrator.New(store, exec.factory(), detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{}
-	r := router.New(store, orch, exec.factory(), resolver, agentTypes, model, markerDir)
-	return store, exec, r, model
+	r := router.New(store, orch, exec.factory(), resolver, agentTypes, model, markerDir, opts...)
+	return exec, r, model
 }
 
 func TestDispatch_AnswerDirectly(t *testing.T) {
