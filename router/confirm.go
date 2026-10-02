@@ -31,13 +31,16 @@ const (
 	// pendingCloneRemote clones a repository the user didn't name, then
 	// carries on with the request (LOOM-90 re-review).
 	pendingCloneRemote
+	// pendingRunCommand runs a shell command the user didn't write out
+	// verbatim (LOOM-72).
+	pendingRunCommand
 )
 
 // pendingInstall is an offer awaiting the user's confirmation — an agent
-// install (LOOM-71), or a clone of a repository the routing model chose.
-// Everything a confirmation will act on is fixed here when the offer is
-// made — what will run and where — so the confirming message itself
-// contributes nothing but "yes".
+// install (LOOM-71), a clone of a repository the routing model chose, or
+// a shell command (LOOM-72). Everything a confirmation will act on is
+// fixed here when the offer is made — what will run and where — so the
+// confirming message itself contributes nothing but "yes".
 type pendingInstall struct {
 	kind      pendingKind
 	agentType string
@@ -90,9 +93,9 @@ func (p *pendingActions) take(conversationID string, now time.Time) (pendingInst
 
 // isConfirmation reports whether message is an unambiguous yes to offer p.
 // Deliberately a short fixed list matched against the whole message, not
-// something the routing model judges: running an install, or cloning a
-// repository the user didn't name, must never happen on a misread.
-// Anything else — including a "yes, but…" — declines.
+// something the routing model judges: running an install, a command the
+// user didn't write, or cloning a repository they didn't name, must never
+// happen on a misread. Anything else — including a "yes, but…" — declines.
 func isConfirmation(message string, p pendingInstall) bool {
 	m := strings.ToLower(strings.TrimSpace(message))
 	m = strings.TrimRight(m, ".!")
@@ -111,6 +114,11 @@ func isConfirmation(message string, p pendingInstall) bool {
 	case pendingCloneRemote:
 		switch m {
 		case "clone", "clone it", "yes clone it":
+			return true
+		}
+	case pendingRunCommand:
+		switch m {
+		case "run", "run it", "yes run it":
 			return true
 		}
 	}

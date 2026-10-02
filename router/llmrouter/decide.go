@@ -20,6 +20,8 @@ type decideArguments struct {
 	WorkspaceID  string                   `json:"workspace_id"`
 	AgentType    string                   `json:"agent_type"`
 	NewWorkspace decideArgumentsWorkspace `json:"new_workspace"`
+	TargetID     string                   `json:"target_id"`
+	Command      string                   `json:"command"`
 }
 
 // decideArgumentsWorkspace is structured data only (LOOM-90): no command
@@ -114,7 +116,8 @@ func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration
 // set, a use_workspace decision naming a workspace_id that wasn't in
 // this call's workspace list, or a provision_workspace decision naming a
 // target_id that wasn't in this call's target list (LOOM-64) — which
-// includes any provision_workspace at all when no targets are registered.
+// includes any provision_workspace at all when no targets are registered —
+// or a run_command (LOOM-72) with an unknown target_id or no command.
 func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs []string) (router.Decision, error) {
 	action := router.DecisionAction(args.Action)
 	switch action {
@@ -152,6 +155,15 @@ func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs [
 			return router.Decision{}, fmt.Errorf("provision_workspace: %w", err)
 		}
 		return router.Decision{Action: action, AgentType: args.AgentType, NewWorkspace: spec}, nil
+
+	case router.ActionRunCommand:
+		if args.TargetID == "" || !contains(targetIDs, args.TargetID) {
+			return router.Decision{}, fmt.Errorf("run_command with unknown target_id %q", args.TargetID)
+		}
+		if strings.TrimSpace(args.Command) == "" {
+			return router.Decision{}, fmt.Errorf("run_command with empty command")
+		}
+		return router.Decision{Action: action, TargetID: args.TargetID, Command: args.Command}, nil
 
 	default:
 		return router.Decision{}, fmt.Errorf("unknown action %q", args.Action)

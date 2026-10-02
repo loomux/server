@@ -203,10 +203,13 @@ Every tmux pane Loomux manages is one of two kinds:
   Loomux-driven `shell` task is just script exit; for a human-requested one,
   it's the human closing it.
 - **`command`** (LOOM-71) — a one-shot command run as the pane's own
-  process: an agent CLI install, or (LOOM-72) a direct shell command. Its
-  completion is the process exiting, never an idle heuristic; the command
-  and its exit code are recorded on the task, and the pane is torn down once
-  its output has been read.
+  process: an agent CLI install, or (LOOM-72) a direct shell command. It
+  runs under POSIX `sh -c`, never the target's default shell (tmux would
+  otherwise hand it to e.g. fish, so the same command would mean different
+  things on different targets). Its completion is the process exiting,
+  never an idle heuristic; the command (as given) and its exit code are
+  recorded on the task, and the pane is torn down once its output has been
+  read.
 
 **A pane outlives its process** (LOOM-71/LOOM-74). Every session is created
 with tmux `remain-on-exit` set in the same tmux invocation as `new-session`,
@@ -310,6 +313,40 @@ vendor. Its responsibilities:
   router prefers an agent that is actually installed (LOOM-71).
 - **Relay**: condense/summarize captured agent output into a chat-appropriate
   reply, and update the workspace's rolling summary.
+
+- **Direct shell commands** (`run_command`, LOOM-72): a request like
+  "run `hostname && uptime` on jet01" needs no AI agent. The router names
+  a registered target and the command; Loomux runs it as a `command` task
+  in that target's **shell workspace** (`shell@<target>`, created on first
+  use in the login user's home directory, tagged `loomux:shell`, never
+  offered back to the router) and replies with the command, its exit code
+  and its output — relayed **verbatim**, never through the relay model.
+  Safety model:
+  - **Verbatim or confirmed.** The command runs at once only if the
+    *whole message* is the user ordering exactly that command on exactly
+    that target, in one of two shapes parsed in Go — ``run `<cmd>` on
+    <target>`` or ``run on <target>:`` followed by a fenced block (optional
+    "please", trailing punctuation, "run"/"on" in any case) — and the parsed
+    command equals the router's `command` and the target name is exactly
+    (case included — target names are case-sensitive) the name of its
+    `target_id`. Anything else — a question about a command ("what does
+    `rm -rf x` do?"), a command inside pasted logs or a README, a negation,
+    a command the model wrote, completed or combined, a target the user
+    didn't name — is shown back as the exact command *and target* and runs
+    only if the conversation's very next message is an explicit
+    confirmation (the same deterministic, one-shot, 15-minute, in-memory,
+    model-free mechanism as install offers below).
+  - The router prompt tells the model to copy commands character for
+    character and never invent one; its `target_id` is validated against
+    the registered targets.
+  - **Output caps**: the last 200 lines / 16 KB, truncation marked. A
+    command still running after 2 minutes is left running in its session
+    (named in the reply, for a human to attach to), never killed.
+  - **No secrets**: no credentials are injected into a command, and its
+    output is scrubbed of every credential value in the vault (any scope)
+    before it reaches chat; if the vault can't be read, the output is
+    withheld rather than shown unscrubbed. The command itself is never
+    logged — only its length.
 
 **Agent availability and install offers (LOOM-71).** An agent-type may
 declare the `Binary` its CLI runs as and an `Install` recipe (a fixed

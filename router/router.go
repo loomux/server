@@ -47,8 +47,12 @@ type Router struct {
 	// provisioning and agent dispatch (LOOM-63). Never nil — New
 	// defaults it to a discarding logger.
 	logger *slog.Logger
-	// pending holds install offers awaiting confirmation (LOOM-71).
+	// pending holds install offers (LOOM-71) and unconfirmed shell
+	// commands (LOOM-72) awaiting confirmation.
 	pending pendingActions
+	// commandTimeout bounds how long a direct shell command's turn waits
+	// for it to exit (LOOM-72); see WithCommandTimeout.
+	commandTimeout time.Duration
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -66,6 +70,17 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithCommandTimeout sets how long a direct shell command's turn waits
+// for the command to exit (LOOM-72) before replying that it's still
+// running and leaving it to run. Zero or negative keeps the default.
+func WithCommandTimeout(d time.Duration) Option {
+	return func(r *Router) {
+		if d > 0 {
+			r.commandTimeout = d
+		}
+	}
+}
+
 // New constructs a Router. markerDir must be the same effective marker
 // directory the CompletionDetector behind orch was constructed with
 // (the configured LOOMUX_MARKER_DIR, or "" for each target's per-user
@@ -75,14 +90,15 @@ func WithLogger(l *slog.Logger) Option {
 func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orchestrator.ExecutorFactory,
 	creds *credentials.Resolver, agentTypes AgentTypeRegistry, model RoutingModel, markerDir string, opts ...Option) *Router {
 	r := &Router{
-		store:       store,
-		orch:        orch,
-		newExecutor: newExecutor,
-		creds:       creds,
-		agentTypes:  agentTypes,
-		model:       model,
-		markerDir:   markerDir,
-		logger:      slog.New(slog.DiscardHandler),
+		store:          store,
+		orch:           orch,
+		newExecutor:    newExecutor,
+		creds:          creds,
+		agentTypes:     agentTypes,
+		model:          model,
+		markerDir:      markerDir,
+		logger:         slog.New(slog.DiscardHandler),
+		commandTimeout: defaultCommandTimeout,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -116,6 +132,9 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				return r.act(ctx, log, conversationID, p.message, Decision{
 					Action: ActionProvisionWorkspace, AgentType: p.agentType, NewWorkspace: *p.provision,
 				}, true, start)
+			}
+			if p.kind == pendingRunCommand {
+				return r.confirmCommand(ctx, log, conversationID, message, p, start)
 			}
 			return r.confirmInstall(ctx, log, conversationID, message, p, start)
 		}
@@ -203,6 +222,9 @@ func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, mess
 		if err != nil {
 			return "", fmt.Errorf("router: dispatch: %w", err)
 		}
+
+	case ActionRunCommand:
+		return r.runCommand(ctx, log, conversationID, message, decision, start)
 
 	default:
 		log.Error("dispatch failed", "stage", "route", "action", string(decision.Action), "error", "unknown decision action")
@@ -300,6 +322,9 @@ func logDecision(log *slog.Logger, d Decision) {
 	case ActionProvisionWorkspace:
 		attrs = append(attrs, "agent_type", d.AgentType, "target_id", d.NewWorkspace.TargetID,
 			"workspace_name", d.NewWorkspace.Name)
+	case ActionRunCommand:
+		// The command is the user's text: only its length is logged.
+		attrs = append(attrs, "target_id", d.TargetID, "command_len", len(d.Command))
 	}
 	log.Info("routing decision", attrs...)
 }
@@ -897,11 +922,13 @@ func (r *Router) snapshotTargets(ctx context.Context, targets []*registry.Target
 
 // snapshotWorkspaces projects the registry for the routing model, leaving
 // out failed workspaces (LOOM-71): one whose provisioning never finished
-// can't be dispatched into usefully.
+// can't be dispatched into usefully — and the per-target shell
+// workspaces direct commands run in (LOOM-72), which exist for Loomux's
+// bookkeeping, not as somewhere to send agent work.
 func snapshotWorkspaces(workspaces []*registry.Workspace) []WorkspaceSnapshot {
 	out := make([]WorkspaceSnapshot, 0, len(workspaces))
 	for _, ws := range workspaces {
-		if ws.Status == registry.WorkspaceStatusFailed {
+		if ws.Status == registry.WorkspaceStatusFailed || isShellWorkspace(ws) {
 			continue
 		}
 		out = append(out, WorkspaceSnapshot{
