@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/internal/health"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 	"github.com/Loomux/server/version"
@@ -121,6 +122,13 @@ type AgentProber interface {
 	RefreshTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error)
 }
 
+// HealthChecker is the narrow seam the health endpoints need from the
+// domain layer (LOOM-105). It is satisfied by *health.Checker.
+type HealthChecker interface {
+	Shallow(ctx context.Context) health.Result
+	Deep(ctx context.Context) health.Result
+}
+
 // defaultSessionTTL is the sliding-expiration window: a session stays
 // valid as long as it's used at least once within this window: 30 days,
 // reasonable for a personal single-user tool used from mobile.
@@ -162,6 +170,7 @@ type Server struct {
 	attachInfo         AttachInfoStore
 	targets            TargetStore
 	agentProber        AgentProber
+	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
 	loginThrottle      *loginThrottle
@@ -213,6 +222,12 @@ func WithAgentProber(p AgentProber) Option {
 	return func(s *Server) { s.agentProber = p }
 }
 
+// WithHealthChecker sets the checker used by /api/v1/health and
+// /api/v1/health/deep (LOOM-105). A nil value is accepted and ignored.
+func WithHealthChecker(h HealthChecker) Option {
+	return func(s *Server) { s.health = h }
+}
+
 // NewServer constructs a Server. passwordHash is a bcrypt hash (see
 // HashPassword) — the single v1 user's credential, verified at login;
 // never a plaintext password.
@@ -254,6 +269,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/agents/refresh", s.requireAuth(s.handleRefreshTargetAgents))
+	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	mux.HandleFunc("GET /api/v1/health/deep", s.requireAuth(s.handleHealthDeep))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
 	s.mux = mux
 	return s
@@ -904,6 +921,43 @@ func (s *Server) latestConversationTaskEvent(ctx context.Context, conversationID
 type versionResponse struct {
 	ServerVersion string `json:"server_version"`
 	APIVersion    string `json:"api_version"`
+}
+
+// handleHealth is the cheap, unauthenticated liveness/readiness probe
+// (LOOM-105). It reports degraded/unhealthy when core dependencies fail,
+// but it does not perform expensive per-target probes.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "health checker not configured")
+		return
+	}
+	result := s.health.Shallow(r.Context())
+	status := http.StatusOK
+	if result.Status == health.StatusUnhealthy {
+		status = http.StatusServiceUnavailable
+	} else if result.Status == health.StatusDegraded {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, result)
+}
+
+// handleHealthDeep is authenticated because it performs probing work and
+// returns per-target detail that could help an attacker map the
+// deployment. It extends the shallow check with target reachability and
+// sidecar SOCKS5 connectivity.
+func (s *Server) handleHealthDeep(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "health checker not configured")
+		return
+	}
+	result := s.health.Deep(r.Context())
+	status := http.StatusOK
+	if result.Status == health.StatusUnhealthy {
+		status = http.StatusServiceUnavailable
+	} else if result.Status == health.StatusDegraded {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, result)
 }
 
 // handleVersion is unauthenticated — clients need to be able to check

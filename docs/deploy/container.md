@@ -248,22 +248,27 @@ as sensitive anyway:
 - **`workspace_name` is chosen by the router model** for a new workspace,
   and can echo words from the user's message.
 
-## Health probes
+## Health probes (LOOM-105)
 
-`GET /api/v1/version` is the **only** route not behind `requireAuth`
-(`api/server.go`), which makes it the one usable probe path. Every other
-endpoint returns 401 to an unauthenticated kubelet.
+`GET /api/v1/health` is the cheap, unauthenticated liveness/readiness probe.
+It pings the database and verifies the router model is configured, but it
+does **not** probe targets or the Tailscale sidecar. Use it for Kubernetes
+liveness and readiness.
+
+`GET /api/v1/health/deep` is authenticated and returns per-component detail:
+database, router model, every registered target (via a short `tmux -V`
+probe), and the sidecar SOCKS5 port. Use it for operational dashboards and
+for debugging "why can't Loomux reach target X?".
 
 ```yaml
 livenessProbe:
-  httpGet: { path: /api/v1/version, port: 8080 }
+  httpGet: { path: /api/v1/health, port: 8080 }
 readinessProbe:
-  httpGet: { path: /api/v1/version, port: 8080 }
+  httpGet: { path: /api/v1/health, port: 8080 }
 ```
 
-It returns the string stamped in at build time via
-`-ldflags -X github.com/Loomux/server/version.Version`, which CI sets to the
-short commit SHA — so the probe response doubles as "which build is this".
+`/api/v1/version` remains available for unauthenticated build identification
+(CI stamps `version.Version` with the short commit SHA).
 
 TLS is *not* terminated here. `loomuxd` serves plain HTTP by design; an
 ingress or reverse proxy in front handles TLS (see `api/README.md`).

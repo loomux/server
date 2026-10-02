@@ -109,7 +109,11 @@ func runServer(ctx context.Context, loomux *app.App) {
 		os.Exit(1)
 	}
 
-	opts := []api.Option{api.WithSessionTTL(apiCfg.SessionTTL), api.WithAgentProber(loomux)}
+	opts := []api.Option{
+		api.WithSessionTTL(apiCfg.SessionTTL),
+		api.WithAgentProber(loomux),
+		api.WithHealthChecker(loomux.HealthChecker()),
+	}
 	if apiCfg.StaticDir != "" {
 		opts = append(opts, api.WithStaticDir(apiCfg.StaticDir))
 	}
