@@ -13,6 +13,7 @@ package agents
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/Loomux/server/completion"
@@ -55,6 +56,19 @@ func ClaudeCode() router.AgentType {
 		LaunchTemplate:     "claude",
 		Binary:             "claude",
 		CompletionHookArgs: []string{"--settings", claudeStopHookSettings()},
+		Profile: router.LaunchProfile{
+			// acceptEdits: file creates/edits inside the working
+			// directory (and any --add-dir) go ahead without asking.
+			// Shell commands, web fetches and MCP tools still stop for
+			// approval in the pane.
+			PermissionArgs: []string{"--permission-mode", "acceptEdits"},
+			// No TrustArgs: Claude Code has no per-launch way to trust a
+			// folder. Trust lives in the user's ~/.claude.json, which
+			// Loomux doesn't edit. Claude Code does treat a folder as
+			// trusted when an ancestor is, so trust the workspace root on
+			// each target once (see README.md).
+			PromptAsArg: true,
+		},
 		VersionCheck: &router.VersionCheck{
 			Command:  "claude --version",
 			Parse:    router.ExtractDottedVersion,
@@ -105,6 +119,15 @@ func Codex() router.AgentType {
 		LaunchTemplate:     "codex",
 		Binary:             "codex",
 		CompletionHookArgs: []string{"-c", "notify=" + tomlStringArray(codexNotifyArgv())},
+		Profile: router.LaunchProfile{
+			// workspace-write: commands run in Codex's sandbox and can
+			// write inside the workspace (and temp dirs), with no network.
+			// on-request: the model asks before anything that needs to
+			// leave the sandbox.
+			PermissionArgs: []string{"--ask-for-approval", "on-request", "--sandbox", "workspace-write"},
+			TrustArgs:      codexTrustArgs,
+			PromptAsArg:    true,
+		},
 		VersionCheck: &router.VersionCheck{
 			Command:  "codex --version",
 			Parse:    router.ExtractDottedVersion,
@@ -127,14 +150,43 @@ func codexNotifyArgv() []string {
 	return []string{"sh", "-c", script, "loomux-notify"}
 }
 
+// codexTrustArgs marks dir as a trusted project for this process only,
+// so Codex skips its "do you trust this directory?" screen (which it
+// shows even with explicit approval and sandbox flags). It's an inline
+// table rather than the dotted key projects."<dir>".trust_level because
+// -c splits dotted keys on every ".", including dots inside the path.
+// For this process, it replaces the user's [projects] table. Nothing
+// is written to ~/.codex/config.toml.
+func codexTrustArgs(dir string) []string {
+	return []string{"-c", "projects={" + tomlString(dir) + `={trust_level="trusted"}}`}
+}
+
 // tomlStringArray renders ss as a TOML array of basic strings — the form
-// Codex's -c parses as TOML. Only `\` and `"` need escaping for the
-// printable-ASCII strings used here.
+// Codex's -c parses as TOML.
 func tomlStringArray(ss []string) string {
-	esc := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	quoted := make([]string, len(ss))
 	for i, s := range ss {
-		quoted[i] = `"` + esc.Replace(s) + `"`
+		quoted[i] = tomlString(s)
 	}
 	return "[" + strings.Join(quoted, ",") + "]"
+}
+
+// tomlString renders s as a TOML basic string: `\` and `"` escaped,
+// control characters as \uXXXX.
+func tomlString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '\\' || r == '"':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7f:
+			fmt.Fprintf(&b, `\u%04X`, r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }

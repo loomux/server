@@ -616,3 +616,29 @@ func TestDispatch_ProbedPathKeepsCompletionHookArgs(t *testing.T) {
 		t.Errorf("launched %v, want suffix %q", cmds, want)
 	}
 }
+
+// LOOM-78 x LOOM-79: with a launch profile, only the binary is swapped for
+// the probed absolute path; the profile's args and the first prompt follow
+// it unchanged.
+func TestDispatch_ProbedPathWithLaunchProfile(t *testing.T) {
+	h := newAvailabilityHarnessWith(t, func(at router.AgentTypeRegistry) {
+		codex := at["codex"]
+		codex.Profile = router.LaunchProfile{PermissionArgs: []string{"--sandbox", "workspace-write"}, PromptAsArg: true}
+		at["codex"] = codex
+	})
+	h.probes.install("codex")
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "existing", Path: "/srv/x", TargetID: h.target.ID, Status: registry.WorkspaceStatusIdle}
+	if err := h.store.CreateWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
+
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	cmds := h.exec.launchedCommands()
+	want := "'" + fakeBinDir + "codex' '--sandbox' 'workspace-write' '--' 'go'"
+	if len(cmds) != 1 || !strings.HasSuffix(cmds[0], want) {
+		t.Errorf("launched %v, want suffix %q", cmds, want)
+	}
+}

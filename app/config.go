@@ -10,12 +10,15 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Loomux/server/registry/sqlite"
+	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
 )
 
@@ -52,6 +55,11 @@ type Config struct {
 	// as in tests that construct Config directly — means nothing is
 	// logged; LoadConfig always sets one.
 	Logger *slog.Logger
+	// AgentProfiles overrides agent-types' launch profiles (LOOM-78):
+	// permission/sandbox args, workspace pre-trust, first prompt as an
+	// argument. Keyed by agent-type name. Nil keeps every default (see
+	// agents/README.md); naming an unregistered agent-type fails Build.
+	AgentProfiles map[string]router.ProfileOverride
 }
 
 const (
@@ -61,6 +69,7 @@ const (
 	envReapIdleThreshold = "LOOMUX_REAP_IDLE_THRESHOLD"
 	envReapInterval      = "LOOMUX_REAP_INTERVAL"
 	envLogLevel          = "LOOMUX_LOG_LEVEL"
+	envAgentProfiles     = "LOOMUX_AGENT_PROFILES"
 
 	defaultDBPath = "loomux.db"
 
@@ -119,7 +128,17 @@ func LoadConfig() (Config, error) {
 		}
 	}
 
+	var agentProfiles map[string]router.ProfileOverride
+	if raw := os.Getenv(envAgentProfiles); raw != "" {
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.DisallowUnknownFields() // a misspelt key must not leave the default posture in force
+		if err := dec.Decode(&agentProfiles); err != nil {
+			return Config{}, fmt.Errorf("app: %s is not a valid profile override map: %w", envAgentProfiles, err)
+		}
+	}
+
 	return Config{
+		AgentProfiles:     agentProfiles,
 		DBPath:            dbPath,
 		MarkerDir:         os.Getenv(envMarkerDir),
 		MasterKey:         masterKey,

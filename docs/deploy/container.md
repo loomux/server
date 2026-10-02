@@ -202,7 +202,14 @@ defaults for three of them.
 `LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
 provisioning and dispatch — see below), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a
-startup error.
+startup error. `LOOMUX_AGENT_PROFILES` overrides how agents are launched
+(permission and sandbox flags, workspace pre-trust, first prompt as an
+argument). It's a JSON object keyed by agent type, e.g.
+`{"claude-code":{"permission_args":["--permission-mode","plan"]}}`. A
+malformed value, an unknown key, or an unknown agent type is a startup
+error. Defaults and what each flag permits: `agents/README.md`. The
+effective profile per agent type is logged at startup as
+`agent launch profile`.
 
 **What the logs contain.** Chat message bodies, direct answers and relayed
 agent output are never logged (only a message's length). But treat the log

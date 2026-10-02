@@ -208,3 +208,7 @@ follow-up, but it does **not** remove the need for a real `$HOME/.ssh`: the
 `ProxyCommand` and `known_hosts` have no equivalent as executor options,
 and they are the two things most likely to be wrong. It would decouple the
 key path from the mount layout, nothing more.
+
+Once SSH works, prepare each target with the operator checklist in
+`targets.md` (agent CLIs and login, one-time Claude Code workspace trust,
+prompt visibility on shared hosts).

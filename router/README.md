@@ -125,6 +125,18 @@ a target), and do nothing when `LOOMUX_MARKER_PATH` is unset. The user's
 agent config files on the target are never read or written; targets can
 be shared work hosts.
 
+## Launch profiles (LOOM-78)
+
+`AgentType.Profile` (`router.LaunchProfile`) adds three things to the
+command line, in this order: `<template> <permission args> <trust args
+for ws.Path> <completion hook args> -- <first message>`
+(`AgentType.launchCommand`; every argument is shell-quoted as one word).
+When `PromptAsArg` is set, `launchAgent` puts a fresh task's message on
+the command line and `dispatchToAgent` skips `SendMessage` for that turn.
+Turns after the first are always typed in. `ApplyProfileOverrides`
+applies the operator's `LOOMUX_AGENT_PROFILES`. The defaults, and what
+each one permits, are in `agents/README.md`.
+
 ## Agent-adapter versioning (design spec §10 axis 3, LOOM-17)
 
 `AgentType.VersionCheck` (nil means "no check enforced") declares a

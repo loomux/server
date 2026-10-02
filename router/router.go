@@ -430,8 +430,9 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		}
 	}
 	resumed := task != nil
+	promptSent := false
 	if task == nil {
-		task, err = r.launchAgent(ctx, workspaceID, conversationID, agentType)
+		task, promptSent, err = r.launchAgent(ctx, workspaceID, conversationID, agentType, message)
 		if err != nil {
 			return "", err
 		}
@@ -439,13 +440,17 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	taskID = task.ID
 	log.Info("agent dispatch started", "task_id", task.ID, "resumed", resumed)
 
-	// Every turn — the first as much as a follow-up — is delivered by
-	// typing it into the pane: a freshly launched agent CLI runs
-	// interactively (spec §3) and has nothing to act on until its first
-	// message arrives, exactly like any later turn on the same task.
+	// A turn is delivered by typing it into the pane — except a fresh
+	// task's first turn when the agent-type's profile passes it on the
+	// launch command line instead (LOOM-78): a just-started TUI may not
+	// be ready for keys yet, and a startup dialog could eat them. Later
+	// turns are safe to type: the previous turn's completion signal
+	// shows the agent is waiting for input.
 	failClass = registry.ErrorClassSendFailed
-	if err := r.orch.SendMessage(ctx, task.ID, message); err != nil {
-		return "", fmt.Errorf("router: dispatch: send message: %w", err)
+	if !promptSent {
+		if err := r.orch.SendMessage(ctx, task.ID, message); err != nil {
+			return "", fmt.Errorf("router: dispatch: send message: %w", err)
+		}
 	}
 	failClass = registry.ErrorClassWaitFailed
 	if err := r.orch.WaitForCompletion(ctx, task.ID); err != nil {
@@ -579,10 +584,14 @@ func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessag
 // (app.DefaultAgentTypes' "claude-code" and "codex") — the fix lives in
 // this one shared path, not per-adapter code, since neither adapter is
 // more than a registry entry (see LOOM-22).
-func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, agentType string) (*registry.Task, error) {
+func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, agentType, message string) (task *registry.Task, promptSent bool, err error) {
 	entry, err := r.agentTypes.Get(agentType)
 	if err != nil {
-		return nil, fmt.Errorf("router: dispatch: %w", err)
+		return nil, false, fmt.Errorf("router: dispatch: %w", err)
+	}
+	ws, err := r.store.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, false, fmt.Errorf("router: dispatch: %w", err)
 	}
 
 	// Probe before anything else touches the target for this agent
@@ -593,17 +602,13 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	// tmux session would have had.
 	var resolvedPath string
 	if entry.Binary != "" {
-		ws, err := r.store.GetWorkspace(ctx, workspaceID)
-		if err != nil {
-			return nil, fmt.Errorf("router: dispatch: %w", err)
-		}
 		target, err := r.store.GetTarget(ctx, ws.TargetID)
 		if err != nil {
-			return nil, fmt.Errorf("router: dispatch: %w", err)
+			return nil, false, fmt.Errorf("router: dispatch: %w", err)
 		}
 		rec, err := r.requireAgent(ctx, target, agentType)
 		if err != nil {
-			return nil, fmt.Errorf("router: dispatch: %w", err)
+			return nil, false, fmt.Errorf("router: dispatch: %w", err)
 		}
 		resolvedPath = rec.Path
 	}
@@ -612,31 +617,34 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		vc := *entry.VersionCheck
 		vc.Command = withResolvedBinary(vc.Command, entry.Binary, resolvedPath)
 		if err := r.verifyAgentVersion(ctx, workspaceID, vc); err != nil {
-			return nil, fmt.Errorf("router: dispatch: %w", err)
+			return nil, false, fmt.Errorf("router: dispatch: %w", err)
 		}
 	}
 
 	secrets, err := r.creds.Resolve(ctx, workspaceID, agentType)
 	if err != nil {
-		return nil, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
+		return nil, false, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
 	}
 	prefix, err := credentials.ShellEnvPrefix(secrets)
 	if err != nil {
-		return nil, fmt.Errorf("router: dispatch: %w", err)
+		return nil, false, fmt.Errorf("router: dispatch: %w", err)
 	}
 
 	taskID := uuid.NewString()
 	envPrefix, err := r.agentEnvPrefix(ctx, workspaceID, taskID, entry)
 	if err != nil {
-		return nil, fmt.Errorf("router: dispatch: %w", err)
+		return nil, false, fmt.Errorf("router: dispatch: %w", err)
 	}
 
-	task, err := r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID,
-		prefix+envPrefix+withResolvedBinary(entry.launchCommand(), entry.Binary, resolvedPath))
-	if err != nil {
-		return nil, fmt.Errorf("router: dispatch: launch: %w", err)
+	prompt := ""
+	if entry.Profile.PromptAsArg {
+		prompt = message
 	}
-	return task, nil
+	task, err = r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID, prefix+envPrefix+withResolvedBinary(entry.launchCommand(ws.Path, prompt), entry.Binary, resolvedPath))
+	if err != nil {
+		return nil, false, fmt.Errorf("router: dispatch: launch: %w", err)
+	}
+	return task, prompt != "", nil
 }
 
 // agentEnvPrefix returns the shell-prefix env assignments (same
