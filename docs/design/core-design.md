@@ -229,6 +229,11 @@ vendor. Its responsibilities:
   structured metadata instead of Loomux stuffing full workspace history into
   every routing call — keeps the router's context small and cheap regardless
   of how many workspaces exist.
+  The router is also given the registered targets (§1), since provisioning a
+  workspace means choosing one — id, name and kind only. Hosts and
+  credential references are never included: the routing prompt goes to a
+  third-party model vendor. The chosen `target_id` is validated against
+  that list, and re-resolved before any workspace row is written (LOOM-64).
 - **Relay**: condense/summarize captured agent output into a chat-appropriate
   reply, and update the workspace's rolling summary.
 

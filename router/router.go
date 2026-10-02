@@ -73,7 +73,12 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
-	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces), opts...)
+	targets, err := r.store.ListTargets(ctx)
+	if err != nil {
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+
+	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces), snapshotTargets(targets), opts...)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: routing failed: %w", err)
 	}
@@ -113,7 +118,21 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 // clean up something that went wrong). This also can't distinguish "the
 // script actually succeeded" from "it failed" beyond "the pane went
 // idle" — the idle heuristic has no concept of exit codes.
+//
+// That leave-in-place policy covers a failing provisioning *task* only.
+// The target is resolved before the row is written (LOOM-64): the
+// target_id comes from the routing model, which must not be trusted, and
+// a row whose target doesn't exist can never be launched — it would just
+// be orphaned. The Store's own referential integrity isn't relied on for
+// this; registry.Store is pluggable.
 func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, spec ProvisionSpec) (string, error) {
+	if spec.TargetID == "" {
+		return "", fmt.Errorf("provision workspace: no target_id given")
+	}
+	if _, err := r.store.GetTarget(ctx, spec.TargetID); err != nil {
+		return "", fmt.Errorf("provision workspace: resolve target %q: %w", spec.TargetID, err)
+	}
+
 	ws := &registry.Workspace{
 		ID:          uuid.NewString(),
 		Name:        spec.Name,
@@ -413,6 +432,21 @@ func (r *Router) executorForWorkspace(ctx context.Context, workspaceID string) (
 		return nil, err
 	}
 	return r.newExecutor(target)
+}
+
+// snapshotTargets projects registered targets into the TargetSnapshot
+// shape the routing model sees: id, name and kind only (no Host, User or
+// SSHKeyRef — see TargetSnapshot).
+func snapshotTargets(targets []*registry.Target) []TargetSnapshot {
+	out := make([]TargetSnapshot, len(targets))
+	for i, t := range targets {
+		out[i] = TargetSnapshot{
+			ID:   t.ID,
+			Name: t.Name,
+			Kind: string(t.Kind),
+		}
+	}
+	return out
 }
 
 func snapshotWorkspaces(workspaces []*registry.Workspace) []WorkspaceSnapshot {
