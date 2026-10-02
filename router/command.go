@@ -40,40 +40,58 @@ func isShellWorkspace(ws *registry.Workspace) bool {
 	return false
 }
 
-// backtickSpan matches a ```fenced``` or `inline` code span.
-var backtickSpan = regexp.MustCompile("(?s)```(?:[a-z]*\\n)?(.*?)```|`([^`]+)`")
+// runRequestInline and runRequestFenced are the only message shapes that
+// run a command without a confirmation (LOOM-72, review fixes 2-3): the
+// whole message must be an order to run one delimited command on one named
+// target —
+//
+//	run `<command>` on <target>
+//	run on <target>:
+//	```
+//	<command>
+//	```
+//
+// (an optional leading "please", trailing punctuation, any case). A
+// command that merely appears in the message — a question about it ("what
+// does `rm -rf x` do?"), a line of pasted log or README, a negation —
+// doesn't match, whatever the routing model made of it.
+var (
+	runRequestInline = regexp.MustCompile("(?is)^\\s*(?:please\\s+)?run\\s+`([^`]+)`\\s+on\\s+([a-z0-9][a-z0-9._-]*?)\\s*[.!]?\\s*$")
+	runRequestFenced = regexp.MustCompile("(?is)^\\s*(?:please\\s+)?run\\s+on\\s+([a-z0-9][a-z0-9._-]*?)\\s*:?\\s*\\n```[a-z]*\\n(.*?)\\n?```\\s*$")
+)
 
-// isVerbatim reports whether command is exactly a backtick-quoted span of
-// message — the user wrote this command out themselves, delimited, so
-// running it isn't the routing model's interpretation of anything. A
-// command merely appearing somewhere in the message doesn't count ("don't
-// run rm -rf there" contains one), nor does a command the model assembled
-// from several spans or completed from one.
-func isVerbatim(command, message string) bool {
-	command = strings.TrimSpace(command)
+// parseRunRequest extracts the command and target name from a message
+// that is exactly a run order (see runRequestInline/Fenced).
+func parseRunRequest(message string) (command, target string, ok bool) {
+	if m := runRequestInline.FindStringSubmatch(message); m != nil {
+		command, target = strings.TrimSpace(m[1]), m[2]
+	} else if m := runRequestFenced.FindStringSubmatch(message); m != nil {
+		command, target = strings.TrimSpace(m[2]), m[1]
+	}
 	if command == "" {
-		return false
+		return "", "", false
 	}
-	for _, m := range backtickSpan.FindAllStringSubmatch(message, -1) {
-		span := m[1]
-		if span == "" {
-			span = m[2]
-		}
-		if strings.TrimSpace(span) == command {
-			return true
-		}
-	}
-	return false
+	return command, target, true
+}
+
+// orderedVerbatim reports whether message is the user ordering exactly
+// this command on exactly this target — checked in Go, never taken from
+// the routing model.
+func orderedVerbatim(message, command string, target *registry.Target) bool {
+	cmd, name, ok := parseRunRequest(message)
+	return ok && cmd == strings.TrimSpace(command) && strings.EqualFold(name, target.Name)
 }
 
 // runCommand handles a run_command decision (LOOM-72). Safety model:
 //   - the target must be a registered one (the model's target_id is not
 //     trusted);
-//   - the command runs at once only if it is verbatim from the user's
-//     message (isVerbatim); anything else — the model wrote it, completed
-//     it, or the user only described what they wanted — is shown back as
-//     the exact command and runs only on an explicit confirmation as the
-//     conversation's next message, matched without the routing model;
+//   - the command runs at once only if the whole message is the user
+//     ordering exactly that command on exactly that target
+//     (orderedVerbatim); anything else — the model wrote, completed or
+//     picked it from a question or pasted text, or chose a target the user
+//     didn't name — is shown back with its target and runs only on an
+//     explicit confirmation as the conversation's next message, matched
+//     without the routing model;
 //   - output is relayed verbatim (never through the relay model), bounded,
 //     with every credential value in the vault redacted.
 func (r *Router) runCommand(ctx context.Context, log *slog.Logger, conversationID, message string, d Decision, start time.Time) (string, error) {
@@ -88,7 +106,7 @@ func (r *Router) runCommand(ctx context.Context, log *slog.Logger, conversationI
 		return "", fmt.Errorf("router: dispatch: run command: no command given")
 	}
 
-	if !isVerbatim(command, message) {
+	if !orderedVerbatim(message, command, target) {
 		r.pending.put(conversationID, pendingInstall{
 			kind:     pendingRunCommand,
 			targetID: target.ID,

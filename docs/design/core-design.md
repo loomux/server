@@ -322,16 +322,19 @@ vendor. Its responsibilities:
   offered back to the router) and replies with the command, its exit code
   and its output — relayed **verbatim**, never through the relay model.
   Safety model:
-  - **Verbatim or confirmed.** The command runs at once only if it is
-    *exactly* a backtick-quoted span (`` `…` `` or a fenced block) of the
-    user's message — checked in Go, not by the router model. Anything else
-    — the user described what they wanted, wrote it without delimiters, or
-    the model completed, combined or "fixed" it — is shown back as the
-    exact command and runs only if the conversation's very next message is
-    an explicit confirmation (the same deterministic, one-shot, 15-minute,
-    in-memory, model-free mechanism as install offers below). Merely
-    appearing in the message isn't enough: "don't run rm -rf there"
-    contains a command but quotes none.
+  - **Verbatim or confirmed.** The command runs at once only if the
+    *whole message* is the user ordering exactly that command on exactly
+    that target, in one of two shapes parsed in Go — ``run `<cmd>` on
+    <target>`` or ``run on <target>:`` followed by a fenced block (optional
+    "please", trailing punctuation, any case) — and the parsed command and
+    target name equal the router's `command` and the name of its
+    `target_id`. Anything else — a question about a command ("what does
+    `rm -rf x` do?"), a command inside pasted logs or a README, a negation,
+    a command the model wrote, completed or combined, a target the user
+    didn't name — is shown back as the exact command *and target* and runs
+    only if the conversation's very next message is an explicit
+    confirmation (the same deterministic, one-shot, 15-minute, in-memory,
+    model-free mechanism as install offers below).
   - The router prompt tells the model to copy commands character for
     character and never invent one; its `target_id` is validated against
     the registered targets.

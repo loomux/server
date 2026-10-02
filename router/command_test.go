@@ -251,3 +251,27 @@ func TestDispatch_RunCommand_StillRunningAtLimit(t *testing.T) {
 		t.Error("the still-running command's session was killed")
 	}
 }
+
+// Review 3: the target is the routing model's choice. The verbatim path
+// runs only when the user named that same target; otherwise the user
+// confirms, shown which target it would run on.
+func TestDispatch_RunCommand_TargetMustBeNamedByUser(t *testing.T) {
+	h := newCommandHarness(t)
+	other := &registry.Target{ID: uuid.NewString(), Name: "bigbox", Kind: registry.TargetKindLocal}
+	if err := h.store.CreateTarget(context.Background(), other); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	h.decideCommand("uptime") // the model picks jet01
+	h.outputs["uptime"] = "up"
+
+	reply, err := h.r.Dispatch(context.Background(), "conv-1", "run `uptime` on bigbox")
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if cmds := h.exec.launchedCommands(); len(cmds) != 0 {
+		t.Fatalf("ran %v on a target the user didn't name", cmds)
+	}
+	if !strings.Contains(reply, "jet01") || !strings.Contains(reply, `"yes"`) {
+		t.Errorf("reply = %q, want a confirmation naming the target it would actually run on", reply)
+	}
+}
