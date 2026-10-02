@@ -98,6 +98,9 @@ func (e *RemoteExecutor) destination() string {
 func (e *RemoteExecutor) baseArgs() []string {
 	args := []string{
 		"-o", "BatchMode=yes",
+		// ssh's own warnings (a new known host, sc1's post-quantum key
+		// exchange notice) would otherwise land in RunOnce's output.
+		"-o", "LogLevel=ERROR",
 		"-o", "ConnectTimeout=" + e.connectTimeout,
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPersist=" + e.controlPersist,
@@ -113,7 +116,7 @@ func (e *RemoteExecutor) baseArgs() []string {
 	return args
 }
 
-// sshExec runs a raw (already shell-quoted) remote command string over
+// sshExec runs a raw (already POSIX-shell-quoted) remote command string over
 // SSH with this executor's standard flags (BatchMode/ConnectTimeout/
 // ControlMaster/etc). err is non-nil only for a genuine SSH-level
 // failure — exit 255 (ssh's own signal for a connection-level failure)
@@ -128,9 +131,16 @@ func (e *RemoteExecutor) sshExec(ctx context.Context, remoteCmd string) (stdout,
 		return "", "", -1, fmt.Errorf("targets: create control path dir: %w", mkErr)
 	}
 
-	sshArgs := append(e.baseArgs(), e.destination(), remoteCmd)
+	// sshd hands the remote command to the user's login shell, which may
+	// not be POSIX (fish), while remoteCmd is POSIX sh. So the only thing
+	// that shell parses is "/bin/sh"; the real command goes to that sh as
+	// a script on stdin (LOOM-90 review). The braces make sh read the
+	// whole command before running any of it, and give it /dev/null as
+	// stdin so nothing it runs can swallow the script.
+	sshArgs := append(e.baseArgs(), e.destination(), "/bin/sh")
 
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	cmd.Stdin = strings.NewReader("{\n" + remoteCmd + "\n} </dev/null\n")
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

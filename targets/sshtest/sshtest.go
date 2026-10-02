@@ -32,12 +32,23 @@ type Server struct {
 	IdentityFile string
 
 	listener net.Listener
+	// loginShell runs each exec request's command as `<loginShell> -c
+	// <command>`, the way sshd hands it to the user's login shell.
+	loginShell string
 }
 
 // Start generates a fresh host keypair and a fresh client keypair, starts
 // listening on 127.0.0.1 (an ephemeral port), and serves connections
 // until the listener is closed via t.Cleanup.
 func Start(t *testing.T) *Server {
+	t.Helper()
+	return StartWithLoginShell(t, "/bin/sh")
+}
+
+// StartWithLoginShell is Start with a different login shell for the
+// remote "user" — e.g. fish, to prove nothing Loomux sends is parsed by a
+// non-POSIX login shell (LOOM-90 review).
+func StartWithLoginShell(t *testing.T, loginShell string) *Server {
 	t.Helper()
 
 	_, hostPriv, err := ed25519.GenerateKey(crand.Reader)
@@ -79,6 +90,7 @@ func Start(t *testing.T) *Server {
 		Port:         ln.Addr().(*net.TCPAddr).Port,
 		IdentityFile: writeIdentityFile(t, clientPriv),
 		listener:     ln,
+		loginShell:   loginShell,
 	}
 
 	go s.serve(config)
@@ -92,11 +104,11 @@ func (s *Server) serve(config *ssh.ServerConfig) {
 		if err != nil {
 			return // listener closed: normal shutdown
 		}
-		go handleConn(nConn, config)
+		go handleConn(nConn, config, s.loginShell)
 	}
 }
 
-func handleConn(nConn net.Conn, config *ssh.ServerConfig) {
+func handleConn(nConn net.Conn, config *ssh.ServerConfig, loginShell string) {
 	sshConn, chans, reqs, err := ssh.NewServerConn(nConn, config)
 	if err != nil {
 		return
@@ -112,7 +124,7 @@ func handleConn(nConn net.Conn, config *ssh.ServerConfig) {
 		if err != nil {
 			continue
 		}
-		go handleSession(channel, requests)
+		go handleSession(channel, requests, loginShell)
 	}
 }
 
@@ -128,7 +140,7 @@ type exitStatusPayload struct {
 // running the received command locally, then reports its exit status —
 // this is what makes commands sent by a real ssh client (tmux
 // invocations included) actually take effect.
-func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
+func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, loginShell string) {
 	defer channel.Close()
 	for req := range requests {
 		if req.Type != "exec" {
@@ -145,7 +157,7 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 		}
 		req.Reply(true, nil)
 
-		cmd := exec.Command("/bin/sh", "-c", payload.Command)
+		cmd := exec.Command(loginShell, "-c", payload.Command)
 		cmd.Stdout = channel
 		cmd.Stderr = channel.Stderr()
 		cmd.Stdin = channel

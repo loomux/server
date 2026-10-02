@@ -25,6 +25,103 @@ func Run(t *testing.T, newExecutor func(t *testing.T) targets.TargetExecutor) {
 	t.Run("FileExistsLifecycle", func(t *testing.T) { testFileExistsLifecycle(t, newExecutor(t)) })
 	t.Run("RunOnce", func(t *testing.T) { testRunOnce(t, newExecutor(t)) })
 	t.Run("PaneSurvivesCommandExit", func(t *testing.T) { testPaneSurvivesCommandExit(t, newExecutor(t)) })
+	t.Run("NoReparseByOtherShells", func(t *testing.T) { testNoReparseByOtherShells(t, newExecutor(t)) })
+}
+
+// posixQuote single-quotes s for POSIX sh.
+func posixQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// testNoReparseByOtherShells covers the LOOM-90 review's latent injection:
+// commands are POSIX sh, quoted for POSIX sh, so no other shell may parse
+// them on the way — not tmux's default-shell for a session command, not
+// the remote user's login shell for anything sent over SSH. Under fish,
+// the POSIX quoting of `\'` ends the quoted string early, so this payload
+// runs its touch if any fish (or other non-POSIX shell) re-parses it.
+func testNoReparseByOtherShells(t *testing.T, exec targets.TargetExecutor) {
+	ctx := context.Background()
+	var marker, payload, printPayload string
+	fresh := func(t *testing.T) {
+		marker = filepath.Join(t.TempDir(), "injected")
+		payload = `\';touch ` + marker + ` #`
+		printPayload = `printf '%s\n' ` + posixQuote(payload)
+	}
+	assertNotInjected := func(t *testing.T, what string) {
+		t.Helper()
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("%s: the payload's touch ran — a non-POSIX shell re-parsed the command", what)
+		}
+	}
+
+	t.Run("RunOnce", func(t *testing.T) {
+		fresh(t)
+		out, err := exec.RunOnce(ctx, printPayload)
+		if err != nil {
+			t.Fatalf("RunOnce: %v (output %q)", err, out)
+		}
+		assertNotInjected(t, "RunOnce")
+		if strings.TrimSpace(out) != payload {
+			t.Errorf("RunOnce output = %q, want the payload literally %q", out, payload)
+		}
+	})
+
+	t.Run("session command", func(t *testing.T) {
+		fresh(t)
+		session := uniqueSessionName(t)
+		if err := exec.NewSession(ctx, session, "", printPayload); err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
+		exit := waitExited(t, exec, session)
+		assertNotInjected(t, "session command")
+		if exit.Status != 0 || !strings.Contains(exit.Output, payload) {
+			t.Errorf("exit = %+v, want status 0 and the payload printed literally", exit)
+		}
+	})
+
+	t.Run("send-keys", func(t *testing.T) {
+		fresh(t)
+		session := uniqueSessionName(t)
+		if err := exec.NewSession(ctx, session, "", "cat"); err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
+		if err := exec.SendKeys(ctx, session, payload, false); err != nil {
+			t.Fatalf("SendKeys: %v", err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		var captured string
+		for time.Now().Before(deadline) {
+			captured, _ = exec.CapturePane(ctx, session)
+			captured = strings.ReplaceAll(captured, "\n", "") // a long line wraps in the pane
+			if strings.Contains(captured, payload) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		assertNotInjected(t, "send-keys")
+		if !strings.Contains(captured, payload) {
+			t.Errorf("pane = %q, want the keys typed literally", captured)
+		}
+	})
+}
+
+func waitExited(t *testing.T, exec targets.TargetExecutor, session string) *targets.PaneExit {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		exit, err := exec.PaneExited(context.Background(), session)
+		if err != nil {
+			t.Fatalf("PaneExited: %v", err)
+		}
+		if exit != nil {
+			return exit
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("the session's command never exited")
+	return nil
 }
 
 // testPaneSurvivesCommandExit covers LOOM-71: a session whose command

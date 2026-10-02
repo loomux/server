@@ -25,7 +25,8 @@ var ErrUnreachable = errors.New("targets: target unreachable")
 type TargetExecutor interface {
 	// NewSession creates a new detached tmux session. dir may be empty to
 	// use the default working directory; command may be empty to start
-	// the pane's default shell. The session's pane is kept after its
+	// the pane's default shell. A non-empty command is POSIX sh, run as
+	// `sh -c command` whatever the target's default or login shell is. The session's pane is kept after its
 	// command exits (tmux remain-on-exit, LOOM-71) so that an agent CLI
 	// that dies at once still leaves its last output and exit status
 	// readable — see PaneExited. Whoever owns the session is
@@ -66,8 +67,9 @@ type TargetExecutor interface {
 	// filesystem.
 	RemoveFile(ctx context.Context, path string) error
 
-	// RunOnce runs command once, non-interactively, and returns its
-	// combined stdout+stderr. Distinct from NewSession/SendKeys/
+	// RunOnce runs command once, non-interactively, as POSIX sh (whatever
+	// the target's login shell is), and returns its combined
+	// stdout+stderr. Distinct from NewSession/SendKeys/
 	// CapturePane's long-running interactive tmux pane — this is a
 	// one-shot command whose output is read straight back, e.g. a
 	// version-check command like "claude --version" (design spec §10
@@ -111,7 +113,13 @@ func newSessionArgs(session, dir, command string) []string {
 		args = append(args, "-c", dir)
 	}
 	if command != "" {
-		args = append(args, command)
+		// argv form: tmux execs `sh -c <command>` directly. Given a single
+		// string it would instead hand it to the target's default-shell,
+		// which may be fish or anything else — and command is POSIX sh,
+		// quoted for POSIX sh (credentials.ShellEnvPrefix, the probe
+		// script…), so a non-POSIX shell re-parsing it could run what was
+		// meant to be quoted data (LOOM-90 review).
+		args = append(args, "sh", "-c", command)
 	}
 	return append(args, ";", "set-option", "-w", "-t", session, "remain-on-exit", "on")
 }
