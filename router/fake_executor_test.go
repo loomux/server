@@ -47,6 +47,11 @@ type fakeExecutor struct {
 	// provisioning *after* the session launched (LOOM-63 review).
 	captureErr error
 	killErr    error
+	// paneExit, when set, is what PaneExited reports for every session —
+	// simulating a launched process (an agent CLI that isn't installed, a
+	// one-shot command) having exited, LOOM-71. nil means "still
+	// running", every existing test's behavior.
+	paneExit *targets.PaneExit
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -152,4 +157,16 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 		return "", targets.ErrUnreachable
 	}
 	return e.runOnceOutput, e.runOnceErr
+}
+
+func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.PaneExit, error) {
+	if e.unreachable {
+		return nil, targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.sessions[target]; !ok {
+		return nil, fmt.Errorf("fakeExecutor: no such session %q", target)
+	}
+	return e.paneExit, nil
 }

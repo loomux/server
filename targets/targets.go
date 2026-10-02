@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/Loomux/server/registry"
 )
@@ -23,8 +25,17 @@ var ErrUnreachable = errors.New("targets: target unreachable")
 type TargetExecutor interface {
 	// NewSession creates a new detached tmux session. dir may be empty to
 	// use the default working directory; command may be empty to start
-	// the pane's default shell.
+	// the pane's default shell. The session's pane is kept after its
+	// command exits (tmux remain-on-exit, LOOM-71) so that an agent CLI
+	// that dies at once still leaves its last output and exit status
+	// readable — see PaneExited. Whoever owns the session is
+	// responsible for killing it.
 	NewSession(ctx context.Context, session, dir, command string) error
+
+	// PaneExited reports whether target's pane process has exited: nil
+	// while it is still running, otherwise its exit status and final
+	// output (see PaneExit).
+	PaneExited(ctx context.Context, target string) (*PaneExit, error)
 
 	// HasSession reports whether a session with the given name currently
 	// exists. A nonexistent session is a normal (false, nil) result, not
@@ -64,6 +75,18 @@ type TargetExecutor interface {
 	RunOnce(ctx context.Context, command string) (string, error)
 }
 
+// PaneExit describes a pane whose process has exited (LOOM-71).
+type PaneExit struct {
+	// Status is the process's exit status, or -1 if it was killed by a
+	// signal and so has none.
+	Status int
+	// Output is the pane's contents including its scrollback — a command
+	// that exits at once has its output scrolled off the visible screen
+	// when tmux writes its "Pane is dead" line — with that line and
+	// trailing blank lines removed. Bounded by the pane's history-limit.
+	Output string
+}
+
 // NewExecutor constructs the TargetExecutor appropriate for t.Kind.
 func NewExecutor(t *registry.Target) (TargetExecutor, error) {
 	switch t.Kind {
@@ -74,4 +97,81 @@ func NewExecutor(t *registry.Target) (TargetExecutor, error) {
 	default:
 		return nil, fmt.Errorf("targets: unknown target kind %q", t.Kind)
 	}
+}
+
+// newSessionArgs is the tmux argument list NewSession runs, shared by the
+// local and remote executors. remain-on-exit is set in the same tmux
+// invocation, after new-session: tmux runs a client's command list to
+// completion before servicing the new pane's process exiting, so even a
+// command that dies instantly (an agent CLI that isn't installed) can't
+// take its session down before the option is in place (LOOM-71).
+func newSessionArgs(session, dir, command string) []string {
+	args := []string{"new-session", "-d", "-s", session}
+	if dir != "" {
+		args = append(args, "-c", dir)
+	}
+	if command != "" {
+		args = append(args, command)
+	}
+	return append(args, ";", "set-option", "-w", "-t", session, "remain-on-exit", "on")
+}
+
+// paneDeadArgs/parsePaneDead are PaneExited's tmux query and its parse:
+// "<pane_dead> <pane_dead_status>", e.g. "0 " for a live pane, "1 127"
+// for an exited one, "1 " for one killed by a signal (no exit status).
+func paneDeadArgs(target string) []string {
+	return []string{"display-message", "-p", "-t", target, "#{pane_dead} #{pane_dead_status}"}
+}
+
+func parsePaneDead(out string) (exited bool, status int, err error) {
+	dead, code, _ := strings.Cut(strings.TrimSpace(out), " ")
+	switch dead {
+	case "0":
+		return false, 0, nil
+	case "1":
+		code = strings.TrimSpace(code)
+		if code == "" {
+			return true, -1, nil
+		}
+		n, err := strconv.Atoi(code)
+		if err != nil {
+			return false, 0, fmt.Errorf("targets: pane exit status: unparseable status %q", code)
+		}
+		return true, n, nil
+	default:
+		return false, 0, fmt.Errorf("targets: pane exit status: unexpected tmux output %q", out)
+	}
+}
+
+// paneHistoryArgs captures target's pane from the start of its
+// scrollback.
+func paneHistoryArgs(target string) []string {
+	return []string{"capture-pane", "-p", "-J", "-S", "-", "-t", target}
+}
+
+// trimDeadPaneOutput drops tmux's own trailing "Pane is dead (...)" line
+// and the blank lines around it.
+func trimDeadPaneOutput(captured string) string {
+	lines := strings.Split(strings.TrimRight(captured, " \t\n"), "\n")
+	if n := len(lines); n > 0 && strings.HasPrefix(lines[n-1], "Pane is dead") {
+		lines = lines[:n-1]
+	}
+	return strings.TrimRight(strings.Join(lines, "\n"), " \t\n")
+}
+
+// paneExited is PaneExited for either executor, given its tmux runner.
+func paneExited(ctx context.Context, run func(context.Context, ...string) (string, error), target string) (*PaneExit, error) {
+	out, err := run(ctx, paneDeadArgs(target)...)
+	if err != nil {
+		return nil, err
+	}
+	exited, status, err := parsePaneDead(out)
+	if err != nil || !exited {
+		return nil, err
+	}
+	captured, err := run(ctx, paneHistoryArgs(target)...)
+	if err != nil {
+		return nil, err
+	}
+	return &PaneExit{Status: status, Output: trimDeadPaneOutput(captured)}, nil
 }
