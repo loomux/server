@@ -484,12 +484,18 @@ Four independent axes:
   so nothing is left `running` with no explanation. A refusal because a
   human has taken the task over is not a failure. Failing a task returns
   an `active` workspace to `idle`; any other workspace status is kept.
-- **Agent crash/hang**: if no completion signal arrives within a generous
-  timeout (accounting for tier-3 idle fallback), the task is marked
-  `failed` and surfaced to chat. The pane is **not** auto-torn-down on
-  failure — left alive for inspection via attach, since teardown is for
-  successful/explicit completion, not silent cleanup of something that
-  went wrong.
+- **Agent crash/hang** (bounded waits, LOOM-76): every agent turn is bounded
+  per agent-type by `MaxTurnDuration` (default 1 h) and, for marker-tier
+  agents, `NoProgressTimeout` (default 10 min of an unchanged pane with no
+  completion signal — typically an agent blocked on an approval prompt).
+  On either, the task is marked `failed` with error class `timeout` and a
+  reason naming the agent, target and elapsed time, the workspace reverts
+  to idle, and the error surfaced to chat names the tmux session to
+  attach to. The pane is **not** auto-torn-down on failure — left alive
+  for inspection via attach, since teardown is for successful/explicit
+  completion, not silent cleanup of something that went wrong. A request
+  cancelled by its caller is not a timeout. Provisioning (10 min) and
+  direct commands (2 min, then left running) have their own bounds.
 - **Router model unavailable/erroring**: an explicit "routing failed"
   message to the user, never a silently dropped message or a wild guess at
   a workspace.

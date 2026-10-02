@@ -214,6 +214,10 @@ const (
 	// ErrorClassRelayFailed: the finished turn's output could not be
 	// captured or relayed.
 	ErrorClassRelayFailed ErrorClass = "relay_failed"
+	// ErrorClassTimeout: the turn hit one of its bounds — its maximum
+	// duration, or no progress while waiting (LOOM-76). The pane is left
+	// running.
+	ErrorClassTimeout ErrorClass = "timeout"
 	// ErrorClassSessionLost: the task's session was gone (reaped,
 	// crashed, killed) when the next message arrived.
 	ErrorClassSessionLost ErrorClass = "session_lost"
