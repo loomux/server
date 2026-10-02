@@ -6,8 +6,11 @@ import (
 	"sort"
 
 	"github.com/Loomux/server/agents"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
@@ -26,6 +29,7 @@ type App struct {
 	store      *sqlite.Store
 	stopReaper context.CancelFunc
 	reaperDone chan struct{}
+	metrics    *metrics.Metrics
 }
 
 // Dispatch routes one chat message through the full pipeline. See
@@ -55,6 +59,12 @@ func (a *App) RefreshTargetAgents(ctx context.Context, targetID string) ([]*regi
 // else rather than a second, separately managed connection.
 func (a *App) Store() registry.Store {
 	return a.store
+}
+
+// Metrics returns the Prometheus metrics bundle so cmd/loomuxd can
+// expose it on a scraper port (LOOM-103).
+func (a *App) Metrics() *metrics.Metrics {
+	return a.metrics
 }
 
 // Close stops the background idle reaper (LOOM-16) and releases the
@@ -142,17 +152,25 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		return nil, fmt.Errorf("app: open store: %w", err)
 	}
 
+	// Metrics use an isolated registry so tests can call Build repeatedly
+	// without panicking on duplicate registration, while production still
+	// exposes them via App.Metrics().Handler() (LOOM-103).
+	met := metrics.NewMetrics(prometheus.NewRegistry())
+
 	// Passed to both the detector and the router, so they agree on where
 	// a TierMarker agent-type's marker files live (LOOM-32): router.
 	// launchAgent tells the launched process the path, completion.Detector
 	// watches it. Empty means each target's per-user default, which both
 	// resolve the same way (completion.ResolveMarkerDir).
 	markerDir := cfg.MarkerDir
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
-	orch := orchestrator.New(store, targets.NewExecutor, detector)
+	newExecutor := func(t *registry.Target) (targets.TargetExecutor, error) {
+		return targets.NewExecutorWithMetrics(t, met)
+	}
+	detector := completion.NewDetector(store, newExecutor, agentTypes.CompletionConfig(), markerDir)
+	orch := orchestrator.New(store, newExecutor, detector, orchestrator.WithMetrics(met))
 	creds := credentials.NewResolver(store)
 
-	model, err := llmrouter.New(cfg.Router, dispatchableAgentTypeNames(agentTypes))
+	model, err := llmrouter.New(cfg.Router, dispatchableAgentTypeNames(agentTypes), llmrouter.WithMetrics(met))
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("app: router model: %w", err)
@@ -170,8 +188,9 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if cfg.Logger != nil {
 		routerOpts = append(routerOpts, router.WithLogger(cfg.Logger))
 	}
+	routerOpts = append(routerOpts, router.WithMetrics(met))
 
-	reaper := orchestrator.NewReaper(orch, threshold)
+	reaper := orchestrator.NewReaper(orch, threshold, orchestrator.WithReaperMetrics(met))
 	reaperCtx, stopReaper := context.WithCancel(context.Background())
 	reaperDone := make(chan struct{})
 	go func() {
@@ -180,9 +199,10 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}()
 
 	return &App{
-		router:     router.New(store, orch, targets.NewExecutor, creds, agentTypes, model, markerDir, routerOpts...),
+		router:     router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...),
 		store:      store,
 		stopReaper: stopReaper,
 		reaperDone: reaperDone,
+		metrics:    met,
 	}, nil
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
 )
@@ -70,6 +72,35 @@ func TestBuild_EndToEnd_AnswerDirectly(t *testing.T) {
 	}
 	if reply != "hello from app" {
 		t.Errorf("Dispatch = %q, want %q", reply, "hello from app")
+	}
+}
+
+func TestBuild_MetricsExportedAfterDispatch(t *testing.T) {
+	srv := fakeRouterServer(t)
+
+	app, err := Build(testConfig(t, srv.URL))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer app.Close()
+
+	if _, err := app.Dispatch(context.Background(), "conv-2", "hi", ""); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	m := app.Metrics()
+	if m == nil {
+		t.Fatal("app.Metrics() = nil")
+	}
+	body := scrapeMetrics(t, m)
+	if !strings.Contains(body, `loomux_dispatch_total{action="answer_directly",error_class="",outcome="success"} 1`) {
+		t.Errorf("expected dispatch success counter in metrics:\n%s", body)
+	}
+	if !strings.Contains(body, `loomux_routing_decisions_total{action="answer_directly"} 1`) {
+		t.Errorf("expected routing decision counter in metrics:\n%s", body)
+	}
+	if !strings.Contains(body, `loomux_router_calls_total{op="decide",outcome="success",tier="primary"} 1`) {
+		t.Errorf("expected router call counter in metrics:\n%s", body)
 	}
 }
 
@@ -193,4 +224,24 @@ func TestDispatchableAgentTypeNames_ExcludesEmptyKey(t *testing.T) {
 			t.Errorf("dispatchableAgentTypeNames = %v, missing %q", names, w)
 		}
 	}
+}
+
+func scrapeMetrics(t *testing.T, m *metrics.Metrics) string {
+	t.Helper()
+	srv := httptest.NewServer(m.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics status = %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return string(body)
 }

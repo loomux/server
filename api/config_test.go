@@ -100,3 +100,41 @@ func TestLoadConfig_StaticDirFromEnv(t *testing.T) {
 		t.Errorf("StaticDir = %q, want %q", cfg.StaticDir, "/srv/loomux/web")
 	}
 }
+
+func TestLoadConfig_MetricsAddrDefaultsTo9090(t *testing.T) {
+	t.Setenv("LOOMUX_AUTH_PASSWORD_HASH", validPasswordHashEnv(t))
+
+	cfg, err := api.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MetricsAddr != "127.0.0.1:9090" {
+		t.Errorf("MetricsAddr = %q, want %q", cfg.MetricsAddr, "127.0.0.1:9090")
+	}
+}
+
+func TestLoadConfig_MetricsAddrFromEnv(t *testing.T) {
+	t.Setenv("LOOMUX_AUTH_PASSWORD_HASH", validPasswordHashEnv(t))
+	t.Setenv("LOOMUX_METRICS_ADDR", ":9090")
+
+	cfg, err := api.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MetricsAddr != ":9090" {
+		t.Errorf("MetricsAddr = %q, want %q", cfg.MetricsAddr, ":9090")
+	}
+}
+
+func TestLoadConfig_MetricsAddrEmptyDisables(t *testing.T) {
+	t.Setenv("LOOMUX_AUTH_PASSWORD_HASH", validPasswordHashEnv(t))
+	t.Setenv("LOOMUX_METRICS_ADDR", "")
+
+	cfg, err := api.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MetricsAddr != "" {
+		t.Errorf("MetricsAddr = %q, want empty string (disabled)", cfg.MetricsAddr)
+	}
+}

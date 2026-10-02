@@ -117,11 +117,25 @@ func runServer(ctx context.Context, loomux *app.App) {
 	server := api.NewServer(loomux, loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), apiCfg.PasswordHash, opts...)
 	httpServer := &http.Server{Addr: apiCfg.Addr, Handler: server}
 
+	var metricsServer *http.Server
+	if apiCfg.MetricsAddr != "" {
+		metricsServer = &http.Server{Addr: apiCfg.MetricsAddr, Handler: loomux.Metrics().Handler()}
+		go func() {
+			fmt.Fprintf(os.Stderr, "loomuxd: metrics listening on %s\n", apiCfg.MetricsAddr)
+			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}()
+	}
+
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
+		if metricsServer != nil {
+			_ = metricsServer.Shutdown(shutdownCtx)
+		}
 	}()
 
 	fmt.Fprintf(os.Stderr, "loomuxd: listening on %s\n", apiCfg.Addr)

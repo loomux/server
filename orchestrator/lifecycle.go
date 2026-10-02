@@ -78,6 +78,7 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 	if err := o.store.CreateTask(ctx, task); err != nil {
 		return nil, fmt.Errorf("orchestrator: launch: %w", err)
 	}
+	o.recordTaskTransition("", string(task.Status), kind)
 
 	if err := exec.NewSession(ctx, task.TmuxSession, ws.Path, command); err != nil {
 		// best-effort; original err is what matters to the caller
@@ -125,7 +126,11 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
 
+	prevStatus := task.Status
 	task.Status = registry.TaskStatusRunning
+	if prevStatus != task.Status {
+		o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
+	}
 	if err := o.store.UpdateTask(ctx, task); err != nil {
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
@@ -148,7 +153,9 @@ func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) err
 		return err
 	}
 
+	prevStatus := task.Status
 	task.Status = registry.TaskStatusAwaitingInput
+	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
 	if err := o.store.UpdateTask(ctx, task); err != nil {
 		return fmt.Errorf("orchestrator: wait for completion: %w", err)
 	}
@@ -172,9 +179,11 @@ func (o *Orchestrator) Complete(ctx context.Context, taskID, summary string) err
 		return fmt.Errorf("orchestrator: complete: %w", err)
 	}
 
+	prevStatus := task.Status
 	now := time.Now().UTC()
 	task.Status = registry.TaskStatusCompleted
 	task.CompletedAt = &now
+	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
 	if err := o.store.UpdateTask(ctx, task); err != nil {
 		return fmt.Errorf("orchestrator: complete: %w", err)
 	}
@@ -321,12 +330,14 @@ func (o *Orchestrator) executorFor(ctx context.Context, task *registry.Task) (ta
 // one task. Shared by the public Fail and by Launch/SendMessage's internal
 // auto-fail-on-executor-error path.
 func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task, failure registry.TaskFailure) error {
+	prevStatus := task.Status
 	now := time.Now().UTC()
 	task.Status = registry.TaskStatusFailed
 	task.CompletedAt = &now
 	task.FailureReason = failure.Reason
 	task.ErrorClass = failure.Class
 	task.OutputTail = failure.OutputTail
+	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
 	if err := o.store.UpdateTask(ctx, task); err != nil {
 		return err
 	}

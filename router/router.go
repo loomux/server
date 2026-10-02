@@ -12,6 +12,7 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
@@ -53,6 +54,10 @@ type Router struct {
 	// commandTimeout bounds how long a direct shell command's turn waits
 	// for it to exit (LOOM-72); see WithCommandTimeout.
 	commandTimeout time.Duration
+	// metrics records Prometheus observations for dispatches, routing
+	// decisions, and task lifecycle events (LOOM-103). Never nil — New
+	// defaults it to a no-op nil *metrics.Metrics.
+	metrics *metrics.Metrics
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -78,6 +83,14 @@ func WithCommandTimeout(d time.Duration) Option {
 		if d > 0 {
 			r.commandTimeout = d
 		}
+	}
+}
+
+// WithMetrics sets the Prometheus metrics bundle the router should
+// record into (LOOM-103). A nil value is accepted and ignored.
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(r *Router) {
+		r.metrics = m
 	}
 }
 
@@ -108,7 +121,7 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 
 // Dispatch runs one turn: routes message, resolves or provisions a
 // workspace, then finds the task already open for that workspace +
-// conversation or launches a fresh one (see dispatchToAgent), waits for
+// conversation or launches a fresh one (see act), waits for
 // completion, relays the captured output, and applies the result.
 // Returns the chat-appropriate reply. opts is passed through to the
 // routing model's Decide call unmodified (e.g. WithWorkspaceHint,
@@ -122,21 +135,42 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	log := r.logger.With("conversation_id", conversationID)
 	log.Info("dispatch started", "message_len", len(message))
 
-	// An install offer made on this conversation's previous turn is
-	// answered here, before routing: the routing model plays no part in
-	// deciding that an install runs, nor in what it runs (LOOM-71).
+	m := &dispatchMetrics{outcome: metrics.OutcomeSuccess}
+	defer func() {
+		r.metrics.RecordDispatch(m.action, m.outcome, m.errClass)
+		r.metrics.RecordDispatchDuration("total", time.Since(start))
+	}()
+
+	// An install, clone, or run offer made on this conversation's
+	// previous turn is answered here, before routing: the routing model
+	// plays no part in deciding that these run, nor in what they run
+	// (LOOM-71, LOOM-72, LOOM-90).
 	if p, ok := r.pending.take(conversationID, time.Now()); ok {
 		if isConfirmation(message, p) {
-			if p.kind == pendingCloneRemote {
+			switch p.kind {
+			case pendingCloneRemote:
 				log.Info("clone confirmed", "target_id", p.targetID)
+				m.action = "clone_remote"
 				return r.act(ctx, log, conversationID, p.message, Decision{
 					Action: ActionProvisionWorkspace, AgentType: p.agentType, NewWorkspace: *p.provision,
-				}, true, start)
+				}, true, start, m)
+			case pendingRunCommand:
+				m.action = string(ActionRunCommand)
+				reply, err := r.confirmCommand(ctx, log, conversationID, message, p, start)
+				if err != nil {
+					m.outcome = metrics.OutcomeFailure
+					m.errClass = classifyDispatchError(err)
+				}
+				return reply, err
+			default:
+				m.action = "install_agent"
+				reply, err := r.confirmInstall(ctx, log, conversationID, message, p, start)
+				if err != nil {
+					m.outcome = metrics.OutcomeFailure
+					m.errClass = classifyDispatchError(err)
+				}
+				return reply, err
 			}
-			if p.kind == pendingRunCommand {
-				return r.confirmCommand(ctx, log, conversationID, message, p, start)
-			}
-			return r.confirmInstall(ctx, log, conversationID, message, p, start)
 		}
 		log.Info("offer declined", "agent_type", p.agentType, "target_id", p.targetID)
 	}
@@ -144,41 +178,63 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	workspaces, err := r.store.ListWorkspaces(ctx)
 	if err != nil {
 		log.Error("dispatch failed", "stage", "list workspaces", "error", err)
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = classifyDispatchError(err)
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
 	targets, err := r.store.ListTargets(ctx)
 	if err != nil {
 		log.Error("dispatch failed", "stage", "list targets", "error", err)
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = classifyDispatchError(err)
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
 	targetSnapshots, err := r.snapshotTargets(ctx, targets)
 	if err != nil {
 		log.Error("dispatch failed", "stage", "list target agents", "error", err)
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = classifyDispatchError(err)
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
+	routeStart := time.Now()
 	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces), targetSnapshots, opts...)
+	r.metrics.RecordDispatchDuration("route", time.Since(routeStart))
 	if err != nil {
 		log.Error("routing failed", "error", err)
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = string(registry.ErrorClassInternal)
 		return "", fmt.Errorf("router: dispatch: routing failed: %w", err)
 	}
 	logDecision(log, decision)
-	return r.act(ctx, log, conversationID, message, decision, false, start)
+	r.metrics.RecordRoutingDecision(string(decision.Action))
+
+	return r.act(ctx, log, conversationID, message, decision, false, start, m)
+}
+
+// dispatchMetrics holds the labels for the top-level dispatch counter.
+type dispatchMetrics struct {
+	action   string
+	outcome  string
+	errClass string
 }
 
 // act carries out a routing decision for message. cloneConfirmed is set
 // when the user has just confirmed cloning the decision's git remote
 // (see askToClone), so it isn't asked about again.
 func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, message string, decision Decision,
-	cloneConfirmed bool, start time.Time) (string, error) {
+	cloneConfirmed bool, start time.Time, m *dispatchMetrics) (string, error) {
 	var workspaceID string
 	var err error
 	switch decision.Action {
 	case ActionAnswerDirectly:
+		m.action = string(decision.Action)
 		if err := r.logTurn(ctx, conversationID, "", message, decision.DirectAnswer); err != nil {
 			log.Error("dispatch failed", "stage", "log turn", "error", err)
+			m.outcome = metrics.OutcomeFailure
+			m.errClass = classifyDispatchError(err)
 			return "", fmt.Errorf("router: dispatch: %w", err)
 		}
 		log.Info("dispatch finished", "action", string(decision.Action), "duration_ms", time.Since(start).Milliseconds())
@@ -186,12 +242,20 @@ func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, mess
 
 	case ActionUseWorkspace:
 		workspaceID = decision.WorkspaceID
+		m.action = string(decision.Action)
 
 	case ActionProvisionWorkspace:
+		if cloneConfirmed {
+			m.action = "clone_remote"
+		} else {
+			m.action = string(decision.Action)
+		}
 		// The spec is the routing model's: validated before anything —
 		// even an install offer that would carry it — happens (LOOM-90).
 		if err := decision.NewWorkspace.Validate(); err != nil {
 			log.Error("dispatch failed", "stage", "validate provisioning", "error", err)
+			m.outcome = metrics.OutcomeFailure
+			m.errClass = classifyDispatchError(err)
 			return "", fmt.Errorf("router: dispatch: provision workspace: %w", err)
 		}
 		// A repository the routing model chose, rather than one the user
@@ -200,7 +264,13 @@ func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, mess
 		// confirming it (LOOM-90 re-review).
 		if spec := decision.NewWorkspace; spec.Kind == ProvisionGitClone && !cloneConfirmed &&
 			!strings.Contains(message, spec.GitRemote) {
-			return r.askToClone(ctx, log, conversationID, message, decision, start)
+			m.action = "clone_confirmation_requested"
+			reply, err := r.askToClone(ctx, log, conversationID, message, decision, start)
+			if err != nil {
+				m.outcome = metrics.OutcomeFailure
+				m.errClass = classifyDispatchError(err)
+			}
+			return reply, err
 		}
 		// Probe for the agent before writing a workspace row, so a target
 		// without the agent's CLI gets an install offer instead of a
@@ -212,31 +282,61 @@ func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, mess
 				var unavailable *AgentUnavailableError
 				if errors.As(err, &unavailable) {
 					spec := decision.NewWorkspace
-					return r.replyWithOffer(ctx, log, conversationID, message, unavailable, "", &spec, start)
+					reply, err := r.replyWithOffer(ctx, log, conversationID, message, unavailable, "", &spec, start)
+					m.action = "agent_unavailable"
+					if err != nil {
+						m.outcome = metrics.OutcomeFailure
+						m.errClass = classifyDispatchError(err)
+					}
+					return reply, err
 				}
 				log.Error("dispatch failed", "stage", "probe agent", "error", err)
+				m.outcome = metrics.OutcomeFailure
+				m.errClass = classifyDispatchError(err)
 				return "", fmt.Errorf("router: dispatch: %w", err)
 			}
 		}
+		provisionStart := time.Now()
 		workspaceID, err = r.provisionWorkspace(ctx, conversationID, decision.NewWorkspace)
+		r.metrics.RecordDispatchDuration("provision", time.Since(provisionStart))
 		if err != nil {
+			m.outcome = metrics.OutcomeFailure
+			m.errClass = classifyDispatchError(err)
 			return "", fmt.Errorf("router: dispatch: %w", err)
 		}
 
 	case ActionRunCommand:
-		return r.runCommand(ctx, log, conversationID, message, decision, start)
+		m.action = string(decision.Action)
+		reply, err := r.runCommand(ctx, log, conversationID, message, decision, start)
+		if err != nil {
+			m.outcome = metrics.OutcomeFailure
+			m.errClass = classifyDispatchError(err)
+		}
+		return reply, err
 
 	default:
 		log.Error("dispatch failed", "stage", "route", "action", string(decision.Action), "error", "unknown decision action")
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = string(registry.ErrorClassInternal)
 		return "", fmt.Errorf("router: dispatch: unknown decision action %q", decision.Action)
 	}
 
+	agentStart := time.Now()
 	reply, err := r.dispatchToAgent(ctx, workspaceID, conversationID, decision.AgentType, message)
+	r.metrics.RecordDispatchDuration("agent", time.Since(agentStart))
 	if err != nil {
 		var unavailable *AgentUnavailableError
 		if errors.As(err, &unavailable) {
-			return r.replyWithOffer(ctx, log, conversationID, message, unavailable, workspaceID, nil, start)
+			reply, err := r.replyWithOffer(ctx, log, conversationID, message, unavailable, workspaceID, nil, start)
+			m.action = "agent_unavailable"
+			if err != nil {
+				m.outcome = metrics.OutcomeFailure
+				m.errClass = classifyDispatchError(err)
+			}
+			return reply, err
 		}
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = classifyDispatchError(err)
 		return "", err
 	}
 	log.Info("dispatch finished", "action", string(decision.Action), "workspace_id", workspaceID,

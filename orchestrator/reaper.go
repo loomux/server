@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/registry"
 )
 
@@ -44,6 +45,7 @@ type Reaper struct {
 	orch      *Orchestrator
 	threshold time.Duration
 	logf      func(format string, args ...any)
+	metrics   *metrics.Metrics
 }
 
 // ReaperOption configures a Reaper constructed via NewReaper.
@@ -54,6 +56,12 @@ type ReaperOption func(*Reaper)
 // gap noted in api's login-throttle work, LOOM-15).
 func WithReaperLogger(logf func(format string, args ...any)) ReaperOption {
 	return func(r *Reaper) { r.logf = logf }
+}
+
+// WithMetrics sets the Prometheus metrics bundle the reaper should record
+// into (LOOM-103). A nil value is accepted and ignored.
+func WithReaperMetrics(m *metrics.Metrics) ReaperOption {
+	return func(r *Reaper) { r.metrics = m }
 }
 
 // NewReaper constructs a Reaper. threshold is how long a reapable task
@@ -111,6 +119,9 @@ func (r *Reaper) Sweep(ctx context.Context) {
 				continue
 			}
 			r.logf("orchestrator: reaper: reaped task %s (idle %s)", task.ID, idleFor.Round(time.Second))
+			if r.metrics != nil {
+				r.metrics.RecordReaperTask()
+			}
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/router"
 )
 
@@ -26,6 +27,7 @@ type Model struct {
 	agentTypes        []string
 	primaryTimeout    time.Duration
 	escalationTimeout time.Duration
+	metrics           *metrics.Metrics
 }
 
 // Option configures a Model constructed via New.
@@ -41,6 +43,12 @@ func WithPrimaryTimeout(d time.Duration) Option {
 // escalation tier.
 func WithEscalationTimeout(d time.Duration) Option {
 	return func(m *Model) { m.escalationTimeout = d }
+}
+
+// WithMetrics sets the Prometheus metrics bundle the model should record
+// into (LOOM-103). A nil value is accepted and ignored.
+func WithMetrics(met *metrics.Metrics) Option {
+	return func(m *Model) { m.metrics = met }
 }
 
 // New constructs a Model. agentTypes is the set of registered agent-type

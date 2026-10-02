@@ -9,6 +9,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/router"
 )
 
@@ -49,23 +50,26 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 		opt(&o)
 	}
 
-	dec, err := m.decideWith(ctx, m.cfg.Primary, m.primaryTimeout, message, workspaces, targets, o.WorkspaceHint)
+	dec, err := m.decideWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, message, workspaces, targets, o.WorkspaceHint)
 	if err == nil {
 		return dec, nil
 	}
 	if m.cfg.Escalation == nil {
+		m.metrics.RecordRouterCall(metrics.RouterOpDecide, "primary", metrics.OutcomeFailure, m.primaryTimeout)
 		return router.Decision{}, fmt.Errorf("llmrouter: decide: primary model: %w", err)
 	}
 
-	dec, err2 := m.decideWith(ctx, *m.cfg.Escalation, m.escalationTimeout, message, workspaces, targets, o.WorkspaceHint)
+	m.metrics.RecordRouterEscalation(metrics.RouterOpDecide)
+	dec, err2 := m.decideWith(ctx, "escalation", *m.cfg.Escalation, m.escalationTimeout, message, workspaces, targets, o.WorkspaceHint)
 	if err2 != nil {
+		m.metrics.RecordRouterCall(metrics.RouterOpDecide, "escalation", metrics.OutcomeFailure, m.escalationTimeout)
 		return router.Decision{}, fmt.Errorf(
 			"llmrouter: decide: primary model failed (%v); escalation model also failed: %w", err, err2)
 	}
 	return dec, nil
 }
 
-func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration, message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, workspaceHint string) (router.Decision, error) {
+func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, timeout time.Duration, message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, workspaceHint string) (router.Decision, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -78,6 +82,7 @@ func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration
 		targetIDs[i] = t.ID
 	}
 
+	start := time.Now()
 	client := buildClient(tier)
 	resp, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: tier.Model,
@@ -90,24 +95,38 @@ func (m *Model) decideWith(ctx context.Context, tier Tier, timeout time.Duration
 			Name: decideToolName,
 		}),
 	})
+	duration := time.Since(start)
 	if err != nil {
+		m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, metrics.OutcomeFailure, duration)
 		return router.Decision{}, fmt.Errorf("call failed: %w", err)
 	}
 	if len(resp.Choices) == 0 {
+		m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, metrics.OutcomeFailure, duration)
 		return router.Decision{}, fmt.Errorf("no choices returned")
 	}
 
 	toolCalls := resp.Choices[0].Message.ToolCalls
 	if len(toolCalls) == 0 {
+		m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, metrics.OutcomeFailure, duration)
 		return router.Decision{}, fmt.Errorf("model did not call %s", decideToolName)
 	}
 
 	var args decideArguments
 	if err := json.Unmarshal([]byte(toolCalls[0].Function.Arguments), &args); err != nil {
+		m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, metrics.OutcomeFailure, duration)
 		return router.Decision{}, fmt.Errorf("unparseable tool call arguments: %w", err)
 	}
 
-	return m.validateDecision(args, workspaceIDs, targetIDs)
+	decision, err := m.validateDecision(args, workspaceIDs, targetIDs)
+	outcome := metrics.OutcomeSuccess
+	if err != nil {
+		outcome = metrics.OutcomeFailure
+	}
+	m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, outcome, duration)
+	if resp.Usage.TotalTokens > 0 {
+		m.metrics.RecordRouterTokens(tierName, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+	}
+	return decision, err
 }
 
 // validateDecision converts parsed tool-call arguments into a
