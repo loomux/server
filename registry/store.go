@@ -14,6 +14,14 @@ type Store interface {
 	ListTargets(ctx context.Context) ([]*Target, error)
 	UpdateTarget(ctx context.Context, t *Target) error
 	DeleteTarget(ctx context.Context, id string) error
+	// SetTargetAgent records an agent CLI probe result (LOOM-71),
+	// replacing any earlier one for the same target + agent type. A target
+	// that doesn't exist is ErrConflict; deleting a target deletes its
+	// probe results with it.
+	SetTargetAgent(ctx context.Context, a *TargetAgent) error
+	// ListTargetAgents returns every recorded probe result for targetID,
+	// ordered by agent type. A target never probed returns an empty slice.
+	ListTargetAgents(ctx context.Context, targetID string) ([]*TargetAgent, error)
 
 	CreateWorkspace(ctx context.Context, w *Workspace) error
 	GetWorkspace(ctx context.Context, id string) (*Workspace, error)
