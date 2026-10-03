@@ -75,10 +75,16 @@ const relaySystemPrompt = `You are Loomux's relay model. You are given the raw c
 // caller-supplied valid sets when non-empty — a cheap, high-value
 // correctness win.
 func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string) openai.ChatCompletionToolUnionParam {
+	// Provisioning and direct commands both need a target: with none
+	// registered they aren't offered at all (LOOM-68).
+	actions := []string{"answer_directly", "use_workspace"}
+	if len(targetIDs) > 0 {
+		actions = append(actions, "provision_workspace", "run_command")
+	}
 	properties := map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"enum":        []string{"answer_directly", "use_workspace", "provision_workspace", "run_command"},
+			"enum":        actions,
 			"description": "What to do with the incoming message.",
 		},
 		"direct_answer": map[string]any{
@@ -217,6 +223,9 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 	b.WriteString("\nTargets:\n")
 	if len(targets) == 0 {
 		b.WriteString("(none)\n")
+		b.WriteString("\nNo targets are registered, so no workspace can be provisioned and no command run. " +
+			"If the message needs work done on a machine, answer directly and tell the user to register a " +
+			"target first, on the Targets page or with POST /api/v1/targets.\n")
 	}
 	for _, t := range targets {
 		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n  agents: %s\n", t.ID, t.Name, t.Kind, renderAgents(t.Agents))

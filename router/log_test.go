@@ -198,7 +198,10 @@ func TestDispatch_Logs_ProvisioningFailure_AtError(t *testing.T) {
 }
 
 func TestDispatch_Logs_UnresolvableTarget_AtError(t *testing.T) {
-	_, _, r, model, logs := setupLogged(t)
+	store, _, r, model, logs := setupLogged(t)
+	// Some other target is registered: with none at all, Dispatch answers
+	// "register a target first" before provisioning is reached (LOOM-68).
+	createFixtureTarget(t, store)
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{
 			Action:       router.ActionProvisionWorkspace,

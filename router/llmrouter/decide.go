@@ -134,11 +134,17 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 // safely: an unknown action, an agent_type outside the caller-supplied
 // set, a use_workspace decision naming a workspace_id that wasn't in
 // this call's workspace list, or a provision_workspace decision naming a
-// target_id that wasn't in this call's target list (LOOM-64) — which
-// includes any provision_workspace at all when no targets are registered —
-// or a run_command (LOOM-72) with an unknown target_id or no command.
+// target_id that wasn't in this call's target list (LOOM-64), or a
+// run_command (LOOM-72) with an unknown target_id or no command.
 func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs []string) (router.Decision, error) {
 	action := router.DecisionAction(args.Action)
+	// With no targets registered, provisioning and direct commands aren't
+	// offered (LOOM-68). A model that picks one anyway wanted a machine
+	// that doesn't exist: that's answered — register a target first — not
+	// treated as a model failure to escalate or surface as an error.
+	if len(targetIDs) == 0 && (action == router.ActionProvisionWorkspace || action == router.ActionRunCommand) {
+		return router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: router.NoTargetsReply}, nil
+	}
 	switch action {
 	case router.ActionAnswerDirectly:
 		if strings.TrimSpace(args.DirectAnswer) == "" {
