@@ -24,6 +24,13 @@ import (
 // inspect.
 const ProvisionTimeout = 10 * time.Minute
 
+// NoTargetsReply is the answer to a request that needs a machine when no
+// target is registered (LOOM-68): with nothing to provision a workspace
+// on or run a command on, the user is told how to register one rather
+// than handed a routing error.
+const NoTargetsReply = "There's no machine to run that on yet: Loomux has no registered targets. " +
+	"Register one first, on the Targets page or with POST /api/v1/targets, then ask again."
+
 // Router composes the workspace registry, orchestrator, completion
 // detection (via the orchestrator it wraps), and credential vault into
 // the dispatch pipeline (design spec §2, §6).
@@ -207,6 +214,14 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		m.outcome = metrics.OutcomeFailure
 		m.errClass = string(registry.ErrorClassInternal)
 		return "", fmt.Errorf("router: dispatch: routing failed: %w", err)
+	}
+	// No target means nowhere to provision or run anything (LOOM-68). The
+	// routing model isn't offered either action then, but whichever model
+	// is plugged in, the answer is the same clear one rather than a
+	// failure further down.
+	if len(targets) == 0 && (decision.Action == ActionProvisionWorkspace || decision.Action == ActionRunCommand) {
+		log.Info("no targets registered", "decided_action", string(decision.Action))
+		decision = Decision{Action: ActionAnswerDirectly, DirectAnswer: NoTargetsReply}
 	}
 	logDecision(log, decision)
 	r.metrics.RecordRoutingDecision(string(decision.Action))

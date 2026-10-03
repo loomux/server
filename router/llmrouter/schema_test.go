@@ -56,3 +56,30 @@ func TestBuildDecideTool_NoTargets_TargetIDUnconstrained(t *testing.T) {
 		t.Errorf("target_id carries an enum with no registered targets: %+v", prop)
 	}
 }
+
+// actionEnum returns the action enum the decide tool offers the model.
+func actionEnum(t *testing.T, targetIDs []string) []string {
+	t.Helper()
+	tool := buildDecideTool([]string{"claude-code"}, nil, targetIDs)
+	params := tool.OfFunction.Function.Parameters
+	props, _ := params["properties"].(map[string]any)
+	action, _ := props["action"].(map[string]any)
+	enum, ok := action["enum"].([]string)
+	if !ok {
+		t.Fatalf("action enum missing or not []string: %#v", action["enum"])
+	}
+	return enum
+}
+
+// TestBuildDecideTool_NoTargets_HidesTargetActions (LOOM-68): with no
+// registered target there is no machine to provision on or run a command
+// on, so neither action is offered; once a target exists both are.
+func TestBuildDecideTool_NoTargets_HidesTargetActions(t *testing.T) {
+	if got, want := actionEnum(t, nil), []string{"answer_directly", "use_workspace"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("no targets: action enum = %v, want %v", got, want)
+	}
+	if got, want := actionEnum(t, []string{"target-1"}),
+		[]string{"answer_directly", "use_workspace", "provision_workspace", "run_command"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("one target: action enum = %v, want %v", got, want)
+	}
+}

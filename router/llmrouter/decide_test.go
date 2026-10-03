@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Loomux/server/router"
@@ -440,40 +441,6 @@ func TestDecide_EmptyTargetID_EscalatesAsValidationFailure(t *testing.T) {
 	}
 }
 
-// TestDecide_NoTargetsRegistered_ProvisionEscalates covers the degenerate
-// case: with no targets registered at all there is no valid target_id the
-// model could name, so a provision_workspace decision can never be acted
-// on — it must fail validation rather than reach Router.Dispatch.
-func TestDecide_NoTargetsRegistered_ProvisionEscalates(t *testing.T) {
-	primarySrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
-		"action":     "provision_workspace",
-		"agent_type": "claude-code",
-		"new_workspace": map[string]any{
-			"name":      "new-ws",
-			"kind":      "empty",
-			"target_id": "anything",
-		},
-	}))
-	escalationSrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
-		"action":        "answer_directly",
-		"direct_answer": "from escalation",
-	}))
-
-	escalation := tierFor(escalationSrv, "escalation-model")
-	m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	dec, err := m.Decide(context.Background(), "start a new project", nil, nil)
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if dec.DirectAnswer != "from escalation" {
-		t.Errorf("Decide.DirectAnswer = %q, want %q", dec.DirectAnswer, "from escalation")
-	}
-}
-
 // TestDecideUserPrompt_TargetAgentAvailability proves each target's
 // recorded agent availability (LOOM-71) reaches the prompt — available,
 // not installed, or (when never probed) not mentioned as either — and the
@@ -616,5 +583,52 @@ func TestDecideSystemPrompt_Persona(t *testing.T) {
 		if !strings.Contains(decideSystemPrompt, want) {
 			t.Errorf("system prompt missing persona text %q", want)
 		}
+	}
+}
+
+// TestDecide_NoTargets_TargetActionBecomesRegisterTargetAnswer (LOOM-68):
+// with no registered targets, a model that picks provision_workspace or
+// run_command anyway gets the register-a-target answer instead of a
+// validation error — no escalation, nothing for the API to 500 on.
+func TestDecide_NoTargets_TargetActionBecomesRegisterTargetAnswer(t *testing.T) {
+	for _, args := range []map[string]any{
+		{"action": "provision_workspace", "agent_type": "claude-code",
+			"new_workspace": map[string]any{"name": "x", "target_id": "", "kind": "empty"}},
+		{"action": "run_command", "target_id": "", "command": "uptime"},
+	} {
+		primarySrv, _ := newFakeServer(t, toolCallHandler(t, decideToolName, args))
+		escalationSrv, escalationCalls := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{
+			"action": "answer_directly", "direct_answer": "from escalation",
+		}))
+		escalation := tierFor(escalationSrv, "escalation-model")
+		m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		dec, err := m.Decide(context.Background(), "set up a repo and run uptime", nil, nil)
+		if err != nil {
+			t.Fatalf("args %v: Decide: %v", args, err)
+		}
+		want := router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: router.NoTargetsReply}
+		if !reflect.DeepEqual(dec, want) {
+			t.Errorf("args %v: Decide = %+v, want %+v", args, dec, want)
+		}
+		if n := atomic.LoadInt32(escalationCalls); n != 0 {
+			t.Errorf("args %v: escalation called %d times, want 0", args, n)
+		}
+	}
+}
+
+// With no targets the prompt tells the model that nothing can be run or
+// provisioned and where the user registers a target (LOOM-68).
+func TestDecideUserPrompt_NoTargets_SaysToRegisterOne(t *testing.T) {
+	prompt := decideUserPrompt("clone my repo", nil, nil, "")
+	for _, want := range []string{"No targets are registered", "POST /api/v1/targets", "Targets page"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if withTarget := decideUserPrompt("hi", nil, []router.TargetSnapshot{{ID: "t1", Name: "jet01", Kind: "local"}}, ""); strings.Contains(withTarget, "No targets are registered") {
+		t.Errorf("prompt with a target still says none are registered:\n%s", withTarget)
 	}
 }

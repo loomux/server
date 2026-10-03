@@ -308,6 +308,10 @@ vendor. Its responsibilities:
   credential references are never included: the routing prompt goes to a
   third-party model vendor. The chosen `target_id` is validated against
   that list, and re-resolved before any workspace row is written (LOOM-64).
+  With no target registered, `provision_workspace` and `run_command` aren't
+  offered at all, and a request that needs a machine gets a direct answer
+  telling the user to register one (Targets page or `POST /api/v1/targets`)
+  rather than a routing error (LOOM-68).
   Each target also carries its recorded agent availability (which agent
   CLIs were found there, which weren't, or "not checked yet"), so the
   router prefers an agent that is actually installed (LOOM-71).
