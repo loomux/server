@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -41,11 +42,22 @@ import (
 // AwaitingInput — set precisely when a turn concludes and Router leaves
 // it open for a follow-up that hasn't arrived yet — is a state where
 // "idle since UpdatedAt" actually means "idle."
+//
+// The sweep also resolves workspaces stuck provisioning (LOOM-60): the
+// router bounds its own provisioning and fails the workspace when that
+// bound passes, but only while the process that started it is alive. A
+// row still provisioning well past that bound — left by a restart
+// mid-provisioning, or written before provisioning was bounded — has no
+// provisioner left to finish or fail it, so it is marked failed with a
+// reason (the row is kept for inspection, like any failed workspace).
 type Reaper struct {
 	orch      *Orchestrator
 	threshold time.Duration
 	logf      func(format string, args ...any)
 	metrics   *metrics.Metrics
+	// staleProvisioningAfter is how long a workspace may stay
+	// provisioning before the sweep fails it; zero disables that check.
+	staleProvisioningAfter time.Duration
 }
 
 // ReaperOption configures a Reaper constructed via NewReaper.
@@ -64,6 +76,14 @@ func WithReaperMetrics(m *metrics.Metrics) ReaperOption {
 	return func(r *Reaper) { r.metrics = m }
 }
 
+// WithStaleProvisioningAfter makes each sweep fail workspaces still
+// provisioning longer than d after they were created (LOOM-60). d must
+// exceed the router's own provisioning bound, so a live provisioning is
+// never touched. Zero (the default) disables the check.
+func WithStaleProvisioningAfter(d time.Duration) ReaperOption {
+	return func(r *Reaper) { r.staleProvisioningAfter = d }
+}
+
 // NewReaper constructs a Reaper. threshold is how long a reapable task
 // can go without a state change before Sweep tears its session down.
 func NewReaper(orch *Orchestrator, threshold time.Duration, opts ...ReaperOption) *Reaper {
@@ -74,8 +94,15 @@ func NewReaper(orch *Orchestrator, threshold time.Duration, opts ...ReaperOption
 	return r
 }
 
-// Run blocks, calling Sweep every interval until ctx is done.
+// Run blocks, calling Sweep every interval until ctx is done. Stuck
+// provisioning is checked once immediately as well, so rows a restart
+// left behind are resolved at startup rather than an interval later.
 func (r *Reaper) Run(ctx context.Context, interval time.Duration) {
+	if workspaces, err := r.orch.store.ListWorkspaces(ctx); err == nil {
+		r.failStaleProvisioning(ctx, workspaces, time.Now().UTC())
+	} else {
+		r.logf("orchestrator: reaper: startup: list workspaces: %v", err)
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -100,6 +127,7 @@ func (r *Reaper) Sweep(ctx context.Context) {
 	}
 
 	now := time.Now().UTC()
+	r.failStaleProvisioning(ctx, workspaces, now)
 	for _, ws := range workspaces {
 		tasks, err := r.orch.store.ListTasksByWorkspace(ctx, ws.ID)
 		if err != nil {
@@ -123,6 +151,38 @@ func (r *Reaper) Sweep(ctx context.Context) {
 				r.metrics.RecordReaperTask()
 			}
 		}
+	}
+}
+
+// failStaleProvisioning marks failed every workspace in workspaces that
+// has been provisioning longer than staleProvisioningAfter (LOOM-60). The
+// status is re-read just before the write, so a provisioning that
+// finished since the list was taken is left as it ended.
+func (r *Reaper) failStaleProvisioning(ctx context.Context, workspaces []*registry.Workspace, now time.Time) {
+	if r.staleProvisioningAfter <= 0 {
+		return
+	}
+	for _, ws := range workspaces {
+		if ws.Status != registry.WorkspaceStatusProvisioning || now.Sub(ws.CreatedAt) < r.staleProvisioningAfter {
+			continue
+		}
+		cur, err := r.orch.store.GetWorkspace(ctx, ws.ID)
+		if err != nil {
+			r.logf("orchestrator: reaper: stale provisioning: get workspace %s: %v", ws.ID, err)
+			continue
+		}
+		if cur.Status != registry.WorkspaceStatusProvisioning {
+			continue
+		}
+		age := now.Sub(cur.CreatedAt).Round(time.Second)
+		cur.Status = registry.WorkspaceStatusFailed
+		cur.StatusReason = fmt.Sprintf("provisioning did not finish: still provisioning %s after the workspace was created, "+
+			"with nothing left running it (Loomux restarted mid-provisioning, or the row predates bounded provisioning)", age)
+		if err := r.orch.store.UpdateWorkspace(ctx, cur); err != nil {
+			r.logf("orchestrator: reaper: stale provisioning: mark workspace %s failed: %v", ws.ID, err)
+			continue
+		}
+		r.logf("orchestrator: reaper: marked workspace %s failed (provisioning for %s)", ws.ID, age)
 	}
 }
 

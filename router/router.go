@@ -18,11 +18,11 @@ import (
 	"github.com/Loomux/server/targets"
 )
 
-// provisionTimeout bounds how long provisioning — a clone, say — may run
+// ProvisionTimeout bounds how long provisioning — a clone, say — may run
 // before the workspace is failed (LOOM-90; LOOM-60's bounded
 // provisioning). The recipe is left running in its session for a human to
 // inspect.
-const provisionTimeout = 10 * time.Minute
+const ProvisionTimeout = 10 * time.Minute
 
 // Router composes the workspace registry, orchestrator, completion
 // detection (via the orchestrator it wraps), and credential vault into
@@ -525,7 +525,7 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	// than the turn waiting forever (LOOM-60).
 	recipe := provisioningRecipe(target, spec)
 	log.Info("provisioning workspace", "kind", string(spec.Kind))
-	res, err := r.runCommandTask(ctx, ws.ID, conversationID, recipe, provisionTimeout)
+	res, err := r.runCommandTask(ctx, ws.ID, conversationID, recipe, ProvisionTimeout)
 	if err != nil {
 		var running *stillRunningError
 		class := registry.ErrorClassWaitFailed

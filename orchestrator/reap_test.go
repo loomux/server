@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,5 +219,101 @@ func TestReaper_Run_SweepsOnTickerUntilCancelled(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Run did not return after ctx was cancelled")
+	}
+}
+
+// newProvisioningWorkspace stores a workspace left in provisioning, as a
+// restart mid-provisioning (or pre-LOOM-90 code) would leave it (LOOM-60).
+func newProvisioningWorkspace(t *testing.T, store registry.Store, targetID, name string) *registry.Workspace {
+	t.Helper()
+	ws := &registry.Workspace{
+		ID:        "ws-" + name,
+		Name:      name,
+		TargetID:  targetID,
+		Status:    registry.WorkspaceStatusProvisioning,
+		IsDynamic: true,
+	}
+	if err := store.CreateWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CreateWorkspace(%s): %v", name, err)
+	}
+	return ws
+}
+
+// TestReaper_Sweep_FailsStaleProvisioningWorkspaces (LOOM-60): a
+// workspace still provisioning past the provisioning bound has no live
+// provisioner — the router fails its own provisioning at that bound — so
+// the sweep marks it failed with a reason the API shows, keeping the row.
+// One still within the bound, or in any other status, is left alone.
+func TestReaper_Sweep_FailsStaleProvisioningWorkspaces(t *testing.T) {
+	store, ws, _, _, o := setup(t)
+	ctx := context.Background()
+
+	stale := newProvisioningWorkspace(t, store, ws.TargetID, "stale")
+	staleAfter := 50 * time.Millisecond
+	time.Sleep(staleAfter + 30*time.Millisecond)
+	fresh := newProvisioningWorkspace(t, store, ws.TargetID, "fresh")
+
+	reaper := orchestrator.NewReaper(o, time.Hour,
+		orchestrator.WithReaperLogger(func(string, ...any) {}),
+		orchestrator.WithStaleProvisioningAfter(staleAfter))
+	reaper.Sweep(ctx)
+
+	got, err := store.GetWorkspace(ctx, stale.ID)
+	if err != nil {
+		t.Fatalf("GetWorkspace(stale): %v", err)
+	}
+	if got.Status != registry.WorkspaceStatusFailed {
+		t.Fatalf("stale workspace Status = %q, want %q", got.Status, registry.WorkspaceStatusFailed)
+	}
+	if !strings.Contains(got.StatusReason, "provisioning did not finish") {
+		t.Fatalf("stale workspace StatusReason = %q, want it to say provisioning did not finish", got.StatusReason)
+	}
+
+	for _, id := range []string{fresh.ID, ws.ID} {
+		before, err := store.GetWorkspace(ctx, id)
+		if err != nil {
+			t.Fatalf("GetWorkspace(%s): %v", id, err)
+		}
+		if before.Status == registry.WorkspaceStatusFailed {
+			t.Fatalf("workspace %s Status = failed, want it left alone", id)
+		}
+	}
+}
+
+// TestReaper_Run_FailsStaleProvisioningAtStart (LOOM-60): rows a restart
+// left provisioning are resolved as soon as the reaper starts, not an
+// interval later (the default interval is an hour).
+func TestReaper_Run_FailsStaleProvisioningAtStart(t *testing.T) {
+	store, ws, _, _, o := setup(t)
+	ctx := context.Background()
+
+	stale := newProvisioningWorkspace(t, store, ws.TargetID, "stale")
+	time.Sleep(20 * time.Millisecond)
+
+	reaper := orchestrator.NewReaper(o, time.Hour,
+		orchestrator.WithReaperLogger(func(string, ...any) {}),
+		orchestrator.WithStaleProvisioningAfter(10*time.Millisecond))
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reaper.Run(runCtx, time.Hour)
+	}()
+	defer func() { cancel(); <-done }()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		got, err := store.GetWorkspace(ctx, stale.ID)
+		if err != nil {
+			t.Fatalf("GetWorkspace: %v", err)
+		}
+		if got.Status == registry.WorkspaceStatusFailed {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("stale workspace still %q after Run started, want failed without waiting an interval", got.Status)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
