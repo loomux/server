@@ -600,3 +600,21 @@ func TestDecideSystemPrompt_RunCommandRules(t *testing.T) {
 		}
 	}
 }
+
+// TestDecideSystemPrompt_Persona (LOOM-61): answer_directly replies speak
+// as Loomux — what it is, that it's single-user, and that it never
+// promises something it can't do — instead of as a generic chatbot.
+func TestDecideSystemPrompt_Persona(t *testing.T) {
+	for _, want := range []string{
+		"Loomux dispatches chat messages to AI coding agents",
+		"machines the user has registered",
+		"single-user",
+		"speak as Loomux",
+		"never promise",
+		"don't claim to have done",
+	} {
+		if !strings.Contains(decideSystemPrompt, want) {
+			t.Errorf("system prompt missing persona text %q", want)
+		}
+	}
+}
