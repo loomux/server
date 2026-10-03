@@ -9,8 +9,12 @@ Three mechanisms cover the database:
 
 1. **Online SQLite backup.** A Kubernetes CronJob (declared in theWyseKube's
    `services/base/loomux/60-backup-cronjob.yaml`) runs nightly and executes
-   `sqlite3 /data/loomux.db ".backup to /backup/loomux-<timestamp>.db"`.
+   `sqlite3 /data/loomux.db ".backup '/backup/loomux-<timestamp>.db'"`.
    This produces a transaction-consistent copy independent of the live file.
+   The dot-command is `.backup ?DB? FILE`, so the file name goes in single
+   quotes and nothing else precedes it: the earlier `.backup to FILE` read
+   `to` as a schema name and failed with `unknown database to`, leaving a
+   0-byte `loomux-*.db` behind (fixed in theWyseKube `7b3eee6`).
    The backup PVC retains 14 days of copies.
 
 2. **PVC-level backup.** The `loomuxd-backup` PVC is listed in
@@ -67,16 +71,32 @@ These steps assume you have access to a consistent backup file (either from
 
 3. Verify and copy the desired backup over the live database:
    ```bash
-   ls -la /backup/
-   sqlite3 /backup/loomux-YYYYMMDD-HHMMSS.db "PRAGMA integrity_check;"
+   ls -la /backup/   # skip 0-byte loomux-*.db files: failed runs before theWyseKube 7b3eee6 left them
+   sqlite3 /backup/loomux-YYYYMMDD-HHMMSS.db "PRAGMA integrity_check;"   # must print "ok"
    cp -p /data/loomux.db /data/loomux.db.pre-restore-$(date +%Y%m%d-%H%M%S)  # keep what you're replacing
    cp /backup/loomux-YYYYMMDD-HHMMSS.db /data/loomux.db
-   rm -f /data/loomux.db-wal /data/loomux.db-shm   # stale WAL/SHM from the old DB must not be replayed onto the restored one
+   # The DB runs with journal_mode=delete (SQLite's default), so a leftover -journal from the
+   # old DB is the file SQLite would treat as hot and roll back onto the restored one; -wal/-shm
+   # are removed too in case the mode ever changes. None of them may survive from the old DB.
+   rm -f /data/loomux.db-journal /data/loomux.db-wal /data/loomux.db-shm
    # The debug pod runs as root: restore the ownership/mode loomuxd (uid 10001, fsGroup 10001) needs,
    # or it starts but can't write ("attempt to write a readonly database").
    chown 1000:10001 /data/loomux.db && chmod 664 /data/loomux.db
    ls -la /data/
    ```
+   `keinos/sqlite3` is a BusyBox-based image and this pod runs as root, so it has no
+   reliable way to act as uid 10001 and check that loomuxd can actually write the
+   restored file. To test that, exit the restore pod (the `loomuxd-data` claim may not
+   mount in two pods at once), then start a second pod on it (same overrides as step 2,
+   minus the backup volume) whose container sets
+   `"securityContext":{"runAsUser":10001,"runAsGroup":10001}`, and run there:
+   ```bash
+   sqlite3 /data/loomux.db "BEGIN; CREATE TABLE restore_write_check(x); ROLLBACK;"
+   ```
+   It writes and rolls back, leaving nothing behind, and fails with `attempt to write a
+   readonly database` if either the file or `/data` isn't writable for 10001 (SQLite
+   creates `loomux.db-journal` beside the file). Don't use `BEGIN IMMEDIATE; ROLLBACK;`
+   for this: it succeeds even on a read-only file.
 
 4. Exit the debug pod, scale `loomuxd` back up, and resume Flux:
    ```bash
