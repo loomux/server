@@ -111,7 +111,9 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	defer a.Close()
+	// A cleanup rather than a defer: defers run before cleanups, and the
+	// session-killing cleanup below needs the store still open.
+	t.Cleanup(func() { _ = a.Close() })
 
 	reply, err := a.Dispatch(ctx, "conv-1", "start the thing", "")
 	if err != nil {
@@ -134,6 +136,22 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	t.Cleanup(func() {
 		if err := realExec.Close(); err != nil {
 			t.Errorf("Close: %v", err)
+		}
+	})
+	// Kill every session this workspace's tasks launched, whichever way
+	// the test exits. Agents sleep 30s and a pane outlives its process
+	// (remain-on-exit, LOOM-71), so a session left behind by a failed
+	// assertion would otherwise linger in the user's tmux server.
+	// Cleanups run LIFO, so this runs before a.Close and the store is
+	// still open.
+	t.Cleanup(func() {
+		all, err := a.store.ListTasksByWorkspace(context.Background(), workspaceID)
+		if err != nil {
+			t.Errorf("ListTasksByWorkspace (cleanup): %v", err)
+			return
+		}
+		for _, tk := range all {
+			_ = realExec.KillSession(context.Background(), tk.TmuxSession)
 		}
 	})
 	exists, err := realExec.HasSession(ctx, task.TmuxSession)
@@ -163,12 +181,24 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 		}
 	}
 
-	reaped, err := a.store.GetTask(ctx, task.ID)
-	if err != nil {
-		t.Fatalf("GetTask (after reap): %v", err)
-	}
-	if reaped.ReapedAt == nil {
-		t.Fatal("ReapedAt is nil after the session was torn down")
+	// Reap kills the session before it records ReapedAt, so the session
+	// vanishing doesn't mean the write has landed yet (LOOM-34): poll for
+	// it rather than reading once.
+	var reaped *registry.Task
+	reapedDeadline := time.After(5 * time.Second)
+	for {
+		reaped, err = a.store.GetTask(ctx, task.ID)
+		if err != nil {
+			t.Fatalf("GetTask (after reap): %v", err)
+		}
+		if reaped.ReapedAt != nil {
+			break
+		}
+		select {
+		case <-reapedDeadline:
+			t.Fatal("ReapedAt still nil 5s after the session was torn down")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	if reaped.Status != registry.TaskStatusAwaitingInput {
 		t.Fatalf("task Status after reap = %q, want unchanged %q", reaped.Status, registry.TaskStatusAwaitingInput)
@@ -189,12 +219,8 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTasksByWorkspace (after fallback): %v", err)
 	}
-	// The fresh session is still open (done: false). Kill it: its agent
-	// exits after 30s, and a pane outlives its process (remain-on-exit,
-	// LOOM-71), so it would otherwise outlive the test.
-	for _, tk := range tasksAfter {
-		_ = realExec.KillSession(context.Background(), tk.TmuxSession)
-	}
+	// The fresh session is still open (done: false); the cleanup above
+	// kills it.
 	if len(tasksAfter) != 2 {
 		t.Fatalf("ListTasksByWorkspace = %+v, want 2 tasks (the reaped one, now Failed, plus a fresh one)", tasksAfter)
 	}
