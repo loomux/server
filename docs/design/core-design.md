@@ -477,7 +477,12 @@ Four independent axes:
   `status_reason`, and excluded from routing. A provisioning script's
   non-zero exit is reported with its output. While provisioning runs the
   workspace stays `provisioning`: starting its session doesn't make it
-  `active` (LOOM-77).
+  `active` (LOOM-77). The 10-minute provisioning bound only holds while
+  the process that started provisioning is alive, so the idle reaper also
+  fails any workspace still `provisioning` 15 minutes after it was created
+  — left behind by a restart mid-provisioning, or written before
+  provisioning was bounded — with a `status_reason` saying so; it runs
+  once at startup as well as on each sweep (LOOM-60).
 - **Every dispatch error after a task exists fails that task** with a
   reason and error class (LOOM-77) — a failed send, an abandoned or broken
   wait (including the request being cancelled), a capture/relay failure —

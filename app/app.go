@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/Loomux/server/agents"
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,6 +20,13 @@ import (
 	"github.com/Loomux/server/router/llmrouter"
 	"github.com/Loomux/server/targets"
 )
+
+// staleProvisioningAfter is how long a workspace may stay provisioning
+// before the reaper fails it as abandoned (LOOM-60): the router's own
+// provisioning bound plus slack for the probe and session launch that
+// precede it, so a live provisioning is always failed (or finished) by
+// the router first.
+const staleProvisioningAfter = router.ProvisionTimeout + 5*time.Minute
 
 // App is the fully wired Loomux domain layer, exposed through the one
 // operation this package's "minimal internal interface" needs —
@@ -198,7 +206,8 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 	routerOpts = append(routerOpts, router.WithMetrics(met))
 
-	reaper := orchestrator.NewReaper(orch, threshold, orchestrator.WithReaperMetrics(met))
+	reaper := orchestrator.NewReaper(orch, threshold, orchestrator.WithReaperMetrics(met),
+		orchestrator.WithStaleProvisioningAfter(staleProvisioningAfter))
 	reaperCtx, stopReaper := context.WithCancel(context.Background())
 	reaperDone := make(chan struct{})
 	go func() {
