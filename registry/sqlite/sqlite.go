@@ -261,18 +261,45 @@ func (s *Store) SetTargetHealth(ctx context.Context, h *registry.TargetHealth) e
 	return nil
 }
 
+const targetHealthColumns = `target_id, reachable, error, latency_ms, tmux_version, disk_free_bytes, probed_at`
+
 func (s *Store) GetTargetHealth(ctx context.Context, targetID string) (*registry.TargetHealth, error) {
-	var h registry.TargetHealth
-	var latencyMS int64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT target_id, reachable, error, latency_ms, tmux_version, disk_free_bytes, probed_at
-		FROM target_health WHERE target_id = ?`, targetID,
-	).Scan(&h.TargetID, &h.Reachable, &h.Error, &latencyMS, &h.TmuxVersion, &h.DiskFreeBytes, &h.ProbedAt)
+	h, err := scanTargetHealth(s.db.QueryRowContext(ctx,
+		`SELECT `+targetHealthColumns+` FROM target_health WHERE target_id = ?`, targetID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: health of target %q", registry.ErrNotFound, targetID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: get target health: %w", err)
+	}
+	return h, nil
+}
+
+func (s *Store) ListTargetHealth(ctx context.Context) ([]*registry.TargetHealth, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+targetHealthColumns+` FROM target_health`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list target health: %w", err)
+	}
+	defer rows.Close()
+	out := []*registry.TargetHealth{}
+	for rows.Next() {
+		h, err := scanTargetHealth(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list target health: %w", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list target health: %w", err)
+	}
+	return out, nil
+}
+
+func scanTargetHealth(row rowScanner) (*registry.TargetHealth, error) {
+	var h registry.TargetHealth
+	var latencyMS int64
+	if err := row.Scan(&h.TargetID, &h.Reachable, &h.Error, &latencyMS, &h.TmuxVersion, &h.DiskFreeBytes, &h.ProbedAt); err != nil {
+		return nil, err
 	}
 	h.Latency = time.Duration(latencyMS) * time.Millisecond
 	return &h, nil

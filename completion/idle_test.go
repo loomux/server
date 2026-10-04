@@ -29,11 +29,11 @@ func newScriptedExecutor(outputs []string) *scriptedExecutor {
 
 func (e *scriptedExecutor) NewSession(context.Context, string, string, string) error { return nil }
 func (e *scriptedExecutor) HasSession(context.Context, string) (bool, error)         { return true, nil }
-func (e *scriptedExecutor) SendKey(ctx context.Context, target, key string) error { return nil }
+func (e *scriptedExecutor) SendKey(ctx context.Context, target, key string) error    { return nil }
 
-func (e *scriptedExecutor) SendKeys(context.Context, string, string, bool) error     { return nil }
-func (e *scriptedExecutor) KillSession(context.Context, string) error                { return nil }
-func (e *scriptedExecutor) Close() error                                             { return nil }
+func (e *scriptedExecutor) SendKeys(context.Context, string, string, bool) error { return nil }
+func (e *scriptedExecutor) KillSession(context.Context, string) error            { return nil }
+func (e *scriptedExecutor) Close() error                                         { return nil }
 
 // FileExists/RemoveFile/RunOnce aren't exercised by IdleWatcher's tests
 // (they're tier-3/version-check specific); trivial stubs satisfy the
@@ -77,10 +77,22 @@ type fakeClock struct {
 	mu      sync.Mutex
 	now     time.Time
 	tickers []*fakeTicker
+	// blocked gets a value each time the code under test reads a ticker's
+	// channel to wait on it, so a test can advance the clock only once
+	// that iteration is done with Now() (LOOM-122: advancing as soon as
+	// CapturePane was called raced the Now() read that follows it).
+	blocked chan struct{}
 }
 
 func newFakeClock(start time.Time) *fakeClock {
-	return &fakeClock{now: start}
+	return &fakeClock{now: start, blocked: make(chan struct{}, 64)}
+}
+
+// AdvanceWhenBlocked waits until the code under test is waiting on a
+// ticker, then advances.
+func (c *fakeClock) AdvanceWhenBlocked(d time.Duration) {
+	<-c.blocked
+	c.Advance(d)
 }
 
 func (c *fakeClock) Now() time.Time {
@@ -92,7 +104,7 @@ func (c *fakeClock) Now() time.Time {
 func (c *fakeClock) NewTicker(time.Duration) completion.Ticker {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t := &fakeTicker{ch: make(chan time.Time, 1)}
+	t := &fakeTicker{ch: make(chan time.Time, 1), blocked: c.blocked}
 	c.tickers = append(c.tickers, t)
 	return t
 }
@@ -117,11 +129,18 @@ func (c *fakeClock) Advance(d time.Duration) {
 var _ completion.Clock = (*fakeClock)(nil)
 
 type fakeTicker struct {
-	ch chan time.Time
+	ch      chan time.Time
+	blocked chan struct{}
 }
 
-func (t *fakeTicker) C() <-chan time.Time { return t.ch }
-func (t *fakeTicker) Stop()               {}
+func (t *fakeTicker) C() <-chan time.Time {
+	select {
+	case t.blocked <- struct{}{}:
+	default:
+	}
+	return t.ch
+}
+func (t *fakeTicker) Stop() {}
 
 var _ completion.Ticker = (*fakeTicker)(nil)
 
@@ -144,13 +163,13 @@ func TestIdleWatcher_FiresAfterConfiguredIdleWindow(t *testing.T) {
 
 	<-exec.captureCh // call 1: "output-a" — establishes baseline at t=0
 
-	clk.Advance(1 * time.Second)
+	clk.AdvanceWhenBlocked(1 * time.Second)
 	<-exec.captureCh // call 2: "output-b" — changed, baseline resets to t=1s
 
-	clk.Advance(2 * time.Second)
+	clk.AdvanceWhenBlocked(2 * time.Second)
 	<-exec.captureCh // call 3: "output-b" — unchanged, elapsed=2s < 5s idle timeout
 
-	clk.Advance(3 * time.Second)
+	clk.AdvanceWhenBlocked(3 * time.Second)
 	<-exec.captureCh // call 4: "output-b" — unchanged, elapsed=5s >= 5s idle timeout: done
 
 	select {
@@ -181,9 +200,9 @@ func TestIdleWatcher_ContextCancelledIfNeverIdle(t *testing.T) {
 	go func() { errCh <- w.Wait(ctx, task, target, idleTimeout) }()
 
 	<-exec.captureCh
-	clk.Advance(1 * time.Second)
+	clk.AdvanceWhenBlocked(1 * time.Second)
 	<-exec.captureCh
-	clk.Advance(1 * time.Second)
+	clk.AdvanceWhenBlocked(1 * time.Second)
 	<-exec.captureCh
 
 	cancel()

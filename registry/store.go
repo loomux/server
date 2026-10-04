@@ -29,6 +29,10 @@ type Store interface {
 	// GetTargetHealth returns targetID's latest health probe, or
 	// ErrNotFound if it has never been probed.
 	GetTargetHealth(ctx context.Context, targetID string) (*TargetHealth, error)
+	// ListTargetHealth returns every recorded health probe, one per
+	// probed target, in no particular order (LOOM-122: GET /targets in one
+	// query rather than one per target).
+	ListTargetHealth(ctx context.Context) ([]*TargetHealth, error)
 
 	CreateWorkspace(ctx context.Context, w *Workspace) error
 	GetWorkspace(ctx context.Context, id string) (*Workspace, error)
