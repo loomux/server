@@ -82,11 +82,21 @@ func (w *IdleWatcher) Wait(ctx context.Context, task *registry.Task, target *reg
 	ticker := w.clock.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
+	var down outage
 	for {
 		output, err := exec.CapturePane(ctx, task.TmuxSession)
 		if err != nil {
-			return err
+			if !down.tolerate(err) {
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C():
+			}
+			continue
 		}
+		down.clear()
 
 		now := w.clock.Now()
 		if !haveBaseline || output != lastOutput {

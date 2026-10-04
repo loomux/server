@@ -900,9 +900,10 @@ func (r *Router) trustWorkspace(ctx context.Context, target *registry.Target, ws
 	if entry.Profile.TrustCommand == nil {
 		return
 	}
+	// No Close: it would tear down the target's shared ssh ControlMaster
+	// under every other operation multiplexed on it.
 	exec, err := r.newExecutor(target)
 	if err == nil {
-		defer exec.Close()
 		_, err = exec.RunOnce(ctx, entry.Profile.TrustCommand(ws.Path))
 	}
 	if err != nil {

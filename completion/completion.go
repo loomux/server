@@ -276,9 +276,13 @@ func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecuto
 func (d *Detector) waitExit(ctx context.Context, exec targets.TargetExecutor, task *registry.Task) error {
 	ticker := time.NewTicker(d.pollInterval)
 	defer ticker.Stop()
+	var down outage
 	for {
 		exit, err := exec.PaneExited(ctx, task.TmuxSession)
-		if err != nil {
+		switch {
+		case err == nil:
+			down.clear()
+		case !down.tolerate(err):
 			return fmt.Errorf("completion: wait: %w", err)
 		}
 		if exit != nil {
