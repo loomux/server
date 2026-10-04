@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/Loomux/server/completion"
-	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
@@ -85,4 +85,3 @@ func TestDispatch_AfterTimeout_StalePaneRetiredBeforeLaunch(t *testing.T) {
 		t.Errorf("%d live panes in one workspace, want at most 1", live)
 	}
 }
-
