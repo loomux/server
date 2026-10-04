@@ -27,6 +27,18 @@ func TestDetectPrompt(t *testing.T) {
 				{Label: "No"},
 			},
 		}},
+		// The same prompt in a narrower pane, its tip wrapped onto a
+		// second line: the tip's tail isn't detail.
+		{"claude-permission-wrapped.txt", &registry.Attention{
+			Kind: registry.AttentionPermission, Title: "Bash command",
+			Detail: "Create empty file a.txt\ntouch /tmp/lx97/a.txt", Question: "Do you want to proceed?",
+			Options: []registry.AttentionOption{
+				{Label: "Yes"},
+				{Label: "Yes, and always allow access to /tmp/lx97 from this project"},
+				{Label: "Yes, and switch to auto mode · auto mode handles these prompts for you"},
+				{Label: "No"},
+			},
+		}},
 		{"claude-question.txt", &registry.Attention{
 			Kind: registry.AttentionQuestion, Title: "Color", Question: "Do you prefer red or blue?",
 			Options: []registry.AttentionOption{

@@ -3,6 +3,7 @@ package agents
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Loomux/server/registry"
@@ -222,6 +223,14 @@ func parsePlain(lines []string, cursor int) (options []registry.AttentionOption,
 // it. Claude Code draws a solid rule above a prompt, which bounds it;
 // with no rule (Codex), what's above the question is the agent's
 // earlier output, so only the lines after the question are kept.
+// isContinuation reports whether t reads as the rest of a wrapped
+// sentence rather than a line of its own: it starts in lower case or
+// with punctuation.
+func isContinuation(t string) bool {
+	r, _ := utf8.DecodeRuneInString(t)
+	return unicode.IsLower(r) || unicode.IsPunct(r)
+}
+
 func splitHeader(lines []string) (question string, header []string) {
 	start, bounded := 0, false
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -231,11 +240,21 @@ func splitHeader(lines []string) (question string, header []string) {
 			break
 		}
 	}
+	inTip := false
 	for _, l := range lines[start:] {
 		t := strings.TrimSpace(l)
-		if t == "" || isRule(l) || strings.HasPrefix(t, "Tip:") {
+		if t == "" || isRule(l) {
+			inTip = false
 			continue
 		}
+		// A tip is the CLI's own advice, not the prompt's. In a narrow
+		// pane it wraps: its tail lines carry on a sentence, so they
+		// don't start with a capital.
+		if strings.HasPrefix(t, "Tip:") || (inTip && isContinuation(t)) {
+			inTip = true
+			continue
+		}
+		inTip = false
 		header = append(header, t)
 	}
 	q := -1
