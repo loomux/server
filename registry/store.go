@@ -22,6 +22,13 @@ type Store interface {
 	// ListTargetAgents returns every recorded probe result for targetID,
 	// ordered by agent type. A target never probed returns an empty slice.
 	ListTargetAgents(ctx context.Context, targetID string) ([]*TargetAgent, error)
+	// SetTargetHealth records a target's latest health probe (LOOM-86),
+	// replacing the previous one. A target that doesn't exist is
+	// ErrConflict; deleting a target deletes its record with it.
+	SetTargetHealth(ctx context.Context, h *TargetHealth) error
+	// GetTargetHealth returns targetID's latest health probe, or
+	// ErrNotFound if it has never been probed.
+	GetTargetHealth(ctx context.Context, targetID string) (*TargetHealth, error)
 
 	CreateWorkspace(ctx context.Context, w *Workspace) error
 	GetWorkspace(ctx context.Context, id string) (*Workspace, error)

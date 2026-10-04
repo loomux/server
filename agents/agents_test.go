@@ -10,6 +10,7 @@ import (
 
 	"github.com/Loomux/server/agents"
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 )
 
@@ -329,6 +330,29 @@ func TestAgentDescriptions(t *testing.T) {
 	for name, at := range map[string]router.AgentType{"claude": agents.ClaudeCode(), "codex": agents.Codex()} {
 		if !strings.Contains(strings.ToLower(at.Description), name) {
 			t.Errorf("%s description = %q, want it to name %q", name, at.Description, name)
+		}
+	}
+}
+
+// LOOM-86: each adapter's auth check reads what its CLI actually prints.
+func TestAdapters_AuthCheckClassifiesRealOutput(t *testing.T) {
+	cases := []struct {
+		agent  router.AgentType
+		output string
+		want   string
+	}{
+		{agents.ClaudeCode(), "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}", registry.AgentAuthLoggedIn},
+		{agents.ClaudeCode(), "{\n  \"loggedIn\": false\n}", registry.AgentAuthLoggedOut},
+		{agents.ClaudeCode(), "error: unknown command 'auth'", registry.AgentAuthUnknown},
+		{agents.Codex(), "Logged in using ChatGPT", registry.AgentAuthLoggedIn},
+		{agents.Codex(), "Not logged in", registry.AgentAuthLoggedOut},
+	}
+	for _, tc := range cases {
+		if tc.agent.AuthCheck == nil {
+			t.Fatalf("%s has no auth check", tc.agent.LaunchTemplate)
+		}
+		if got := tc.agent.AuthCheck.Status(tc.output); got != tc.want {
+			t.Errorf("%s auth check on %q = %q, want %q", tc.agent.LaunchTemplate, tc.output, got, tc.want)
 		}
 	}
 }

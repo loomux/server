@@ -27,6 +27,10 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TargetAgentPathAndVersion", func(t *testing.T) { testTargetAgentPathAndVersion(t, newStore(t)) })
 	t.Run("TargetAgentRequiresValidTarget", func(t *testing.T) { testTargetAgentRequiresValidTarget(t, newStore(t)) })
 	t.Run("TargetAgentDeletedWithTarget", func(t *testing.T) { testTargetAgentDeletedWithTarget(t, newStore(t)) })
+	t.Run("TargetAgentAuthStatus", func(t *testing.T) { testTargetAgentAuthStatus(t, newStore(t)) })
+	t.Run("TargetHealthRoundTrip", func(t *testing.T) { testTargetHealthRoundTrip(t, newStore(t)) })
+	t.Run("TargetHealthRequiresValidTarget", func(t *testing.T) { testTargetHealthRequiresValidTarget(t, newStore(t)) })
+	t.Run("TargetHealthDeletedWithTarget", func(t *testing.T) { testTargetHealthDeletedWithTarget(t, newStore(t)) })
 
 	t.Run("Workspace", func(t *testing.T) { testWorkspaceCRUD(t, newStore(t)) })
 	t.Run("WorkspaceStatusFailed", func(t *testing.T) { testWorkspaceStatusFailed(t, newStore(t)) })
@@ -1047,6 +1051,80 @@ func testTargetAgentDeletedWithTarget(t *testing.T, s registry.Store) {
 	}
 	if len(got) != 0 {
 		t.Errorf("probe results outlived their target: %v", got)
+	}
+}
+
+func testTargetAgentAuthStatus(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+	if err := s.SetTargetAgent(ctx, &registry.TargetAgent{TargetID: target.ID, AgentType: "claude", Available: true,
+		Path: "/usr/bin/claude", AuthStatus: registry.AgentAuthLoggedOut}); err != nil {
+		t.Fatalf("SetTargetAgent: %v", err)
+	}
+	got, err := s.ListTargetAgents(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("ListTargetAgents: %v", err)
+	}
+	if len(got) != 1 || got[0].AuthStatus != registry.AgentAuthLoggedOut {
+		t.Fatalf("ListTargetAgents = %+v, want one row logged out", got)
+	}
+}
+
+func testTargetHealthRoundTrip(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+	if _, err := s.GetTargetHealth(ctx, target.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetTargetHealth (never probed): err = %v, want ErrNotFound", err)
+	}
+
+	first := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	want := &registry.TargetHealth{TargetID: target.ID, Reachable: true, Latency: 250 * time.Millisecond,
+		TmuxVersion: "tmux 3.4", DiskFreeBytes: 5 << 30, ProbedAt: first}
+	if err := s.SetTargetHealth(ctx, want); err != nil {
+		t.Fatalf("SetTargetHealth: %v", err)
+	}
+	got, err := s.GetTargetHealth(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("GetTargetHealth: %v", err)
+	}
+	if !got.Reachable || got.Latency != want.Latency || got.TmuxVersion != want.TmuxVersion ||
+		got.DiskFreeBytes != want.DiskFreeBytes || !got.ProbedAt.Equal(first) || got.Error != "" {
+		t.Errorf("GetTargetHealth = %+v, want %+v", got, want)
+	}
+
+	// A later probe replaces the earlier one.
+	second := first.Add(5 * time.Minute)
+	if err := s.SetTargetHealth(ctx, &registry.TargetHealth{TargetID: target.ID, Reachable: false,
+		Error: "no answer", DiskFreeBytes: -1, ProbedAt: second}); err != nil {
+		t.Fatalf("SetTargetHealth (again): %v", err)
+	}
+	got, err = s.GetTargetHealth(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("GetTargetHealth: %v", err)
+	}
+	if got.Reachable || got.Error != "no answer" || got.DiskFreeBytes != -1 || got.TmuxVersion != "" || !got.ProbedAt.Equal(second) {
+		t.Errorf("GetTargetHealth after a second probe = %+v", got)
+	}
+}
+
+func testTargetHealthRequiresValidTarget(t *testing.T, s registry.Store) {
+	err := s.SetTargetHealth(context.Background(), &registry.TargetHealth{TargetID: "no-such-target"})
+	if !errors.Is(err, registry.ErrConflict) {
+		t.Fatalf("SetTargetHealth on unknown target: err = %v, want ErrConflict", err)
+	}
+}
+
+func testTargetHealthDeletedWithTarget(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+	if err := s.SetTargetHealth(ctx, &registry.TargetHealth{TargetID: target.ID, Reachable: true}); err != nil {
+		t.Fatalf("SetTargetHealth: %v", err)
+	}
+	if err := s.DeleteTarget(ctx, target.ID); err != nil {
+		t.Fatalf("DeleteTarget with a health record: %v", err)
+	}
+	if _, err := s.GetTargetHealth(ctx, target.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("health record outlived its target: err = %v", err)
 	}
 }
 

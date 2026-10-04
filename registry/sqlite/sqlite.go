@@ -187,12 +187,12 @@ func (s *Store) SetTargetAgent(ctx context.Context, a *registry.TargetAgent) err
 		a.CheckedAt = time.Now().UTC()
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO target_agents (target_id, agent_type, available, path, version, checked_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO target_agents (target_id, agent_type, available, path, version, auth_status, checked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (target_id, agent_type) DO UPDATE SET
 			available = excluded.available, path = excluded.path, version = excluded.version,
-			checked_at = excluded.checked_at`,
-		a.TargetID, a.AgentType, a.Available, a.Path, a.Version, a.CheckedAt,
+			auth_status = excluded.auth_status, checked_at = excluded.checked_at`,
+		a.TargetID, a.AgentType, a.Available, a.Path, a.Version, a.AuthStatus, a.CheckedAt,
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: target %q does not exist", registry.ErrConflict, a.TargetID)
@@ -205,7 +205,7 @@ func (s *Store) SetTargetAgent(ctx context.Context, a *registry.TargetAgent) err
 
 func (s *Store) ListTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT target_id, agent_type, available, path, version, checked_at FROM target_agents
+		SELECT target_id, agent_type, available, path, version, auth_status, checked_at FROM target_agents
 		WHERE target_id = ? ORDER BY agent_type`, targetID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list target agents: %w", err)
@@ -215,7 +215,7 @@ func (s *Store) ListTargetAgents(ctx context.Context, targetID string) ([]*regis
 	out := []*registry.TargetAgent{}
 	for rows.Next() {
 		var a registry.TargetAgent
-		if err := rows.Scan(&a.TargetID, &a.AgentType, &a.Available, &a.Path, &a.Version, &a.CheckedAt); err != nil {
+		if err := rows.Scan(&a.TargetID, &a.AgentType, &a.Available, &a.Path, &a.Version, &a.AuthStatus, &a.CheckedAt); err != nil {
 			return nil, fmt.Errorf("sqlite: list target agents: %w", err)
 		}
 		out = append(out, &a)
@@ -224,6 +224,46 @@ func (s *Store) ListTargetAgents(ctx context.Context, targetID string) ([]*regis
 		return nil, fmt.Errorf("sqlite: list target agents: %w", err)
 	}
 	return out, nil
+}
+
+// SetTargetHealth upserts a target's latest health probe (LOOM-86).
+func (s *Store) SetTargetHealth(ctx context.Context, h *registry.TargetHealth) error {
+	if h.ProbedAt.IsZero() {
+		h.ProbedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO target_health (target_id, reachable, error, latency_ms, tmux_version, disk_free_bytes, probed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (target_id) DO UPDATE SET
+			reachable = excluded.reachable, error = excluded.error, latency_ms = excluded.latency_ms,
+			tmux_version = excluded.tmux_version, disk_free_bytes = excluded.disk_free_bytes,
+			probed_at = excluded.probed_at`,
+		h.TargetID, h.Reachable, h.Error, h.Latency.Milliseconds(), h.TmuxVersion, h.DiskFreeBytes, h.ProbedAt,
+	)
+	if isForeignKeyConstraintErr(err) {
+		return fmt.Errorf("%w: target %q does not exist", registry.ErrConflict, h.TargetID)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: set target health: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetTargetHealth(ctx context.Context, targetID string) (*registry.TargetHealth, error) {
+	var h registry.TargetHealth
+	var latencyMS int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT target_id, reachable, error, latency_ms, tmux_version, disk_free_bytes, probed_at
+		FROM target_health WHERE target_id = ?`, targetID,
+	).Scan(&h.TargetID, &h.Reachable, &h.Error, &latencyMS, &h.TmuxVersion, &h.DiskFreeBytes, &h.ProbedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: health of target %q", registry.ErrNotFound, targetID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get target health: %w", err)
+	}
+	h.Latency = time.Duration(latencyMS) * time.Millisecond
+	return &h, nil
 }
 
 func (s *Store) CreateWorkspace(ctx context.Context, w *registry.Workspace) error {

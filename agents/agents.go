@@ -14,6 +14,7 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/Loomux/server/completion"
@@ -56,7 +57,13 @@ func ClaudeCode() router.AgentType {
 		AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker, DetectPrompt: DetectPrompt},
 		LaunchTemplate: "claude",
 		Binary:         "claude",
-		InterruptKeys:  []string{"Escape"},
+		// `claude auth status` prints JSON with "loggedIn" (LOOM-86).
+		AuthCheck: &router.AuthCheck{
+			Args:      []string{"auth", "status"},
+			LoggedIn:  regexp.MustCompile(`"loggedIn":\s*true`),
+			LoggedOut: regexp.MustCompile(`"loggedIn":\s*false`),
+		},
+		InterruptKeys: []string{"Escape"},
 		Description: `Anthropic's Claude Code CLI ("claude"). A general coding agent: reads, edits and runs code ` +
 			`in the workspace. The default when the user doesn't name an agent.`,
 		CompletionHookArgs: []string{"--settings", claudeStopHookSettings()},
@@ -125,9 +132,15 @@ func claudeStopHookSettings() string {
 // themselves (Codex has one notify program, not a list).
 func Codex() router.AgentType {
 	return router.AgentType{
-		AgentConfig:        completion.AgentConfig{Tier: completion.TierMarker, DetectPrompt: DetectPrompt},
-		LaunchTemplate:     "codex",
-		Binary:             "codex",
+		AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker, DetectPrompt: DetectPrompt},
+		LaunchTemplate: "codex",
+		Binary:         "codex",
+		// `codex login status`: "Logged in using …" or "Not logged in".
+		AuthCheck: &router.AuthCheck{
+			Args:      []string{"login", "status"},
+			LoggedIn:  regexp.MustCompile(`(?im)^\s*logged in\b`),
+			LoggedOut: regexp.MustCompile(`(?i)\bnot logged in\b`),
+		},
 		InterruptKeys:      []string{"Escape"},
 		Description:        `OpenAI's Codex CLI ("codex"). A coding agent; choose it when the user asks for Codex or OpenAI.`,
 		CompletionHookArgs: []string{"-c", "notify=" + tomlStringArray(codexNotifyArgv())},

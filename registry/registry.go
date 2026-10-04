@@ -318,7 +318,36 @@ type TargetAgent struct {
 	// Version the first line its --version printed (LOOM-79). Launches
 	// use Path, so the version recorded is the version that runs. Empty
 	// when unavailable.
-	Path      string
-	Version   string
-	CheckedAt time.Time
+	Path    string
+	Version string
+	// AuthStatus is whether the CLI reported itself signed in when probed
+	// (LOOM-86): one of the AgentAuth* values, empty when not checked.
+	AuthStatus string
+	CheckedAt  time.Time
+}
+
+// TargetAgent.AuthStatus values (LOOM-86).
+const (
+	AgentAuthLoggedIn  = "logged_in"
+	AgentAuthLoggedOut = "logged_out"
+	// AgentAuthUnknown: the CLI was asked but its answer wasn't
+	// recognised.
+	AgentAuthUnknown = "unknown"
+)
+
+// TargetHealth is a target's latest health probe (LOOM-86), refreshed
+// periodically and on demand. No record means never probed.
+type TargetHealth struct {
+	TargetID string
+	// Reachable is whether the probe could run a command on the target
+	// at all; Error says why not, or what else is wrong with it.
+	Reachable bool
+	Error     string
+	// Latency is how long the probe command took, end to end.
+	Latency     time.Duration
+	TmuxVersion string
+	// DiskFreeBytes is the space free on the filesystem holding the
+	// target's workspace root; -1 when unknown.
+	DiskFreeBytes int64
+	ProbedAt      time.Time
 }

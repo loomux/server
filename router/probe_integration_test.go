@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -57,6 +58,8 @@ func TestIntegration_ProbeResolvesAgentOffThePath(t *testing.T) {
 				"fake": router.AgentType{
 					AgentConfig:    completion.AgentConfig{Tier: completion.TierIdle},
 					LaunchTemplate: "loomux-fake-agent", Binary: "loomux-fake-agent",
+					AuthCheck: &router.AuthCheck{Args: []string{"auth", "status"},
+						LoggedIn: regexp.MustCompile(`"loggedIn":\s*true`), LoggedOut: regexp.MustCompile(`"loggedIn":\s*false`)},
 				},
 				"missing": router.AgentType{
 					AgentConfig:    completion.AgentConfig{Tier: completion.TierIdle},
@@ -80,6 +83,9 @@ func TestIntegration_ProbeResolvesAgentOffThePath(t *testing.T) {
 			if fake == nil || !fake.Available || fake.Path != want || fake.Version != "loomux-fake-agent 4.5.6" {
 				t.Errorf("fake agent = %+v, want available at %s reporting version 4.5.6", fake, want)
 			}
+			if fake != nil && fake.AuthStatus != registry.AgentAuthLoggedOut {
+				t.Errorf("fake agent auth = %q, want logged out (LOOM-86)", fake.AuthStatus)
+			}
 			if m := byName["missing"]; m == nil || m.Available || m.Path != "" {
 				t.Errorf("missing agent = %+v, want unavailable with no path", m)
 			}
@@ -93,7 +99,8 @@ func writeFakeAgent(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "loomux-fake-agent")
-	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'loomux-fake-agent 4.5.6'; fi\n"
+	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'loomux-fake-agent 4.5.6'; fi\n" +
+		"if [ \"$1 $2\" = 'auth status' ]; then printf '{\\n  \"loggedIn\": false\\n}\\n'; exit 1; fi\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

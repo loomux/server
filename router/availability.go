@@ -19,7 +19,13 @@ const (
 	agentProbePathPrefix    = "loomux-agent-path:"
 	agentProbeVersionPrefix = "loomux-agent-version:"
 	agentProbeAbsent        = "loomux-agent-absent"
+	// What the auth check (LOOM-86) printed is fenced between these.
+	agentProbeAuthBegin = "loomux-agent-auth-begin"
+	agentProbeAuthEnd   = "loomux-agent-auth-end"
 )
+
+// agentAuthOutputMax bounds how much of an auth check's output is read.
+const agentAuthOutputMax = 4000
 
 // agentSearchDirs are where agent CLIs commonly install outside a
 // non-interactive shell's PATH (LOOM-79: on sc1, claude is only in
@@ -47,8 +53,9 @@ func (e *AgentUnavailableError) Error() string {
 // shell's PATH ($SHELL, then bash) — then the non-interactive PATH, then
 // agentSearchDirs; and reports the --version of exactly the path it found,
 // since that is the path the launch will run. Output: the absent sentinel,
-// or the path and version lines.
-func agentProbeCommand(binary string) string {
+// or the path and version lines, then — when authArgs are given — that
+// path run with authArgs, fenced (LOOM-86).
+func agentProbeCommand(binary string, authArgs []string) string {
 	lookup := shellQuote("command -v " + shellQuote(binary))
 	var dirs []string
 	for _, d := range agentSearchDirs {
@@ -76,16 +83,40 @@ v=$($t "$p" --version </dev/null 2>&1 | head -n 1)
 echo "` + agentProbePathPrefix + `$p"
 echo "` + agentProbeVersionPrefix + `$v"
 `
+	if len(authArgs) > 0 {
+		quoted := make([]string, len(authArgs))
+		for i, a := range authArgs {
+			quoted[i] = shellQuote(a)
+		}
+		script += `echo ` + agentProbeAuthBegin + `
+$t "$p" ` + strings.Join(quoted, " ") + ` </dev/null 2>&1 | head -c ` + fmt.Sprint(agentAuthOutputMax) + `
+echo
+echo ` + agentProbeAuthEnd + `
+`
+	}
 	return "sh -c " + shellQuote(script)
 }
 
-// parseAgentProbe reads agentProbeCommand's output.
-func parseAgentProbe(out string) (path, version string, err error) {
+// parseAgentProbe reads agentProbeCommand's output; auth is what the
+// auth check printed, empty if it didn't run.
+func parseAgentProbe(out string) (path, version, auth string, err error) {
+	inAuth := false
+	var authLines []string
 	for _, line := range strings.Split(out, "\n") {
+		if inAuth {
+			if strings.TrimSpace(line) == agentProbeAuthEnd {
+				inAuth = false
+			} else {
+				authLines = append(authLines, line)
+			}
+			continue
+		}
 		line = strings.TrimSpace(line)
 		switch {
+		case line == agentProbeAuthBegin:
+			inAuth = true
 		case line == agentProbeAbsent:
-			return "", "", nil
+			return "", "", "", nil
 		case strings.HasPrefix(line, agentProbePathPrefix):
 			path = strings.TrimPrefix(line, agentProbePathPrefix)
 		case strings.HasPrefix(line, agentProbeVersionPrefix):
@@ -93,13 +124,13 @@ func parseAgentProbe(out string) (path, version string, err error) {
 		}
 	}
 	if !strings.HasPrefix(path, "/") {
-		return "", "", fmt.Errorf("unexpected output %q", out)
+		return "", "", "", fmt.Errorf("unexpected output %q", out)
 	}
 	const maxVersion = 200
 	if len(version) > maxVersion {
 		version = version[:maxVersion]
 	}
-	return path, version, nil
+	return path, version, strings.TrimSpace(strings.Join(authLines, "\n")), nil
 }
 
 // withResolvedBinary rewrites command — an agent-type's launch template or
@@ -141,11 +172,15 @@ func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentT
 	if err != nil {
 		return nil, fmt.Errorf("probe agent %q: %w", agentType, err)
 	}
-	out, err := exec.RunOnce(ctx, agentProbeCommand(entry.Binary))
+	var authArgs []string
+	if entry.AuthCheck != nil {
+		authArgs = entry.AuthCheck.Args
+	}
+	out, err := exec.RunOnce(ctx, agentProbeCommand(entry.Binary, authArgs))
 	if err != nil {
 		return nil, fmt.Errorf("probe agent %q on target %q: %w", agentType, target.Name, err)
 	}
-	path, version, err := parseAgentProbe(out)
+	path, version, auth, err := parseAgentProbe(out)
 	if err != nil {
 		return nil, fmt.Errorf("probe agent %q on target %q: %w", agentType, target.Name, err)
 	}
@@ -153,11 +188,16 @@ func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentT
 		TargetID: target.ID, AgentType: agentType, Available: path != "",
 		Path: path, Version: version, CheckedAt: time.Now().UTC(),
 	}
+	// Only what the CLI said is classified, never kept: it can carry the
+	// account's email.
+	if path != "" && entry.AuthCheck != nil {
+		rec.AuthStatus = entry.AuthCheck.Status(auth)
+	}
 	if err := r.store.SetTargetAgent(ctx, rec); err != nil {
 		return nil, fmt.Errorf("probe agent %q: record result: %w", agentType, err)
 	}
 	r.logger.Info("agent probed", "target_id", target.ID, "agent_type", agentType, "available", rec.Available,
-		"path", path, "version", version)
+		"path", path, "version", version, "auth", rec.AuthStatus)
 	return rec, nil
 }
 
