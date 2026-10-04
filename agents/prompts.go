@@ -3,6 +3,7 @@ package agents
 import (
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Loomux/server/registry"
@@ -217,6 +218,20 @@ func parsePlain(lines []string, cursor int) (options []registry.AttentionOption,
 	return options, selected, first
 }
 
+// isContinuation reports whether t reads as the rest of a wrapped
+// sentence rather than a line of its own: it starts in lower case or
+// with punctuation.
+func isContinuation(t string) bool {
+	r, _ := utf8.DecodeRuneInString(t)
+	return unicode.IsLower(r) || unicode.IsPunct(r)
+}
+
+// endsSentence reports whether t ends with a sentence's closing
+// punctuation, so nothing wraps on from it.
+func endsSentence(t string) bool {
+	return strings.HasSuffix(t, ".") || strings.HasSuffix(t, "!") || strings.HasSuffix(t, "?")
+}
+
 // splitHeader splits what's above a prompt's options into its question
 // (the last line asking one) and the heading and detail lines around
 // it. Claude Code draws a solid rule above a prompt, which bounds it;
@@ -231,11 +246,27 @@ func splitHeader(lines []string) (question string, header []string) {
 			break
 		}
 	}
+	// tipOpen: the line before was a tip that may wrap onto this one.
+	tipOpen := false
 	for _, l := range lines[start:] {
 		t := strings.TrimSpace(l)
-		if t == "" || isRule(l) || strings.HasPrefix(t, "Tip:") {
+		if t == "" || isRule(l) {
+			tipOpen = false
 			continue
 		}
+		// A tip is the CLI's own advice, not the prompt's. It can wrap
+		// onto one more line, which carries on its sentence, so doesn't
+		// start with a capital. Only one: what follows is the prompt's
+		// own detail, even if it starts in lower case.
+		if strings.HasPrefix(t, "Tip:") {
+			tipOpen = !endsSentence(t)
+			continue
+		}
+		if tipOpen && isContinuation(t) {
+			tipOpen = false
+			continue
+		}
+		tipOpen = false
 		header = append(header, t)
 	}
 	q := -1
