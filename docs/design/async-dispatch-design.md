@@ -162,8 +162,10 @@ reconnects mid-turn picks up where it was. Stage events (routing/provisioning/â€
 `main.go` order on SIGTERM:
 1. `dispatch.Service.Shutdown(ctx)` with a drain budget (`LOOMUX_DISPATCH_DRAIN`, default `20s`;
    k8s grace is 30s): new submits get 503; in-flight jobs get the budget to finish.
-2. Jobs still running then are marked `interrupted` (`error_class=interrupted`,
-   reason `server_shutdown`) and their contexts cancelled with cause `dispatch.ErrShutdown`.
+2. Jobs still running then have their contexts cancelled with cause
+   `orchestrator.ErrInterrupted`. Their rows are left `running`, so the next process's `Recover`
+   resumes them (LOOM-82). Before LOOM-82 they were marked `interrupted`, which meant a deploy
+   mid-turn could never be resumed.
 3. Router: the LOOM-77 deferred guard in `dispatchToAgent` skips failing the task when
    `context.Cause(ctx)` is `ErrShutdown` (exposed as `orchestrator.ErrInterrupted` so router doesn't
    import `dispatch`). The task stays `running` with its pane alive, which is exactly what LOOM-82

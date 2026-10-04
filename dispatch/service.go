@@ -298,6 +298,12 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run 
 	}
 
 	reply, err := s.safeRun(ctx, d, run)
+	if errors.Is(context.Cause(ctx), orchestrator.ErrInterrupted) {
+		// Cut off by shutdown: the row stays running for the next
+		// start's Recover to resume or interrupt (LOOM-82).
+		log.Info("dispatch left running for the next start")
+		return
+	}
 
 	finished := time.Now().UTC()
 	d.FinishedAt = &finished
@@ -364,10 +370,11 @@ func (s *Service) ListByConversation(ctx context.Context, conversationID string)
 }
 
 // Shutdown stops accepting dispatches and gives running ones until ctx
-// is done to finish. Any still running then are marked interrupted and
-// their contexts cancelled with cause orchestrator.ErrInterrupted, which
-// tells the router to leave their tasks running for startup
-// reconciliation (LOOM-82) rather than failing them.
+// is done to finish. Any still running then have their contexts
+// cancelled with cause orchestrator.ErrInterrupted, which tells the
+// router to leave their tasks running, and their rows are left running
+// too: the next process's Recover resumes them (LOOM-82), so a deploy
+// mid-turn still delivers the reply.
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.closing = true
@@ -391,11 +398,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
-	for id, j := range running {
-		s.interrupt(id, "interrupted: the server shut down before this dispatch finished")
+	for _, j := range running {
 		j.cancel(orchestrator.ErrInterrupted)
 	}
-	s.logger.Warn("dispatch drain timed out; interrupted in-flight dispatches", "count", len(running))
+	s.logger.Warn("dispatch drain timed out; left in-flight dispatches for the next start to resume", "count", len(running))
 
 	select {
 	case <-drained:
@@ -441,16 +447,6 @@ func (s *Service) Recover(ctx context.Context) (int, error) {
 		s.logger.Warn("marked dispatches left by a previous run as interrupted", "count", n)
 	}
 	return n, nil
-}
-
-func (s *Service) interrupt(id, reason string) {
-	ctx := context.Background()
-	d, err := s.store.GetDispatch(ctx, id)
-	if err != nil {
-		s.logger.Error("dispatch not interrupted", "dispatch_id", id, "error", err)
-		return
-	}
-	s.markInterrupted(ctx, d, reason)
 }
 
 func (s *Service) markInterrupted(ctx context.Context, d *registry.Dispatch, reason string) bool {

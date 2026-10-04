@@ -299,7 +299,10 @@ func TestShutdownDrainsQuickJob(t *testing.T) {
 	}
 }
 
-func TestShutdownInterruptsSlowJob(t *testing.T) {
+// LOOM-82: a job still running when the drain budget runs out is
+// cancelled (cause ErrInterrupted) but its row is left running, for the
+// next start's Recover to resume.
+func TestShutdownLeavesSlowJobForRecover(t *testing.T) {
 	store := newStore(t)
 	cause := make(chan error, 1)
 	svc := dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
@@ -323,16 +326,23 @@ func TestShutdownInterruptsSlowJob(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("job context never cancelled")
 	}
-	got, _ := store.GetDispatch(context.Background(), d.ID)
-	if got.Status != registry.DispatchStatusInterrupted || got.ErrorClass != registry.ErrorClassInterrupted || got.FinishedAt == nil {
-		t.Fatalf("interrupted dispatch = %+v", got)
+	// A waiter on the job is released, not left hanging.
+	if w := waitDone(t, svc, d.ID); w.Status != registry.DispatchStatusRunning || w.FinishedAt != nil {
+		t.Fatalf("job after Shutdown = %+v, want it left running", w)
 	}
 	if _, err := svc.Submit(context.Background(), dispatch.Request{ConversationID: "c2", Message: "m"}); !errors.Is(err, dispatch.ErrShuttingDown) {
 		t.Fatalf("Submit after Shutdown = %v, want ErrShuttingDown", err)
 	}
-	// A waiter on an interrupted job is released, not left hanging.
-	if w := waitDone(t, svc, d.ID); w.Status != registry.DispatchStatusInterrupted {
-		t.Fatalf("Wait on interrupted job = %+v", w)
+	// The next process resumes it.
+	next := newService(t, store, func(context.Context, *registry.Dispatch) (string, error) { return "", nil },
+		dispatch.WithResumer(func(context.Context, *registry.Dispatch) dispatch.RunFunc {
+			return func(context.Context, *registry.Dispatch) (string, error) { return "resumed", nil }
+		}))
+	if _, err := next.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if got := waitDone(t, next, d.ID); got.Status != registry.DispatchStatusSucceeded || got.Reply != "resumed" {
+		t.Errorf("after the next start's Recover: %+v", got)
 	}
 }
 
