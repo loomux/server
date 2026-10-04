@@ -537,6 +537,15 @@ Four independent axes:
   completion signal, so after a deny the turn also ends once the pane
   has been unchanged for 3 s. Then the turn carries on as any other:
   wait, relay, apply.
+- **Flaky or saturated SSH** (LOOM-84): every ssh call sets
+  `ServerAliveInterval=15`/`ServerAliveCountMax=3`, so a half-dead
+  connection is dropped after ~45 s instead of hanging. Each operation
+  has a deadline (30 s; 2 min for one-shot commands), and past it the
+  operation fails as `ErrUnreachable`. At most 6 ssh operations run at
+  once per target: they share one ControlMaster, and sshd's MaxSessions
+  defaults to 10. Completion polling (marker, idle, exit) runs every 1 s,
+  not every 250 ms. Not done yet: batching marker checks into one `ls`
+  per target.
 - **Router model unavailable/erroring**: an explicit "routing failed"
   message to the user, never a silently dropped message or a wild guess at
   a workspace.
