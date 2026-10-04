@@ -39,6 +39,7 @@ type App struct {
 	store         *sqlite.Store
 	stopReaper    context.CancelFunc
 	reaperDone    chan struct{}
+	proberDone    chan struct{}
 	metrics       *metrics.Metrics
 	healthChecker *health.Checker
 	dispatches    *dispatch.Service
@@ -85,6 +86,34 @@ func (a *App) RefreshTargetAgents(ctx context.Context, targetID string) ([]*regi
 	return a.router.RefreshTargetAgents(ctx, targetID)
 }
 
+// ProbeTarget probes a target's health and agent CLIs now and records the
+// results (LOOM-86) — see router.Router.ProbeTarget. Satisfies
+// api.TargetProber.
+func (a *App) ProbeTarget(ctx context.Context, targetID string) (*registry.TargetHealth, []*registry.TargetAgent, error) {
+	return a.router.ProbeTarget(ctx, targetID)
+}
+
+// firstProbeAfter caps how long after startup the first target health
+// probe runs (LOOM-86): soon, but clear of startup itself.
+const firstProbeAfter = 30 * time.Second
+
+// runTargetProber probes every target's health every interval until ctx
+// ends, the first time after interval or firstProbeAfter, whichever is
+// sooner.
+func runTargetProber(ctx context.Context, rtr *router.Router, interval time.Duration) {
+	timer := time.NewTimer(min(interval, firstProbeAfter))
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		rtr.ProbeAllTargets(ctx)
+		timer.Reset(interval)
+	}
+}
+
 // Store returns the underlying registry.Store — e.g. for api.Server's
 // session storage, which must live in the same database as everything
 // else rather than a second, separately managed connection.
@@ -117,6 +146,7 @@ func (a *App) Close() error {
 	if a.stopReaper != nil {
 		a.stopReaper()
 		<-a.reaperDone
+		<-a.proberDone
 	}
 	return a.store.Close()
 }
@@ -275,6 +305,17 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr)
 
 	rtr := router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...)
+	// The target health probe (LOOM-86) shares the reaper's lifetime too,
+	// and Close waits for it: a probe mid-flight writes to the store.
+	probeInterval := cfg.TargetProbeInterval
+	if probeInterval == 0 {
+		probeInterval = defaultTargetProbeInterval
+	}
+	proberDone := make(chan struct{})
+	go func() {
+		defer close(proberDone)
+		runTargetProber(reaperCtx, rtr, probeInterval)
+	}()
 	dispatchOpts := []dispatch.Option{
 		dispatch.WithErrorClassifier(router.ClassifyError),
 		dispatch.WithMaxDuration(cfg.DispatchMaxDuration),
@@ -305,6 +346,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if _, err := dispatches.Recover(context.Background()); err != nil {
 		stopReaper()
 		<-reaperDone
+		<-proberDone
 		_ = store.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	}
@@ -327,6 +369,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		store:         store,
 		stopReaper:    stopReaper,
 		reaperDone:    reaperDone,
+		proberDone:    proberDone,
 		metrics:       met,
 		healthChecker: healthChecker,
 	}, nil

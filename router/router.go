@@ -550,6 +550,10 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		log.Error("provisioning failed", "stage", "validate", "error", err)
 		return "", fmt.Errorf("provision workspace: %w", err)
 	}
+	if err := r.requireHealthyTarget(ctx, target, true); err != nil {
+		log.Error("provisioning failed", "stage", "target health", "error", err)
+		return "", fmt.Errorf("provision workspace: %w", err)
+	}
 
 	// Path stays empty until the recipe reports the directory it
 	// resolved inside the workspace root.
@@ -682,6 +686,9 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	failClass := registry.ErrorClassInternal
 	defer func() { r.failTurnOnError(ctx, log, taskID, failClass, err) }()
 
+	if err := r.requireWorkspaceTargetHealthy(ctx, workspaceID); err != nil {
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
 	task, err := r.findActiveTask(ctx, workspaceID, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
@@ -1309,12 +1316,17 @@ func (r *Router) snapshotTargets(ctx context.Context, targets []*registry.Target
 		if err != nil {
 			return nil, err
 		}
+		problem, err := r.targetProblem(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
 		out[i] = TargetSnapshot{
 			ID:            t.ID,
 			Name:          t.Name,
 			Kind:          string(t.Kind),
 			Agents:        agents,
 			AgentVersions: versions,
+			Problem:       problem,
 		}
 	}
 	return out, nil

@@ -7,9 +7,11 @@ package router
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/registry"
 )
 
 // AgentType is a full registered agent-type entry (design spec §6:
@@ -50,6 +52,9 @@ type AgentType struct {
 	// workspace is provisioned for it, and the result is recorded per
 	// target (LOOM-71). Empty means the agent-type is never probed.
 	Binary string
+	// AuthCheck, if set, is how the probe asks the CLI whether it is
+	// signed in (LOOM-86). Only meaningful with Binary.
+	AuthCheck *AuthCheck
 	// Description is one line telling the routing model what this agent
 	// is and when to choose it (LOOM-88), by the name a user would use.
 	Description string
@@ -61,6 +66,27 @@ type AgentType struct {
 	// Install, if set, is how to put the CLI on a target that lacks it —
 	// offered to the user, and run only on their explicit confirmation.
 	Install *AgentInstall
+}
+
+// AuthCheck asks an agent CLI whether it is signed in (LOOM-86): the
+// probe runs the resolved binary with Args and matches what it prints.
+// LoggedOut is tried first, since "not logged in" usually contains
+// "logged in"; output neither matches records registry.AgentAuthUnknown.
+type AuthCheck struct {
+	Args      []string
+	LoggedIn  *regexp.Regexp
+	LoggedOut *regexp.Regexp
+}
+
+// Status classifies what the auth command printed.
+func (c *AuthCheck) Status(output string) string {
+	switch {
+	case c.LoggedOut != nil && c.LoggedOut.MatchString(output):
+		return registry.AgentAuthLoggedOut
+	case c.LoggedIn != nil && c.LoggedIn.MatchString(output):
+		return registry.AgentAuthLoggedIn
+	}
+	return registry.AgentAuthUnknown
 }
 
 // AgentInstall is an agent-type's install recipe (LOOM-71). Both fields

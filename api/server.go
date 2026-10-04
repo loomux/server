@@ -114,6 +114,16 @@ type TargetStore interface {
 	// ListTargetAgents backs GET /targets/{id}/agents (LOOM-71): the
 	// recorded agent CLI availability on a target.
 	ListTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error)
+	// GetTargetHealth backs each target's health in GET /targets
+	// (LOOM-86); registry.ErrNotFound means never probed.
+	GetTargetHealth(ctx context.Context, targetID string) (*registry.TargetHealth, error)
+}
+
+// TargetProber probes a target's health and agent CLIs now and records
+// the results (LOOM-86) — satisfied by *app.App. Optional: with none
+// configured (WithTargetProber), the probe endpoint answers 501.
+type TargetProber interface {
+	ProbeTarget(ctx context.Context, targetID string) (*registry.TargetHealth, []*registry.TargetAgent, error)
 }
 
 // AgentProber re-probes a target for every probe-able agent CLI and
@@ -171,6 +181,7 @@ type Server struct {
 	attachInfo         AttachInfoStore
 	targets            TargetStore
 	agentProber        AgentProber
+	targetProber       TargetProber
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
@@ -223,6 +234,11 @@ func WithAgentProber(p AgentProber) Option {
 	return func(s *Server) { s.agentProber = p }
 }
 
+// WithTargetProber enables POST /api/v1/targets/{id}/probe (LOOM-86).
+func WithTargetProber(p TargetProber) Option {
+	return func(s *Server) { s.targetProber = p }
+}
+
 // WithHealthChecker sets the checker used by /api/v1/health and
 // /api/v1/health/deep (LOOM-105). A nil value is accepted and ignored.
 func WithHealthChecker(h HealthChecker) Option {
@@ -271,6 +287,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/agents/refresh", s.requireAuth(s.handleRefreshTargetAgents))
+	mux.HandleFunc("POST /api/v1/targets/{id}/probe", s.requireAuth(s.handleProbeTarget))
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/health/deep", s.requireAuth(s.handleHealthDeep))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
@@ -1117,6 +1134,38 @@ type targetResponse struct {
 	PermissionMode string    `json:"permission_mode"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	// Health is the target's last health probe (LOOM-86); null when it
+	// has never been probed, and in create/update responses.
+	Health *targetHealthResponse `json:"health"`
+}
+
+// targetHealthResponse is a target's last health probe (LOOM-86).
+type targetHealthResponse struct {
+	// Status is "healthy" or "unhealthy"; Error says why when unhealthy.
+	Status      string `json:"status"`
+	Reachable   bool   `json:"reachable"`
+	Error       string `json:"error,omitempty"`
+	LatencyMS   int64  `json:"latency_ms"`
+	TmuxVersion string `json:"tmux_version"`
+	// DiskFreeBytes is free space on the workspace root's filesystem;
+	// null when unknown.
+	DiskFreeBytes *int64    `json:"disk_free_bytes"`
+	LastProbedAt  time.Time `json:"last_probed_at"`
+}
+
+func newTargetHealthResponse(h *registry.TargetHealth) *targetHealthResponse {
+	out := &targetHealthResponse{
+		Status: "healthy", Reachable: h.Reachable, Error: h.Error, LatencyMS: h.Latency.Milliseconds(),
+		TmuxVersion: h.TmuxVersion, LastProbedAt: h.ProbedAt,
+	}
+	if h.Error != "" {
+		out.Status = "unhealthy"
+	}
+	if h.DiskFreeBytes >= 0 {
+		free := h.DiskFreeBytes
+		out.DiskFreeBytes = &free
+	}
+	return out
 }
 
 func newTargetResponse(t *registry.Target) targetResponse {
@@ -1224,7 +1273,16 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]targetResponse, 0, len(targets))
 	for _, t := range targets {
-		out = append(out, newTargetResponse(t))
+		resp := newTargetResponse(t)
+		h, err := s.targets.GetTargetHealth(r.Context(), t.ID)
+		switch {
+		case err == nil:
+			resp.Health = newTargetHealthResponse(h)
+		case !errors.Is(err, registry.ErrNotFound):
+			writeError(w, http.StatusInternalServerError, "could not read target health")
+			return
+		}
+		out = append(out, resp)
 	}
 	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out})
 }
@@ -1297,9 +1355,12 @@ type targetAgentResponse struct {
 	Available bool   `json:"available"`
 	// Path is the absolute path the CLI resolved to, Version what it
 	// reported (LOOM-79); empty when unavailable.
-	Path      string    `json:"path,omitempty"`
-	Version   string    `json:"version,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	Path    string `json:"path,omitempty"`
+	Version string `json:"version,omitempty"`
+	// AuthStatus is logged_in, logged_out or unknown (LOOM-86); omitted
+	// when the CLI wasn't asked.
+	AuthStatus string    `json:"auth_status,omitempty"`
+	CheckedAt  time.Time `json:"checked_at"`
 }
 
 type listTargetAgentsResponse struct {
@@ -1310,7 +1371,8 @@ func newListTargetAgentsResponse(agents []*registry.TargetAgent) listTargetAgent
 	out := make([]targetAgentResponse, 0, len(agents))
 	for _, a := range agents {
 		out = append(out, targetAgentResponse{
-			AgentType: a.AgentType, Available: a.Available, Path: a.Path, Version: a.Version, CheckedAt: a.CheckedAt,
+			AgentType: a.AgentType, Available: a.Available, Path: a.Path, Version: a.Version,
+			AuthStatus: a.AuthStatus, CheckedAt: a.CheckedAt,
 		})
 	}
 	return listTargetAgentsResponse{Agents: out}
@@ -1358,6 +1420,34 @@ func (s *Server) handleRefreshTargetAgents(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))
+}
+
+// handleProbeTarget probes the target now — health, then its agent CLIs
+// if it answered — records and returns the results (LOOM-86). An
+// unreachable target is a 200 whose health says so: the probe worked.
+func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
+	if s.targetProber == nil {
+		writeError(w, http.StatusNotImplemented, "target probing is not configured on this server")
+		return
+	}
+	h, agents, err := s.targetProber.ProbeTarget(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no such target")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not probe target")
+		return
+	}
+	writeJSON(w, http.StatusOK, probeTargetResponse{
+		Health: newTargetHealthResponse(h),
+		Agents: newListTargetAgentsResponse(agents).Agents,
+	})
+}
+
+type probeTargetResponse struct {
+	Health *targetHealthResponse `json:"health"`
+	Agents []targetAgentResponse `json:"agents"`
 }
 
 type errorResponse struct {

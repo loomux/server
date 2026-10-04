@@ -39,6 +39,10 @@ func classifyDispatchError(err error) string {
 	if errors.Is(err, targets.ErrUnreachable) {
 		return string(registry.ErrorClassTargetUnreachable)
 	}
+	var unhealthy *TargetUnhealthyError
+	if errors.As(err, &unhealthy) {
+		return string(registry.ErrorClassTargetUnhealthy)
+	}
 	if errors.Is(err, orchestrator.ErrHumanTakeover) {
 		return string(registry.ErrorClassInternal)
 	}

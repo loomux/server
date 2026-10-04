@@ -36,6 +36,27 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.ReapInterval != defaultReapInterval {
 		t.Errorf("ReapInterval = %v, want %v", cfg.ReapInterval, defaultReapInterval)
 	}
+	if cfg.TargetProbeInterval != defaultTargetProbeInterval {
+		t.Errorf("TargetProbeInterval = %v, want %v", cfg.TargetProbeInterval, defaultTargetProbeInterval)
+	}
+}
+
+func TestLoadConfig_TargetProbeInterval(t *testing.T) {
+	setRouterEnv(t)
+	t.Setenv(envTargetProbeInterval, "90s")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.TargetProbeInterval != 90*time.Second {
+		t.Errorf("TargetProbeInterval = %v, want 90s", cfg.TargetProbeInterval)
+	}
+	for _, bad := range []string{"soon", "0s", "-1m"} {
+		t.Setenv(envTargetProbeInterval, bad)
+		if _, err := LoadConfig(); err == nil {
+			t.Errorf("LoadConfig with %s=%q: want an error", envTargetProbeInterval, bad)
+		}
+	}
 }
 
 func TestLoadConfig_CustomReapTiming(t *testing.T) {

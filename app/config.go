@@ -51,6 +51,9 @@ type Config struct {
 	// ReapInterval is how often the idle reaper sweeps. Same zero-means-
 	// default handling as ReapIdleThreshold.
 	ReapInterval time.Duration
+	// TargetProbeInterval is how often every target's health is probed
+	// (LOOM-86). Same zero-means-default handling as ReapIdleThreshold.
+	TargetProbeInterval time.Duration
 	// Logger receives the router's structured records (LOOM-63). Nil —
 	// as in tests that construct Config directly — means nothing is
 	// logged; LoadConfig always sets one.
@@ -75,6 +78,7 @@ const (
 	envMasterKey           = "LOOMUX_MASTER_KEY"
 	envReapIdleThreshold   = "LOOMUX_REAP_IDLE_THRESHOLD"
 	envReapInterval        = "LOOMUX_REAP_INTERVAL"
+	envTargetProbeInterval = "LOOMUX_TARGET_PROBE_INTERVAL"
 	envLogLevel            = "LOOMUX_LOG_LEVEL"
 	envAgentProfiles       = "LOOMUX_AGENT_PROFILES"
 	envDispatchMaxDuration = "LOOMUX_DISPATCH_MAX_DURATION"
@@ -85,8 +89,9 @@ const (
 	// defaultReapIdleThreshold/Interval are also build's fallback for a
 	// zero Config field, not just LoadConfig's env default — see Config's
 	// doc comments.
-	defaultReapIdleThreshold = 24 * time.Hour
-	defaultReapInterval      = time.Hour
+	defaultReapIdleThreshold   = 24 * time.Hour
+	defaultReapInterval        = time.Hour
+	defaultTargetProbeInterval = 5 * time.Minute
 	// defaultDispatchDrain fits inside Kubernetes' default 30s
 	// termination grace, leaving room for the HTTP server's own shutdown.
 	defaultDispatchDrain = 20 * time.Second
@@ -132,6 +137,14 @@ func LoadConfig() (Config, error) {
 		}
 		reapInterval = d
 	}
+	targetProbeInterval := defaultTargetProbeInterval
+	if raw := os.Getenv(envTargetProbeInterval); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("app: %s is not a valid positive duration: %q", envTargetProbeInterval, raw)
+		}
+		targetProbeInterval = d
+	}
 
 	var dispatchMaxDuration time.Duration
 	if raw := os.Getenv(envDispatchMaxDuration); raw != "" {
@@ -174,6 +187,7 @@ func LoadConfig() (Config, error) {
 		Router:              routerCfg,
 		ReapIdleThreshold:   reapIdleThreshold,
 		ReapInterval:        reapInterval,
+		TargetProbeInterval: targetProbeInterval,
 		DispatchMaxDuration: dispatchMaxDuration,
 		DispatchDrain:       dispatchDrain,
 		// JSON on stderr: one record per line, for the container log.

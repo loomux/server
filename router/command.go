@@ -155,6 +155,9 @@ func (r *Router) finishTurn(ctx context.Context, log *slog.Logger, conversationI
 // executeCommand runs command on target as a command task in the
 // target's shell workspace and renders the reply.
 func (r *Router) executeCommand(ctx context.Context, conversationID string, target *registry.Target, command string) (reply, taskID string, err error) {
+	if err := r.requireHealthyTarget(ctx, target, false); err != nil {
+		return "", "", err
+	}
 	ws, err := r.shellWorkspace(ctx, target)
 	if err != nil {
 		return "", "", err

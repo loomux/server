@@ -112,6 +112,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 	opts := []api.Option{
 		api.WithSessionTTL(apiCfg.SessionTTL),
 		api.WithAgentProber(loomux),
+		api.WithTargetProber(loomux),
 		api.WithHealthChecker(loomux.HealthChecker()),
 	}
 	if apiCfg.StaticDir != "" {

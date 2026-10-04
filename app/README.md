@@ -27,7 +27,8 @@ message directly, bypassing HTTP/auth entirely, for local debugging).
   model's own config via `router/llmrouter.ConfigFromEnv()`, and the
   idle reaper's timing (`LOOMUX_REAP_IDLE_THRESHOLD` default 24h,
   `LOOMUX_REAP_INTERVAL` default 1h — design spec's continuation model,
-  LOOM-16), and `LOOMUX_LOG_LEVEL` (`debug`/`info`/`warn`/`error`,
+  LOOM-16), the target health probe's interval
+  (`LOOMUX_TARGET_PROBE_INTERVAL` default 5m, LOOM-86), and `LOOMUX_LOG_LEVEL` (`debug`/`info`/`warn`/`error`,
   default `info`) for the JSON-on-stderr `Config.Logger` that `build`
   hands the router (LOOM-63; a nil `Logger` logs nothing). A zero `ReapIdleThreshold`/`ReapInterval` on a `Config` built
   directly (not via `LoadConfig` — existing tests do this) isn't an

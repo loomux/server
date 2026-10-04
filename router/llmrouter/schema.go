@@ -41,7 +41,9 @@ const decideSystemPrompt = `You are Loomux's routing model. Loomux dispatches ch
 	`"available" on the target the work will run on, and don't choose one marked "not installed" ` +
 	`there unless the user explicitly asked for that agent — Loomux will then offer to install it ` +
 	`rather than run it. "not checked yet" means availability is unknown; Loomux checks before ` +
-	`launching. A new workspace is described only by its name, kind (empty, git_clone or ` +
+	`launching. A target marked "unusable right now" failed its last health check: don't send ` +
+	`work there; if the user asked for that machine, answer directly and tell them what is wrong ` +
+	`with it. A new workspace is described only by its name, kind (empty, git_clone or ` +
 	`existing_dir) and, for git_clone, the git_remote URL: Loomux creates it under the target's ` +
 	`workspace root itself, so you never supply a path or any provisioning command. ` +
 	`Choose "run_command" when the user asks to run a plain shell command on a machine ` +
@@ -346,6 +348,9 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 	}
 	for _, t := range targets {
 		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n  agents: %s\n", t.ID, t.Name, t.Kind, renderAgents(t.Agents, t.AgentVersions))
+		if t.Problem != "" {
+			fmt.Fprintf(&b, "  unusable right now: %s\n", t.Problem)
+		}
 	}
 	if o.WorkspaceHint != "" {
 		fmt.Fprintf(&b, "\nClient hint: the caller suggests this message likely belongs to workspace_id %q. "+

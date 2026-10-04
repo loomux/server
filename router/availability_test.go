@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -38,7 +39,9 @@ func availabilityAgentTypes() router.AgentTypeRegistry {
 			Binary:         "codex",
 			Install:        &router.AgentInstall{Command: codexInstall, Login: "run `codex login` on the target"},
 		},
-		"claude-code": router.AgentType{AgentConfig: short, LaunchTemplate: "claude", Binary: "claude"},
+		"claude-code": router.AgentType{AgentConfig: short, LaunchTemplate: "claude", Binary: "claude",
+			AuthCheck: &router.AuthCheck{Args: []string{"auth", "status"},
+				LoggedIn: regexp.MustCompile(`"loggedIn":\s*true`), LoggedOut: regexp.MustCompile(`"loggedIn":\s*false`)}},
 	}
 }
 
@@ -48,6 +51,8 @@ type probeScript struct {
 	mu        sync.Mutex
 	installed map[string]bool
 	probes    int
+	// auth is what each binary's auth check prints, when asked (LOOM-86).
+	auth map[string]string
 }
 
 func (p *probeScript) runOnce(command string) (string, error) {
@@ -59,8 +64,12 @@ func (p *probeScript) runOnce(command string) (string, error) {
 	p.probes++
 	for bin, ok := range p.installed {
 		if ok && strings.Contains(command, "b='\\''"+bin+"'\\''") {
-			return router.AgentProbePathPrefix + fakeBinDir + bin + "\n" +
-				router.AgentProbeVersionPrefix + bin + " 1.2.3\n", nil
+			out := router.AgentProbePathPrefix + fakeBinDir + bin + "\n" +
+				router.AgentProbeVersionPrefix + bin + " 1.2.3\n"
+			if a, ok := p.auth[bin]; ok && strings.Contains(command, router.AgentProbeAuthBegin) {
+				out += router.AgentProbeAuthBegin + "\n" + a + "\n" + router.AgentProbeAuthEnd + "\n"
+			}
+			return out, nil
 		}
 	}
 	return router.AgentProbeAbsent + "\n", nil
@@ -516,6 +525,37 @@ func TestRefreshTargetAgents(t *testing.T) {
 
 	if _, err := h.r.RefreshTargetAgents(context.Background(), "no-such-target"); !errors.Is(err, registry.ErrNotFound) {
 		t.Errorf("RefreshTargetAgents(unknown) err = %v, want ErrNotFound", err)
+	}
+}
+
+// LOOM-86: a probe also asks an agent CLI that can say so whether it is
+// signed in, and records the answer; one that can't say isn't asked.
+func TestRefreshTargetAgents_RecordsAuthStatus(t *testing.T) {
+	cases := []struct {
+		name, output, want string
+	}{
+		{"logged in", `{"loggedIn": true, "authMethod": "claude.ai"}`, registry.AgentAuthLoggedIn},
+		{"logged out", `{"loggedIn": false}`, registry.AgentAuthLoggedOut},
+		{"unrecognised", "error: unknown command 'auth'", registry.AgentAuthUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newAvailabilityHarness(t)
+			h.probes.install("claude")
+			h.probes.install("codex")
+			h.probes.auth = map[string]string{"claude": tc.output, "codex": `{"loggedIn": true}`}
+
+			if _, err := h.r.RefreshTargetAgents(context.Background(), h.target.ID); err != nil {
+				t.Fatalf("RefreshTargetAgents: %v", err)
+			}
+			if rec := h.agentRecord(t, "claude-code"); rec == nil || rec.AuthStatus != tc.want {
+				t.Errorf("claude-code = %+v, want auth %q", rec, tc.want)
+			}
+			// codex declares no auth check: never asked, nothing recorded.
+			if rec := h.agentRecord(t, "codex"); rec == nil || rec.AuthStatus != "" {
+				t.Errorf("codex = %+v, want no auth status", rec)
+			}
+		})
 	}
 }
 
