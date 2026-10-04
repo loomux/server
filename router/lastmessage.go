@@ -26,10 +26,12 @@ const maxReplyPayload = 1 << 20
 // agent-type names one and the payload has it; otherwise the pane's
 // screen, as captured. agentMessage is that message unbounded, "" when
 // there was none.
-func (r *Router) turnOutput(ctx context.Context, exec targets.TargetExecutor, task *registry.Task) (relay, agentMessage string, err error) {
+// keepPayload leaves the payload in place for the caller to clear once
+// the turn is relayed, as a late reply (LOOM-121) does.
+func (r *Router) turnOutput(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, keepPayload bool) (relay, agentMessage string, err error) {
 	if entry, err := r.agentTypes.Get(task.AgentType); err == nil &&
 		entry.Tier == completion.TierMarker && entry.LastMessageKey != "" {
-		if msg := r.readLastMessage(ctx, exec, task, entry.LastMessageKey); msg != "" {
+		if msg := r.readLastMessage(ctx, exec, task, entry.LastMessageKey, keepPayload); msg != "" {
 			return boundRelayInput(msg), msg, nil
 		}
 	}
@@ -69,10 +71,10 @@ func (r *Router) recordTurn(ctx context.Context, exec targets.TargetExecutor, ta
 	}
 }
 
-// readLastMessage reads, and removes, the payload task's completion hook
-// saved, returning the message under key — or "" if there is no payload
+// readLastMessage reads, and unless keep removes, the payload task's
+// completion hook saved, returning the message under key — or "" if there is no payload
 // or no message in it, logged, so the caller falls back to the pane.
-func (r *Router) readLastMessage(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, key string) string {
+func (r *Router) readLastMessage(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, key string, keep bool) string {
 	log := r.logger.With("task_id", task.ID)
 	marker, err := r.markerPathOn(ctx, exec, task.ID)
 	if err != nil {
@@ -82,8 +84,11 @@ func (r *Router) readLastMessage(ctx context.Context, exec targets.TargetExecuto
 	script := `f=` + shellQuote(completion.ReplyPath(marker)) + `
 [ -f "$f" ] || exit 0
 head -c ` + fmt.Sprint(maxReplyPayload) + ` -- "$f"
-rm -f -- "$f"
 `
+	if !keep {
+		script += `rm -f -- "$f"
+`
+	}
 	out, err := exec.RunOnce(ctx, "sh -c "+shellQuote(script))
 	if err != nil {
 		log.Warn("agent's last message not read", "error", err)

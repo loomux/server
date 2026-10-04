@@ -24,7 +24,12 @@ import (
 // finished turn would (rolling summary, transcript, completion when the
 // relay model calls it done). A conversation with a turn in flight is
 // skipped: that turn owns the pane and clears an old marker before it
-// types. Failures are logged; the next pass tries again.
+// types. Failures before the reply is logged consume nothing, so the
+// next pass tries again.
+//
+// A task handed back from a human takeover to waiting for input counts
+// too: a marker the agent wrote while the human drove it is relayed
+// as a late reply, which is what the conversation would want to hear.
 func (r *Router) RelayLateOutput(ctx context.Context) int {
 	tasks, err := r.store.ListTasks(ctx)
 	if err != nil {
@@ -85,26 +90,16 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 	start := time.Now()
 	log := r.logger.With("task_id", task.ID, "conversation_id", task.ConversationID)
 	log.Info("agent wrote output after its turn ended; relaying it")
-	_ = exec.RemoveFile(ctx, marker)
 
-	captured, agentMessage, err := r.turnOutput(ctx, exec, task)
+	// Nothing is consumed until the reply is logged: a relay that fails
+	// leaves the marker and the agent's message for the next pass.
+	captured, agentMessage, err := r.turnOutput(ctx, exec, task, true)
 	if err != nil {
 		return false, fmt.Errorf("capture pane: %w", err)
 	}
-	r.recordTurn(ctx, exec, task, "", agentMessage)
 	result, err := r.model.Relay(ctx, captured)
 	if err != nil {
 		return false, fmt.Errorf("relay: %w", err)
-	}
-	if result.Done && AsksUser(result.Reply) {
-		result.Done = false
-	}
-	if result.Done {
-		if err := r.orch.Complete(ctx, task.ID, result.Reply); err != nil {
-			return false, fmt.Errorf("complete: %w", err)
-		}
-	} else if err := r.store.SetWorkspaceRollingSummary(ctx, task.WorkspaceID, result.Reply); err != nil {
-		return false, fmt.Errorf("update rolling summary: %w", err)
 	}
 	if err := r.store.CreateMessage(ctx, &registry.Message{
 		ID:             uuid.NewString(),
@@ -114,6 +109,19 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 		Content:        result.Reply,
 	}); err != nil {
 		return false, fmt.Errorf("log reply: %w", err)
+	}
+	// Logged: from here a failure must not relay it again.
+	r.clearTurnFiles(ctx, exec, task)
+	r.recordTurn(ctx, exec, task, "", agentMessage)
+	if result.Done && AsksUser(result.Reply) {
+		result.Done = false
+	}
+	if result.Done {
+		if err := r.orch.Complete(ctx, task.ID, result.Reply); err != nil {
+			log.Error("late reply relayed, but its task not completed", "error", err)
+		}
+	} else if err := r.store.SetWorkspaceRollingSummary(ctx, task.WorkspaceID, result.Reply); err != nil {
+		log.Error("late reply relayed, but the rolling summary not updated", "error", err)
 	}
 	if r.onLateReply != nil {
 		r.onLateReply(task, result.Reply)

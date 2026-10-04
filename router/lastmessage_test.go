@@ -30,6 +30,7 @@ type lastMessageHarness struct {
 	relayed  []string
 	commands []string
 	done     bool
+	relayErr error
 }
 
 func newLastMessageHarness(t *testing.T) *lastMessageHarness {
@@ -47,7 +48,9 @@ func newLastMessageHarness(t *testing.T) *lastMessageHarness {
 		h.commands = append(h.commands, command)
 		if strings.Contains(command, ".reply") && strings.Contains(command, "head -c") {
 			p := h.payload
-			h.payload = "" // read once, then removed
+			if strings.Contains(command, "rm -f") {
+				h.payload = "" // read once, then removed
+			}
 			return p, nil
 		}
 		if strings.Contains(command, "capture-pane") {
@@ -71,6 +74,9 @@ func newLastMessageHarness(t *testing.T) *lastMessageHarness {
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			h.relayed = append(h.relayed, captured)
+			if h.relayErr != nil {
+				return router.RelayResult{}, h.relayErr
+			}
 			return router.RelayResult{Reply: "relayed", Done: h.done}, nil
 		},
 	}
