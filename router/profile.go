@@ -23,6 +23,16 @@ type LaunchProfile struct {
 	// trust this folder?" dialog. Must not persist anything on the
 	// target. nil means the CLI has no per-launch way to do this.
 	TrustArgs func(workspaceDir string) []string
+	// TrustCommand, if set, returns a shell command that marks exactly
+	// workspaceDir as trusted in the agent's own config on the target. It
+	// runs before every launch, for a CLI with no per-launch way to do it
+	// (Claude Code). It persists, so it must touch only that one path:
+	// never a global "trust all" (user decision 2026-10-04).
+	TrustCommand func(workspaceDir string) string
+	// PermissionModes maps each registry.PermissionMode* name to this
+	// CLI's flags for it, so a target can pick one (Target.PermissionMode).
+	// A mode missing here falls back to PermissionArgs.
+	PermissionModes map[string][]string
 	// PromptAsArg passes a fresh task's first message as a trailing
 	// positional argument (after "--") instead of typing it into the
 	// pane with send-keys, which races the TUI's startup and can be
@@ -65,6 +75,7 @@ func (r AgentTypeRegistry) ApplyProfileOverrides(overrides map[string]ProfileOve
 		}
 		if o.PreTrust != nil && !*o.PreTrust {
 			at.Profile.TrustArgs = nil
+			at.Profile.TrustCommand = nil
 		}
 		if o.PromptAsArg != nil {
 			at.Profile.PromptAsArg = *o.PromptAsArg

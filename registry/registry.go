@@ -33,8 +33,13 @@ type Target struct {
 	// refuses any workspace whose resolved directory — symlinks followed —
 	// isn't inside it.
 	WorkspaceRoot string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// PermissionMode is how much the agents launched on this target may
+	// do without asking (one of the PermissionMode* values); empty means
+	// each agent-type's own default. Per-target, so policy (LOOM-89) can
+	// tighten it on, say, a work-only host.
+	PermissionMode string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // Validate enforces the invariants the execution layer assumes but
@@ -73,6 +78,11 @@ func (t *Target) Validate() error {
 	default:
 		return fmt.Errorf("kind must be %q or %q", TargetKindLocal, TargetKindRemote)
 	}
+	switch t.PermissionMode {
+	case "", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual:
+	default:
+		return fmt.Errorf("permission_mode must be empty, %q, %q or %q", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual)
+	}
 	if t.WorkspaceRoot != "" {
 		switch {
 		case !path.IsAbs(t.WorkspaceRoot):
@@ -85,6 +95,18 @@ func (t *Target) Validate() error {
 	}
 	return nil
 }
+
+// Target permission modes: how much an agent may do without a human
+// approving it. Each agent-type maps them to its own CLI flags.
+const (
+	// PermissionModeAuto: the agent's own classifier-gated automatic
+	// mode (claude --permission-mode auto) — never bypass.
+	PermissionModeAuto = "auto"
+	// PermissionModeAcceptEdits: file edits go ahead; commands ask.
+	PermissionModeAcceptEdits = "accept-edits"
+	// PermissionModeManual: everything asks.
+	PermissionModeManual = "manual"
+)
 
 // WorkspaceStatus tracks a workspace's current lifecycle state.
 type WorkspaceStatus string

@@ -1101,22 +1101,26 @@ type targetResponse struct {
 	SSHKeyRef string `json:"ssh_key_ref"`
 	// WorkspaceRoot bounds where dynamic workspaces are provisioned
 	// (LOOM-90); empty means $HOME/loomux-workspaces on the target.
-	WorkspaceRoot string    `json:"workspace_root"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	WorkspaceRoot string `json:"workspace_root"`
+	// PermissionMode: empty (each agent-type's default), auto,
+	// accept-edits or manual.
+	PermissionMode string    `json:"permission_mode"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func newTargetResponse(t *registry.Target) targetResponse {
 	return targetResponse{
-		ID:            t.ID,
-		Name:          t.Name,
-		Kind:          string(t.Kind),
-		Host:          t.Host,
-		User:          t.User,
-		SSHKeyRef:     t.SSHKeyRef,
-		WorkspaceRoot: t.WorkspaceRoot,
-		CreatedAt:     t.CreatedAt,
-		UpdatedAt:     t.UpdatedAt,
+		ID:             t.ID,
+		Name:           t.Name,
+		Kind:           string(t.Kind),
+		Host:           t.Host,
+		User:           t.User,
+		SSHKeyRef:      t.SSHKeyRef,
+		WorkspaceRoot:  t.WorkspaceRoot,
+		PermissionMode: t.PermissionMode,
+		CreatedAt:      t.CreatedAt,
+		UpdatedAt:      t.UpdatedAt,
 	}
 }
 
@@ -1132,6 +1136,8 @@ type targetRequest struct {
 	// PUT keeps what's stored, an explicit "" clears it.
 	SSHKeyRef     *string `json:"ssh_key_ref"`
 	WorkspaceRoot *string `json:"workspace_root"`
+	// PermissionMode is optional the same way.
+	PermissionMode *string `json:"permission_mode"`
 }
 
 type listTargetsResponse struct {
@@ -1158,13 +1164,16 @@ func decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.
 	// base is the stored target on an update: its optional fields stand
 	// unless the request names them (LOOM-119).
 	if base != nil {
-		target.SSHKeyRef, target.WorkspaceRoot = base.SSHKeyRef, base.WorkspaceRoot
+		target.SSHKeyRef, target.WorkspaceRoot, target.PermissionMode = base.SSHKeyRef, base.WorkspaceRoot, base.PermissionMode
 	}
 	if req.SSHKeyRef != nil {
 		target.SSHKeyRef = *req.SSHKeyRef
 	}
 	if req.WorkspaceRoot != nil {
 		target.WorkspaceRoot = *req.WorkspaceRoot
+	}
+	if req.PermissionMode != nil {
+		target.PermissionMode = *req.PermissionMode
 	}
 	if err := target.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

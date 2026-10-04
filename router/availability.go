@@ -120,6 +120,10 @@ func withResolvedBinary(command, binary, path string) string {
 	return command
 }
 
+// ShellQuote quotes s as one POSIX shell word, for adapters building
+// commands that run on a target.
+func ShellQuote(s string) string { return shellQuote(s) }
+
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

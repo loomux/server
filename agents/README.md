@@ -62,30 +62,33 @@ on the command line, for that launch only:
 
 | | `claude-code` | `codex` |
 |---|---|---|
-| Permission args | `--permission-mode acceptEdits` | `--ask-for-approval on-request --sandbox workspace-write` |
-| Runs without asking | Creating and editing files in the workspace (and any `--add-dir`). | Commands inside Codex's sandbox: read anywhere, write inside the workspace and temp dirs, **no network**. |
-| Still asks a human | Shell commands, web fetch, MCP tools: anything other than file edits. | Anything the model wants to run outside the sandbox (network, writes elsewhere). |
-| Workspace pre-trust | **None per launch** (see below). | `-c 'projects={"<workspace>"={trust_level="trusted"}}'` for this process. Nothing is written to `~/.codex/config.toml`. |
+| Permission args (mode `auto`) | `--permission-mode auto` | `--ask-for-approval on-request --sandbox workspace-write` |
+| Runs without asking | Whatever Claude Code's auto-mode classifier judges routine: edits and ordinary commands. | Commands inside Codex's sandbox: read anywhere, write inside the workspace and temp dirs, **no network**. |
+| Still asks a human | Anything the classifier flags as risky. | Anything the model wants to run outside the sandbox (network, writes elsewhere). |
+| Workspace pre-trust | Before each launch, `hasTrustDialogAccepted` for exactly that workspace path in `~/.claude.json` (see below). | `-c 'projects={"<workspace>"={trust_level="trusted"}}'` for this process. Nothing is written to `~/.codex/config.toml`. |
 | First message | Positional argument after `--`. | Positional argument after `--`. |
 
-These defaults are deliberately not the "skip everything" modes
-(`--dangerously-skip-permissions`, `bypassPermissions`,
-`--dangerously-bypass-approvals-and-sandbox`). A task that needs a shell
-command (claude) or network access (codex) will stop at an approval
-prompt in its pane. Answer it by attaching, or loosen the profile on
-purpose.
+Agents run in each CLI's own **automatic** mode, never the "skip
+everything" modes (`--dangerously-skip-permissions`, `bypassPermissions`,
+`--dangerously-bypass-approvals-and-sandbox`); user decision 2026-10-04. A
+target can tighten this with `permission_mode` (`auto`, `accept-edits` or
+`manual`; empty means the agent-type's default, `auto`). Each agent-type
+maps the modes to its own flags (`LaunchProfile.PermissionModes`), so
+per-target policy (LOOM-89) can restrict, say, a work-only host. Anything
+a mode still asks about stops at a prompt in the pane; LOOM-97 surfaces
+those in chat.
 
 **Claude Code workspace trust.** Claude Code has no per-launch flag to
-trust a folder. Trust is kept in the user's `~/.claude.json`, which Loomux
-does not edit. Claude Code also treats a folder as trusted when one of
-its **ancestors** is trusted (verified 2026-10-02). So once per target,
-run `claude` in the directory that holds Loomux workspaces and accept the
-trust prompt (operator checklist: `docs/deploy/targets.md`). Every workspace
-created under it is then trusted. Without
-that step, a fresh workspace stops at the trust dialog. The first message
-waits behind the dialog instead of answering it, but the turn doesn't
-start until someone attaches and accepts. A Loomux-side detector for
-blocked agents is separate work.
+trust a folder; trust lives in the user's `~/.claude.json`. Before every
+launch Loomux runs a small Python 3 script on the target
+(`claudeTrustCommand`) that sets `projects["<realpath of the workspace>"]
+.hasTrustDialogAccepted = true`. It keeps every other key, writes
+atomically and keeps the file's mode. This is the one write Loomux makes to
+an agent's own config (approved 2026-10-04 for this narrow purpose). It is
+scoped to that exact path, never a global trust, and covers both directories
+Loomux creates and existing ones a workspace is attached to. It needs
+`python3` on the target. If it fails, the launch goes ahead and the trust
+dialog shows in the pane.
 
 **First message on the command line.** Passing the first message as an
 argument removes the send-keys race on turn 1. Turns 2 and later are
