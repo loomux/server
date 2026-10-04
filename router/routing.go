@@ -145,6 +145,12 @@ type DispatchOptions struct {
 	// named in the snapshot it's given. An empty string (the default)
 	// means no hint was supplied.
 	WorkspaceHint string
+	// DispatchID is the dispatch job this call runs for (LOOM-80); the
+	// messages the router writes are stamped with it. Empty outside one.
+	DispatchID string
+	// UserMessageLogged says the user message is already stored (a
+	// dispatch job writes it at submit), so only the reply is logged.
+	UserMessageLogged bool
 }
 
 // DispatchOption configures a DispatchOptions via With* constructors
@@ -155,6 +161,16 @@ type DispatchOption func(*DispatchOptions)
 // WithWorkspaceHint sets DispatchOptions.WorkspaceHint.
 func WithWorkspaceHint(workspaceID string) DispatchOption {
 	return func(o *DispatchOptions) { o.WorkspaceHint = workspaceID }
+}
+
+// WithDispatchID sets DispatchOptions.DispatchID.
+func WithDispatchID(id string) DispatchOption {
+	return func(o *DispatchOptions) { o.DispatchID = id }
+}
+
+// WithUserMessageLogged sets DispatchOptions.UserMessageLogged.
+func WithUserMessageLogged() DispatchOption {
+	return func(o *DispatchOptions) { o.UserMessageLogged = true }
 }
 
 // RoutingModel is the swappable "router model" seam (design spec §6) —

@@ -139,7 +139,18 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 // level. The message body itself is never logged — only its length.
 func (r *Router) Dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
 	start := time.Now()
+	var o DispatchOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	// Every stage below that logs the turn does so through logTurn, which
+	// reads these back; carrying them on ctx saves threading them through
+	// each of those paths.
+	ctx = withTurnLog(ctx, turnLog{dispatchID: o.DispatchID, userMessageLogged: o.UserMessageLogged})
 	log := r.logger.With("conversation_id", conversationID)
+	if o.DispatchID != "" {
+		log = log.With("dispatch_id", o.DispatchID)
+	}
 	log.Info("dispatch started", "message_len", len(message))
 
 	m := &dispatchMetrics{outcome: metrics.OutcomeSuccess}
@@ -618,6 +629,12 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		if taskID == "" || errors.Is(err, orchestrator.ErrHumanTakeover) {
 			return
 		}
+		// Cut off by server shutdown (LOOM-80): the agent may still
+		// finish, and startup reconciliation (LOOM-82) can pick the task
+		// back up, so it is left as it is.
+		if errors.Is(context.Cause(ctx), orchestrator.ErrInterrupted) {
+			return
+		}
 		cleanupCtx := context.WithoutCancel(ctx)
 		cur, gerr := r.store.GetTask(cleanupCtx, taskID)
 		if gerr != nil || isTerminal(cur.Status) || cur.Status == registry.TaskStatusHumanTakeover {
@@ -787,26 +804,50 @@ func isTerminal(status registry.TaskStatus) bool {
 	return status == registry.TaskStatusCompleted || status == registry.TaskStatusFailed
 }
 
+// turnLog is how a Dispatch call's messages are to be written (LOOM-80).
+type turnLog struct {
+	dispatchID        string
+	userMessageLogged bool
+}
+
+type turnLogKey struct{}
+
+func withTurnLog(ctx context.Context, tl turnLog) context.Context {
+	return context.WithValue(ctx, turnLogKey{}, tl)
+}
+
+func turnLogFrom(ctx context.Context) turnLog {
+	tl, _ := ctx.Value(turnLogKey{}).(turnLog)
+	return tl
+}
+
 // logTurn persists one turn's user/assistant message pair. Called only
 // once a reply is actually available (design spec
 // docs/design/message-logging-design.md, "Where it's written") — a
 // Dispatch call that errors before producing a reply leaves no trace
 // here; the caller already learns about the failure synchronously via
-// Dispatch's own returned error.
+// Dispatch's own returned error. Under a dispatch job (LOOM-80) the user
+// message was already stored at submit, so only the reply is written,
+// and both carry the job's id.
 func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessage, assistantReply string) error {
-	if err := r.store.CreateMessage(ctx, &registry.Message{
-		ID:             uuid.NewString(),
-		ConversationID: conversationID,
-		TaskID:         taskID,
-		Role:           registry.MessageRoleUser,
-		Content:        userMessage,
-	}); err != nil {
-		return fmt.Errorf("log turn: user message: %w", err)
+	tl := turnLogFrom(ctx)
+	if !tl.userMessageLogged {
+		if err := r.store.CreateMessage(ctx, &registry.Message{
+			ID:             uuid.NewString(),
+			ConversationID: conversationID,
+			TaskID:         taskID,
+			DispatchID:     tl.dispatchID,
+			Role:           registry.MessageRoleUser,
+			Content:        userMessage,
+		}); err != nil {
+			return fmt.Errorf("log turn: user message: %w", err)
+		}
 	}
 	if err := r.store.CreateMessage(ctx, &registry.Message{
 		ID:             uuid.NewString(),
 		ConversationID: conversationID,
 		TaskID:         taskID,
+		DispatchID:     tl.dispatchID,
 		Role:           registry.MessageRoleAssistant,
 		Content:        assistantReply,
 	}); err != nil {
