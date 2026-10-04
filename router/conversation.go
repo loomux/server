@@ -111,13 +111,15 @@ func keepEnd(s string, n int) string {
 	return "…" + string(r[len(r)-n:])
 }
 
-// applyAffinity is the deterministic half of conversation affinity
+// ApplyAffinity is the deterministic half of conversation affinity
 // (LOOM-87): with a task open in the conversation, a decision that
 // doesn't continue it is overridden to — unless the model said the
 // message is unrelated (LeaveOpenTask). Continuing it always uses the
 // open task's agent: the turn goes into the pane that's there.
-// overriddenFrom names the action that was replaced, if any.
-func applyAffinity(d Decision, open *OpenTaskSnapshot) (out Decision, overriddenFrom string) {
+// overriddenFrom names the action that was replaced, if any. Exported
+// so the routing evals (llmrouter, build tag routereval) score a
+// decision as the router acts on it.
+func ApplyAffinity(d Decision, open *OpenTaskSnapshot) (out Decision, overriddenFrom string) {
 	if open == nil {
 		return d, ""
 	}

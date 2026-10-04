@@ -245,7 +245,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		log.Info("no targets registered", "decided_action", string(decision.Action))
 		decision = Decision{Action: ActionAnswerDirectly, DirectAnswer: NoTargetsReply}
 	}
-	decision, affinityFrom := applyAffinity(decision, openTask)
+	decision, affinityFrom := ApplyAffinity(decision, openTask)
 	var substitutedFrom, targetName string
 	// The open task's pane is already running its agent: nothing to check.
 	if openTask == nil || decision.WorkspaceID != openTask.WorkspaceID {

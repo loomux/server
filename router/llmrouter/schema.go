@@ -49,9 +49,12 @@ const decideSystemPrompt = `You are Loomux's routing model. Loomux dispatches ch
 	`exactly as the user wrote it, character for character — never invent, expand, combine or ` +
 	`"fix" a command. Only if the user describes what they want without giving the command may you ` +
 	`propose one in command; Loomux then shows it to the user and runs it only after they confirm. ` +
-	`Use run_command rather than an agent whenever a plain shell command's output answers the ` +
-	`request (disk space, uptime, a process or file listing); an agent is for work that needs ` +
-	`reading, writing or reasoning about code. ` +
+	`You cannot see any machine's live state: never answer a question about a machine's disk, ` +
+	`memory, uptime, load, processes, files or services yourself — choose run_command with the ` +
+	`command that answers it (if the user didn't give one, propose it; Loomux asks before running a ` +
+	`command you proposed). Use run_command rather than an agent whenever a plain shell command's ` +
+	`output answers the request; an agent is for work that needs reading, writing or reasoning ` +
+	`about code. ` +
 	`Each workspace lists its status, the target it is on, when it was last used and what was last ` +
 	`done there: prefer an idle or active workspace whose description or recent work fits the ` +
 	`message over provisioning a new one; a provisioning workspace isn't ready yet.`
@@ -303,8 +306,10 @@ func renderConversation(b *strings.Builder, o router.DispatchOptions) {
 			fmt.Fprintf(b, "  its last reply: %q\n", strings.ReplaceAll(t.LastReply, "\n", " "))
 		}
 		fmt.Fprintf(b, "If the message continues this task (an answer, a confirmation, a choice, a follow-up), "+
-			"choose use_workspace with workspace_id %s. Set leave_open_task to true only if the message is "+
-			"clearly unrelated to it.\n\n", t.WorkspaceID)
+			"choose use_workspace with workspace_id %s. If the message is clearly unrelated to it (a new "+
+			"topic or a different machine), handle it as you would otherwise and set leave_open_task to true: "+
+			"any decision other than use_workspace %s without leave_open_task is sent to this task instead.\n\n",
+			t.WorkspaceID, t.WorkspaceID)
 	} else if o.LastWorkspaceID != "" {
 		fmt.Fprintf(b, "This conversation last worked in workspace %s (id %s).\n\n", o.LastWorkspaceName, o.LastWorkspaceID)
 	}
