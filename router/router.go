@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -218,7 +219,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	}
 
 	routeStart := time.Now()
-	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces), targetSnapshots, opts...)
+	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces, targets), targetSnapshots, opts...)
 	r.metrics.RecordDispatchDuration("route", time.Since(routeStart))
 	if err != nil {
 		log.Error("routing failed", "error", err)
@@ -234,10 +235,27 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		log.Info("no targets registered", "decided_action", string(decision.Action))
 		decision = Decision{Action: ActionAnswerDirectly, DirectAnswer: NoTargetsReply}
 	}
-	logDecision(log, decision)
+	decision, substitutedFrom, targetName := r.checkAgentChoice(ctx, decision, message)
+	if substitutedFrom != "" {
+		tl := turnLogFrom(ctx)
+		tl.replyNote = substitutionNote(decision.AgentType, substitutedFrom, targetName)
+		ctx = withTurnLog(ctx, tl)
+	}
+	logDecision(log, decision, substitutedFrom)
 	r.metrics.RecordRoutingDecision(string(decision.Action))
 
-	return r.act(ctx, log, conversationID, message, decision, false, start, m)
+	reply, err := r.act(ctx, log, conversationID, message, decision, false, start, m)
+	if err == nil {
+		reply = withReplyNote(turnLogFrom(ctx).replyNote, reply)
+	}
+	return reply, err
+}
+
+func withReplyNote(note, reply string) string {
+	if note == "" {
+		return reply
+	}
+	return note + "\n\n" + reply
 }
 
 // dispatchMetrics holds the labels for the top-level dispatch counter.
@@ -440,8 +458,11 @@ func (r *Router) confirmInstall(ctx context.Context, log *slog.Logger, conversat
 // logDecision records what the routing model decided: the action plus
 // whichever of workspace, agent type and new-workspace target/name it
 // carries. A direct answer's text is not logged — it is chat content.
-func logDecision(log *slog.Logger, d Decision) {
+func logDecision(log *slog.Logger, d Decision, agentSubstitutedFrom string) {
 	attrs := []any{"action", string(d.Action)}
+	if agentSubstitutedFrom != "" {
+		attrs = append(attrs, "agent_substituted_from", agentSubstitutedFrom)
+	}
 	switch d.Action {
 	case ActionUseWorkspace:
 		attrs = append(attrs, "workspace_id", d.WorkspaceID, "agent_type", d.AgentType)
@@ -808,6 +829,9 @@ func isTerminal(status registry.TaskStatus) bool {
 type turnLog struct {
 	dispatchID        string
 	userMessageLogged bool
+	// replyNote, when set, is put in front of the reply — stored and
+	// returned alike (LOOM-88's agent substitution note).
+	replyNote string
 }
 
 type turnLogKey struct{}
@@ -849,7 +873,7 @@ func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessag
 		TaskID:         taskID,
 		DispatchID:     tl.dispatchID,
 		Role:           registry.MessageRoleAssistant,
-		Content:        assistantReply,
+		Content:        withReplyNote(tl.replyNote, assistantReply),
 	}); err != nil {
 		return fmt.Errorf("log turn: assistant message: %w", err)
 	}
@@ -1088,38 +1112,70 @@ func (r *Router) executorForWorkspace(ctx context.Context, workspaceID string) (
 func (r *Router) snapshotTargets(ctx context.Context, targets []*registry.Target) ([]TargetSnapshot, error) {
 	out := make([]TargetSnapshot, len(targets))
 	for i, t := range targets {
-		agents, err := r.agentAvailability(ctx, t.ID)
+		agents, versions, err := r.agentAvailability(ctx, t.ID)
 		if err != nil {
 			return nil, err
 		}
 		out[i] = TargetSnapshot{
-			ID:     t.ID,
-			Name:   t.Name,
-			Kind:   string(t.Kind),
-			Agents: agents,
+			ID:            t.ID,
+			Name:          t.Name,
+			Kind:          string(t.Kind),
+			Agents:        agents,
+			AgentVersions: versions,
 		}
 	}
 	return out, nil
 }
 
-// snapshotWorkspaces projects the registry for the routing model, leaving
-// out failed workspaces (LOOM-71): one whose provisioning never finished
-// can't be dispatched into usefully — and the per-target shell
-// workspaces direct commands run in (LOOM-72), which exist for Loomux's
-// bookkeeping, not as somewhere to send agent work.
-func snapshotWorkspaces(workspaces []*registry.Workspace) []WorkspaceSnapshot {
-	out := make([]WorkspaceSnapshot, 0, len(workspaces))
+// snapshotWorkspaces projects the workspaces the routing model may
+// choose from, most recently used first (never-used last, by name): not
+// failed or archived ones (LOOM-88) — nothing should be routed into a
+// broken or retired workspace — and not shell workspaces (LOOM-72).
+func snapshotWorkspaces(workspaces []*registry.Workspace, targets []*registry.Target) []WorkspaceSnapshot {
+	targetNames := make(map[string]string, len(targets))
+	for _, t := range targets {
+		targetNames[t.ID] = t.Name
+	}
+	kept := make([]*registry.Workspace, 0, len(workspaces))
 	for _, ws := range workspaces {
-		if ws.Status == registry.WorkspaceStatusFailed || isShellWorkspace(ws) {
+		if ws.Status == registry.WorkspaceStatusFailed || ws.Status == registry.WorkspaceStatusArchived || isShellWorkspace(ws) {
 			continue
 		}
+		kept = append(kept, ws)
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		a, b := kept[i].LastUsedAt, kept[j].LastUsedAt
+		switch {
+		case a != nil && b != nil:
+			return a.After(*b)
+		case a != nil || b != nil:
+			return a != nil
+		default:
+			return kept[i].Name < kept[j].Name
+		}
+	})
+	out := make([]WorkspaceSnapshot, 0, len(kept))
+	for _, ws := range kept {
 		out = append(out, WorkspaceSnapshot{
 			ID:           ws.ID,
 			Name:         ws.Name,
 			Description:  ws.Description,
 			Tags:         ws.Tags,
 			Capabilities: ws.Capabilities,
+			Status:       string(ws.Status),
+			TargetName:   targetNames[ws.TargetID],
+			Summary:      truncateRunes(ws.RollingSummary, SnapshotSummaryRunes),
+			LastUsed:     ws.LastUsedAt,
 		})
 	}
 	return out
+}
+
+// truncateRunes keeps the first n runes of s, marking a cut with "…".
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

@@ -449,7 +449,7 @@ func TestDecideUserPrompt_TargetAgentAvailability(t *testing.T) {
 	prompt := decideUserPrompt("hi", nil, []router.TargetSnapshot{
 		{ID: "t1", Name: "jet01", Kind: "remote", Agents: map[string]bool{"codex": false, "claude-code": true}},
 		{ID: "t2", Name: "bigbox", Kind: "remote"},
-	}, "")
+	}, router.DispatchOptions{})
 
 	for _, want := range []string{
 		"agents: claude-code: available, codex: not installed",
@@ -622,13 +622,13 @@ func TestDecide_NoTargets_TargetActionBecomesRegisterTargetAnswer(t *testing.T) 
 // With no targets the prompt tells the model that nothing can be run or
 // provisioned and where the user registers a target (LOOM-68).
 func TestDecideUserPrompt_NoTargets_SaysToRegisterOne(t *testing.T) {
-	prompt := decideUserPrompt("clone my repo", nil, nil, "")
+	prompt := decideUserPrompt("clone my repo", nil, nil, router.DispatchOptions{})
 	for _, want := range []string{"No targets are registered", "POST /api/v1/targets", "Targets page"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if withTarget := decideUserPrompt("hi", nil, []router.TargetSnapshot{{ID: "t1", Name: "jet01", Kind: "local"}}, ""); strings.Contains(withTarget, "No targets are registered") {
+	if withTarget := decideUserPrompt("hi", nil, []router.TargetSnapshot{{ID: "t1", Name: "jet01", Kind: "local"}}, router.DispatchOptions{}); strings.Contains(withTarget, "No targets are registered") {
 		t.Errorf("prompt with a target still says none are registered:\n%s", withTarget)
 	}
 }

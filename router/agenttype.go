@@ -50,6 +50,9 @@ type AgentType struct {
 	// workspace is provisioned for it, and the result is recorded per
 	// target (LOOM-71). Empty means the agent-type is never probed.
 	Binary string
+	// Description is one line telling the routing model what this agent
+	// is and when to choose it (LOOM-88), by the name a user would use.
+	Description string
 	// Install, if set, is how to put the CLI on a target that lacks it —
 	// offered to the user, and run only on their explicit confirmation.
 	Install *AgentInstall

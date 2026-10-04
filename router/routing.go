@@ -1,5 +1,7 @@
 package router
 
+import "time"
+
 import "context"
 
 // DecisionAction identifies what a RoutingModel decided to do with an
@@ -31,7 +33,20 @@ type WorkspaceSnapshot struct {
 	Description  string
 	Tags         []string
 	Capabilities []string
+	// Status, TargetName, Summary and LastUsed say what state the
+	// workspace is in, where it lives and what was last done there
+	// (LOOM-88), so the routing model can tell a live workspace from a
+	// stale one. TargetName is the target's name, never its host.
+	// Summary is the rolling summary, cut to SnapshotSummaryRunes.
+	Status     string
+	TargetName string
+	Summary    string
+	LastUsed   *time.Time
 }
+
+// SnapshotSummaryRunes bounds a workspace's summary in the routing
+// prompt; a longer one is cut and ends in "…".
+const SnapshotSummaryRunes = 240
 
 // TargetSnapshot is the compact projection of a registered execution
 // target (design spec §2) a routing call sees, so a provision_workspace
@@ -49,6 +64,10 @@ type TargetSnapshot struct {
 	// agent-type never probed here is absent from the map — unknown, not
 	// unavailable.
 	Agents map[string]bool
+	// AgentVersions is the version line each available agent's CLI
+	// printed when probed (LOOM-79), keyed like Agents; absent when
+	// unknown.
+	AgentVersions map[string]string
 }
 
 // ProvisionKind is how a new dynamic workspace's directory comes to be

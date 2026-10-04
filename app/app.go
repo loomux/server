@@ -147,6 +147,18 @@ func DefaultAgentTypes() router.AgentTypeRegistry {
 // dispatchableAgentTypeNames excludes the "" bookkeeping entry (see
 // DefaultAgentTypes) — the router model must never be offered it as a
 // choice, since it isn't a real, launchable agent type.
+// agentDescriptionsFor maps each dispatchable agent type to its
+// description, for the routing prompt (LOOM-88).
+func agentDescriptionsFor(agentTypes router.AgentTypeRegistry) map[string]string {
+	out := make(map[string]string, len(agentTypes))
+	for _, name := range dispatchableAgentTypeNames(agentTypes) {
+		if d := agentTypes[name].Description; d != "" {
+			out[name] = d
+		}
+	}
+	return out
+}
+
 func dispatchableAgentTypeNames(agentTypes router.AgentTypeRegistry) []string {
 	names := make([]string, 0, len(agentTypes))
 	for name := range agentTypes {
@@ -214,7 +226,8 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	orch := orchestrator.New(store, newExecutor, detector, orchestrator.WithMetrics(met))
 	creds := credentials.NewResolver(store)
 
-	model, err := llmrouter.New(cfg.Router, dispatchableAgentTypeNames(agentTypes), llmrouter.WithMetrics(met))
+	model, err := llmrouter.New(cfg.Router, dispatchableAgentTypeNames(agentTypes), llmrouter.WithMetrics(met),
+		llmrouter.WithAgentDescriptions(agentDescriptionsFor(agentTypes)))
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("app: router model: %w", err)

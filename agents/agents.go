@@ -52,9 +52,11 @@ const (
 // TierMarker signal.
 func ClaudeCode() router.AgentType {
 	return router.AgentType{
-		AgentConfig:        completion.AgentConfig{Tier: completion.TierMarker},
-		LaunchTemplate:     "claude",
-		Binary:             "claude",
+		AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
+		LaunchTemplate: "claude",
+		Binary:         "claude",
+		Description: `Anthropic's Claude Code CLI ("claude"). A general coding agent: reads, edits and runs code ` +
+			`in the workspace. The default when the user doesn't name an agent.`,
 		CompletionHookArgs: []string{"--settings", claudeStopHookSettings()},
 		Profile: router.LaunchProfile{
 			// acceptEdits: file creates/edits inside the working
@@ -118,6 +120,7 @@ func Codex() router.AgentType {
 		AgentConfig:        completion.AgentConfig{Tier: completion.TierMarker},
 		LaunchTemplate:     "codex",
 		Binary:             "codex",
+		Description:        `OpenAI's Codex CLI ("codex"). A coding agent; choose it when the user asks for Codex or OpenAI.`,
 		CompletionHookArgs: []string{"-c", "notify=" + tomlStringArray(codexNotifyArgv())},
 		Profile: router.LaunchProfile{
 			// workspace-write: commands run in Codex's sandbox and can

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
@@ -47,7 +48,34 @@ const decideSystemPrompt = `You are Loomux's routing model. Loomux dispatches ch
 	`(no AI agent needed): set target_id to one of the listed targets and command to the command ` +
 	`exactly as the user wrote it, character for character — never invent, expand, combine or ` +
 	`"fix" a command. Only if the user describes what they want without giving the command may you ` +
-	`propose one in command; Loomux then shows it to the user and runs it only after they confirm.`
+	`propose one in command; Loomux then shows it to the user and runs it only after they confirm. ` +
+	`Use run_command rather than an agent whenever a plain shell command's output answers the ` +
+	`request (disk space, uptime, a process or file listing); an agent is for work that needs ` +
+	`reading, writing or reasoning about code. ` +
+	`Each workspace lists its status, the target it is on, when it was last used and what was last ` +
+	`done there: prefer an idle or active workspace whose description or recent work fits the ` +
+	`message over provisioning a new one; a provisioning workspace isn't ready yet.`
+
+// systemPrompt is decideSystemPrompt plus the registered agent types,
+// each with its description (LOOM-88).
+func (m *Model) systemPrompt() string {
+	if len(m.agentTypes) == 0 {
+		return decideSystemPrompt
+	}
+	var b strings.Builder
+	b.WriteString(decideSystemPrompt)
+	b.WriteString("\n\nAgent types:")
+	names := append([]string(nil), m.agentTypes...)
+	sort.Strings(names)
+	for _, name := range names {
+		if d := m.agentDescriptions[name]; d != "" {
+			fmt.Fprintf(&b, "\n- %s: %s", name, d)
+		} else {
+			fmt.Fprintf(&b, "\n- %s", name)
+		}
+	}
+	return b.String()
+}
 
 // relayToolName is the single function Relay forces the model to call
 // via tool_choice, so it always returns both the condensed reply and
@@ -178,9 +206,14 @@ func enumStringProperty(description string, values []string) map[string]any {
 	return p
 }
 
-// renderAgents lists a target's recorded agent availability (LOOM-71) in
-// a stable order, e.g. "claude-code: available, codex: not installed".
-func renderAgents(agents map[string]bool) string {
+// nowFunc is the clock relative times in the prompt are measured
+// against; a var so tests can pin it.
+var nowFunc = time.Now
+
+// renderAgents lists a target's recorded agent availability (LOOM-71)
+// in a stable order, with each available agent's probed version
+// (LOOM-88), e.g. "claude-code: available (2.1.4), codex: not installed".
+func renderAgents(agents map[string]bool, versions map[string]string) string {
 	if len(agents) == 0 {
 		return "not checked yet"
 	}
@@ -194,21 +227,63 @@ func renderAgents(agents map[string]bool) string {
 		state := "not installed"
 		if agents[name] {
 			state = "available"
+			if v := versions[name]; v != "" {
+				state += " (" + v + ")"
+			}
 		}
 		parts[i] = name + ": " + state
 	}
 	return strings.Join(parts, ", ")
 }
 
+// relativeAge renders how long before now t was, coarsely.
+func relativeAge(now, t time.Time) string {
+	d := now.Sub(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+// renderWorkspace writes one workspace entry: what it is, what state it
+// is in and what was last done there (LOOM-88).
+func renderWorkspace(b *strings.Builder, ws router.WorkspaceSnapshot, now time.Time) {
+	fmt.Fprintf(b, "- id: %s\n  name: %s\n", ws.ID, ws.Name)
+	state := ws.Status
+	if state == "" {
+		state = "unknown"
+	}
+	if ws.TargetName != "" {
+		state += ", on " + ws.TargetName
+	}
+	if ws.LastUsed != nil {
+		state += ", last used " + relativeAge(now, *ws.LastUsed)
+	} else {
+		state += ", never used"
+	}
+	fmt.Fprintf(b, "  status: %s\n  description: %s\n  tags: %s\n  capabilities: %s\n",
+		state, ws.Description, strings.Join(ws.Tags, ", "), strings.Join(ws.Capabilities, ", "))
+	if ws.Summary != "" {
+		fmt.Fprintf(b, "  recent: %s\n", ws.Summary)
+	}
+}
+
 // decideUserPrompt renders the message, compact workspace registry
-// (design spec §6: tags/description/capabilities, not full history) and
+// (design spec §6, enriched with status/target/recency in LOOM-88) and
 // registered targets (LOOM-64: id, name and kind only — plus each one's
 // recorded agent availability, LOOM-71) as the user turn.
-// workspaceHint (LOOM-46), when non-empty, is appended as advisory
+// o.WorkspaceHint (LOOM-46), when non-empty, is appended as advisory
 // context — the client's suggested workspace_id, which the model may
 // follow or disregard; it's never substituted for the model's own
 // use_workspace decision.
-func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, workspaceHint string) string {
+func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, o router.DispatchOptions) string {
+	now := nowFunc()
 	var b strings.Builder
 	b.WriteString("Message:\n")
 	b.WriteString(message)
@@ -217,8 +292,7 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 		b.WriteString("(none)\n")
 	}
 	for _, ws := range workspaces {
-		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  description: %s\n  tags: %s\n  capabilities: %s\n",
-			ws.ID, ws.Name, ws.Description, strings.Join(ws.Tags, ", "), strings.Join(ws.Capabilities, ", "))
+		renderWorkspace(&b, ws, now)
 	}
 	b.WriteString("\nTargets:\n")
 	if len(targets) == 0 {
@@ -228,11 +302,11 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 			"target first, on the Targets page or with POST /api/v1/targets.\n")
 	}
 	for _, t := range targets {
-		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n  agents: %s\n", t.ID, t.Name, t.Kind, renderAgents(t.Agents))
+		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n  agents: %s\n", t.ID, t.Name, t.Kind, renderAgents(t.Agents, t.AgentVersions))
 	}
-	if workspaceHint != "" {
+	if o.WorkspaceHint != "" {
 		fmt.Fprintf(&b, "\nClient hint: the caller suggests this message likely belongs to workspace_id %q. "+
-			"Treat this as advisory only — use your own judgement and the message content to decide.\n", workspaceHint)
+			"Treat this as advisory only — use your own judgement and the message content to decide.\n", o.WorkspaceHint)
 	}
 	return b.String()
 }
