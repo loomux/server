@@ -129,7 +129,8 @@ func TestProbeTarget_NoTmux(t *testing.T) {
 func TestDispatch_RecordedUnreachable_FailsFastWithReason(t *testing.T) {
 	h := newAvailabilityHarness(t)
 	ws := h.existingWorkspace(t)
-	h.recordHealth(t, registry.TargetHealth{Reachable: false, Error: "no answer", DiskFreeBytes: -1})
+	h.recordHealth(t, registry.TargetHealth{Reachable: false, Error: "no answer", DiskFreeBytes: -1,
+		ProbedAt: time.Now().Add(-time.Minute)})
 	hs := &healthScript{unreachable: true}
 	h.scriptHealth(hs)
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
@@ -156,7 +157,8 @@ func TestDispatch_RecordedUnreachable_RecoveredGoesAhead(t *testing.T) {
 	h := newAvailabilityHarness(t)
 	h.probes.install("codex")
 	ws := h.existingWorkspace(t)
-	h.recordHealth(t, registry.TargetHealth{Reachable: false, Error: "no answer", DiskFreeBytes: -1})
+	h.recordHealth(t, registry.TargetHealth{Reachable: false, Error: "no answer", DiskFreeBytes: -1,
+		ProbedAt: time.Now().Add(-time.Minute)})
 	hs := &healthScript{tmux: "tmux 3.4", diskKB: "1048576"}
 	h.scriptHealth(hs)
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
@@ -169,6 +171,27 @@ func TestDispatch_RecordedUnreachable_RecoveredGoesAhead(t *testing.T) {
 	}
 	if got := h.health(t); !got.Reachable || got.Error != "" {
 		t.Errorf("health after recovery = %+v, want reachable", got)
+	}
+}
+
+// A target found down moments ago isn't probed again: the dispatch fails
+// at once on the recorded reason, rather than waiting out another probe.
+func TestDispatch_RecentlyUnreachable_NoReprobe(t *testing.T) {
+	h := newAvailabilityHarness(t)
+	ws := h.existingWorkspace(t)
+	h.recordHealth(t, registry.TargetHealth{Reachable: false, Error: "no answer", DiskFreeBytes: -1,
+		ProbedAt: time.Now().Add(-5 * time.Second)})
+	hs := &healthScript{tmux: "tmux 3.4", diskKB: "1048576"}
+	h.scriptHealth(hs)
+	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
+
+	_, err := h.r.Dispatch(context.Background(), "conv-1", "go")
+	var unhealthy *router.TargetUnhealthyError
+	if !errors.As(err, &unhealthy) || !strings.Contains(err.Error(), "no answer") {
+		t.Fatalf("Dispatch err = %v, want a TargetUnhealthyError with the recorded reason", err)
+	}
+	if hs.probes != 0 {
+		t.Errorf("health probes = %d, want none for a record seconds old", hs.probes)
 	}
 }
 

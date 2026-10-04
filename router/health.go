@@ -25,6 +25,10 @@ const (
 const (
 	healthProbeTimeout = 20 * time.Second
 	agentProbeTimeout  = time.Minute
+	// healthRecheckAfter is how old an unhealthy record must be before a
+	// dispatch probes again rather than trusting it: one this fresh
+	// fails the dispatch at once instead of waiting out another probe.
+	healthRecheckAfter = 30 * time.Second
 )
 
 // MinProvisionDiskFree is the least space the workspace root's
@@ -205,7 +209,8 @@ func healthProblem(h *registry.TargetHealth, provision bool) string {
 
 // requireHealthyTarget refuses a dispatch to target if its last health
 // probe found it unfit (LOOM-86) and a fresh probe agrees, with a
-// *TargetUnhealthyError saying why. A target recorded healthy, or never
+// *TargetUnhealthyError saying why. A record under healthRecheckAfter
+// old is trusted as it stands. A target recorded healthy, or never
 // probed, costs nothing: the dispatch itself finds out. If the record
 // can't be read, the dispatch goes ahead — health is advice, not a lock.
 func (r *Router) requireHealthyTarget(ctx context.Context, target *registry.Target, provision bool) error {
@@ -220,7 +225,11 @@ func (r *Router) requireHealthyTarget(ctx context.Context, target *registry.Targ
 	if healthProblem(h, provision) == "" {
 		return nil
 	}
-	// It may have recovered since: look again before refusing.
+	// It may have recovered since: unless it was just checked, look
+	// again before refusing.
+	if time.Since(h.ProbedAt) < healthRecheckAfter {
+		return &TargetUnhealthyError{TargetName: target.Name, Reason: healthProblem(h, provision), Unreachable: !h.Reachable}
+	}
 	if h, err = r.probeHealth(ctx, target); err != nil {
 		r.logger.Warn("re-probe target health", "target_id", target.ID, "error", err)
 		return nil
