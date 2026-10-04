@@ -371,7 +371,9 @@ func moveCursor(from, to int) []keyStep {
 // — one a restart left behind: it is failed with class cancelled and its
 // agent interrupted, the pane kept to inspect. A task under a running
 // dispatch is cancelled through the dispatch instead, which ends the turn
-// the same way. orchestrator.ErrTaskInactive if it has already ended.
+// the same way. orchestrator.ErrTaskInactive if it has already ended;
+// orchestrator.ErrHumanTakeover if a person has taken it over, as nothing
+// may be typed into a pane they are driving (spec §4).
 func (r *Router) CancelTask(ctx context.Context, taskID string) error {
 	task, err := r.store.GetTask(ctx, taskID)
 	if err != nil {
@@ -379,6 +381,9 @@ func (r *Router) CancelTask(ctx context.Context, taskID string) error {
 	}
 	if isTerminal(task.Status) {
 		return orchestrator.ErrTaskInactive
+	}
+	if task.Status == registry.TaskStatusHumanTakeover {
+		return orchestrator.ErrHumanTakeover
 	}
 	if err := r.orch.Fail(ctx, task.ID, registry.TaskFailure{Class: registry.ErrorClassCancelled, Reason: "cancelled by the user"}); err != nil {
 		return err

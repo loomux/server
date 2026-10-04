@@ -151,9 +151,11 @@ cause `orchestrator.ErrCancelled`. The router fails the turn's task with class `
 the agent-type's interrupt keys (Escape for claude/codex) and keeps the pane to inspect. The job ends
 `failed` with `error_class: cancelled`, which the stream reports. `404` unknown, `409` already ended.
 
-`POST /api/v1/tasks/{id}/cancel` → `202 {task_id, dispatch_id?}`: cancels the conversation's running
-dispatch if one is driving the task, else (a task a restart left running) fails and interrupts the
-task directly. `404` unknown, `409` already ended.
+`POST /api/v1/tasks/{id}/cancel` → `202 {task_id, dispatch_id?}`: a `running` task is the one its
+conversation's running dispatch drives, so it is cancelled through that dispatch. Any other open task
+(left awaiting input, stopped at a prompt, or left running by a restart) is failed and interrupted
+directly, never through a dispatch driving another task of the conversation. `404` unknown, `409`
+already ended or taken over by a person (nothing is typed into a pane they are driving).
 
 A cancelled task is `failed` with class `cancelled`, not a status of its own. The tasks table's
 status CHECK would need a table rebuild for a new status, and every "has it ended" check would need

@@ -68,6 +68,7 @@ func TestCancelTask(t *testing.T) {
 		{"running", nil, http.StatusAccepted},
 		{"unknown", registry.ErrNotFound, http.StatusNotFound},
 		{"ended", orchestrator.ErrTaskInactive, http.StatusConflict},
+		{"taken over", orchestrator.ErrHumanTakeover, http.StatusConflict},
 		{"broken", errors.New("boom"), http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

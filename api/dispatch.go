@@ -235,6 +235,8 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such task")
 	case errors.Is(err, orchestrator.ErrTaskInactive):
 		writeError(w, http.StatusConflict, "the task has already ended")
+	case errors.Is(err, orchestrator.ErrHumanTakeover):
+		writeError(w, http.StatusConflict, "someone has taken over this task; release it first")
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "could not cancel task")
 	default:

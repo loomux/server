@@ -139,3 +139,29 @@ func TestCancelTask_WithoutDispatch(t *testing.T) {
 		t.Errorf("CancelTask(ended) = %v, want ErrTaskInactive", err)
 	}
 }
+
+// LOOM-99 review: a task a person has taken over isn't cancelled; nothing
+// is typed into the pane they are driving.
+func TestCancelTask_RefusesHumanTakeover(t *testing.T) {
+	store, exec, r, _, ws := timeoutHarness(t)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	exec.onSendKeys = func() { time.AfterFunc(30*time.Millisecond, func() { cancel(orchestrator.ErrInterrupted) }) }
+	_, _ = r.Dispatch(ctx, "conv-1", "do something long")
+	task := onlyTask(t, store, ws.ID)
+	task.Status = registry.TaskStatusHumanTakeover
+	if err := store.UpdateTask(context.Background(), task); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	before := len(exec.sessionFor(task.TmuxSession).namedKeys)
+
+	if err := r.CancelTask(context.Background(), task.ID); !errors.Is(err, orchestrator.ErrHumanTakeover) {
+		t.Fatalf("CancelTask(taken over) = %v, want ErrHumanTakeover", err)
+	}
+	task = onlyTask(t, store, ws.ID)
+	if task.Status != registry.TaskStatusHumanTakeover {
+		t.Errorf("task = %s, want still human-takeover", task.Status)
+	}
+	if n := len(exec.sessionFor(task.TmuxSession).namedKeys); n != before {
+		t.Errorf("keys were sent to a taken-over pane")
+	}
+}
