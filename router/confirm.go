@@ -34,6 +34,9 @@ const (
 	// pendingRunCommand runs a shell command the user didn't write out
 	// verbatim (LOOM-72).
 	pendingRunCommand
+	// pendingPolicyConfirm carries out a plan its target's policy made
+	// wait for a "yes" (LOOM-89).
+	pendingPolicyConfirm
 )
 
 // pendingInstall is an offer awaiting the user's confirmation — an agent
@@ -54,10 +57,13 @@ type pendingInstall struct {
 	// needed.
 	workspaceID string
 	provision   *ProvisionSpec
-	// message is, for pendingCloneRemote, the request that will carry on
-	// once the clone is confirmed.
+	// message is, for pendingCloneRemote and pendingPolicyConfirm, the
+	// request that will carry on once confirmed.
 	message string
-	expires time.Time
+	// decision is, for pendingPolicyConfirm, the plan a "yes" carries out
+	// (LOOM-89).
+	decision *Decision
+	expires  time.Time
 }
 
 // pendingActions holds at most one offer per conversation, in memory. A

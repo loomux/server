@@ -1145,9 +1145,17 @@ type targetResponse struct {
 	WorkspaceRoot string `json:"workspace_root"`
 	// PermissionMode: empty (each agent-type's default), auto,
 	// accept-edits or manual.
-	PermissionMode string    `json:"permission_mode"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	PermissionMode string `json:"permission_mode"`
+	// The target's policy (LOOM-89): purpose (personal, work or empty),
+	// the only agent types allowed there (empty: all), and whether new
+	// workspaces, shell commands and unconfirmed new work are allowed.
+	Purpose             string    `json:"purpose"`
+	AllowedAgentTypes   []string  `json:"allowed_agent_types"`
+	AllowProvision      bool      `json:"allow_provision"`
+	AllowShell          bool      `json:"allow_shell"`
+	RequireConfirmation bool      `json:"require_confirmation"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 	// Health is the target's last health probe (LOOM-86); null when it
 	// has never been probed, and in create/update responses.
 	Health *targetHealthResponse `json:"health"`
@@ -1184,16 +1192,21 @@ func newTargetHealthResponse(h *registry.TargetHealth) *targetHealthResponse {
 
 func newTargetResponse(t *registry.Target) targetResponse {
 	return targetResponse{
-		ID:             t.ID,
-		Name:           t.Name,
-		Kind:           string(t.Kind),
-		Host:           t.Host,
-		User:           t.User,
-		SSHKeyRef:      t.SSHKeyRef,
-		WorkspaceRoot:  t.WorkspaceRoot,
-		PermissionMode: t.PermissionMode,
-		CreatedAt:      t.CreatedAt,
-		UpdatedAt:      t.UpdatedAt,
+		ID:                  t.ID,
+		Name:                t.Name,
+		Kind:                string(t.Kind),
+		Host:                t.Host,
+		User:                t.User,
+		SSHKeyRef:           t.SSHKeyRef,
+		WorkspaceRoot:       t.WorkspaceRoot,
+		PermissionMode:      t.PermissionMode,
+		Purpose:             t.Policy.Purpose,
+		AllowedAgentTypes:   append([]string{}, t.Policy.AllowedAgentTypes...),
+		AllowProvision:      !t.Policy.NoProvision,
+		AllowShell:          !t.Policy.NoShell,
+		RequireConfirmation: t.Policy.RequireConfirmation,
+		CreatedAt:           t.CreatedAt,
+		UpdatedAt:           t.UpdatedAt,
 	}
 }
 
@@ -1211,6 +1224,13 @@ type targetRequest struct {
 	WorkspaceRoot *string `json:"workspace_root"`
 	// PermissionMode is optional the same way.
 	PermissionMode *string `json:"permission_mode"`
+	// The policy fields (LOOM-89) are optional the same way; on a create,
+	// omitted means allowed.
+	Purpose             *string   `json:"purpose"`
+	AllowedAgentTypes   *[]string `json:"allowed_agent_types"`
+	AllowProvision      *bool     `json:"allow_provision"`
+	AllowShell          *bool     `json:"allow_shell"`
+	RequireConfirmation *bool     `json:"require_confirmation"`
 }
 
 type listTargetsResponse struct {
@@ -1238,6 +1258,25 @@ func decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.
 	// unless the request names them (LOOM-119).
 	if base != nil {
 		target.SSHKeyRef, target.WorkspaceRoot, target.PermissionMode = base.SSHKeyRef, base.WorkspaceRoot, base.PermissionMode
+		target.Policy = base.Policy
+	}
+	if req.Purpose != nil {
+		target.Policy.Purpose = *req.Purpose
+	}
+	if req.AllowedAgentTypes != nil {
+		target.Policy.AllowedAgentTypes = *req.AllowedAgentTypes
+		if len(target.Policy.AllowedAgentTypes) == 0 {
+			target.Policy.AllowedAgentTypes = nil
+		}
+	}
+	if req.AllowProvision != nil {
+		target.Policy.NoProvision = !*req.AllowProvision
+	}
+	if req.AllowShell != nil {
+		target.Policy.NoShell = !*req.AllowShell
+	}
+	if req.RequireConfirmation != nil {
+		target.Policy.RequireConfirmation = *req.RequireConfirmation
 	}
 	if req.SSHKeyRef != nil {
 		target.SSHKeyRef = *req.SSHKeyRef
