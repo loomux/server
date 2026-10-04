@@ -10,12 +10,38 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
 	defaultConnectTimeout = "10s"
 	defaultControlPersist = "10m"
+	// A half-dead connection (the Tailscale sidecar restarted, a target
+	// went away) is noticed after ServerAliveInterval*ServerAliveCountMax
+	// = 45s of silence instead of hanging (LOOM-84).
+	serverAliveInterval = "15"
+	serverAliveCountMax = "3"
+	// defaultOpTimeout bounds every ssh operation, and defaultRunOnceTimeout
+	// a one-shot command (a version probe, a pre-trust script), which may
+	// take longer (LOOM-84).
+	defaultOpTimeout      = 30 * time.Second
+	defaultRunOnceTimeout = 2 * time.Minute
+	// maxConcurrentOps caps the ssh operations in flight per target: they
+	// share one ControlMaster, and sshd refuses sessions past its
+	// MaxSessions (10 by default) on one connection (LOOM-84).
+	maxConcurrentOps = 6
 )
+
+// opSlots holds, per ControlMaster path (one per target), the semaphore
+// bounding concurrent ssh operations on it. Shared by every
+// RemoteExecutor for that target, whichever code made it.
+var opSlots sync.Map // controlPath -> chan struct{}
+
+func slotsFor(controlPath string) chan struct{} {
+	v, _ := opSlots.LoadOrStore(controlPath, make(chan struct{}, maxConcurrentOps))
+	return v.(chan struct{})
+}
 
 // RemoteExecutor runs tmux operations over SSH, using connection
 // multiplexing (ControlMaster/ControlPersist) so repeated operations
@@ -32,6 +58,8 @@ type RemoteExecutor struct {
 	controlPersist string
 	controlPath    string
 	extraArgs      []string
+	opTimeout      time.Duration
+	runOnceTimeout time.Duration
 }
 
 // RemoteOption configures a RemoteExecutor. Production's NewExecutor
@@ -54,6 +82,12 @@ func WithConnectTimeout(timeout string) RemoteOption {
 	return func(e *RemoteExecutor) { e.connectTimeout = timeout }
 }
 
+// WithOpTimeout overrides the per-operation deadline (LOOM-84) for
+// every operation but RunOnce.
+func WithOpTimeout(d time.Duration) RemoteOption {
+	return func(e *RemoteExecutor) { e.opTimeout = d }
+}
+
 // WithExtraSSHArgs appends raw arguments to every ssh invocation,
 // inserted before the destination — an escape hatch tests use for
 // StrictHostKeyChecking=no and a scratch UserKnownHostsFile against a
@@ -69,6 +103,8 @@ func NewRemoteExecutor(host, user string, opts ...RemoteOption) *RemoteExecutor 
 		user:           user,
 		connectTimeout: defaultConnectTimeout,
 		controlPersist: defaultControlPersist,
+		opTimeout:      defaultOpTimeout,
+		runOnceTimeout: defaultRunOnceTimeout,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -102,6 +138,8 @@ func (e *RemoteExecutor) baseArgs() []string {
 		// exchange notice) would otherwise land in RunOnce's output.
 		"-o", "LogLevel=ERROR",
 		"-o", "ConnectTimeout=" + e.connectTimeout,
+		"-o", "ServerAliveInterval=" + serverAliveInterval,
+		"-o", "ServerAliveCountMax=" + serverAliveCountMax,
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPersist=" + e.controlPersist,
 		"-o", "ControlPath=" + e.controlPath,
@@ -126,9 +164,31 @@ func (e *RemoteExecutor) baseArgs() []string {
 // true/false, RemoveFile treats non-zero as an unexpected rm -f
 // failure. Shared by run() and the file-existence/cleanup methods so
 // none of them duplicate this SSH-invocation boilerplate.
+//
+// Each call holds one of the target's operation slots (LOOM-84) and is
+// bounded by timeout: an operation that outlives it fails as
+// ErrUnreachable, since a target that doesn't answer in time is, for
+// the caller, unreachable.
 func (e *RemoteExecutor) sshExec(ctx context.Context, remoteCmd string) (stdout, stderr string, exitCode int, err error) {
+	return e.sshExecWithin(ctx, e.opTimeout, remoteCmd)
+}
+
+func (e *RemoteExecutor) sshExecWithin(ctx context.Context, timeout time.Duration, remoteCmd string) (stdout, stderr string, exitCode int, err error) {
 	if mkErr := os.MkdirAll(filepath.Dir(e.controlPath), 0o700); mkErr != nil {
 		return "", "", -1, fmt.Errorf("targets: create control path dir: %w", mkErr)
+	}
+	slots := slotsFor(e.controlPath)
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		return "", "", -1, ctx.Err()
+	}
+	opCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		opCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 
 	// sshd hands the remote command to the user's login shell, which may
@@ -139,7 +199,7 @@ func (e *RemoteExecutor) sshExec(ctx context.Context, remoteCmd string) (stdout,
 	// stdin so nothing it runs can swallow the script.
 	sshArgs := append(e.baseArgs(), e.destination(), "/bin/sh")
 
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	cmd := exec.CommandContext(opCtx, "ssh", sshArgs...)
 	cmd.Stdin = strings.NewReader("{\n" + remoteCmd + "\n} </dev/null\n")
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -149,6 +209,9 @@ func (e *RemoteExecutor) sshExec(ctx context.Context, remoteCmd string) (stdout,
 
 	if runErr == nil {
 		return stdout, stderr, 0, nil
+	}
+	if ctx.Err() == nil && errors.Is(opCtx.Err(), context.DeadlineExceeded) {
+		return stdout, stderr, -1, fmt.Errorf("%w: no answer within %s", ErrUnreachable, timeout)
 	}
 	if exitErr, ok := runErr.(*exec.ExitError); ok {
 		if exitErr.ExitCode() == 255 {
@@ -259,7 +322,7 @@ func (e *RemoteExecutor) KillSession(ctx context.Context, session string) error 
 // print --version to stderr, so both streams are captured rather than
 // just stdout.
 func (e *RemoteExecutor) RunOnce(ctx context.Context, command string) (string, error) {
-	stdout, stderr, exitCode, err := e.sshExec(ctx, command)
+	stdout, stderr, exitCode, err := e.sshExecWithin(ctx, e.runOnceTimeout, command)
 	if err != nil {
 		return "", err
 	}
