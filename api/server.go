@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/dispatch"
 	"github.com/Loomux/server/internal/health"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
@@ -30,18 +31,18 @@ import (
 // version.Version (axis 4, the server's own release version).
 const APIVersion = "v1"
 
-// Dispatcher is the one operation Server needs from the domain layer —
-// satisfied by *app.App. A narrow seam (this package doesn't import app
-// directly) keeps its own tests fast and self-contained, mirroring
-// router.RoutingModel / orchestrator.CompletionDetector's minimal-seam
-// pattern elsewhere in this codebase.
+// Dispatcher is what Server needs from the domain layer to run chat
+// dispatches: the dispatch-job service (LOOM-80), satisfied by
+// *dispatch.Service (app.App.Dispatches() in production). Every POST
+// /dispatch becomes a job running on a server-owned context; the
+// request only decides whether to wait for it.
 type Dispatcher interface {
-	// Dispatch routes one chat message. workspaceHint (LOOM-46) is an
-	// optional, advisory workspace ID — empty means none was given — a
-	// plain string rather than a router.DispatchOption so this
-	// interface doesn't need to import the router package (this
-	// package's own narrow-seam rationale, see the doc comment above).
-	Dispatch(ctx context.Context, conversationID, message, workspaceHint string) (string, error)
+	Submit(ctx context.Context, req dispatch.Request) (*registry.Dispatch, error)
+	// Wait blocks until the job is finished or ctx is done; ctx ending
+	// never affects the job.
+	Wait(ctx context.Context, id string) (*registry.Dispatch, error)
+	Get(ctx context.Context, id string) (*registry.Dispatch, error)
+	ListByConversation(ctx context.Context, conversationID string) ([]*registry.Dispatch, error)
 }
 
 // SessionStore is the session-related slice of registry.Store this
@@ -258,6 +259,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/sessions", s.requireAuth(s.handleListSessions))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAuth(s.handleRevokeSession))
 	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
+	mux.HandleFunc("GET /api/v1/dispatches/{id}", s.requireAuth(s.handleGetDispatch))
 	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
 	mux.HandleFunc("GET /api/v1/conversations", s.requireAuth(s.handleListConversations))
 	mux.HandleFunc("GET /api/v1/conversations/{id}", s.requireAuth(s.handleGetConversation))
@@ -439,44 +441,6 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-type dispatchRequest struct {
-	ConversationID string `json:"conversation_id"`
-	Message        string `json:"message"`
-	// WorkspaceHint (LOOM-46) is optional: a client-supplied workspace
-	// ID the caller believes this message likely belongs to (e.g. a
-	// chat UI already focused on that workspace's conversation). It's
-	// advisory only — see Dispatcher.Dispatch and router.WithWorkspaceHint.
-	WorkspaceHint string `json:"workspace_hint,omitempty"`
-}
-
-type dispatchResponse struct {
-	Reply string `json:"reply"`
-}
-
-func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
-	var req dispatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed request body")
-		return
-	}
-	if req.ConversationID == "" || req.Message == "" {
-		writeError(w, http.StatusBadRequest, "conversation_id and message are required")
-		return
-	}
-
-	reply, err := s.dispatcher.Dispatch(r.Context(), req.ConversationID, req.Message, req.WorkspaceHint)
-	if err != nil {
-		// Surfaced verbatim, not genericized: design spec's error-handling
-		// section requires routing failures to reach the user as an
-		// explicit message, never a silently dropped one — and this
-		// endpoint is auth-gated, so the exposure is to the authenticated
-		// owner only, not an anonymous caller.
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, dispatchResponse{Reply: reply})
 }
 
 type workspaceSummary struct {
@@ -673,17 +637,23 @@ type conversationTask struct {
 }
 
 type messageSummary struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	TaskID    string    `json:"task_id,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID      string `json:"id"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	TaskID  string `json:"task_id,omitempty"`
+	// DispatchID is the dispatch job the message belongs to (LOOM-80).
+	DispatchID string    `json:"dispatch_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type getConversationResponse struct {
 	ConversationID string             `json:"conversation_id"`
 	Tasks          []conversationTask `json:"tasks"`
 	Messages       []messageSummary   `json:"messages"`
+	// Dispatches is every dispatch job of the conversation, oldest first
+	// (LOOM-80): a client reopening a conversation sees a turn still in
+	// flight, or one that failed, here.
+	Dispatches []dispatchResponse `json:"dispatches"`
 }
 
 // handleGetConversation returns a conversation's full task history (every
@@ -735,24 +705,35 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	msgOut := make([]messageSummary, 0, len(messages))
 	for _, m := range messages {
 		msgOut = append(msgOut, messageSummary{
-			ID:        m.ID,
-			Role:      string(m.Role),
-			Content:   m.Content,
-			TaskID:    m.TaskID,
-			CreatedAt: m.CreatedAt,
+			ID:         m.ID,
+			Role:       string(m.Role),
+			Content:    m.Content,
+			TaskID:     m.TaskID,
+			DispatchID: m.DispatchID,
+			CreatedAt:  m.CreatedAt,
 		})
+	}
+
+	dispatches, err := s.dispatcher.ListByConversation(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not fetch conversation")
+		return
+	}
+	dispatchOut := make([]dispatchResponse, 0, len(dispatches))
+	for _, d := range dispatches {
+		dispatchOut = append(dispatchOut, newDispatchResponse(d))
 	}
 
 	// A conversation is only truly unknown if it has neither task
 	// history nor any logged messages — an answer_directly-only
 	// conversation (LOOM-31) has messages but zero tasks, and must not
 	// 404.
-	if len(out) == 0 && len(msgOut) == 0 {
+	if len(out) == 0 && len(msgOut) == 0 && len(dispatchOut) == 0 {
 		writeError(w, http.StatusNotFound, "no such conversation")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out, Messages: msgOut})
+	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out, Messages: msgOut, Dispatches: dispatchOut})
 }
 
 type attachTargetInfo struct {
@@ -828,10 +809,9 @@ type taskUpdateEvent struct {
 
 // handleStream serves GET /api/v1/conversations/{id}/stream (LOOM-21):
 // Server-Sent Events reporting task status transitions for one
-// conversation, so a client can watch a dispatch progress instead of
-// only getting a single reply when POST /dispatch's blocking call
-// eventually returns (that endpoint's contract is unchanged — this is
-// purely additive). No 404 for an unknown conversation_id: a client may
+// conversation, so a client can watch a dispatch progress, and (LOOM-80)
+// dispatch_update events for its dispatch jobs, which carry the reply
+// once a job succeeds (see sendDispatchUpdates). No 404 for an unknown conversation_id: a client may
 // open the stream before ever calling dispatch, to catch the very first
 // transition. Implemented as a polling loop against TaskLister (the same
 // seam LOOM-18's conversation endpoints use) rather than a push-based
@@ -861,6 +841,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	defer heartbeat.Stop()
 
 	var lastSent *taskUpdateEvent
+	// dispatchSeen is each job's last reported (status, updated_at), so
+	// a job is reported whenever it changes (LOOM-80). Jobs already
+	// finished when the stream opens are recorded unreported: only what
+	// is still in flight is news to a client connecting now.
+	var dispatchSeen map[string]dispatchUpdateEvent
 	for {
 		select {
 		case <-r.Context().Done():
@@ -869,6 +854,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		case <-poll.C:
+			dispatchSeen = s.sendDispatchUpdates(r.Context(), w, flusher, id, dispatchSeen)
 			ev, err := s.latestConversationTaskEvent(r.Context(), id)
 			if err != nil || ev == nil {
 				continue

@@ -489,9 +489,18 @@ Four independent axes:
   once at startup as well as on each sweep (LOOM-60).
 - **Every dispatch error after a task exists fails that task** with a
   reason and error class (LOOM-77) — a failed send, an abandoned or broken
-  wait (including the request being cancelled), a capture/relay failure —
+  wait, a capture/relay failure —
   so nothing is left `running` with no explanation. A refusal because a
-  human has taken the task over is not a failure. Failing a task returns
+  human has taken the task over is not a failure. The one exception is a
+  turn cut off by server shutdown: that leaves the task as it is, for
+  startup reconciliation (LOOM-82) to pick up.
+- **Dispatch outlives the request** (LOOM-80,
+  `docs/design/async-dispatch-design.md`): every `POST /dispatch` runs as a
+  persisted dispatch job on a server-owned context, so a client going away
+  mid-turn doesn't cancel it; the user message is stored at submit, the
+  result lands on the job and in the conversation's history. Shutdown
+  drains jobs, then marks the rest `interrupted`; startup marks any job a
+  previous process left in flight `interrupted`. Failing a task returns
   an `active` workspace to `idle`; any other workspace status is kept.
 - **Agent crash/hang** (bounded waits, LOOM-76): every agent turn is bounded
   per agent-type by `MaxTurnDuration` (default 1 h) and, for marker-tier

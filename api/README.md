@@ -144,15 +144,41 @@ not engineering taste):
     session is allowed and behaves exactly like `/logout`. `204` on
     success, `404` if `id` doesn't name an existing session. Wraps
     `SessionStore.DeleteSession`.
-  - `POST /api/v1/dispatch` — auth-gated, `{conversation_id, message,
-    workspace_hint?}` → `{reply}`, wraps `Dispatcher.Dispatch`.
-    `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
-    ID (e.g. a chat UI already focused on that workspace's conversation)
-    that's folded into the router model's prompt as advisory context
-    only; the router model (design spec §6) keeps final authority over
-    which workspace a message actually goes to, exactly as it already
-    does for the workspace list itself. Omitting it (every request
-    before this ticket) is unchanged
+  - `POST /api/v1/dispatch` — auth-gated, `{conversation_id?, message,
+    workspace_hint?}`, optional `Idempotency-Key` header (≤ 255 chars).
+    Since LOOM-80 every request becomes a **dispatch job** (wraps
+    `Dispatcher`, i.e. `dispatch.Service`): the job and its user message
+    are stored before anything runs, and the turn runs on a server-owned
+    context, so a client that disconnects mid-turn loses nothing — the
+    result lands on the job and in the conversation's history. See
+    `docs/design/async-dispatch-design.md`.
+    - **Blocking** (the default, or `?wait=true`): waits for the job and
+      answers `200 {reply, dispatch_id, conversation_id, status, …}`, or
+      `500 {error, error_class, dispatch_id, …}` if it failed or was
+      interrupted.
+    - **Async** (`Prefer: respond-async`, or `?async=true`): `202
+      {dispatch_id, conversation_id, status}` at once, with `Location:
+      /api/v1/dispatches/{id}` (and `Preference-Applied: respond-async`
+      when the header asked). `?wait=true` with an async request is `400`.
+    - The default is one constant, `dispatchAsyncByDefault` in
+      `api/dispatch.go`: blocking while the deployed web still expects
+      `{reply}`, to be flipped to async once the LOOM-81 web has shipped.
+    - `conversation_id` empty starts a new conversation (its id is in the
+      response). A repeat with the same `Idempotency-Key` and the same
+      body returns the original job and runs nothing; the same key with a
+      different body is `422`. A conversation with a job still in flight
+      answers `409 {error, dispatch_id}` naming it (LOOM-83 owns
+      serializing instead). `503` while the server is shutting down.
+    - `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
+      ID (e.g. a chat UI already focused on that workspace's conversation)
+      that's folded into the router model's prompt as advisory context
+      only; the router model (design spec §6) keeps final authority over
+      which workspace a message actually goes to.
+  - `GET /api/v1/dispatches/{id}` — auth-gated (LOOM-80), one dispatch job:
+    `{dispatch_id, conversation_id, status, reply?, error?, error_class?,
+    created_at, started_at?, finished_at?}`, `status` one of `queued`,
+    `running`, `succeeded`, `failed`, `interrupted` (shutdown or restart
+    cut it off; error class `interrupted`); `404` if unknown.
   - `GET /api/v1/workspaces` — auth-gated (LOOM-19), lists registered
     workspaces sorted by name: `{workspaces: [{id, name, target_id,
     status, tags, description, capabilities, rolling_summary, is_dynamic,
@@ -184,7 +210,10 @@ not engineering taste):
     history for one conversation plus its message transcript (LOOM-31):
     `{conversation_id, tasks: [{id, workspace_id, kind, agent_type,
     status, created_at, updated_at, started_at, completed_at}, ...],
-    messages: [{id, role, content, task_id, created_at}, ...]}`, both
+    messages: [{id, role, content, task_id, dispatch_id?, created_at}, ...],
+    dispatches: [{dispatch_id, status, reply?, error?, …}, ...]}` (dispatches
+    and `dispatch_id` since LOOM-80; a conversation whose only turn is still
+    in flight already resolves, via its job and stored user message), all
     oldest first; `404` only if there is neither task history nor any
     message for that `conversation_id` — an `answer_directly`-only
     conversation has messages but no tasks and still resolves to `200`.
@@ -214,18 +243,13 @@ not engineering taste):
     minimal-machinery style (e.g. completion detection's own idle-
     heuristic tier).
 
-    **Design note on reply text:** the actual chat reply is still only
-    ever produced by `POST /dispatch`'s blocking return value — it is
-    never persisted per-task or per-conversation (`Complete` only ever
-    writes it into the workspace's `rolling_summary`, which is replaced,
-    not conversation-scoped, and shared across every conversation that
-    touches that workspace). So a client's real flow is: open the stream
-    for live progress, and still block on (or already have called)
-    `POST /dispatch` to get the actual reply text — the stream is a
-    supplementary progress indicator, not a full async-dispatch
-    replacement. Persisting reply text per-task so a client could skip
-    blocking entirely was considered and deliberately deferred — real
-    schema growth beyond this ticket's scope, confirmed with the user.
+    Since LOOM-80 the same stream also carries `event: dispatch_update`,
+    `data: {dispatch_id, status, reply?, error?, error_class?, updated_at}`,
+    whenever one of the conversation's dispatch jobs changes. On connect it
+    reports jobs still in flight (so a client reconnecting mid-turn picks
+    up where it was) but not ones already finished. With the reply on the
+    `succeeded` event, in the job and in the conversation's messages, an
+    async client no longer has to hold a request open for the reply text.
   - `GET /api/v1/tasks/{id}/attach-info` — auth-gated (LOOM-20), resolves
     a task down to the target+session a human would SSH into to attach
     (design spec §4): `{task_id, tmux_session, target: {id, name, kind,

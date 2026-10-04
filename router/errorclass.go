@@ -9,6 +9,25 @@ import (
 	"github.com/Loomux/server/targets"
 )
 
+// ClassifyError maps a failed Dispatch's error to the class a dispatch
+// job records (LOOM-80): the turn-level classes a client can act on
+// (timeout, agent exited) where the error carries them, otherwise the
+// same classes the dispatch metrics use.
+func ClassifyError(err error) registry.ErrorClass {
+	var timeout *orchestrator.TurnTimeoutError
+	if errors.As(err, &timeout) {
+		return registry.ErrorClassTimeout
+	}
+	var exited *orchestrator.ProcessExitedError
+	if errors.As(err, &exited) {
+		return registry.ErrorClassAgentExited
+	}
+	if c := classifyDispatchError(err); c != "" {
+		return registry.ErrorClass(c)
+	}
+	return registry.ErrorClassInternal
+}
+
 // classifyDispatchError maps a dispatch error to a stable error_class
 // label for metrics, reusing registry.ErrorClass values from LOOM-77.
 // It keeps cardinality bounded by never using the error message as a

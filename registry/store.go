@@ -62,6 +62,28 @@ type Store interface {
 	// conversation with no tasks at all is discovered (LOOM-62).
 	ListConversationActivity(ctx context.Context) ([]*ConversationActivity, error)
 
+	// CreateDispatch, GetDispatch, GetDispatchByIdempotencyKey,
+	// ListDispatchesByConversation, ListDispatchesByStatus and
+	// TransitionDispatch back dispatch jobs (LOOM-80).
+	//
+	// CreateDispatch stores d (Status queued, or as given) and, when
+	// userMessage is non-nil, that message with DispatchID = d.ID, in one
+	// transaction: both or neither. It fails with ErrIdempotencyKeyExists
+	// when d.IdempotencyKey is already held, and ErrConversationBusy when
+	// d.ConversationID already has a queued or running dispatch.
+	CreateDispatch(ctx context.Context, d *Dispatch, userMessage *Message) error
+	GetDispatch(ctx context.Context, id string) (*Dispatch, error)
+	GetDispatchByIdempotencyKey(ctx context.Context, key string) (*Dispatch, error)
+	// ListDispatchesByConversation returns oldest first; unknown is empty.
+	ListDispatchesByConversation(ctx context.Context, conversationID string) ([]*Dispatch, error)
+	// ListDispatchesByStatus returns every dispatch in any of statuses.
+	ListDispatchesByStatus(ctx context.Context, statuses ...DispatchStatus) ([]*Dispatch, error)
+	// TransitionDispatch writes d's status, reply, error, error class and
+	// started/finished times, but only if the stored status is still
+	// from; otherwise ErrDispatchStateChanged (ErrNotFound if no such
+	// dispatch). It stamps d.UpdatedAt.
+	TransitionDispatch(ctx context.Context, d *Dispatch, from DispatchStatus) error
+
 	// CreateCredential, GetCredential, ListCredentials, and
 	// DeleteCredential are the vault (design spec §7's second half).
 	// Credential.Value is plaintext at this interface's boundary; a

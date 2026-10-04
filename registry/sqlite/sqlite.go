@@ -508,12 +508,12 @@ func scanTask(row rowScanner) (*registry.Task, error) {
 func (s *Store) CreateMessage(ctx context.Context, m *registry.Message) error {
 	m.CreatedAt = time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO messages (id, conversation_id, task_id, role, content, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ConversationID, nullIfEmpty(m.TaskID), string(m.Role), m.Content, m.CreatedAt,
+		INSERT INTO messages (id, conversation_id, task_id, dispatch_id, role, content, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, nullIfEmpty(m.TaskID), nullIfEmpty(m.DispatchID), string(m.Role), m.Content, m.CreatedAt,
 	)
 	if isForeignKeyConstraintErr(err) {
-		return fmt.Errorf("%w: task %q does not exist", registry.ErrConflict, m.TaskID)
+		return fmt.Errorf("%w: task %q or dispatch %q does not exist", registry.ErrConflict, m.TaskID, m.DispatchID)
 	}
 	if err != nil {
 		return fmt.Errorf("sqlite: create message: %w", err)
@@ -521,7 +521,7 @@ func (s *Store) CreateMessage(ctx context.Context, m *registry.Message) error {
 	return nil
 }
 
-const messageColumns = `id, conversation_id, task_id, role, content, created_at`
+const messageColumns = `id, conversation_id, task_id, dispatch_id, role, content, created_at`
 
 // ListMessagesByConversation orders by created_at then the table's
 // implicit rowid — the rowid tiebreak guarantees insertion order even
@@ -583,12 +583,13 @@ func (s *Store) ListConversationActivity(ctx context.Context) ([]*registry.Conve
 
 func scanMessage(row rowScanner) (*registry.Message, error) {
 	var m registry.Message
-	var taskID sql.NullString
+	var taskID, dispatchID sql.NullString
 	var role string
-	if err := row.Scan(&m.ID, &m.ConversationID, &taskID, &role, &m.Content, &m.CreatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.ConversationID, &taskID, &dispatchID, &role, &m.Content, &m.CreatedAt); err != nil {
 		return nil, err
 	}
 	m.TaskID = taskID.String
+	m.DispatchID = dispatchID.String
 	m.Role = registry.MessageRole(role)
 	return &m, nil
 }
