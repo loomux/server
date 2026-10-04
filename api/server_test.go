@@ -201,7 +201,7 @@ func TestLogin_MalformedBody_ReturnsBadRequest(t *testing.T) {
 func TestDispatch_NoToken_ReturnsUnauthorized(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
-	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", "", body)
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", "", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
@@ -211,7 +211,7 @@ func TestDispatch_NoToken_ReturnsUnauthorized(t *testing.T) {
 func TestDispatch_InvalidToken_ReturnsUnauthorized(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
-	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", "not-a-real-token", body)
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", "not-a-real-token", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
@@ -233,7 +233,7 @@ func TestDispatch_ValidToken_CallsDispatcherAndReturnsReply(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hello"})
-	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -266,7 +266,7 @@ func TestDispatch_WorkspaceHint_ReachesDispatcher(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{
 		"conversation_id": "c1", "message": "hello", "workspace_hint": "ws-hinted",
 	})
-	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -281,7 +281,7 @@ func TestDispatch_MissingFields_ReturnsBadRequest(t *testing.T) {
 	token, _ := login(t, srv.URL, testPassword)
 
 	body, _ := json.Marshal(map[string]string{"conversation_id": "", "message": ""})
-	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
@@ -302,7 +302,7 @@ func TestLogout_RevokesToken(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
-	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("dispatch after logout status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
@@ -474,14 +474,14 @@ func TestRevokeSession_ByID_InvalidatesThatTokenButNotOthers(t *testing.T) {
 
 	// tokenB (revoked by id) can no longer authenticate...
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
-	respB := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", tokenB, body)
+	respB := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", tokenB, body)
 	defer respB.Body.Close()
 	if respB.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("dispatch with revoked tokenB status = %d, want %d", respB.StatusCode, http.StatusUnauthorized)
 	}
 
 	// ...but tokenA (the caller, untouched) still can.
-	respA := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", tokenA, body)
+	respA := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", tokenA, body)
 	defer respA.Body.Close()
 	if respA.StatusCode != http.StatusOK {
 		t.Fatalf("dispatch with tokenA status = %d, want %d", respA.StatusCode, http.StatusOK)
@@ -514,7 +514,7 @@ func TestRevokeSession_CurrentSession_BehavesLikeLogout(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
-	after := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	after := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 	defer after.Body.Close()
 	if after.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("dispatch after self-revoke status = %d, want %d", after.StatusCode, http.StatusUnauthorized)
@@ -531,7 +531,7 @@ func TestSession_ExpiresAfterTTL(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
-	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status after TTL expiry = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
@@ -551,7 +551,7 @@ func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
 	// what a single fixed expiration from login time would allow.
 	for i := 0; i < 3; i++ {
 		time.Sleep(80 * time.Millisecond)
-		resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token, body)
+		resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d status = %d, want %d (sliding expiration should have kept the session alive)", i, resp.StatusCode, http.StatusOK)

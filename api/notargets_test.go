@@ -85,7 +85,7 @@ func TestIntegration_Dispatch_NoTargets_ClearAnswerNot500(t *testing.T) {
 		t.Fatalf("precondition: targets = %s, want an empty table", listed.Targets)
 	}
 
-	resp := postJSON(t, httpSrv.URL+"/api/v1/dispatch", token, map[string]string{
+	resp := postJSON(t, httpSrv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{
 		"conversation_id": "c1", "message": "set up a workspace on sc1",
 	})
 	defer resp.Body.Close()
