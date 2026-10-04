@@ -49,6 +49,12 @@ LOOMUX_REAP_INTERVAL          idle reaper sweep interval, time.ParseDuration syn
 LOOMUX_TARGET_PROBE_INTERVAL  how often every target's health is probed (default: 5m; LOOM-86)
 LOOMUX_LOG_LEVEL              debug | info | warn | error (default: info); structured JSON on stderr
                                for routing decisions, provisioning and dispatch (LOOM-63)
+LOOMUX_NTFY_URL / _TOPIC      ntfy server and topic for turn notifications (LOOM-102); both or
+                               neither — unset turns notifications off
+LOOMUX_NTFY_TOKEN             ntfy access token (optional)
+LOOMUX_NOTIFY_EVENTS          which to notify: done,failed,needs_you (default: all three)
+LOOMUX_NOTIFY_MIN_DURATION    skip turns quicker than this (default: 30s)
+LOOMUX_PUBLIC_URL             where the web client is served, for notification links (optional)
 
 LOOMUX_ROUTER_PRIMARY_BASE_URL / _API_KEY / _MODEL       (required — see router/llmrouter)
 LOOMUX_ROUTER_ESCALATION_BASE_URL / _API_KEY / _MODEL    (optional, all-or-nothing)

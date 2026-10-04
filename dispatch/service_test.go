@@ -458,3 +458,32 @@ func TestCancelFinishedOrUnknownJob(t *testing.T) {
 		t.Errorf("Cancel(unknown) = %v, want ErrNotFound", err)
 	}
 }
+
+func TestOnFinishedSeesEachEndedJobOnce(t *testing.T) {
+	store := newStore(t)
+	var mu sync.Mutex
+	var seen []*registry.Dispatch
+	svc := newService(t, store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
+		if d.Message == "break" {
+			return "", errors.New("boom")
+		}
+		return "ok", nil
+	}, dispatch.WithOnFinished(func(d *registry.Dispatch) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, d)
+	}))
+	for _, msg := range []string{"fine", "break"} {
+		d, err := svc.Submit(context.Background(), dispatch.Request{ConversationID: "conv-" + msg, Message: msg})
+		if err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		waitDone(t, svc, d.ID)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 || seen[0].Status != registry.DispatchStatusSucceeded || seen[0].Reply != "ok" ||
+		seen[1].Status != registry.DispatchStatusFailed || seen[1].Error != "boom" {
+		t.Fatalf("OnFinished saw %+v", seen)
+	}
+}

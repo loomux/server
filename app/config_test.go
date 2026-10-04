@@ -129,3 +129,67 @@ func TestLoadConfig_MissingRouterConfig(t *testing.T) {
 		t.Fatalf("LoadConfig err = %v, want it to mention router config", err)
 	}
 }
+
+func TestLoadConfig_NotifyOffByDefault(t *testing.T) {
+	setRouterEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Notify.NtfyURL != "" {
+		t.Errorf("Notify.NtfyURL = %q, want empty (notifications off)", cfg.Notify.NtfyURL)
+	}
+}
+
+func TestLoadConfig_Notify(t *testing.T) {
+	setRouterEnv(t)
+	t.Setenv("LOOMUX_NTFY_URL", "https://ntfy.example")
+	t.Setenv("LOOMUX_NTFY_TOPIC", "loomux")
+	t.Setenv("LOOMUX_NTFY_TOKEN", "tk_x")
+	t.Setenv("LOOMUX_NOTIFY_EVENTS", "failed,needs_you")
+	t.Setenv("LOOMUX_NOTIFY_MIN_DURATION", "2m")
+	t.Setenv("LOOMUX_PUBLIC_URL", "https://loomux.example")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	n := cfg.Notify
+	if n.NtfyURL != "https://ntfy.example" || n.NtfyTopic != "loomux" || n.NtfyToken != "tk_x" ||
+		n.MinDuration != 2*time.Minute || n.PublicURL != "https://loomux.example" ||
+		len(n.Events) != 2 || !n.Events["failed"] || !n.Events["needs_you"] {
+		t.Fatalf("Notify = %+v", n)
+	}
+}
+
+func TestLoadConfig_NotifyDefaults(t *testing.T) {
+	setRouterEnv(t)
+	t.Setenv("LOOMUX_NTFY_URL", "https://ntfy.example")
+	t.Setenv("LOOMUX_NTFY_TOPIC", "loomux")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Notify.Events) != 3 || cfg.Notify.MinDuration != defaultNotifyMinDuration {
+		t.Fatalf("Notify = %+v, want every event and the default minimum", cfg.Notify)
+	}
+}
+
+func TestLoadConfig_NotifyInvalid(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"url without topic": {"LOOMUX_NTFY_URL": "https://ntfy.example"},
+		"topic without url": {"LOOMUX_NTFY_TOPIC": "loomux"},
+		"bad url":           {"LOOMUX_NTFY_URL": "ntfy.example", "LOOMUX_NTFY_TOPIC": "loomux"},
+		"unknown event":     {"LOOMUX_NTFY_URL": "https://n.example", "LOOMUX_NTFY_TOPIC": "t", "LOOMUX_NOTIFY_EVENTS": "done,finished"},
+		"bad duration":      {"LOOMUX_NTFY_URL": "https://n.example", "LOOMUX_NTFY_TOPIC": "t", "LOOMUX_NOTIFY_MIN_DURATION": "soon"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRouterEnv(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := LoadConfig(); err == nil {
+				t.Fatalf("LoadConfig accepted %v", env)
+			}
+		})
+	}
+}

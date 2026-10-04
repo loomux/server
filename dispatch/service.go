@@ -131,11 +131,20 @@ func WithResumer(f ResumeFunc) Option {
 	return func(s *Service) { s.resume = f }
 }
 
+// WithOnFinished calls f with each job that ran to its end, succeeded or
+// failed, once its result is recorded (LOOM-102) — not with one
+// interrupted by shutdown. f runs on the job's goroutine before waiters
+// are released, so it must return quickly; d is a copy f may keep.
+func WithOnFinished(f func(d *registry.Dispatch)) Option {
+	return func(s *Service) { s.onFinished = f }
+}
+
 // Service accepts, runs and tracks dispatch jobs.
 type Service struct {
 	store       Store
 	run         RunFunc
 	resume      ResumeFunc
+	onFinished  func(d *registry.Dispatch)
 	maxDuration time.Duration
 	logger      *slog.Logger
 	classify    func(error) registry.ErrorClass
@@ -336,6 +345,9 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run 
 		log.Error("dispatch failed", "error_class", string(d.ErrorClass), "duration_ms", finished.Sub(started).Milliseconds())
 	default:
 		log.Info("dispatch succeeded", "duration_ms", finished.Sub(started).Milliseconds())
+	}
+	if err == nil && s.onFinished != nil {
+		s.onFinished(copyDispatch(d))
 	}
 }
 

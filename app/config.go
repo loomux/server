@@ -13,10 +13,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
@@ -70,6 +72,25 @@ type Config struct {
 	// finish before marking them interrupted (LOOM-80). Zero means
 	// defaultDispatchDrain.
 	DispatchDrain time.Duration
+	// Notify configures turn notifications (LOOM-102); off when
+	// Notify.NtfyURL is empty.
+	Notify NotifyConfig
+}
+
+// NotifyConfig configures turn notifications (LOOM-102).
+type NotifyConfig struct {
+	// NtfyURL is the ntfy server ("https://ntfy.sh"), NtfyTopic the topic
+	// posted to and NtfyToken an optional access token. An empty NtfyURL
+	// turns notifications off.
+	NtfyURL, NtfyTopic, NtfyToken string
+	// Events are the kinds notified ("done", "failed", "needs_you").
+	Events map[notify.Kind]bool
+	// MinDuration skips turns shorter than this: the user was likely
+	// still watching.
+	MinDuration time.Duration
+	// PublicURL is where the web client is served, for each
+	// notification's link to its conversation; empty means no link.
+	PublicURL string
 }
 
 const (
@@ -83,6 +104,12 @@ const (
 	envAgentProfiles       = "LOOMUX_AGENT_PROFILES"
 	envDispatchMaxDuration = "LOOMUX_DISPATCH_MAX_DURATION"
 	envDispatchDrain       = "LOOMUX_DISPATCH_DRAIN"
+	envNtfyURL             = "LOOMUX_NTFY_URL"
+	envNtfyTopic           = "LOOMUX_NTFY_TOPIC"
+	envNtfyToken           = "LOOMUX_NTFY_TOKEN"
+	envNotifyEvents        = "LOOMUX_NOTIFY_EVENTS"
+	envNotifyMinDuration   = "LOOMUX_NOTIFY_MIN_DURATION"
+	envPublicURL           = "LOOMUX_PUBLIC_URL"
 
 	defaultDBPath = "loomux.db"
 
@@ -95,6 +122,9 @@ const (
 	// defaultDispatchDrain fits inside Kubernetes' default 30s
 	// termination grace, leaving room for the HTTP server's own shutdown.
 	defaultDispatchDrain = 20 * time.Second
+	// defaultNotifyMinDuration: a turn quicker than this was most likely
+	// watched as it happened.
+	defaultNotifyMinDuration = 30 * time.Second
 )
 
 // LoadConfig reads Config from the environment, failing fast on
@@ -179,7 +209,13 @@ func LoadConfig() (Config, error) {
 		}
 	}
 
+	notifyCfg, err := loadNotifyConfig()
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
+		Notify:              notifyCfg,
 		AgentProfiles:       agentProfiles,
 		DBPath:              dbPath,
 		MarkerDir:           os.Getenv(envMarkerDir),
@@ -193,4 +229,41 @@ func LoadConfig() (Config, error) {
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil
+}
+
+// loadNotifyConfig reads NotifyConfig (LOOM-102) from the environment.
+func loadNotifyConfig() (NotifyConfig, error) {
+	cfg := NotifyConfig{
+		NtfyURL:     os.Getenv(envNtfyURL),
+		NtfyTopic:   os.Getenv(envNtfyTopic),
+		NtfyToken:   os.Getenv(envNtfyToken),
+		MinDuration: defaultNotifyMinDuration,
+		PublicURL:   os.Getenv(envPublicURL),
+	}
+	if cfg.NtfyURL == "" && cfg.NtfyTopic == "" {
+		return NotifyConfig{}, nil
+	}
+	if cfg.NtfyURL == "" || cfg.NtfyTopic == "" {
+		return NotifyConfig{}, fmt.Errorf("app: %s and %s must be set together", envNtfyURL, envNtfyTopic)
+	}
+	if u, err := url.Parse(cfg.NtfyURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return NotifyConfig{}, fmt.Errorf("app: %s must be an http(s) URL: %q", envNtfyURL, cfg.NtfyURL)
+	}
+	events := "done,failed,needs_you"
+	if raw := os.Getenv(envNotifyEvents); raw != "" {
+		events = raw
+	}
+	kinds, err := notify.ParseKinds(events)
+	if err != nil {
+		return NotifyConfig{}, fmt.Errorf("app: %s: %w", envNotifyEvents, err)
+	}
+	cfg.Events = kinds
+	if raw := os.Getenv(envNotifyMinDuration); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < 0 {
+			return NotifyConfig{}, fmt.Errorf("app: %s is not a valid duration: %q", envNotifyMinDuration, raw)
+		}
+		cfg.MinDuration = d
+	}
+	return cfg, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/Loomux/server/dispatch"
 	"github.com/Loomux/server/internal/health"
 	"github.com/Loomux/server/internal/metrics"
+	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
@@ -266,6 +268,13 @@ const (
 	finishedPaneSweep = time.Minute
 )
 
+// At most notifyBurst notifications go out at once, then one more every
+// notifyRefill (LOOM-102): a string of failures mustn't flood a phone.
+const (
+	notifyBurst  = 5
+	notifyRefill = time.Minute
+)
+
 // reconcileTimeout bounds startup task reconciliation (LOOM-82).
 const reconcileTimeout = 2 * time.Minute
 
@@ -402,6 +411,22 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		resumed[taskID] = true
 		return run
 	}))
+	if cfg.Notify.NtfyURL != "" {
+		logger := cfg.Logger
+		if logger == nil {
+			logger = slog.New(slog.DiscardHandler)
+		}
+		n := &turnNotifier{
+			store: store,
+			filter: notify.NewFilter(notify.NewNtfy(cfg.Notify.NtfyURL, cfg.Notify.NtfyTopic, cfg.Notify.NtfyToken), notify.FilterConfig{
+				Events: cfg.Notify.Events, Burst: notifyBurst, Refill: notifyRefill,
+			}),
+			minDuration: cfg.Notify.MinDuration,
+			publicURL:   cfg.Notify.PublicURL,
+			logger:      logger,
+		}
+		dispatchOpts = append(dispatchOpts, dispatch.WithOnFinished(n.finished))
+	}
 	dispatches := dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
 		opts := []router.DispatchOption{router.WithDispatchID(d.ID), router.WithUserMessageLogged()}
 		if d.WorkspaceHint != "" {
