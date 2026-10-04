@@ -46,6 +46,7 @@ LOOMUX_MASTER_KEY             base64 AES-256 key for the credential vault (optio
                                warning is printed if unset, since credential operations will then fail)
 LOOMUX_REAP_IDLE_THRESHOLD    idle reaper threshold, time.ParseDuration syntax (default: 24h)
 LOOMUX_REAP_INTERVAL          idle reaper sweep interval, time.ParseDuration syntax (default: 1h)
+LOOMUX_TARGET_PROBE_INTERVAL  how often every target's health is probed (default: 5m; LOOM-86)
 LOOMUX_LOG_LEVEL              debug | info | warn | error (default: info); structured JSON on stderr
                                for routing decisions, provisioning and dispatch (LOOM-63)
 

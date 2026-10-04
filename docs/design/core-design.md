@@ -380,6 +380,24 @@ recorded results can also be listed and refreshed on demand
 (`GET /api/v1/targets/{id}/agents`, `POST .../agents/refresh`). A probe
 that can't run (target unreachable) is an error, never "absent".
 
+**Target health (LOOM-86).** Every target is also probed for health on a
+timer (`LOOMUX_TARGET_PROBE_INTERVAL`, default 5m) and on demand
+(`POST /api/v1/targets/{id}/probe`): reachability, latency, `tmux -V`,
+and the space free on the workspace root's filesystem. A target that
+answers has its agent CLIs re-probed in the same pass, including whether
+each is signed in (`claude auth status`, `codex login status` —
+classified as logged_in / logged_out / unknown; the output itself, which
+can carry the account's email, is never stored). The latest result is
+kept per target, shown on `GET /api/v1/targets` (`health`, with
+`last_probed_at`), fed to the routing model (a target marked "unusable
+right now" is avoided), and exported as `loomux_target_up` /
+`loomux_target_disk_free_bytes`. A dispatch, command or provisioning
+aimed at a target recorded unhealthy re-probes it first: recovered, the
+work goes ahead; still broken, it fails at once with the probe's reason
+(error class `target_unreachable`, or `target_unhealthy` for no tmux /
+a nearly full disk) instead of a raw error minutes into the turn. A new
+workspace also needs at least 1 GiB free on the root's filesystem.
+
 If the turn would also have provisioned a workspace, the offer shows that
 provisioning script in full too: a "yes" runs nothing the offer didn't
 show.

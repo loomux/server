@@ -10,6 +10,8 @@ const (
 	AgentProbeAbsent        = agentProbeAbsent
 	AgentProbeAuthBegin     = agentProbeAuthBegin
 	AgentProbeAuthEnd       = agentProbeAuthEnd
+	HealthProbeTmuxPrefix   = healthProbeTmuxPrefix
+	HealthProbeDiskPrefix   = healthProbeDiskPrefix
 )
 
 // ProvisioningMarker starts every provisioning recipe; tests use it to

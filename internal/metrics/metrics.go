@@ -52,6 +52,7 @@ type Metrics struct {
 	TaskTransitions    *prometheus.CounterVec
 	TasksByStatus      *prometheus.GaugeVec
 	TargetUp           *prometheus.GaugeVec
+	TargetDiskFree     *prometheus.GaugeVec
 	TargetOpDuration   *prometheus.HistogramVec
 	TargetOpErrors     *prometheus.CounterVec
 	ReaperTasksReaped  prometheus.Counter
@@ -105,6 +106,10 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "loomux_target_up",
 			Help: "Whether a target is reachable (1) or not (0).",
 		}, []string{"target", "kind"}),
+		TargetDiskFree: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loomux_target_disk_free_bytes",
+			Help: "Bytes free on the filesystem holding a target's workspace root, as last probed.",
+		}, []string{"target"}),
 		TargetOpDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "loomux_target_op_seconds",
 			Help:    "Target operation latency distribution in seconds by target kind and operation.",
@@ -248,6 +253,19 @@ func (m *Metrics) SetTargetUp(target, kind string, up bool) {
 		v = 1
 	}
 	m.TargetUp.WithLabelValues(target, kind).Set(v)
+}
+
+// SetTargetDiskFree sets a target's disk-free gauge (LOOM-86); a negative
+// value — unknown — removes it.
+func (m *Metrics) SetTargetDiskFree(target string, bytes int64) {
+	if m == nil {
+		return
+	}
+	if bytes < 0 {
+		m.TargetDiskFree.DeleteLabelValues(target)
+		return
+	}
+	m.TargetDiskFree.WithLabelValues(target).Set(float64(bytes))
 }
 
 // RecordTargetOp records the duration and (if any) error reason for a

@@ -3,8 +3,10 @@ package router_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,4 +107,35 @@ func writeFakeAgent(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// TestIntegration_ProbeTargetHealth runs the real health probe through a
+// real shell (LOOM-86): a workspace root that doesn't exist yet is measured
+// at its nearest existing parent, and tmux's version is read when present.
+func TestIntegration_ProbeTargetHealth(t *testing.T) {
+	store := newTestStore(t)
+	target := &registry.Target{ID: uuid.NewString(), Name: "local", Kind: registry.TargetKindLocal,
+		WorkspaceRoot: filepath.Join(t.TempDir(), "not", "yet")}
+	if err := store.CreateTarget(context.Background(), target); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	agentTypes := router.AgentTypeRegistry{
+		"": router.AgentType{AgentConfig: completion.AgentConfig{Tier: completion.TierIdle, IdleTimeout: time.Second}},
+	}
+	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), t.TempDir())
+	orch := orchestrator.New(store, targets.NewExecutor, detector)
+	r := router.New(store, orch, targets.NewExecutor, credentials.NewResolver(store), agentTypes,
+		&routertest.StubRoutingModel{}, t.TempDir())
+
+	h, _, err := r.ProbeTarget(context.Background(), target.ID)
+	if err != nil {
+		t.Fatalf("ProbeTarget: %v", err)
+	}
+	if !h.Reachable || h.DiskFreeBytes <= 0 {
+		t.Errorf("health = %+v, want reachable with disk free measured", h)
+	}
+	_, lookErr := exec.LookPath("tmux")
+	if hasTmux := lookErr == nil; hasTmux != strings.HasPrefix(h.TmuxVersion, "tmux ") {
+		t.Errorf("tmux version = %q, tmux installed = %v", h.TmuxVersion, hasTmux)
+	}
 }

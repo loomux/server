@@ -68,6 +68,10 @@ type TargetSnapshot struct {
 	// printed when probed (LOOM-79), keyed like Agents; absent when
 	// unknown.
 	AgentVersions map[string]string
+	// Problem is why the target's last health probe found it unusable
+	// (LOOM-86) — unreachable, no tmux — or "" if nothing is wrong or it
+	// has never been probed.
+	Problem string
 }
 
 // ProvisionKind is how a new dynamic workspace's directory comes to be

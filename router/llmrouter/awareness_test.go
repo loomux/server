@@ -70,6 +70,21 @@ func TestDecideUserPrompt_AgentVersions(t *testing.T) {
 	}
 }
 
+// LOOM-86: a target its health probe found unusable says why; a healthy
+// one adds nothing.
+func TestDecideUserPrompt_TargetProblem(t *testing.T) {
+	prompt := decideUserPrompt("hi", nil, []router.TargetSnapshot{
+		{ID: "t1", Name: "jet01", Kind: "remote", Problem: "unreachable: Connection timed out"},
+		{ID: "t2", Name: "local", Kind: "local"},
+	}, router.DispatchOptions{})
+	if want := "name: jet01\n  kind: remote\n  agents: not checked yet\n  unusable right now: unreachable: Connection timed out\n"; !strings.Contains(prompt, want) {
+		t.Errorf("prompt missing %q:\n%s", want, prompt)
+	}
+	if strings.Count(prompt, "unusable right now") != 1 {
+		t.Errorf("a healthy target is marked unusable:\n%s", prompt)
+	}
+}
+
 // decideRequest captures the chat request the fake model receives.
 type decideRequest struct {
 	Messages []struct {

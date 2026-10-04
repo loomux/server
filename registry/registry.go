@@ -294,6 +294,10 @@ const (
 	// ErrorClassLoginRequired: the agent CLI asked to be signed in
 	// (LOOM-97). Its pane is left for a human to complete the login.
 	ErrorClassLoginRequired ErrorClass = "login_required"
+	// ErrorClassTargetUnhealthy: the target failed its health probe for a
+	// reason other than being unreachable — no tmux, its disk nearly full
+	// (LOOM-86).
+	ErrorClassTargetUnhealthy ErrorClass = "target_unhealthy"
 	// ErrorClassInternal: anything else.
 	ErrorClassInternal ErrorClass = "internal"
 )
