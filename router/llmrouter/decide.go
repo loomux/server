@@ -23,6 +23,8 @@ type decideArguments struct {
 	NewWorkspace decideArgumentsWorkspace `json:"new_workspace"`
 	TargetID     string                   `json:"target_id"`
 	Command      string                   `json:"command"`
+	// LeaveOpenTask (LOOM-87) is only offered while a task is open.
+	LeaveOpenTask bool `json:"leave_open_task"`
 }
 
 // decideArgumentsWorkspace is structured data only (LOOM-90): no command
@@ -90,7 +92,7 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 			openai.SystemMessage(m.systemPrompt()),
 			openai.UserMessage(decideUserPrompt(message, workspaces, targets, o)),
 		},
-		Tools: []openai.ChatCompletionToolUnionParam{buildDecideTool(m.agentTypes, workspaceIDs, targetIDs)},
+		Tools: []openai.ChatCompletionToolUnionParam{buildDecideTool(m.agentTypes, workspaceIDs, targetIDs, o.OpenTask != nil)},
 		ToolChoice: openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
 			Name: decideToolName,
 		}),
@@ -118,6 +120,7 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 	}
 
 	decision, err := m.validateDecision(args, workspaceIDs, targetIDs)
+	decision.LeaveOpenTask = err == nil && o.OpenTask != nil && args.LeaveOpenTask
 	outcome := metrics.OutcomeSuccess
 	if err != nil {
 		outcome = metrics.OutcomeFailure

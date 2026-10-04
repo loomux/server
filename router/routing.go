@@ -124,6 +124,11 @@ type Decision struct {
 	// user's message, never composed by the model if it can help it.
 	TargetID string
 	Command  string
+
+	// LeaveOpenTask is the model saying this message is unrelated to the
+	// conversation's open task (LOOM-87). Without it, a decision that
+	// doesn't continue the open task is overridden to do so.
+	LeaveOpenTask bool
 }
 
 // RelayResult is what RoutingModel.Relay returns.
@@ -170,6 +175,57 @@ type DispatchOptions struct {
 	// UserMessageLogged says the user message is already stored (a
 	// dispatch job writes it at submit), so only the reply is logged.
 	UserMessageLogged bool
+
+	// History, OpenTask and LastWorkspaceID/Name are the conversation's
+	// context (LOOM-87), filled in by the router itself — not callers —
+	// before Decide. History is the turns before this message, oldest
+	// first, bounded (see HistoryMessages). OpenTask is the conversation's
+	// agent task awaiting input, if any. LastWorkspaceID is the workspace
+	// of its most recent task when none is open.
+	History           []ConversationTurn
+	OpenTask          *OpenTaskSnapshot
+	LastWorkspaceID   string
+	LastWorkspaceName string
+}
+
+// ConversationTurn is one earlier message in a conversation.
+type ConversationTurn struct {
+	Role    string // "user" or "assistant"
+	Content string
+}
+
+// OpenTaskSnapshot is a conversation's task still waiting on the user:
+// its agent's last turn ended without finishing (relay done=false) — a
+// question, a confirmation, or a step of a longer job.
+type OpenTaskSnapshot struct {
+	TaskID        string
+	WorkspaceID   string
+	WorkspaceName string
+	AgentType     string
+	Status        string
+	// LastReply is what the agent last said, as relayed, keeping its end.
+	LastReply string
+}
+
+// Bounds on the conversation context given to Decide (LOOM-87), in
+// runes: at most HistoryMessages turns, each cut to HistoryMessageRunes,
+// HistoryRunes in all; an open task's last reply cut to
+// OpenTaskReplyRunes.
+const (
+	HistoryMessages     = 6
+	HistoryMessageRunes = 400
+	HistoryRunes        = 2400
+	OpenTaskReplyRunes  = 600
+)
+
+// withConversation sets the conversation context on a Decide call.
+func withConversation(history []ConversationTurn, open *OpenTaskSnapshot, lastWorkspaceID, lastWorkspaceName string) DispatchOption {
+	return func(o *DispatchOptions) {
+		o.History = history
+		o.OpenTask = open
+		o.LastWorkspaceID = lastWorkspaceID
+		o.LastWorkspaceName = lastWorkspaceName
+	}
 }
 
 // DispatchOption configures a DispatchOptions via With* constructors

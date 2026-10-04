@@ -218,8 +218,18 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 
+	offered := snapshotWorkspaces(workspaces, targets)
+	history, openTask, lastWS, lastWSName, err := r.conversationContext(ctx, conversationID, offered)
+	if err != nil {
+		log.Error("dispatch failed", "stage", "conversation context", "error", err)
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = classifyDispatchError(err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+	decideOpts := append(append([]DispatchOption(nil), opts...), withConversation(history, openTask, lastWS, lastWSName))
+
 	routeStart := time.Now()
-	decision, err := r.model.Decide(ctx, message, snapshotWorkspaces(workspaces, targets), targetSnapshots, opts...)
+	decision, err := r.model.Decide(ctx, message, offered, targetSnapshots, decideOpts...)
 	r.metrics.RecordDispatchDuration("route", time.Since(routeStart))
 	if err != nil {
 		log.Error("routing failed", "error", err)
@@ -235,13 +245,18 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		log.Info("no targets registered", "decided_action", string(decision.Action))
 		decision = Decision{Action: ActionAnswerDirectly, DirectAnswer: NoTargetsReply}
 	}
-	decision, substitutedFrom, targetName := r.checkAgentChoice(ctx, decision, message)
+	decision, affinityFrom := applyAffinity(decision, openTask)
+	var substitutedFrom, targetName string
+	// The open task's pane is already running its agent: nothing to check.
+	if openTask == nil || decision.WorkspaceID != openTask.WorkspaceID {
+		decision, substitutedFrom, targetName = r.checkAgentChoice(ctx, decision, message)
+	}
 	if substitutedFrom != "" {
 		tl := turnLogFrom(ctx)
 		tl.replyNote = substitutionNote(decision.AgentType, substitutedFrom, targetName)
 		ctx = withTurnLog(ctx, tl)
 	}
-	logDecision(log, decision, substitutedFrom)
+	logDecision(log, decision, substitutedFrom, affinityFrom)
 	r.metrics.RecordRoutingDecision(string(decision.Action))
 
 	reply, err := r.act(ctx, log, conversationID, message, decision, false, start, m)
@@ -458,8 +473,11 @@ func (r *Router) confirmInstall(ctx context.Context, log *slog.Logger, conversat
 // logDecision records what the routing model decided: the action plus
 // whichever of workspace, agent type and new-workspace target/name it
 // carries. A direct answer's text is not logged — it is chat content.
-func logDecision(log *slog.Logger, d Decision, agentSubstitutedFrom string) {
+func logDecision(log *slog.Logger, d Decision, agentSubstitutedFrom, affinityOverrideFrom string) {
 	attrs := []any{"action", string(d.Action)}
+	if affinityOverrideFrom != "" {
+		attrs = append(attrs, "affinity_override_from", affinityOverrideFrom)
+	}
 	if agentSubstitutedFrom != "" {
 		attrs = append(attrs, "agent_substituted_from", agentSubstitutedFrom)
 	}

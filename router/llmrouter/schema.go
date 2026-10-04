@@ -102,7 +102,10 @@ const relaySystemPrompt = `You are Loomux's relay model. You are given the raw c
 // workspace_id and new_workspace.target_id are enum-constrained to the
 // caller-supplied valid sets when non-empty — a cheap, high-value
 // correctness win.
-func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string) openai.ChatCompletionToolUnionParam {
+//
+// leave_open_task (LOOM-87) is offered only when the conversation has a
+// task waiting on the user (openTask).
+func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool) openai.ChatCompletionToolUnionParam {
 	// Provisioning and direct commands both need a target: with none
 	// registered they aren't offered at all (LOOM-68).
 	actions := []string{"answer_directly", "use_workspace"}
@@ -157,6 +160,14 @@ func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string) openai.ChatCo
 				},
 			},
 		},
+	}
+
+	if openTask {
+		properties["leave_open_task"] = map[string]any{
+			"type": "boolean",
+			"description": "Only while the conversation has an open task: true if this message is clearly unrelated to it " +
+				"(a new topic, not an answer, confirmation or follow-up). Otherwise leave it false.",
+		}
 	}
 
 	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
@@ -274,6 +285,31 @@ func renderWorkspace(b *strings.Builder, ws router.WorkspaceSnapshot, now time.T
 	}
 }
 
+// renderConversation writes the conversation's context (LOOM-87) ahead
+// of the message: its recent turns, then the task waiting on the user —
+// with what to do about it — or else the workspace it last worked in.
+func renderConversation(b *strings.Builder, o router.DispatchOptions) {
+	if len(o.History) > 0 {
+		b.WriteString("Conversation so far (oldest first):\n")
+		for _, turn := range o.History {
+			fmt.Fprintf(b, "%s: %s\n", turn.Role, strings.ReplaceAll(turn.Content, "\n", " "))
+		}
+		b.WriteString("\n")
+	}
+	if t := o.OpenTask; t != nil {
+		fmt.Fprintf(b, "Open task in this conversation:\n  workspace: %s (id %s), agent: %s, status: %s\n",
+			t.WorkspaceName, t.WorkspaceID, t.AgentType, t.Status)
+		if t.LastReply != "" {
+			fmt.Fprintf(b, "  its last reply: %q\n", strings.ReplaceAll(t.LastReply, "\n", " "))
+		}
+		fmt.Fprintf(b, "If the message continues this task (an answer, a confirmation, a choice, a follow-up), "+
+			"choose use_workspace with workspace_id %s. Set leave_open_task to true only if the message is "+
+			"clearly unrelated to it.\n\n", t.WorkspaceID)
+	} else if o.LastWorkspaceID != "" {
+		fmt.Fprintf(b, "This conversation last worked in workspace %s (id %s).\n\n", o.LastWorkspaceName, o.LastWorkspaceID)
+	}
+}
+
 // decideUserPrompt renders the message, compact workspace registry
 // (design spec §6, enriched with status/target/recency in LOOM-88) and
 // registered targets (LOOM-64: id, name and kind only — plus each one's
@@ -285,6 +321,7 @@ func renderWorkspace(b *strings.Builder, ws router.WorkspaceSnapshot, now time.T
 func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, o router.DispatchOptions) string {
 	now := nowFunc()
 	var b strings.Builder
+	renderConversation(&b, o)
 	b.WriteString("Message:\n")
 	b.WriteString(message)
 	b.WriteString("\n\nWorkspaces:\n")
