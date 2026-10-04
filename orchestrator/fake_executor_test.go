@@ -32,6 +32,8 @@ type fakeExecutor struct {
 	onKill func()
 	// runOnceOut is what RunOnce returns (the orphan sweep's session list).
 	runOnceOut string
+	// lastRunOnce is the last command RunOnce was given.
+	lastRunOnce string
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -134,6 +136,9 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 	if e.unreachable {
 		return "", targets.ErrUnreachable
 	}
+	e.mu.Lock()
+	e.lastRunOnce = command
+	e.mu.Unlock()
 	return e.runOnceOut, nil
 }
 

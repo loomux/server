@@ -39,6 +39,12 @@ type Store interface {
 	// rolling summary field.
 	SetWorkspaceRollingSummary(ctx context.Context, id, summary string) error
 	DeleteWorkspace(ctx context.Context, id string) error
+	// DeleteWorkspaceAndTasks deletes a workspace together with every
+	// task in it (their turns with them; messages keep their text, losing
+	// only the task link) in one transaction (LOOM-70). ErrNotFound for an
+	// unknown id; ErrConflict, deleting nothing, while a credential is
+	// still scoped to the workspace.
+	DeleteWorkspaceAndTasks(ctx context.Context, id string) error
 
 	CreateTask(ctx context.Context, t *Task) error
 	GetTask(ctx context.Context, id string) (*Task, error)

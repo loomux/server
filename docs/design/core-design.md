@@ -209,6 +209,23 @@ failure leaves the workspace `failed` with a reason, its output redacted.
 Arbitrary commands go only through `run_command` (§6), with its
 verbatim-or-confirmed safety model.
 
+**Deleting and repairing a workspace** (LOOM-70).
+`DELETE /api/v1/workspaces/{id}` deletes the workspace and every task in it
+(their per-turn transcripts with them) in one transaction, then kills those
+tasks' tmux sessions. The chat transcript stays: messages lose only their
+task link. The workspace's files on the target are never touched. It is
+refused (409, with the reason) while a task there is mid-turn (cancel it or
+let it finish) or taken over by a person (release it), while the workspace is still provisioning (the reaper fails
+a stuck one, which can be deleted then), or while a credential is scoped to
+it. Sessions it couldn't kill (target unreachable) are returned as
+`sessions_not_killed`; the orphan sweep removes them later, since no task
+owns them any more. `PATCH /api/v1/workspaces/{id}` with `{"status": ...}`
+is the repair: `idle` puts a `failed` or `archived` workspace back in
+service, clearing its `status_reason`, but only once its directory is
+confirmed to exist on the target; `archived` takes an idle or failed one out
+of the router's view while keeping its tasks and history. Nothing else is
+settable there.
+
 ### 3. Pane kinds and agent lifecycle
 
 Every tmux pane Loomux manages is one of two kinds:

@@ -36,6 +36,7 @@ const staleProvisioningAfter = router.ProvisionTimeout + 5*time.Minute
 // session storage in the same database.
 type App struct {
 	router        *router.Router
+	orch          *orchestrator.Orchestrator
 	store         *sqlite.Store
 	stopReaper    context.CancelFunc
 	reaperDone    chan struct{}
@@ -84,6 +85,26 @@ func (a *App) Dispatch(ctx context.Context, conversationID, message, workspaceHi
 // router.Router.RefreshTargetAgents. Satisfies api.AgentProber.
 func (a *App) RefreshTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error) {
 	return a.router.RefreshTargetAgents(ctx, targetID)
+}
+
+// DeleteWorkspace deletes a workspace, its tasks and their sessions
+// (LOOM-70) — see orchestrator.Orchestrator.DeleteWorkspace. Satisfies
+// api.WorkspaceManager.
+func (a *App) DeleteWorkspace(ctx context.Context, id string) ([]string, error) {
+	return a.orch.DeleteWorkspace(ctx, id)
+}
+
+// SetWorkspaceStatus reopens (idle) or archives a workspace (LOOM-70) —
+// see orchestrator.Orchestrator.ReopenWorkspace and ArchiveWorkspace.
+// Satisfies api.WorkspaceManager.
+func (a *App) SetWorkspaceStatus(ctx context.Context, id string, status registry.WorkspaceStatus) error {
+	switch status {
+	case registry.WorkspaceStatusIdle:
+		return a.orch.ReopenWorkspace(ctx, id)
+	case registry.WorkspaceStatusArchived:
+		return a.orch.ArchiveWorkspace(ctx, id)
+	}
+	return fmt.Errorf("app: a workspace can't be set to %q", status)
 }
 
 // ProbeTarget probes a target's health and agent CLIs now and records the
@@ -372,6 +393,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 
 	return &App{
 		router:        rtr,
+		orch:          orch,
 		dispatches:    dispatches,
 		dispatchDrain: dispatchDrain,
 		store:         store,

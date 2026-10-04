@@ -414,6 +414,31 @@ func (s *Store) DeleteWorkspace(ctx context.Context, id string) error {
 	return requireRowAffected(res, "workspace", id)
 }
 
+func (s *Store) DeleteWorkspaceAndTasks(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete workspace and tasks: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE workspace_id = ?`, id); err != nil {
+		return fmt.Errorf("sqlite: delete workspace tasks: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM workspaces WHERE id = ?`, id)
+	if isForeignKeyConstraintErr(err) {
+		return fmt.Errorf("%w: workspace %q still has credentials scoped to it", registry.ErrConflict, id)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: delete workspace: %w", err)
+	}
+	if err := requireRowAffected(res, "workspace", id); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: delete workspace and tasks: %w", err)
+	}
+	return nil
+}
+
 func scanWorkspace(row rowScanner) (*registry.Workspace, error) {
 	var w registry.Workspace
 	var status, tags, caps string

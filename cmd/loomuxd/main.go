@@ -113,6 +113,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithSessionTTL(apiCfg.SessionTTL),
 		api.WithAgentProber(loomux),
 		api.WithTargetProber(loomux),
+		api.WithWorkspaceManager(loomux),
 		api.WithTaskTurns(loomux.Store()),
 		api.WithHealthChecker(loomux.HealthChecker()),
 	}
