@@ -158,7 +158,20 @@ func TestDispatch_UnavailableAgentNotNamed_UseWorkspaceSubstituted(t *testing.T)
 	}
 	tasks, _ := h.store.ListTasksByWorkspace(context.Background(), ws.ID)
 	if len(tasks) != 1 || tasks[0].AgentType != "claude-code" {
-		t.Errorf("tasks = %+v, want one claude-code task", tasks)
+		t.Fatalf("tasks = %+v, want one claude-code task", tasks)
+	}
+	// The substitute is told why it got the work (sent typed or on its
+	// command line, whichever the profile uses), while history keeps the
+	// user's own words.
+	s := h.exec.sessionFor(tasks[0].TmuxSession)
+	sent := s.command + strings.Join(s.keys, "\n")
+	note := "[Loomux note: this request was routed to codex, which isn't installed on jet01, so you (claude-code) are handling it instead.]"
+	if !strings.Contains(sent, note) || !strings.Contains(sent, "fix the bug") {
+		t.Errorf("the agent got %q, want the note and the message", sent)
+	}
+	msgs, _ := h.store.ListMessagesByConversation(context.Background(), "conv-1")
+	if len(msgs) == 0 || msgs[0].Content != "fix the bug" {
+		t.Errorf("stored messages = %+v, want the user's message as typed", msgs)
 	}
 }
 

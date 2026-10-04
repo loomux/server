@@ -69,6 +69,14 @@ func substitutionNote(used, from, targetName string) string {
 	return fmt.Sprintf("Using %s: %s isn't installed on %s.", used, from, targetName)
 }
 
+// agentSubstitutionNote is put in front of the message the substitute
+// agent receives, so it knows why it got work meant for another agent
+// rather than seeing only the user's own words.
+func agentSubstitutionNote(used, from, targetName string) string {
+	return fmt.Sprintf("[Loomux note: this request was routed to %s, which isn't installed on %s, so you (%s) are handling it instead.]",
+		from, targetName, used)
+}
+
 // AgentNamedIn reports whether message names agentType — by its
 // registered name or its CLI's binary — as a whole word, ignoring case.
 // Exported for tests.

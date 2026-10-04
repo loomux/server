@@ -271,6 +271,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	if substitutedFrom != "" {
 		tl := turnLogFrom(ctx)
 		tl.replyNote = substitutionNote(decision.AgentType, substitutedFrom, targetName)
+		tl.agentNote = agentSubstitutionNote(decision.AgentType, substitutedFrom, targetName)
 		ctx = withTurnLog(ctx, tl)
 	}
 	logDecision(log, decision, substitutedFrom, affinityFrom)
@@ -705,8 +706,12 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	}
 	resumed := task != nil
 	promptSent := false
+	agentMessage := message
+	if note := turnLogFrom(ctx).agentNote; note != "" {
+		agentMessage = note + "\n\n" + message
+	}
 	if task == nil {
-		task, promptSent, err = r.launchAgent(ctx, workspaceID, conversationID, agentType, message)
+		task, promptSent, err = r.launchAgent(ctx, workspaceID, conversationID, agentType, agentMessage)
 		if err != nil {
 			return "", err
 		}
@@ -722,7 +727,7 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	// shows the agent is waiting for input.
 	failClass = registry.ErrorClassSendFailed
 	if !promptSent {
-		if err := r.orch.SendMessage(ctx, task.ID, message); err != nil {
+		if err := r.orch.SendMessage(ctx, task.ID, agentMessage); err != nil {
 			return "", fmt.Errorf("router: dispatch: send message: %w", err)
 		}
 	}
@@ -956,6 +961,10 @@ type turnLog struct {
 	// replyNote, when set, is put in front of the reply — stored and
 	// returned alike (LOOM-88's agent substitution note).
 	replyNote string
+	// agentNote, when set, is put in front of the message the agent
+	// receives — not the one stored — telling a substitute agent why it
+	// got the work.
+	agentNote string
 }
 
 type turnLogKey struct{}
