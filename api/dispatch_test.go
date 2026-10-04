@@ -84,12 +84,28 @@ func pollDispatch(t *testing.T, baseURL, token, id string) dispatchReply {
 	return dispatchReply{}
 }
 
-func TestDispatch_DefaultBlocks_ReturnsReplyAndIDs(t *testing.T) {
+// With neither mode asked for, the request doesn't wait (LOOM-81 shipped).
+func TestDispatch_DefaultIsAsync(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
 	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) { return "the reply", nil }
 	token, _ := login(t, srv.URL, testPassword)
 
 	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c1", "message": "hi"}, nil)
+	if resp.StatusCode != http.StatusAccepted || out.DispatchID == "" || out.ConversationID != "c1" ||
+		resp.Header.Get("Location") != "/api/v1/dispatches/"+out.DispatchID {
+		t.Fatalf("default dispatch = %d %+v (Location %q)", resp.StatusCode, out, resp.Header.Get("Location"))
+	}
+	if resp.Header.Get("Preference-Applied") != "" {
+		t.Errorf("Preference-Applied set without a Prefer header")
+	}
+}
+
+func TestDispatch_WaitTrueBlocks_ReturnsReplyAndIDs(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t)
+	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) { return "the reply", nil }
+	token, _ := login(t, srv.URL, testPassword)
+
+	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c1", "message": "hi"}, nil)
 	if resp.StatusCode != http.StatusOK || out.Reply != "the reply" || out.DispatchID == "" || out.ConversationID != "c1" {
 		t.Fatalf("blocking dispatch = %d %+v", resp.StatusCode, out)
 	}
@@ -163,7 +179,7 @@ func TestDispatch_ClientDisconnectMidTurn_JobFinishes(t *testing.T) {
 	reqCtx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	go func() {
-		_, _, err := postDispatch(t, reqCtx, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c-gone", "message": "long job"}, nil)
+		_, _, err := postDispatch(t, reqCtx, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c-gone", "message": "long job"}, nil)
 		errc <- err
 	}()
 	<-started
@@ -222,8 +238,8 @@ func TestDispatch_IdempotencyKey_OneDispatch(t *testing.T) {
 	body := map[string]string{"conversation_id": "c-idem", "message": "do it once"}
 	hdr := map[string]string{"Idempotency-Key": "key-123"}
 
-	r1, a := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, body, hdr)
-	r2, b := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, body, hdr)
+	r1, a := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, body, hdr)
+	r2, b := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, body, hdr)
 	if r1.StatusCode != http.StatusOK || r2.StatusCode != http.StatusOK {
 		t.Fatalf("statuses = %d, %d", r1.StatusCode, r2.StatusCode)
 	}
@@ -240,8 +256,8 @@ func TestDispatch_IdempotencyKeyReused_Unprocessable(t *testing.T) {
 	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) { return "ok", nil }
 	token, _ := login(t, srv.URL, testPassword)
 	hdr := map[string]string{"Idempotency-Key": "key-x"}
-	mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c", "message": "one"}, hdr)
-	resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c", "message": "two"}, hdr)
+	mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c", "message": "one"}, hdr)
+	resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c", "message": "two"}, hdr)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", resp.StatusCode)
 	}
@@ -270,7 +286,7 @@ func TestDispatch_Failure_BlockingReturns500WithClass(t *testing.T) {
 		return "", errors.New("router: dispatch: it broke")
 	}
 	token, _ := login(t, srv.URL, testPassword)
-	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c", "message": "hi"}, nil)
+	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c", "message": "hi"}, nil)
 	if resp.StatusCode != http.StatusInternalServerError || out.Error != "router: dispatch: it broke" ||
 		out.ErrorClass != "internal" || out.DispatchID == "" {
 		t.Fatalf("failed dispatch = %d %+v", resp.StatusCode, out)
@@ -281,7 +297,7 @@ func TestDispatch_ShuttingDown_ServiceUnavailable(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
 	_ = dispatcher.Jobs.Shutdown(context.Background())
 	token, _ := login(t, srv.URL, testPassword)
-	resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c", "message": "hi"}, nil)
+	resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c", "message": "hi"}, nil)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
 	}
@@ -385,7 +401,7 @@ func TestStream_DoesNotReplayFinishedDispatches(t *testing.T) {
 		return m, nil
 	}
 	token, _ := login(t, srv.URL, testPassword)
-	mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c-old", "message": "old"}, nil)
+	mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c-old", "message": "old"}, nil)
 
 	r := openStream(t, srv.URL, token, "c-old")
 	_, d := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c-old", "message": "new"}, map[string]string{"Prefer": "respond-async"})

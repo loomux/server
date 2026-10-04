@@ -152,17 +152,17 @@ not engineering taste):
     context, so a client that disconnects mid-turn loses nothing — the
     result lands on the job and in the conversation's history. See
     `docs/design/async-dispatch-design.md`.
-    - **Blocking** (the default, or `?wait=true`): waits for the job and
+    - **Blocking** (`?wait=true`): waits for the job and
       answers `200 {reply, dispatch_id, conversation_id, status, …}`, or
       `500 {error, error_class, dispatch_id, …}` if it failed or was
       interrupted.
-    - **Async** (`Prefer: respond-async`, or `?async=true`): `202
+    - **Async** (the default, `Prefer: respond-async`, or `?async=true`): `202
       {dispatch_id, conversation_id, status}` at once, with `Location:
       /api/v1/dispatches/{id}` (and `Preference-Applied: respond-async`
       when the header asked). `?wait=true` with an async request is `400`.
     - The default is one constant, `dispatchAsyncByDefault` in
-      `api/dispatch.go`: blocking while the deployed web still expects
-      `{reply}`, to be flipped to async once the LOOM-81 web has shipped.
+      `api/dispatch.go`: async since the LOOM-81 web shipped (it was
+      blocking while the deployed web still expected `{reply}`).
     - `conversation_id` empty starts a new conversation (its id is in the
       response). A repeat with the same `Idempotency-Key` and the same
       body returns the original job and runs nothing; the same key with a

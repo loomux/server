@@ -89,14 +89,14 @@ func TestIntegration_RealAppBehindAuth(t *testing.T) {
 	}
 
 	// No token: refused.
-	unauthedResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch", "", map[string]string{"conversation_id": "c1", "message": "hi"})
+	unauthedResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch?wait=true", "", map[string]string{"conversation_id": "c1", "message": "hi"})
 	defer unauthedResp.Body.Close()
 	if unauthedResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("dispatch without token status = %d, want %d", unauthedResp.StatusCode, http.StatusUnauthorized)
 	}
 
 	// With token: reaches the real app.App.Dispatch.
-	dispatchResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c1", "message": "hi"})
+	dispatchResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c1", "message": "hi"})
 	defer dispatchResp.Body.Close()
 	if dispatchResp.StatusCode != http.StatusOK {
 		t.Fatalf("dispatch status = %d, want %d", dispatchResp.StatusCode, http.StatusOK)
@@ -117,7 +117,7 @@ func TestIntegration_RealAppBehindAuth(t *testing.T) {
 	if logoutResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("logout status = %d, want %d", logoutResp.StatusCode, http.StatusNoContent)
 	}
-	afterLogoutResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c1", "message": "hi"})
+	afterLogoutResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c1", "message": "hi"})
 	defer afterLogoutResp.Body.Close()
 	if afterLogoutResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("dispatch after logout status = %d, want %d", afterLogoutResp.StatusCode, http.StatusUnauthorized)
@@ -178,7 +178,7 @@ func TestIntegration_DispatchThenConversationDetail_ShowsMessages(t *testing.T) 
 		t.Fatalf("login status = %d, want %d", status, http.StatusOK)
 	}
 
-	dispatchResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c-transcript", "message": "hello"})
+	dispatchResp := postJSON(t, httpSrv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c-transcript", "message": "hello"})
 	dispatchResp.Body.Close()
 	if dispatchResp.StatusCode != http.StatusOK {
 		t.Fatalf("dispatch status = %d, want %d", dispatchResp.StatusCode, http.StatusOK)
@@ -276,7 +276,7 @@ func TestIntegration_DirectAnswerOnlyConversation_IsListedAndReadable(t *testing
 
 	// Two user turns, both answered directly — the live incident's shape.
 	for _, msg := range []string{"first question", "second question"} {
-		resp := postJSON(t, httpSrv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c-direct", "message": msg})
+		resp := postJSON(t, httpSrv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c-direct", "message": msg})
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("dispatch %q status = %d, want %d", msg, resp.StatusCode, http.StatusOK)

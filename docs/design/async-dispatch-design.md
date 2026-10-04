@@ -188,8 +188,9 @@ reconnects mid-turn picks up where it was. Stage events (routing/provisioning/â€
 await dispatch()`, so the server ships with **blocking as the default**: the web keeps working
 unchanged and the server deploys on its own. Even in blocking mode the turn runs on the job's
 server-owned context, so a closed tab no longer loses it; reopening the conversation shows the reply.
-The default is one constant, `dispatchAsyncByDefault` in `api/server.go`. Flip it to `true` once the
-LOOM-81 web (which asks for async explicitly anyway) has shipped and is pinned.
+The default is one constant, `dispatchAsyncByDefault` in `api/dispatch.go`. Flipped to `true` once the
+LOOM-81 web (which asks for async explicitly anyway) shipped and was pinned (`deploy/web-ref` `d14a402`):
+a client that wants the reply in the response now asks with `?wait=true`.
 
 ## Testing
 

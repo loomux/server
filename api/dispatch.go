@@ -14,12 +14,13 @@ import (
 )
 
 // dispatchAsyncByDefault is the LOOM-80 rollout switch: what POST
-// /dispatch does when the client asks for neither mode. It is false while
-// the deployed web (deploy/web-ref e5276dd) still expects a blocking
-// {reply}. Flip it to true once the LOOM-81 web, which asks for async
-// itself, has shipped. Both modes run the turn as a job on a
-// server-owned context; this only decides whether the response waits.
-const dispatchAsyncByDefault = false
+// /dispatch does when the client asks for neither mode. It was false while
+// the deployed web still expected a blocking {reply}; the LOOM-81 web
+// (deploy/web-ref d14a402) asks for async itself, so async is now the
+// default and a client wanting the reply in the response asks with
+// ?wait=true. Both modes run the turn as a job on a server-owned
+// context; this only decides whether the response waits.
+const dispatchAsyncByDefault = true
 
 // maxIdempotencyKeyLen bounds the Idempotency-Key header.
 const maxIdempotencyKeyLen = 255
