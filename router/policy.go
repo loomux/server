@@ -140,6 +140,29 @@ func (r *Router) describePlan(ctx context.Context, target *registry.Target, deci
 	return "", fmt.Errorf("no plan for action %q", decision.Action)
 }
 
+// offerRefusal is why the target's policy, as it stands now, forbids
+// what the confirmed offer p would do, or "" if it doesn't: the policy
+// may have been tightened since the offer was made. pendingPolicyConfirm
+// is re-checked by confirmPolicy itself.
+func (r *Router) offerRefusal(ctx context.Context, p pendingInstall) (string, error) {
+	var d Decision
+	switch {
+	case p.kind == pendingRunCommand:
+		d = Decision{Action: ActionRunCommand, TargetID: p.targetID, Command: p.command}
+	case (p.kind == pendingCloneRemote || p.kind == pendingInstallAgent) && p.provision != nil:
+		d = Decision{Action: ActionProvisionWorkspace, AgentType: p.agentType, NewWorkspace: *p.provision}
+	case p.kind == pendingInstallAgent:
+		d = Decision{Action: ActionUseWorkspace, WorkspaceID: p.workspaceID, AgentType: p.agentType}
+	default:
+		return "", nil
+	}
+	target, err := r.policyTarget(ctx, d)
+	if err != nil || target == nil {
+		return "", err
+	}
+	return policyRefusal(target, d), nil
+}
+
 // confirmPolicy carries out a plan its target's policy made wait for a
 // "yes" (LOOM-89), refusing it if the policy has since been tightened.
 func (r *Router) confirmPolicy(ctx context.Context, log *slog.Logger, conversationID string, p pendingInstall,

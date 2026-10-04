@@ -186,6 +186,18 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	// (LOOM-71, LOOM-72, LOOM-90).
 	if p, ok := r.pending.take(conversationID, time.Now()); ok {
 		if isConfirmation(message, p) {
+			refusal, err := r.offerRefusal(ctx, p)
+			if err != nil {
+				log.Error("dispatch failed", "stage", "recheck policy", "error", err)
+				m.outcome = metrics.OutcomeFailure
+				m.errClass = classifyDispatchError(err)
+				return "", fmt.Errorf("router: dispatch: policy: %w", err)
+			}
+			if refusal != "" {
+				log.Info("confirmed offer refused by target policy", "target_id", p.targetID, "agent_type", p.agentType)
+				m.action = "policy_refused"
+				return r.finishTurn(ctx, log, conversationID, message, "", refusal, "policy_refused", start)
+			}
 			switch p.kind {
 			case pendingCloneRemote:
 				log.Info("clone confirmed", "target_id", p.targetID)
