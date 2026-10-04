@@ -41,3 +41,31 @@ func (c *convLocks) lock(conversationID string) (unlock func()) {
 		c.mu.Unlock()
 	}
 }
+
+// tryLock takes conversationID's lock if it is free, returning its
+// unlock, or nil if a turn holds it.
+func (c *convLocks) tryLock(conversationID string) (unlock func()) {
+	c.mu.Lock()
+	if c.locks == nil {
+		c.locks = make(map[string]*convLock)
+	}
+	l := c.locks[conversationID]
+	if l == nil {
+		l = &convLock{}
+		c.locks[conversationID] = l
+	}
+	if !l.mu.TryLock() {
+		c.mu.Unlock()
+		return nil
+	}
+	l.refs++
+	c.mu.Unlock()
+	return func() {
+		l.mu.Unlock()
+		c.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(c.locks, conversationID)
+		}
+		c.mu.Unlock()
+	}
+}

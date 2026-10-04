@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Loomux/server/api"
+	"github.com/Loomux/server/registry"
 )
 
 // LOOM-80 dispatch jobs: see docs/design/async-dispatch-design.md.
@@ -418,5 +419,44 @@ func TestStream_DoesNotReplayFinishedDispatches(t *testing.T) {
 		if u.Status == "succeeded" {
 			return
 		}
+	}
+}
+
+// A message logged outside any turn the client is following — an agent's
+// late reply (LOOM-121) — is announced, so the client can refetch the
+// transcript. Messages already there when the stream opens aren't.
+func TestStream_MessageAdded(t *testing.T) {
+	srv, _, store := newTestServer(t, api.WithStreamPollInterval(10*time.Millisecond))
+	ctx := context.Background()
+	old := &registry.Message{ID: "m-old", ConversationID: "c-msg", Role: registry.MessageRoleAssistant, Content: "earlier"}
+	if err := store.CreateMessage(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	ws := createTestWorkspace(t, store, "ws-msg", registry.WorkspaceStatusIdle)
+	createTestTask(t, store, "t-1", ws.ID, "c-msg", registry.TaskStatusAwaitingInput)
+	token, _ := login(t, srv.URL, testPassword)
+	r := openStream(t, srv.URL, token, "c-msg")
+	time.Sleep(50 * time.Millisecond) // the stream has seen the old message
+	late := &registry.Message{ID: "m-late", ConversationID: "c-msg", TaskID: "t-1", Role: registry.MessageRoleAssistant, Content: "the build finished"}
+	if err := store.CreateMessage(ctx, late); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		ev := readSSEEventWithTimeout(t, r, 3*time.Second)
+		if ev.Event != "message_added" {
+			continue
+		}
+		var m struct {
+			MessageID string `json:"message_id"`
+			TaskID    string `json:"task_id"`
+			Role      string `json:"role"`
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &m); err != nil {
+			t.Fatalf("unmarshal %q: %v", ev.Data, err)
+		}
+		if m.MessageID != "m-late" || m.TaskID != "t-1" || m.Role != "assistant" {
+			t.Fatalf("message_added = %+v, want the late message only", m)
+		}
+		return
 	}
 }

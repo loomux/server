@@ -24,3 +24,9 @@ func SetBootRetry(every, upTo time.Duration) (restore func()) {
 	bootRetry, bootRetryFor = every, upTo
 	return func() { bootRetry, bootRetryFor = oldEvery, oldUpTo }
 }
+
+// LockConversation holds conversationID's turn lock, as a turn in flight
+// does, until the returned func is called.
+func LockConversation(r *Router, conversationID string) (unlock func()) {
+	return r.conversations.lock(conversationID)
+}
