@@ -761,6 +761,14 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	}
 
 	failClass = registry.ErrorClassInternal
+	// A reply that asks the user something isn't a finished turn, whatever
+	// the relay model said: completing would tear the pane down and leave
+	// the answer nowhere to go. Wrongly keeping a task open only costs an
+	// idle pane until the reaper; wrongly closing one loses the session.
+	if result.Done && AsksUser(result.Reply) {
+		log.Info("relay done overridden: the reply asks the user something", "task_id", task.ID)
+		result.Done = false
+	}
 	if result.Done {
 		if err := r.orch.Complete(ctx, task.ID, result.Reply); err != nil {
 			return "", fmt.Errorf("router: dispatch: complete: %w", err)
@@ -831,6 +839,21 @@ func (r *Router) turnTimedOut(ctx context.Context, task *registry.Task, timeout 
 	r.interruptAgent(cleanupCtx, task)
 	return fmt.Errorf("router: dispatch: %s. Loomux interrupted it and kept the pane — attach on %s with `tmux attach -t %s` to see it: %w",
 		reason, targetName, task.TmuxSession, timeout)
+}
+
+// AsksUser reports whether a relayed reply puts a question to the user
+// or says the agent is waiting on them.
+func AsksUser(reply string) bool {
+	if strings.Contains(reply, "?") {
+		return true
+	}
+	lower := strings.ToLower(reply)
+	for _, phrase := range []string{"waiting for your", "waiting on your", "let me know", "would you like", "do you want", "please confirm"} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // interruptAgent sends the agent-type's interrupt keys to task's pane,

@@ -328,3 +328,59 @@ func matchesAny(name string, prefixes []string) bool {
 	}
 	return false
 }
+
+// TestEvalRelay checks the relay's done signal against the real model:
+// a turn ending in a question to the user is never done. Scored as the
+// router acts on it — done only if the model says so and the reply
+// doesn't ask anything (router.AsksUser) — with the raw signal logged.
+func TestEvalRelay(t *testing.T) {
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Skipf("router model not configured: %v", err)
+	}
+	cfg.Escalation = nil
+	m, err := New(cfg, []string{"claude-code"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pace := 20 * time.Second
+	if raw := os.Getenv("ROUTEREVAL_PACE"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil {
+			pace = d
+		}
+	}
+	cases := []struct {
+		name     string
+		captured string
+		wantDone bool
+	}{
+		{"asks-a-question", "> ask me whether to create hello.txt, then wait\n\n● Should I create hello.txt?\n\n> ", false},
+		{"offers-options", "> the search endpoint is slow\n\n● I found three options: (1) add an index on title, (2) rewrite the query, (3) cache results. Which do you want?\n\n> ", false},
+		{"finished", "> create hello.txt containing hi\n\n● Write(hello.txt)\n  ⎿  Wrote 1 line to hello.txt\n\n● Created hello.txt containing \"hi\".\n\n> ", true},
+	}
+	failed := 0
+	for _, c := range cases {
+		passed := 0
+		var got []string
+		for range evalRuns {
+			time.Sleep(pace)
+			res, err := m.Relay(context.Background(), c.captured)
+			if err != nil {
+				got = append(got, "error: "+errClass(err))
+				continue
+			}
+			effective := res.Done && !router.AsksUser(res.Reply)
+			got = append(got, fmt.Sprintf("done=%v effective=%v", res.Done, effective))
+			if effective == c.wantDone {
+				passed++
+			}
+		}
+		t.Logf("relay %-18s %d/%d  %s", c.name, passed, evalRuns, strings.Join(got, " | "))
+		if passed != evalRuns {
+			failed++
+		}
+	}
+	if failed > 0 {
+		t.Errorf("%d relay cases below %d/%d", failed, evalRuns, evalRuns)
+	}
+}

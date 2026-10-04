@@ -1000,6 +1000,9 @@ func newStaticHandler(dir string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		// Revalidated on every load: after a deploy an old index.html
+		// would point at asset hashes that no longer exist.
+		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeContent(w, r, "index.html", info.ModTime(), f)
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -1010,9 +1013,14 @@ func newStaticHandler(dir string) http.HandlerFunc {
 		}
 		info, statErr := f.Stat()
 		f.Close()
-		if statErr != nil || info.IsDir() {
+		if statErr != nil || info.IsDir() || r.URL.Path == "/index.html" {
 			serveIndex(w, r)
 			return
+		}
+		// Vite names every built asset by its content hash, so one never
+		// changes under its name.
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		fileServer.ServeHTTP(w, r)
 	}

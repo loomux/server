@@ -1575,3 +1575,31 @@ func TestStaticFileServing_DisabledByDefault(t *testing.T) {
 		t.Errorf("status = %d, want 404 (static serving not configured)", resp.StatusCode)
 	}
 }
+
+// After a deploy, a browser must not keep an old index.html pointing at
+// asset hashes that no longer exist; the hashed assets themselves never
+// change, so they can be cached for good.
+func TestStaticFileServing_CacheHeaders(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html></html>"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "assets", "app-abc123.js"), []byte("x"), 0o644)
+	httpSrv, _, _ := newTestServer(t, api.WithStaticDir(dir))
+	for path, want := range map[string]string{
+		"/":                     "no-cache",
+		"/index.html":           "no-cache",
+		"/conversations/abc":    "no-cache",
+		"/assets/app-abc123.js": "public, max-age=31536000, immutable",
+	} {
+		resp, err := http.Get(httpSrv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Cache-Control"); got != want {
+			t.Errorf("GET %s Cache-Control = %q, want %q", path, got, want)
+		}
+	}
+}
