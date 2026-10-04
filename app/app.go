@@ -385,6 +385,25 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		routerOpts = append(routerOpts, router.WithLogger(cfg.Logger))
 	}
 	routerOpts = append(routerOpts, router.WithMetrics(met))
+	// The notifier (LOOM-102) hears of finished turns from the dispatch
+	// service and of late replies (LOOM-121) from the router.
+	var notifier *turnNotifier
+	if cfg.Notify.NtfyURL != "" {
+		logger := cfg.Logger
+		if logger == nil {
+			logger = slog.New(slog.DiscardHandler)
+		}
+		notifier = &turnNotifier{
+			store: store,
+			filter: notify.NewFilter(notify.NewNtfy(cfg.Notify.NtfyURL, cfg.Notify.NtfyTopic, cfg.Notify.NtfyToken), notify.FilterConfig{
+				Events: cfg.Notify.Events, Burst: notifyBurst, Refill: notifyRefill,
+			}),
+			minDuration: cfg.Notify.MinDuration,
+			publicURL:   cfg.Notify.PublicURL,
+			logger:      logger,
+		}
+		routerOpts = append(routerOpts, router.WithLateReplyHook(notifier.lateReply))
+	}
 
 	reaper := orchestrator.NewReaper(orch, threshold, orchestrator.WithReaperMetrics(met),
 		orchestrator.WithStaleProvisioningAfter(staleProvisioningAfter))
@@ -435,21 +454,8 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		resumed[taskID] = true
 		return run
 	}))
-	if cfg.Notify.NtfyURL != "" {
-		logger := cfg.Logger
-		if logger == nil {
-			logger = slog.New(slog.DiscardHandler)
-		}
-		n := &turnNotifier{
-			store: store,
-			filter: notify.NewFilter(notify.NewNtfy(cfg.Notify.NtfyURL, cfg.Notify.NtfyTopic, cfg.Notify.NtfyToken), notify.FilterConfig{
-				Events: cfg.Notify.Events, Burst: notifyBurst, Refill: notifyRefill,
-			}),
-			minDuration: cfg.Notify.MinDuration,
-			publicURL:   cfg.Notify.PublicURL,
-			logger:      logger,
-		}
-		dispatchOpts = append(dispatchOpts, dispatch.WithOnFinished(n.finished))
+	if notifier != nil {
+		dispatchOpts = append(dispatchOpts, dispatch.WithOnFinished(notifier.finished))
 	}
 	dispatches := dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
 		opts := []router.DispatchOption{router.WithDispatchID(d.ID), router.WithUserMessageLogged()}

@@ -167,3 +167,30 @@ type failingCreds struct{ registry.Store }
 func (failingCreds) ListCredentials(context.Context) ([]*registry.Credential, error) {
 	return nil, errors.New("vault locked")
 }
+
+// An agent's late reply (LOOM-121) is announced as done, with its
+// workspace and link, and scrubbed like any other body.
+func TestTurnNotifierLateReplyEvent(t *testing.T) {
+	ctx := context.Background()
+	store := openNotifyStore(t)
+	const secret = "ghp_s3cretvalue"
+	if err := store.CreateCredential(ctx, &registry.Credential{ID: "c", Name: "GH_TOKEN", Value: secret}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	if err := store.CreateTarget(ctx, &registry.Target{ID: "t", Name: "jet01", Kind: registry.TargetKindLocal}); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	if err := store.CreateWorkspace(ctx, &registry.Workspace{ID: "w", Name: "my-app", Path: "/p", TargetID: "t", Status: registry.WorkspaceStatusIdle}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	n := &turnNotifier{store: store, publicURL: "https://loomux.example"}
+	task := &registry.Task{ID: "task", WorkspaceID: "w", ConversationID: "c1"}
+
+	e := n.lateReplyEvent(ctx, task, "  The build passed; pushed with "+secret+"\n")
+	if e.Kind != notify.KindDone || e.Workspace != "my-app" || e.Link != "https://loomux.example/conversations/c1" {
+		t.Fatalf("event = %+v", e)
+	}
+	if strings.Contains(e.Summary, secret) || !strings.HasPrefix(e.Summary, "The build passed; pushed with [redacted]") {
+		t.Fatalf("summary = %q, want it trimmed and scrubbed", e.Summary)
+	}
+}

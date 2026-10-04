@@ -145,3 +145,16 @@ func TestRelayLateOutput_OnlyAwaitingInputTasks(t *testing.T) {
 		})
 	}
 }
+
+// The late-reply hook hears of each one, with its task and reply.
+func TestRelayLateOutput_CallsHook(t *testing.T) {
+	h, task := lateHarness(t)
+	var gotTask, gotReply string
+	router.WithLateReplyHook(func(tk *registry.Task, reply string) { gotTask, gotReply = tk.ID, reply })(h.r)
+	h.payload = hookPayload(t, "last_assistant_message", "finished")
+	h.exec.setFileExists(true)
+	h.r.RelayLateOutput(context.Background())
+	if gotTask != task.ID || gotReply != "relayed" {
+		t.Fatalf("hook got (%q, %q), want (%q, relayed)", gotTask, gotReply, task.ID)
+	}
+}

@@ -68,6 +68,9 @@ type Router struct {
 	metrics *metrics.Metrics
 	// conversations serializes turns per conversation (LOOM-83).
 	conversations convLocks
+	// onLateReply, if set, is told of each late reply relayed (LOOM-121);
+	// see WithLateReplyHook.
+	onLateReply func(task *registry.Task, reply string)
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -102,6 +105,13 @@ func WithMetrics(m *metrics.Metrics) Option {
 	return func(r *Router) {
 		r.metrics = m
 	}
+}
+
+// WithLateReplyHook sets a func told of each agent reply relayed after
+// its turn ended (LOOM-121) — for a notification: no dispatch finishing
+// carries it. It runs on the relaying goroutine, so it must not block.
+func WithLateReplyHook(f func(task *registry.Task, reply string)) Option {
+	return func(r *Router) { r.onLateReply = f }
 }
 
 // New constructs a Router. markerDir must be the same effective marker

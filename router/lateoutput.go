@@ -115,6 +115,9 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 	}); err != nil {
 		return false, fmt.Errorf("log reply: %w", err)
 	}
+	if r.onLateReply != nil {
+		r.onLateReply(task, result.Reply)
+	}
 	log.Info("late agent output relayed", "task_done", result.Done,
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, nil
