@@ -212,8 +212,18 @@ func (r *Router) failTurnOnError(ctx context.Context, log *slog.Logger, taskID s
 	if gerr != nil || isTerminal(cur.Status) || cur.Status == registry.TaskStatusHumanTakeover {
 		return
 	}
-	if ferr := r.orch.Fail(cleanupCtx, taskID, taskFailure(class, err, "")); ferr != nil {
+	// Cancelled by the user (LOOM-99): that's the turn's end, and its
+	// agent mustn't carry on unsupervised. The pane is kept to inspect.
+	failure := taskFailure(class, err, "")
+	cancelled := errors.Is(context.Cause(ctx), orchestrator.ErrCancelled)
+	if cancelled {
+		failure = registry.TaskFailure{Class: registry.ErrorClassCancelled, Reason: "cancelled by the user"}
+	}
+	if ferr := r.orch.Fail(cleanupCtx, taskID, failure); ferr != nil {
 		log.Error("agent dispatch cleanup failed", "task_id", taskID, "error", ferr)
+	}
+	if cancelled {
+		r.interruptAgent(cleanupCtx, cur)
 	}
 }
 
@@ -355,4 +365,30 @@ func moveCursor(from, to int) []keyStep {
 		steps = append(steps, keyStep{key: "Up"})
 	}
 	return steps
+}
+
+// CancelTask cancels a running task that no dispatch is driving (LOOM-99)
+// — one a restart left behind: it is failed with class cancelled and its
+// agent interrupted, the pane kept to inspect. A task under a running
+// dispatch is cancelled through the dispatch instead, which ends the turn
+// the same way. orchestrator.ErrTaskInactive if it has already ended;
+// orchestrator.ErrHumanTakeover if a person has taken it over, as nothing
+// may be typed into a pane they are driving (spec §4).
+func (r *Router) CancelTask(ctx context.Context, taskID string) error {
+	task, err := r.store.GetTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if isTerminal(task.Status) {
+		return orchestrator.ErrTaskInactive
+	}
+	if task.Status == registry.TaskStatusHumanTakeover {
+		return orchestrator.ErrHumanTakeover
+	}
+	if err := r.orch.Fail(ctx, task.ID, registry.TaskFailure{Class: registry.ErrorClassCancelled, Reason: "cancelled by the user"}); err != nil {
+		return err
+	}
+	r.interruptAgent(ctx, task)
+	r.logger.Info("task cancelled", "task_id", task.ID)
+	return nil
 }

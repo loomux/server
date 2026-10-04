@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Loomux/server/dispatch"
+	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 )
 
@@ -196,6 +197,51 @@ func (s *Server) handleGetDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newDispatchResponse(d))
+}
+
+// handleCancelDispatch stops a running turn (LOOM-99). 202: the job has
+// been told; it ends failed with class cancelled, which the stream and
+// GET /dispatches/{id} report.
+func (s *Server) handleCancelDispatch(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	switch err := s.dispatcher.Cancel(r.Context(), id); {
+	case errors.Is(err, registry.ErrNotFound):
+		writeError(w, http.StatusNotFound, "no such dispatch")
+	case errors.Is(err, dispatch.ErrNotRunning):
+		writeError(w, http.StatusConflict, "the dispatch isn't running")
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "could not cancel dispatch")
+	default:
+		writeJSON(w, http.StatusAccepted, cancelResponse{DispatchID: id})
+	}
+}
+
+type cancelResponse struct {
+	TaskID     string `json:"task_id,omitempty"`
+	DispatchID string `json:"dispatch_id,omitempty"`
+}
+
+// handleCancelTask stops a running task (LOOM-99): its agent is
+// interrupted and the task failed with class cancelled, the pane kept.
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	if s.taskCanceller == nil {
+		writeError(w, http.StatusNotImplemented, "task cancellation is not configured on this server")
+		return
+	}
+	id := r.PathValue("id")
+	dispatchID, err := s.taskCanceller.CancelTask(r.Context(), id)
+	switch {
+	case errors.Is(err, registry.ErrNotFound):
+		writeError(w, http.StatusNotFound, "no such task")
+	case errors.Is(err, orchestrator.ErrTaskInactive):
+		writeError(w, http.StatusConflict, "the task has already ended")
+	case errors.Is(err, orchestrator.ErrHumanTakeover):
+		writeError(w, http.StatusConflict, "someone has taken over this task; release it first")
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "could not cancel task")
+	default:
+		writeJSON(w, http.StatusAccepted, cancelResponse{TaskID: id, DispatchID: dispatchID})
+	}
 }
 
 // dispatchUpdateEvent is the data of a stream's `event: dispatch_update`.

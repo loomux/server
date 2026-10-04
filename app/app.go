@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -35,16 +36,19 @@ const staleProvisioningAfter = router.ProvisionTimeout + 5*time.Minute
 // Store for a client-facing layer (api.Server) that needs its own
 // session storage in the same database.
 type App struct {
-	router        *router.Router
-	orch          *orchestrator.Orchestrator
-	store         *sqlite.Store
-	stopReaper    context.CancelFunc
-	reaperDone    chan struct{}
-	proberDone    chan struct{}
-	metrics       *metrics.Metrics
-	healthChecker *health.Checker
-	dispatches    *dispatch.Service
-	dispatchDrain time.Duration
+	router *router.Router
+	// cancelTaskDirect cancels a task no dispatch is driving; the router's
+	// CancelTask, a seam for tests.
+	cancelTaskDirect func(ctx context.Context, taskID string) error
+	orch             *orchestrator.Orchestrator
+	store            *sqlite.Store
+	stopReaper       context.CancelFunc
+	reaperDone       chan struct{}
+	proberDone       chan struct{}
+	metrics          *metrics.Metrics
+	healthChecker    *health.Checker
+	dispatches       *dispatch.Service
+	dispatchDrain    time.Duration
 }
 
 // Dispatches is the dispatch-job service (LOOM-80) the client API
@@ -105,6 +109,43 @@ func (a *App) SetWorkspaceStatus(ctx context.Context, id string, status registry
 		return a.orch.ArchiveWorkspace(ctx, id)
 	}
 	return fmt.Errorf("app: a workspace can't be set to %q", status)
+}
+
+// CancelTask cancels a task (LOOM-99). A running task is the one its
+// conversation's running dispatch drives — only one task is ever mid-turn
+// — so it is cancelled through that dispatch, which ends the turn. Any
+// other open task (left awaiting input, stopped at a prompt, or running
+// with no dispatch after a restart) is cancelled directly — see
+// router.Router.CancelTask — never through a dispatch driving some other
+// task of the conversation. Satisfies api.TaskCanceller.
+func (a *App) CancelTask(ctx context.Context, taskID string) (string, error) {
+	task, err := a.store.GetTask(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	if task.Status == registry.TaskStatusCompleted || task.Status == registry.TaskStatusFailed {
+		return "", orchestrator.ErrTaskInactive
+	}
+	if task.Status == registry.TaskStatusRunning && task.ConversationID != "" {
+		ds, err := a.dispatches.ListByConversation(ctx, task.ConversationID)
+		if err != nil {
+			return "", err
+		}
+		for _, d := range ds {
+			if d.Status.Terminal() {
+				continue
+			}
+			if err := a.dispatches.Cancel(ctx, d.ID); err == nil {
+				return d.ID, nil
+			} else if !errors.Is(err, dispatch.ErrNotRunning) {
+				return "", err
+			}
+			// It ended between the list and the cancel: the task has just
+			// finished its turn. The user asked to cancel it, so it is,
+			// directly.
+		}
+	}
+	return "", a.cancelTaskDirect(ctx, taskID)
 }
 
 // ProbeTarget probes a target's health and agent CLIs now and records the
@@ -392,15 +433,16 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 
 	return &App{
-		router:        rtr,
-		orch:          orch,
-		dispatches:    dispatches,
-		dispatchDrain: dispatchDrain,
-		store:         store,
-		stopReaper:    stopReaper,
-		reaperDone:    reaperDone,
-		proberDone:    proberDone,
-		metrics:       met,
-		healthChecker: healthChecker,
+		router:           rtr,
+		cancelTaskDirect: rtr.CancelTask,
+		orch:             orch,
+		dispatches:       dispatches,
+		dispatchDrain:    dispatchDrain,
+		store:            store,
+		stopReaper:       stopReaper,
+		reaperDone:       reaperDone,
+		proberDone:       proberDone,
+		metrics:          met,
+		healthChecker:    healthChecker,
 	}, nil
 }

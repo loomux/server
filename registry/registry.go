@@ -350,6 +350,8 @@ const (
 	// reason other than being unreachable — no tmux, its disk nearly full
 	// (LOOM-86).
 	ErrorClassTargetUnhealthy ErrorClass = "target_unhealthy"
+	// ErrorClassCancelled: the user cancelled the turn (LOOM-99).
+	ErrorClassCancelled ErrorClass = "cancelled"
 	// ErrorClassInternal: anything else.
 	ErrorClassInternal ErrorClass = "internal"
 )
