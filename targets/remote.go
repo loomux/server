@@ -228,7 +228,7 @@ func (e *RemoteExecutor) sshExecWithin(ctx context.Context, timeout time.Duratio
 // shell metacharacters in e.g. send-keys content would be interpreted
 // remotely).
 func (e *RemoteExecutor) run(ctx context.Context, args ...string) (string, error) {
-	remoteCmd := shellQuoteJoin(append([]string{"tmux"}, args...))
+	remoteCmd := shellQuoteJoin(append([]string{"tmux", "-L", TmuxSocket}, args...))
 	stdout, stderr, exitCode, err := e.sshExec(ctx, remoteCmd)
 	if err != nil {
 		return "", err

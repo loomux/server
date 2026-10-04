@@ -30,6 +30,8 @@ type fakeExecutor struct {
 	// onKill, if set, runs after KillSession succeeds — a test's hook for
 	// something happening concurrently with a reap.
 	onKill func()
+	// runOnceOut is what RunOnce returns (the orphan sweep's session list).
+	runOnceOut string
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -129,7 +131,10 @@ func (e *fakeExecutor) Close() error { return nil }
 func (e *fakeExecutor) FileExists(ctx context.Context, path string) (bool, error) { return false, nil }
 func (e *fakeExecutor) RemoveFile(ctx context.Context, path string) error         { return nil }
 func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, error) {
-	return "", nil
+	if e.unreachable {
+		return "", targets.ErrUnreachable
+	}
+	return e.runOnceOut, nil
 }
 
 // PaneExited always reports the pane still running: this package's tests

@@ -236,11 +236,20 @@ Lifecycle for an `agent` task:
    if the task itself (not just the turn) is finished — the pane is torn
    down. The workspace registry row persists regardless; only the
    task-scoped pane goes away.
-4. At any point, attaching via `ssh` + `tmux attach` to watch is free and has
-   no side effects. Taking over (see §4) pauses automated dispatch for that
+4. At any point, attaching via `ssh` + `tmux -L loomux attach` to watch is
+   free and has no side effects. Taking over (see §4) pauses automated dispatch for that
    task until released.
 
 ### 4. tmux interaction model
+
+Every Loomux session lives on its own tmux server, `tmux -L loomux`
+(LOOM-93), never the target user's default one. The user's tmux config
+and plugins don't apply to agents, and Loomux sessions stay out of their
+`tmux ls`. Attach-info returns the full `attach_command`. An hourly orphan
+sweep lists `loomux-*` sessions on that socket per target. A session no
+live task owns is logged, and killed once it is 24 h old, which leaves a
+failed turn's pane a day for inspection. The sweep only ever touches that
+socket and that prefix.
 
 The orchestrator talks to tmux directly (`send-keys` / `capture-pane`),
 shelling out locally or over SSH depending on the task's target. This is

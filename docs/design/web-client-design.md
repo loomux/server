@@ -173,7 +173,7 @@ extended to this client) — a persistent banner, not a hard block, since
 When a task's status implies a human might want to intervene (`running`,
 `awaiting-input`, `human-takeover`), its card in the chat view exposes a
 "attach" affordance that calls `GET /tasks/{id}/attach-info` and displays
-the resolved `ssh <user>@<host>` + `tmux attach -t <session>` command as
+the resolved `ssh <user>@<host>` + `attach_command` (`tmux -L loomux attach -t <session>`, LOOM-93) command as
 copyable text. The client never attempts to open an SSH connection itself
 — purely informational, matching the design spec's own attach model (§4):
 attaching is something a human does directly against the target, outside

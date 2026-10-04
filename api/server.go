@@ -749,9 +749,13 @@ type attachTargetInfo struct {
 }
 
 type attachInfoResponse struct {
-	TaskID      string           `json:"task_id"`
-	TmuxSession string           `json:"tmux_session"`
-	Target      attachTargetInfo `json:"target"`
+	TaskID      string `json:"task_id"`
+	TmuxSession string `json:"tmux_session"`
+	// TmuxSocket and AttachCommand (LOOM-93): Loomux sessions live on
+	// their own tmux server, so a bare `tmux attach` won't find them.
+	TmuxSocket    string           `json:"tmux_socket"`
+	AttachCommand string           `json:"attach_command"`
+	Target        attachTargetInfo `json:"target"`
 }
 
 // handleAttachInfo resolves a task down to the target+session a human
@@ -789,8 +793,10 @@ func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, attachInfoResponse{
-		TaskID:      task.ID,
-		TmuxSession: task.TmuxSession,
+		TaskID:        task.ID,
+		TmuxSession:   task.TmuxSession,
+		TmuxSocket:    targets.TmuxSocket,
+		AttachCommand: targets.AttachCommand(task.TmuxSession),
 		Target: attachTargetInfo{
 			ID:   target.ID,
 			Name: target.Name,

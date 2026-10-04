@@ -159,6 +159,14 @@ func agentDescriptionsFor(agentTypes router.AgentTypeRegistry) map[string]string
 	return out
 }
 
+// The orphan sweep (LOOM-93) runs hourly and kills a Loomux session no
+// live task owns once it is a day old: long enough to attach to a failed
+// turn's pane and look.
+const (
+	orphanSweepInterval = time.Hour
+	orphanTTL           = 24 * time.Hour
+)
+
 // reconcileTimeout bounds startup task reconciliation (LOOM-82).
 const reconcileTimeout = 2 * time.Minute
 
@@ -258,6 +266,8 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		defer close(reaperDone)
 		reaper.Run(reaperCtx, interval)
 	}()
+	// The orphan sweep (LOOM-93) shares the reaper's lifetime.
+	go orchestrator.NewOrphanSweeper(orch, orphanTTL, cfg.Logger).Run(reaperCtx, orphanSweepInterval)
 
 	// Health probes bypass the metrics-wrapped executor so periodic
 	// liveness checks don't pollute the target operation latency/error
