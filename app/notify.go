@@ -57,7 +57,8 @@ func (n *turnNotifier) finished(d *registry.Dispatch) {
 // event builds d's notification, or reports false when d doesn't warrant
 // one.
 func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.Event, bool) {
-	if d.FinishedAt == nil {
+	// A turn the user cancelled is no news to them.
+	if d.FinishedAt == nil || d.ErrorClass == registry.ErrorClassCancelled {
 		return notify.Event{}, false
 	}
 	start := d.CreatedAt

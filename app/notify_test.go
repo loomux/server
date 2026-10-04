@@ -79,6 +79,13 @@ func TestTurnNotifierEvent(t *testing.T) {
 		t.Fatalf("failed event = %+v", e)
 	}
 
+	// Cancelled: the user did it themselves.
+	d.ErrorClass = registry.ErrorClassCancelled
+	if _, ok := n.event(ctx, d); ok {
+		t.Fatalf("an event for a cancelled turn")
+	}
+	d.ErrorClass = ""
+
 	// A quick turn: the user was watching.
 	quick := start.Add(10 * time.Second)
 	d.FinishedAt = &quick
