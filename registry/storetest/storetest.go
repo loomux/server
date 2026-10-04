@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("ListTargetHealth", func(t *testing.T) { testListTargetHealth(t, newStore(t)) })
 
 	t.Run("TaskTurns", func(t *testing.T) { testTaskTurns(t, newStore(t)) })
+	t.Run("TaskTurnsPage", func(t *testing.T) { testTaskTurnsPage(t, newStore(t)) })
+	t.Run("DeleteTaskTurnsBefore", func(t *testing.T) { testDeleteTaskTurnsBefore(t, newStore(t)) })
 
 	t.Run("Workspace", func(t *testing.T) { testWorkspaceCRUD(t, newStore(t)) })
 	t.Run("WorkspaceStatusFailed", func(t *testing.T) { testWorkspaceStatusFailed(t, newStore(t)) })
@@ -1638,6 +1641,73 @@ func testTaskTurns(t *testing.T, s registry.Store) {
 	}
 	if got, _ := s.ListTaskTurns(ctx, task.ID); len(got) != 0 {
 		t.Errorf("turns outlived their task: %+v", got)
+	}
+}
+
+func createTurns(t *testing.T, s registry.Store, n int) *registry.Task {
+	t.Helper()
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{ID: "paged-task", WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "loomux-paged", Status: registry.TaskStatusRunning, ConversationID: "conv"}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	for i := 1; i <= n; i++ {
+		if err := s.CreateTaskTurn(ctx, &registry.TaskTurn{ID: fmt.Sprintf("turn-%d", i), TaskID: task.ID,
+			UserMessage: fmt.Sprint(i)}); err != nil {
+			t.Fatalf("CreateTaskTurn: %v", err)
+		}
+	}
+	return task
+}
+
+// LOOM-122: a task's turns come back a page at a time, latest first by
+// page and oldest first within one, even when turns share a timestamp.
+func testTaskTurnsPage(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	task := createTurns(t, s, 5)
+	ids := func(turns []*registry.TaskTurn) string {
+		var out []string
+		for _, turn := range turns {
+			out = append(out, turn.UserMessage)
+		}
+		return strings.Join(out, ",")
+	}
+	for _, tc := range []struct {
+		before string
+		want   string
+		more   bool
+	}{
+		{"", "4,5", true},
+		{"turn-4", "2,3", true},
+		{"turn-2", "1", false},
+		{"turn-1", "", false},
+	} {
+		got, more, err := s.ListTaskTurnsPage(ctx, task.ID, tc.before, 2)
+		if err != nil {
+			t.Fatalf("ListTaskTurnsPage(before %q): %v", tc.before, err)
+		}
+		if ids(got) != tc.want || more != tc.more {
+			t.Errorf("ListTaskTurnsPage(before %q) = [%s] more=%v, want [%s] more=%v", tc.before, ids(got), more, tc.want, tc.more)
+		}
+	}
+	if _, _, err := s.ListTaskTurnsPage(ctx, task.ID, "no-such-turn", 2); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("ListTaskTurnsPage before an unknown turn: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testDeleteTaskTurnsBefore(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	task := createTurns(t, s, 3)
+	if n, err := s.DeleteTaskTurnsBefore(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Fatalf("DeleteTaskTurnsBefore (an hour ago) = %d, %v; want 0", n, err)
+	}
+	if n, err := s.DeleteTaskTurnsBefore(ctx, time.Now().Add(time.Second)); err != nil || n != 3 {
+		t.Fatalf("DeleteTaskTurnsBefore (now) = %d, %v; want 3", n, err)
+	}
+	if got, _ := s.ListTaskTurns(ctx, task.ID); len(got) != 0 {
+		t.Errorf("turns left = %+v", got)
 	}
 }
 

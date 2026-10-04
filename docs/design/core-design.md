@@ -292,7 +292,10 @@ Lifecycle for an `agent` task:
    Every finished turn is also stored (`task_turns`): the message sent,
    the agent's own message and the pane's last 3000 lines of scrollback,
    with credential values redacted. They are served at
-   `GET /api/v1/tasks/{id}/transcript` after the task ends.
+   `GET /api/v1/tasks/{id}/transcript` after the task ends, a page at a
+   time, latest first (`?limit=`, default 20, and `?before=<turn id>`),
+   and kept for `LOOMUX_TURN_RETENTION` (30 days; `0` keeps them) — the
+   reaper deletes older ones (LOOM-122).
 4. At any point, attaching via `ssh` + `tmux -L loomux attach` to watch is
    free and has no side effects. Taking over (see §4) pauses automated dispatch for that
    task until released.

@@ -157,7 +157,7 @@ type TargetProber interface {
 // satisfied by any registry.Store.
 type TaskTurnStore interface {
 	GetTask(ctx context.Context, id string) (*registry.Task, error)
-	ListTaskTurns(ctx context.Context, taskID string) ([]*registry.TaskTurn, error)
+	ListTaskTurnsPage(ctx context.Context, taskID, beforeID string, limit int) ([]*registry.TaskTurn, bool, error)
 }
 
 // AgentProber re-probes a target for every probe-able agent CLI and
@@ -1633,6 +1633,7 @@ type probeTargetResponse struct {
 }
 
 type taskTurnResponse struct {
+	ID          string `json:"id"`
 	UserMessage string `json:"user_message"`
 	// AgentMessage is the agent's own final message for the turn; empty
 	// when its completion hook saved none (Pane is then all there is).
@@ -1644,11 +1645,23 @@ type taskTurnResponse struct {
 type taskTranscriptResponse struct {
 	TaskID string             `json:"task_id"`
 	Turns  []taskTurnResponse `json:"turns"`
+	// HasMore says earlier turns remain; NextBefore is the before= value
+	// that fetches them (LOOM-122).
+	HasMore    bool   `json:"has_more"`
+	NextBefore string `json:"next_before,omitempty"`
 }
+
+// Transcript page sizes (LOOM-122): a turn can carry a 256 KiB pane.
+const (
+	defaultTranscriptPage = 20
+	maxTranscriptPage     = 100
+)
 
 // handleTaskTranscript returns what each turn of a task produced, oldest
 // first (LOOM-91): the message sent, the agent's own final message and
-// the pane's scrollback at the turn's end, credentials redacted.
+// the pane's scrollback at the turn's end, credentials redacted. It is
+// paged, latest turns first (LOOM-122): ?limit= (default 20, at most 100)
+// and ?before=<turn id>, from the previous page's next_before.
 func (s *Server) handleTaskTranscript(w http.ResponseWriter, r *http.Request) {
 	if s.taskTurns == nil {
 		writeError(w, http.StatusNotImplemented, "task transcripts are not configured on this server")
@@ -1663,15 +1676,31 @@ func (s *Server) handleTaskTranscript(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not fetch task")
 		return
 	}
-	turns, err := s.taskTurns.ListTaskTurns(r.Context(), id)
+	limit := defaultTranscriptPage
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > maxTranscriptPage {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("limit must be a number from 1 to %d", maxTranscriptPage))
+			return
+		}
+		limit = n
+	}
+	turns, more, err := s.taskTurns.ListTaskTurnsPage(r.Context(), id, r.URL.Query().Get("before"), limit)
+	if errors.Is(err, registry.ErrNotFound) {
+		writeError(w, http.StatusBadRequest, "before names no turn of this task")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list the task's turns")
 		return
 	}
-	out := taskTranscriptResponse{TaskID: id, Turns: make([]taskTurnResponse, 0, len(turns))}
+	out := taskTranscriptResponse{TaskID: id, Turns: make([]taskTurnResponse, 0, len(turns)), HasMore: more}
 	for _, t := range turns {
-		out.Turns = append(out.Turns, taskTurnResponse{UserMessage: t.UserMessage, AgentMessage: t.AgentMessage,
+		out.Turns = append(out.Turns, taskTurnResponse{ID: t.ID, UserMessage: t.UserMessage, AgentMessage: t.AgentMessage,
 			Pane: t.Pane, CreatedAt: t.CreatedAt})
+	}
+	if more && len(turns) > 0 {
+		out.NextBefore = turns[0].ID
 	}
 	writeJSON(w, http.StatusOK, out)
 }

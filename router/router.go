@@ -301,7 +301,10 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 
 	// The target's policy (LOOM-89) has the last word, whatever the
 	// routing model chose.
-	continuing := openTask != nil && decision.Action == ActionUseWorkspace && decision.WorkspaceID == openTask.WorkspaceID
+	var continuing string
+	if openTask != nil && decision.Action == ActionUseWorkspace && decision.WorkspaceID == openTask.WorkspaceID {
+		continuing = openTask.TaskID
+	}
 	if reply, handled, err := r.enforcePolicy(ctx, log, conversationID, message, decision, continuing, start); handled {
 		m.action = string(decision.Action)
 		if err != nil {

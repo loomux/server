@@ -75,6 +75,10 @@ type Config struct {
 	// Notify configures turn notifications (LOOM-102); off when
 	// Notify.NtfyURL is empty.
 	Notify NotifyConfig
+	// TurnRetention is how long each task turn's transcript is kept
+	// (LOOM-122); zero keeps them. LoadConfig defaults it to
+	// defaultTurnRetention.
+	TurnRetention time.Duration
 }
 
 // NotifyConfig configures turn notifications (LOOM-102).
@@ -110,6 +114,7 @@ const (
 	envNotifyEvents        = "LOOMUX_NOTIFY_EVENTS"
 	envNotifyMinDuration   = "LOOMUX_NOTIFY_MIN_DURATION"
 	envPublicURL           = "LOOMUX_PUBLIC_URL"
+	envTurnRetention       = "LOOMUX_TURN_RETENTION"
 
 	defaultDBPath = "loomux.db"
 
@@ -125,6 +130,9 @@ const (
 	// defaultNotifyMinDuration: a turn quicker than this was most likely
 	// watched as it happened.
 	defaultNotifyMinDuration = 30 * time.Second
+	// defaultTurnRetention keeps a month of per-turn transcripts: each
+	// can carry a 256 KiB pane.
+	defaultTurnRetention = 30 * 24 * time.Hour
 )
 
 // LoadConfig reads Config from the environment, failing fast on
@@ -193,6 +201,15 @@ func LoadConfig() (Config, error) {
 		dispatchDrain = d
 	}
 
+	turnRetention := defaultTurnRetention
+	if raw := os.Getenv(envTurnRetention); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration (0 keeps turns): %q", envTurnRetention, raw)
+		}
+		turnRetention = d
+	}
+
 	var logLevel slog.Level
 	if raw := os.Getenv(envLogLevel); raw != "" {
 		if err := logLevel.UnmarshalText([]byte(raw)); err != nil {
@@ -226,6 +243,7 @@ func LoadConfig() (Config, error) {
 		TargetProbeInterval: targetProbeInterval,
 		DispatchMaxDuration: dispatchMaxDuration,
 		DispatchDrain:       dispatchDrain,
+		TurnRetention:       turnRetention,
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -622,6 +623,62 @@ func (s *Store) ListTaskTurns(ctx context.Context, taskID string) ([]*registry.T
 		return nil, fmt.Errorf("sqlite: list task turns: %w", err)
 	}
 	return out, nil
+}
+
+func (s *Store) ListTaskTurnsPage(ctx context.Context, taskID, beforeID string, limit int) ([]*registry.TaskTurn, bool, error) {
+	query := `SELECT id, task_id, user_message, agent_message, pane, created_at FROM task_turns WHERE task_id = ?`
+	args := []any{taskID}
+	if beforeID != "" {
+		var at time.Time
+		var rowid int64
+		err := s.db.QueryRowContext(ctx, `SELECT created_at, rowid FROM task_turns WHERE id = ? AND task_id = ?`,
+			beforeID, taskID).Scan(&at, &rowid)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, fmt.Errorf("%w: turn %q of task %q", registry.ErrNotFound, beforeID, taskID)
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("sqlite: list task turns page: %w", err)
+		}
+		query += ` AND (created_at, rowid) < (?, ?)`
+		args = append(args, at, rowid)
+	}
+	// One more than asked says whether there are more.
+	query += ` ORDER BY created_at DESC, rowid DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("sqlite: list task turns page: %w", err)
+	}
+	defer rows.Close()
+	out := []*registry.TaskTurn{}
+	for rows.Next() {
+		var t registry.TaskTurn
+		if err := rows.Scan(&t.ID, &t.TaskID, &t.UserMessage, &t.AgentMessage, &t.Pane, &t.CreatedAt); err != nil {
+			return nil, false, fmt.Errorf("sqlite: list task turns page: %w", err)
+		}
+		out = append(out, &t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("sqlite: list task turns page: %w", err)
+	}
+	more := len(out) > limit
+	if more {
+		out = out[:limit]
+	}
+	slices.Reverse(out)
+	return out, more, nil
+}
+
+func (s *Store) DeleteTaskTurnsBefore(ctx context.Context, cutoff time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM task_turns WHERE created_at < ?`, cutoff.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: delete task turns: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: delete task turns: %w", err)
+	}
+	return int(n), nil
 }
 
 func (s *Store) ListTasks(ctx context.Context) ([]*registry.Task, error) {

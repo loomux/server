@@ -68,11 +68,14 @@ func policyRefusal(target *registry.Target, decision Decision) string {
 // (LOOM-89), after routing and before anything runs: a forbidden decision
 // ends the turn with a refusal, and new work on a require-confirmation
 // target ends it with the plan and an offer to carry it out on "yes".
-// continuing is set when decision only carries on the conversation's open
-// task in its own workspace, which was confirmed when it started.
+// continuing is the conversation's open task's id when decision only carries
+// it on in its own workspace: that work was confirmed when it started, so
+// it isn't asked about again — as long as its pane is still live. One
+// reaped, killed or whose agent exited would mean launching a fresh agent,
+// which is new work (LOOM-122).
 // handled reports whether the turn ended here.
 func (r *Router) enforcePolicy(ctx context.Context, log *slog.Logger, conversationID, message string, decision Decision,
-	continuing bool, start time.Time) (reply string, handled bool, err error) {
+	continuing string, start time.Time) (reply string, handled bool, err error) {
 	target, err := r.policyTarget(ctx, decision)
 	if err != nil {
 		return "", true, fmt.Errorf("router: dispatch: policy: %w", err)
@@ -86,8 +89,20 @@ func (r *Router) enforcePolicy(ctx context.Context, log *slog.Logger, conversati
 		reply, err := r.finishTurn(ctx, log, conversationID, message, "", refusal, "policy_refused", start)
 		return reply, true, err
 	}
-	if !target.Policy.RequireConfirmation || continuing {
+	if !target.Policy.RequireConfirmation {
 		return "", false, nil
+	}
+	if continuing != "" {
+		// Unreachable, or the task unreadable, reads as not live: asking
+		// again is the safe side. sessionIsLive kills a dead pane as it
+		// looks, so a relaunch the user then declines has still lost that
+		// pane: harmless, as it was dead and the next turn would replace
+		// it anyway.
+		if task, err := r.store.GetTask(ctx, continuing); err == nil && task.ReapedAt == nil {
+			if live, _ := r.sessionIsLive(ctx, task); live {
+				return "", false, nil
+			}
+		}
 	}
 	// A command not given verbatim is shown back for a "yes" by
 	// runCommand itself: one confirmation is enough.

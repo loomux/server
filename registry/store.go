@@ -73,6 +73,14 @@ type Store interface {
 	// ListTaskTurns returns taskID's turns, oldest first; none (or an
 	// unknown task) is an empty slice.
 	ListTaskTurns(ctx context.Context, taskID string) ([]*TaskTurn, error)
+	// ListTaskTurnsPage returns up to limit of taskID's turns, the latest
+	// ones recorded before the turn beforeID (any, when empty), oldest
+	// first; more reports whether earlier ones remain (LOOM-122). An
+	// unknown beforeID is ErrNotFound.
+	ListTaskTurnsPage(ctx context.Context, taskID, beforeID string, limit int) (turns []*TaskTurn, more bool, err error)
+	// DeleteTaskTurnsBefore deletes every task's turns recorded before
+	// cutoff (retention, LOOM-122), returning how many it deleted.
+	DeleteTaskTurnsBefore(ctx context.Context, cutoff time.Time) (int, error)
 
 	// CreateMessage and ListMessagesByConversation store the per-turn
 	// chat transcript (design spec docs/design/message-logging-design.md).

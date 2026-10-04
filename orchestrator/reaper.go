@@ -58,6 +58,8 @@ type Reaper struct {
 	// staleProvisioningAfter is how long a workspace may stay
 	// provisioning before the sweep fails it; zero disables that check.
 	staleProvisioningAfter time.Duration
+	// turnRetention is how long task turns are kept; zero keeps them.
+	turnRetention time.Duration
 }
 
 // ReaperOption configures a Reaper constructed via NewReaper.
@@ -82,6 +84,13 @@ func WithReaperMetrics(m *metrics.Metrics) ReaperOption {
 // never touched. Zero (the default) disables the check.
 func WithStaleProvisioningAfter(d time.Duration) ReaperOption {
 	return func(r *Reaper) { r.staleProvisioningAfter = d }
+}
+
+// WithTurnRetention makes each sweep delete task turns (LOOM-91's
+// per-turn transcript) recorded more than d ago (LOOM-122). Zero (the
+// default) keeps them.
+func WithTurnRetention(d time.Duration) ReaperOption {
+	return func(r *Reaper) { r.turnRetention = d }
 }
 
 // NewReaper constructs a Reaper. threshold is how long a reapable task
@@ -128,6 +137,13 @@ func (r *Reaper) Sweep(ctx context.Context) {
 
 	now := time.Now().UTC()
 	r.failStaleProvisioning(ctx, workspaces, now)
+	if r.turnRetention > 0 {
+		if n, err := r.orch.store.DeleteTaskTurnsBefore(ctx, now.Add(-r.turnRetention)); err != nil {
+			r.logf("orchestrator: reaper: turn retention: %v", err)
+		} else if n > 0 {
+			r.logf("orchestrator: reaper: deleted %d task turns older than %s", n, r.turnRetention)
+		}
+	}
 	for _, ws := range workspaces {
 		tasks, err := r.orch.store.ListTasksByWorkspace(ctx, ws.ID)
 		if err != nil {
