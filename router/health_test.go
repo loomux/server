@@ -242,6 +242,23 @@ func TestRunCommand_RecordedUnreachable_FailsFast(t *testing.T) {
 	}
 }
 
+// A probe its caller cancels records nothing: it says nothing about the
+// target.
+func TestProbeTarget_CancelledRecordsNothing(t *testing.T) {
+	h := newAvailabilityHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	h.exec.runOnce = func(string) (string, error) {
+		cancel()
+		return "", context.Canceled
+	}
+	if _, _, err := h.r.ProbeTarget(ctx, h.target.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProbeTarget err = %v, want context.Canceled", err)
+	}
+	if _, err := h.store.GetTargetHealth(context.Background(), h.target.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("a cancelled probe was recorded: err = %v", err)
+	}
+}
+
 // The routing model is told what's wrong with a target, so it can avoid
 // it or say so.
 func TestDispatch_TargetSnapshotCarriesHealthProblem(t *testing.T) {
@@ -253,7 +270,7 @@ func TestDispatch_TargetSnapshotCarriesHealthProblem(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	got := h.model.LastDecideTargets
-	if len(got) != 1 || !strings.Contains(got[0].Problem, "no answer") {
+	if len(got) != 1 || !strings.Contains(got[0].Problem, "no answer") || !strings.Contains(got[0].Problem, "checked 0s ago") {
 		t.Errorf("snapshot = %+v, want the target's problem", got)
 	}
 }

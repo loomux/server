@@ -20,8 +20,12 @@ const (
 	healthProbeDiskPrefix = "loomux-health-disk-kb:"
 )
 
-// healthProbeTimeout bounds one health probe of one target.
-const healthProbeTimeout = 20 * time.Second
+// healthProbeTimeout bounds one health probe of one target, and
+// agentProbeTimeout the re-probe of its agent CLIs that follows.
+const (
+	healthProbeTimeout = 20 * time.Second
+	agentProbeTimeout  = time.Minute
+)
 
 // MinProvisionDiskFree is the least space the workspace root's
 // filesystem must have free for a workspace to be provisioned there
@@ -100,7 +104,13 @@ func (r *Router) ProbeTarget(ctx context.Context, targetID string) (*registry.Ta
 	}
 	agents := []*registry.TargetAgent{}
 	if h.Reachable {
-		if agents, err = r.RefreshTargetAgents(ctx, targetID); err != nil {
+		// Bounded: a CLI hanging on --version or its auth check, with no
+		// timeout(1) on the target, mustn't stall the periodic probe of
+		// every other target.
+		agentCtx, cancel := context.WithTimeout(ctx, agentProbeTimeout)
+		agents, err = r.RefreshTargetAgents(agentCtx, targetID)
+		cancel()
+		if err != nil {
 			r.logger.Warn("target agent probe failed", "target_id", targetID, "error", err)
 			agents = []*registry.TargetAgent{}
 		}
@@ -127,7 +137,8 @@ func (r *Router) ProbeAllTargets(ctx context.Context) {
 }
 
 // probeHealth runs the health probe on target and records the result,
-// and the target's gauges. It errors only if the result can't be stored.
+// and the target's gauges. It errors only if ctx ends first (nothing is
+// recorded) or the result can't be stored.
 func (r *Router) probeHealth(ctx context.Context, target *registry.Target) (*registry.TargetHealth, error) {
 	h := &registry.TargetHealth{TargetID: target.ID, DiskFreeBytes: -1}
 	start := time.Now()
@@ -146,6 +157,11 @@ func (r *Router) probeHealth(ctx context.Context, target *registry.Target) (*reg
 		}
 	}
 	h.Latency = time.Since(start)
+	// A probe cut short by its caller says nothing about the target:
+	// recording it would mark a healthy target broken.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		h.Error = probeFailureReason(err)
 	}
@@ -239,7 +255,13 @@ func (r *Router) targetProblem(ctx context.Context, targetID string) (string, er
 	if err != nil {
 		return "", err
 	}
-	return healthProblem(h, false), nil
+	problem := healthProblem(h, false)
+	if problem == "" {
+		return "", nil
+	}
+	// Its age, so the model can weigh a stale record: work sent there
+	// anyway is re-checked before it is refused.
+	return fmt.Sprintf("%s (checked %s ago)", problem, time.Since(h.ProbedAt).Round(time.Minute)), nil
 }
 
 // formatBytes renders n in the largest binary unit that keeps it >= 1.
