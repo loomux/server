@@ -148,3 +148,16 @@ func mustTask(t *testing.T, store registry.Store, id string) *registry.Task {
 	}
 	return got
 }
+
+// Right after a restart the network sidecar may not be up yet: a target
+// that can't be reached at first is retried, not given up on.
+func TestReconcileTasks_RetriesUnreachableTarget(t *testing.T) {
+	defer router.SetBootRetry(50*time.Millisecond, 5*time.Second)()
+	store, exec, r, ws := reconcileHarness(t)
+	gone := plantTask(t, store, exec, ws, registry.TaskKindAgent, false)
+	exec.set(func() { exec.unreachableFor = 3 })
+
+	r.ReconcileTasks(context.Background(), nil)
+
+	assertFailed(t, mustTask(t, store, gone.ID), registry.ErrorClassSessionLost, "restarted")
+}

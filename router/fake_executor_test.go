@@ -66,6 +66,9 @@ type fakeExecutor struct {
 	// after every successful SendKeys (e.g. to cancel a request mid-turn).
 	captureFunc func() string
 	onSendKeys  func()
+	// unreachableFor makes the next that many HasSession calls fail as
+	// unreachable (a target that comes back).
+	unreachableFor int
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -100,6 +103,10 @@ func (e *fakeExecutor) HasSession(ctx context.Context, session string) (bool, er
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.unreachableFor > 0 {
+		e.unreachableFor--
+		return false, targets.ErrUnreachable
+	}
 	s, ok := e.sessions[session]
 	return ok && s.alive, nil
 }
