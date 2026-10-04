@@ -43,6 +43,19 @@ type Dispatcher interface {
 	Wait(ctx context.Context, id string) (*registry.Dispatch, error)
 	Get(ctx context.Context, id string) (*registry.Dispatch, error)
 	ListByConversation(ctx context.Context, conversationID string) ([]*registry.Dispatch, error)
+	// Cancel stops a running job (LOOM-99): registry.ErrNotFound for an
+	// unknown id, dispatch.ErrNotRunning for one that has ended.
+	Cancel(ctx context.Context, id string) error
+}
+
+// TaskCanceller cancels a running task (LOOM-99): through the dispatch
+// driving it if there is one, else directly. It returns the dispatch it
+// cancelled, if any; registry.ErrNotFound for an unknown task and
+// orchestrator.ErrTaskInactive for one that has ended. Satisfied by
+// *app.App. Optional: with none configured (WithTaskCanceller), the
+// endpoint answers 501.
+type TaskCanceller interface {
+	CancelTask(ctx context.Context, taskID string) (dispatchID string, err error)
 }
 
 // WorkspaceManager deletes and repairs workspaces (LOOM-70). Satisfied
@@ -204,6 +217,7 @@ type Server struct {
 	targetProber       TargetProber
 	taskTurns          TaskTurnStore
 	workspaceManager   WorkspaceManager
+	taskCanceller      TaskCanceller
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
@@ -267,6 +281,11 @@ func WithWorkspaceManager(m WorkspaceManager) Option {
 	return func(s *Server) { s.workspaceManager = m }
 }
 
+// WithTaskCanceller enables POST /api/v1/tasks/{id}/cancel (LOOM-99).
+func WithTaskCanceller(c TaskCanceller) Option {
+	return func(s *Server) { s.taskCanceller = c }
+}
+
 // WithTaskTurns enables GET /api/v1/tasks/{id}/transcript (LOOM-91).
 func WithTaskTurns(t TaskTurnStore) Option {
 	return func(s *Server) { s.taskTurns = t }
@@ -309,6 +328,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAuth(s.handleRevokeSession))
 	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
 	mux.HandleFunc("GET /api/v1/dispatches/{id}", s.requireAuth(s.handleGetDispatch))
+	mux.HandleFunc("POST /api/v1/dispatches/{id}/cancel", s.requireAuth(s.handleCancelDispatch))
 	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
 	mux.HandleFunc("DELETE /api/v1/workspaces/{id}", s.requireAuth(s.handleDeleteWorkspace))
 	mux.HandleFunc("PATCH /api/v1/workspaces/{id}", s.requireAuth(s.handlePatchWorkspace))
@@ -317,6 +337,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/conversations/{id}/stream", s.requireAuth(s.handleStream))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attach-info", s.requireAuth(s.handleAttachInfo))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/transcript", s.requireAuth(s.handleTaskTranscript))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/cancel", s.requireAuth(s.handleCancelTask))
 	mux.HandleFunc("POST /api/v1/targets", s.requireAuth(s.handleCreateTarget))
 	mux.HandleFunc("GET /api/v1/targets", s.requireAuth(s.handleListTargets))
 	mux.HandleFunc("PUT /api/v1/targets/{id}", s.requireAuth(s.handleUpdateTarget))

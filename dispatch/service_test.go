@@ -415,3 +415,46 @@ func TestRecoverResumesRunning(t *testing.T) {
 		t.Errorf("left-q = %+v, want a fresh run", got)
 	}
 }
+
+// LOOM-99: cancelling a running job cuts its context with
+// orchestrator.ErrCancelled, and it ends failed with class cancelled.
+func TestCancelRunningJob(t *testing.T) {
+	started := make(chan struct{})
+	var cause atomic.Value
+	svc := newService(t, newStore(t), func(ctx context.Context, d *registry.Dispatch) (string, error) {
+		close(started)
+		<-ctx.Done()
+		cause.Store(context.Cause(ctx))
+		return "", ctx.Err()
+	})
+	d, err := svc.Submit(context.Background(), dispatch.Request{ConversationID: "c", Message: "m"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	<-started
+	if err := svc.Cancel(context.Background(), d.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	done := waitDone(t, svc, d.ID)
+	if done.Status != registry.DispatchStatusFailed || done.ErrorClass != registry.ErrorClassCancelled {
+		t.Fatalf("cancelled dispatch = %+v, want failed/cancelled", done)
+	}
+	if c, _ := cause.Load().(error); !errors.Is(c, orchestrator.ErrCancelled) {
+		t.Errorf("run saw cause %v, want ErrCancelled", c)
+	}
+}
+
+func TestCancelFinishedOrUnknownJob(t *testing.T) {
+	svc := newService(t, newStore(t), func(context.Context, *registry.Dispatch) (string, error) { return "ok", nil })
+	d, err := svc.Submit(context.Background(), dispatch.Request{ConversationID: "c", Message: "m"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	waitDone(t, svc, d.ID)
+	if err := svc.Cancel(context.Background(), d.ID); !errors.Is(err, dispatch.ErrNotRunning) {
+		t.Errorf("Cancel(finished) = %v, want ErrNotRunning", err)
+	}
+	if err := svc.Cancel(context.Background(), "no-such"); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("Cancel(unknown) = %v, want ErrNotFound", err)
+	}
+}

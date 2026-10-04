@@ -932,7 +932,7 @@ func (r *Router) interruptAgent(ctx context.Context, task *registry.Task) {
 			return
 		}
 	}
-	r.logger.Info("agent interrupted after timeout", "task_id", task.ID, "agent_type", task.AgentType)
+	r.logger.Info("agent interrupted", "task_id", task.ID, "agent_type", task.AgentType)
 }
 
 // trustWorkspace runs the agent-type's TrustCommand for the workspace's

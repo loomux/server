@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -105,6 +106,36 @@ func (a *App) SetWorkspaceStatus(ctx context.Context, id string, status registry
 		return a.orch.ArchiveWorkspace(ctx, id)
 	}
 	return fmt.Errorf("app: a workspace can't be set to %q", status)
+}
+
+// CancelTask cancels a running task (LOOM-99): through the conversation's
+// running dispatch, if one is driving it, else directly — see
+// router.Router.CancelTask. Satisfies api.TaskCanceller.
+func (a *App) CancelTask(ctx context.Context, taskID string) (string, error) {
+	task, err := a.store.GetTask(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	if task.Status == registry.TaskStatusCompleted || task.Status == registry.TaskStatusFailed {
+		return "", orchestrator.ErrTaskInactive
+	}
+	if task.ConversationID != "" {
+		ds, err := a.dispatches.ListByConversation(ctx, task.ConversationID)
+		if err != nil {
+			return "", err
+		}
+		for _, d := range ds {
+			if d.Status.Terminal() {
+				continue
+			}
+			if err := a.dispatches.Cancel(ctx, d.ID); err == nil {
+				return d.ID, nil
+			} else if !errors.Is(err, dispatch.ErrNotRunning) {
+				return "", err
+			}
+		}
+	}
+	return "", a.router.CancelTask(ctx, taskID)
 }
 
 // ProbeTarget probes a target's health and agent CLIs now and records the

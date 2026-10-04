@@ -57,6 +57,9 @@ var (
 	ErrKeyReused = errors.New("dispatch: idempotency key was already used for a different request")
 	// ErrShuttingDown: the Service no longer accepts dispatches.
 	ErrShuttingDown = errors.New("dispatch: server is shutting down")
+	// ErrNotRunning: Cancel was asked for a job that has already ended,
+	// or isn't running in this process.
+	ErrNotRunning = errors.New("dispatch: not running")
 	// errMaxDuration is a job context's cause once it has run for the
 	// Service's maximum duration.
 	errMaxDuration = errors.New("dispatch: exceeded the maximum dispatch duration")
@@ -314,8 +317,12 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run 
 		d.Status = registry.DispatchStatusFailed
 		d.Error = err.Error()
 		d.ErrorClass = s.classify(err)
-		if errors.Is(context.Cause(ctx), errMaxDuration) {
+		switch cause := context.Cause(ctx); {
+		case errors.Is(cause, errMaxDuration):
 			d.ErrorClass = registry.ErrorClassTimeout
+		case errors.Is(cause, orchestrator.ErrCancelled):
+			d.ErrorClass = registry.ErrorClassCancelled
+			d.Error = "cancelled by the user"
 		}
 	}
 	err = s.store.TransitionDispatch(bookCtx, d, registry.DispatchStatusRunning)
@@ -362,6 +369,26 @@ func (s *Service) Wait(ctx context.Context, id string) (*registry.Dispatch, erro
 // Get returns dispatch id as stored.
 func (s *Service) Get(ctx context.Context, id string) (*registry.Dispatch, error) {
 	return s.store.GetDispatch(ctx, id)
+}
+
+// Cancel stops the running job id (LOOM-99): its context is cancelled
+// with cause orchestrator.ErrCancelled, which the router answers by
+// interrupting the agent and failing its task, and the job then ends
+// failed with class cancelled. It returns once the job has been told,
+// not once it has ended: the stream reports that. registry.ErrNotFound
+// for an unknown id; ErrNotRunning for one that has ended.
+func (s *Service) Cancel(ctx context.Context, id string) error {
+	s.mu.Lock()
+	j, ok := s.jobs[id]
+	s.mu.Unlock()
+	if ok {
+		j.cancel(orchestrator.ErrCancelled)
+		return nil
+	}
+	if _, err := s.store.GetDispatch(ctx, id); err != nil {
+		return err
+	}
+	return ErrNotRunning
 }
 
 // ListByConversation returns a conversation's dispatches, oldest first.

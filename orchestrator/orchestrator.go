@@ -30,6 +30,12 @@ var ErrTaskInactive = errors.New("orchestrator: task is not active")
 // a cancelled context leaves it as it is when context.Cause is this.
 var ErrInterrupted = errors.New("orchestrator: interrupted by server shutdown")
 
+// ErrCancelled is the cancellation cause of a turn's context when the
+// user cancels it (LOOM-99). Unlike ErrInterrupted it is the turn's end:
+// its task is failed with class cancelled and its agent interrupted,
+// the pane kept for inspection.
+var ErrCancelled = errors.New("orchestrator: cancelled by the user")
+
 // ProcessExitedError is what a CompletionDetector returns when the
 // process a task's pane was running exits while it was waiting for a
 // turn to complete (LOOM-71) — an agent CLI that isn't installed, or one

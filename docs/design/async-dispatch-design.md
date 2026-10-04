@@ -144,6 +144,22 @@ response waits for it:
 
 `{dispatch_id, conversation_id, status, reply?, error?, error_class?, created_at, started_at?, finished_at?}`; `404` unknown.
 
+### Cancelling a turn (LOOM-99)
+
+`POST /api/v1/dispatches/{id}/cancel` → `202 {dispatch_id}`: the job's context is cancelled with
+cause `orchestrator.ErrCancelled`. The router fails the turn's task with class `cancelled`, sends
+the agent-type's interrupt keys (Escape for claude/codex) and keeps the pane to inspect. The job ends
+`failed` with `error_class: cancelled`, which the stream reports. `404` unknown, `409` already ended.
+
+`POST /api/v1/tasks/{id}/cancel` → `202 {task_id, dispatch_id?}`: cancels the conversation's running
+dispatch if one is driving the task, else (a task a restart left running) fails and interrupts the
+task directly. `404` unknown, `409` already ended.
+
+A cancelled task is `failed` with class `cancelled`, not a status of its own. The tasks table's
+status CHECK would need a table rebuild for a new status, and every "has it ended" check would need
+to learn it. The class already says why it ended. A command task's or provisioning recipe's
+pane is not interrupted, since each has its own time limit.
+
 ### `GET /api/v1/conversations/{id}`
 
 Adds `dispatches: [...]` (same shape, oldest first) and `dispatch_id` on each message. A conversation
