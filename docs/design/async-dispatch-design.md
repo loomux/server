@@ -46,9 +46,14 @@ One unit with one job: own dispatch jobs' lifetime. Depends on a narrow store in
   `?wait=true`; the caller giving up never affects the job).
 - `Service.Get`, `Service.ListByConversation`.
 - `Service.Shutdown(ctx)`: stop accepting, drain, mark the rest (see Shutdown).
-- `Service.Recover(ctx)` at startup: any `queued`/`running` row left by a previous process is
-  marked `interrupted` with reason `server_restart` (the minimal half of LOOM-82; LOOM-82 extends
-  this to re-attach live tasks).
+- `Service.Recover(ctx)` at startup (LOOM-82): a `queued` row left by a previous process never
+  started, so it is run now. A `running` one is offered to the resumer (`WithResumer`, the router's
+  `ResumeDispatch`): when its conversation has an agent task still running, the job carries on by
+  waiting on that turn, then relays and records the reply, so a restart mid-turn still delivers it.
+  If that session is gone, the task fails (`session_lost`) and so does the job. Anything else is
+  marked `interrupted` with reason `server_restart`. Then `Router.ReconcileTasks` (background, 2 min
+  bound) fails every other running task whose session is gone, and finishes a command that exited
+  meanwhile.
 
 Runner context: derived from a service-owned root context created at
 `app.Build`, cancelled only by `Shutdown`, plus a backstop `context.WithTimeout` of

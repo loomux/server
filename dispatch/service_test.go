@@ -336,11 +336,13 @@ func TestShutdownInterruptsSlowJob(t *testing.T) {
 	}
 }
 
-func TestRecoverMarksLeftoverJobsInterrupted(t *testing.T) {
-	store := newStore(t)
+// leftover creates dispatches a previous process left behind: left-q
+// queued, left-r running, done succeeded.
+func leftover(t *testing.T, store *sqlite.Store) {
+	t.Helper()
 	ctx := context.Background()
 	for _, id := range []string{"left-q", "left-r", "done"} {
-		d := &registry.Dispatch{ID: id, ConversationID: "conv-" + id, Message: "m", RequestHash: "h", Status: registry.DispatchStatusQueued}
+		d := &registry.Dispatch{ID: id, ConversationID: "conv-" + id, Message: "m " + id, RequestHash: "h", Status: registry.DispatchStatusQueued}
 		if err := store.CreateDispatch(ctx, d, nil); err != nil {
 			t.Fatalf("CreateDispatch: %v", err)
 		}
@@ -351,19 +353,55 @@ func TestRecoverMarksLeftoverJobsInterrupted(t *testing.T) {
 	s, _ := store.GetDispatch(ctx, "done")
 	s.Status = registry.DispatchStatusSucceeded
 	_ = store.TransitionDispatch(ctx, s, registry.DispatchStatusQueued)
+}
 
-	svc := newService(t, store, func(context.Context, *registry.Dispatch) (string, error) { return "", nil })
+// LOOM-82: a job left queued never started, so Recover runs it; one left
+// running can't be resumed without a resumer, so it's interrupted.
+func TestRecoverRunsQueuedAndInterruptsRunning(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	leftover(t, store)
+
+	svc := newService(t, store, func(_ context.Context, d *registry.Dispatch) (string, error) { return "ran " + d.Message, nil })
 	n, err := svc.Recover(ctx)
-	if err != nil || n != 2 {
-		t.Fatalf("Recover = %d, %v; want 2", n, err)
+	if err != nil || n != 1 {
+		t.Fatalf("Recover = %d, %v; want 1 interrupted", n, err)
 	}
-	for _, id := range []string{"left-q", "left-r"} {
-		got, _ := store.GetDispatch(ctx, id)
-		if got.Status != registry.DispatchStatusInterrupted || got.ErrorClass != registry.ErrorClassInterrupted || got.Error == "" {
-			t.Errorf("%s after Recover = %+v", id, got)
-		}
+	if got := waitDone(t, svc, "left-q"); got.Status != registry.DispatchStatusSucceeded || got.Reply != "ran m left-q" {
+		t.Errorf("left-q after Recover = %+v, want it run", got)
+	}
+	got, _ := store.GetDispatch(ctx, "left-r")
+	if got.Status != registry.DispatchStatusInterrupted || got.ErrorClass != registry.ErrorClassInterrupted || got.Error == "" {
+		t.Errorf("left-r after Recover = %+v", got)
 	}
 	if got, _ := store.GetDispatch(ctx, "done"); got.Status != registry.DispatchStatusSucceeded {
 		t.Errorf("Recover touched a finished dispatch: %+v", got)
+	}
+}
+
+// A job left running that the resumer can carry on finishes with the
+// resumed run's reply; one it can't is interrupted.
+func TestRecoverResumesRunning(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	leftover(t, store)
+	var offered []string
+	resume := func(_ context.Context, d *registry.Dispatch) dispatch.RunFunc {
+		offered = append(offered, d.ID)
+		return func(context.Context, *registry.Dispatch) (string, error) { return "resumed", nil }
+	}
+	svc := newService(t, store, func(context.Context, *registry.Dispatch) (string, error) { return "fresh", nil },
+		dispatch.WithResumer(resume))
+	if n, err := svc.Recover(ctx); err != nil || n != 0 {
+		t.Fatalf("Recover = %d, %v; want none interrupted", n, err)
+	}
+	if len(offered) != 1 || offered[0] != "left-r" {
+		t.Errorf("resumer offered %v, want only the running job", offered)
+	}
+	if got := waitDone(t, svc, "left-r"); got.Status != registry.DispatchStatusSucceeded || got.Reply != "resumed" {
+		t.Errorf("left-r = %+v, want the resumed run's reply", got)
+	}
+	if got := waitDone(t, svc, "left-q"); got.Reply != "fresh" {
+		t.Errorf("left-q = %+v, want a fresh run", got)
 	}
 }

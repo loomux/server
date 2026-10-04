@@ -493,7 +493,10 @@ Four independent axes:
   so nothing is left `running` with no explanation. A refusal because a
   human has taken the task over is not a failure. The one exception is a
   turn cut off by server shutdown: that leaves the task as it is, for
-  startup reconciliation (LOOM-82) to pick up.
+  startup reconciliation (LOOM-82) to pick up. At startup a job left
+  mid-turn re-attaches to its agent if the session is still alive (the
+  reply is delivered once the agent finishes), and a task whose session
+  vanished during the downtime is failed with a reason.
 - **Dispatch outlives the request** (LOOM-80,
   `docs/design/async-dispatch-design.md`): every `POST /dispatch` runs as a
   persisted dispatch job on a server-owned context, so a client going away
