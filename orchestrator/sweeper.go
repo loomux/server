@@ -60,8 +60,14 @@ func (s *OrphanSweeper) Sweep(ctx context.Context) int {
 		return 0
 	}
 	owned := make(map[string]bool)
+	now := time.Now()
 	for _, t := range tasks {
 		if t.Status != registry.TaskStatusCompleted && t.Status != registry.TaskStatusFailed {
+			owned[t.TmuxSession] = true
+		}
+		// A completed task's kept pane is the finished-pane sweep's to tear
+		// down (LOOM-91), however old the session itself is (LOOM-122).
+		if keptPane(t, now) {
 			owned[t.TmuxSession] = true
 		}
 	}
@@ -71,7 +77,6 @@ func (s *OrphanSweeper) Sweep(ctx context.Context) int {
 		return 0
 	}
 	killed := 0
-	now := time.Now()
 	for _, target := range targetList {
 		log := s.logger.With("target_id", target.ID, "target", target.Name)
 		exec, err := s.orch.newExecutor(target)
@@ -115,6 +120,14 @@ func (s *OrphanSweeper) Sweep(ctx context.Context) int {
 // way the orphan sweep is what cleans up after it.
 const finishedPaneHorizon = 24 * time.Hour
 
+// keptPane reports whether t is a completed task whose pane is still
+// kept for inspection: not yet reaped, and finished within the horizon
+// the finished-pane sweep looks back over.
+func keptPane(t *registry.Task, now time.Time) bool {
+	return t.Status == registry.TaskStatusCompleted && t.ReapedAt == nil && t.CompletedAt != nil &&
+		now.Sub(*t.CompletedAt) <= finishedPaneHorizon
+}
+
 // FinishedPaneSweeper tears down the sessions of completed tasks once
 // they have been finished for its grace period, marking each reaped
 // (LOOM-91): Complete leaves the pane so a person can still attach and
@@ -123,6 +136,10 @@ type FinishedPaneSweeper struct {
 	orch   *Orchestrator
 	grace  time.Duration
 	logger *slog.Logger
+	// warned are the tasks whose teardown failure has been warned about:
+	// a target down for hours is said once, not every sweep (LOOM-122).
+	// Only Sweep's goroutine touches it.
+	warned map[string]bool
 }
 
 // NewFinishedPaneSweeper constructs a FinishedPaneSweeper with the given
@@ -131,7 +148,7 @@ func NewFinishedPaneSweeper(orch *Orchestrator, grace time.Duration, logger *slo
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &FinishedPaneSweeper{orch: orch, grace: grace, logger: logger}
+	return &FinishedPaneSweeper{orch: orch, grace: grace, logger: logger, warned: make(map[string]bool)}
 }
 
 // Run sweeps every interval until ctx is done.
@@ -158,6 +175,14 @@ func (s *FinishedPaneSweeper) Sweep(ctx context.Context) int {
 	}
 	now := time.Now().UTC()
 	reaped := 0
+	considered := make(map[string]bool)
+	defer func() {
+		for id := range s.warned {
+			if !considered[id] {
+				delete(s.warned, id)
+			}
+		}
+	}()
 	for _, t := range tasks {
 		if t.Status != registry.TaskStatusCompleted || t.ReapedAt != nil || t.CompletedAt == nil {
 			continue
@@ -165,10 +190,17 @@ func (s *FinishedPaneSweeper) Sweep(ctx context.Context) int {
 		if age := now.Sub(*t.CompletedAt); age < s.grace || age > finishedPaneHorizon {
 			continue
 		}
+		considered[t.ID] = true
 		if err := s.orch.Reap(ctx, t.ID); err != nil {
-			s.logger.Warn("finished pane not torn down", "task_id", t.ID, "error", err)
+			level := slog.LevelWarn
+			if s.warned[t.ID] {
+				level = slog.LevelDebug
+			}
+			s.warned[t.ID] = true
+			s.logger.Log(ctx, level, "finished pane not torn down", "task_id", t.ID, "error", err)
 			continue
 		}
+		delete(s.warned, t.ID)
 		reaped++
 		s.logger.Info("finished pane torn down", "task_id", t.ID, "session", t.TmuxSession)
 	}

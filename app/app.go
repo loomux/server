@@ -38,7 +38,8 @@ const staleProvisioningAfter = router.ProvisionTimeout + 5*time.Minute
 // Store for a client-facing layer (api.Server) that needs its own
 // session storage in the same database.
 type App struct {
-	router *router.Router
+	router     *router.Router
+	agentTypes []string
 	// cancelTaskDirect cancels a task no dispatch is driving; the router's
 	// CancelTask, a seam for tests.
 	cancelTaskDirect func(ctx context.Context, taskID string) error
@@ -176,6 +177,14 @@ func runTargetProber(ctx context.Context, rtr *router.Router, interval time.Dura
 		rtr.ProbeAllTargets(ctx)
 		timer.Reset(interval)
 	}
+}
+
+// AgentTypeNames are the agent types this server can launch, sorted
+// (LOOM-122: what a target's allowed_agent_types may name).
+func (a *App) AgentTypeNames() []string {
+	names := append([]string(nil), a.agentTypes...)
+	sort.Strings(names)
+	return names
 }
 
 // Store returns the underlying registry.Store — e.g. for api.Server's
@@ -459,6 +468,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 
 	return &App{
 		router:           rtr,
+		agentTypes:       dispatchableAgentTypeNames(agentTypes),
 		cancelTaskDirect: rtr.CancelTask,
 		orch:             orch,
 		dispatches:       dispatches,

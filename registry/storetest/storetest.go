@@ -33,6 +33,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TargetHealthRoundTrip", func(t *testing.T) { testTargetHealthRoundTrip(t, newStore(t)) })
 	t.Run("TargetHealthRequiresValidTarget", func(t *testing.T) { testTargetHealthRequiresValidTarget(t, newStore(t)) })
 	t.Run("TargetHealthDeletedWithTarget", func(t *testing.T) { testTargetHealthDeletedWithTarget(t, newStore(t)) })
+	t.Run("ListTargetHealth", func(t *testing.T) { testListTargetHealth(t, newStore(t)) })
 
 	t.Run("TaskTurns", func(t *testing.T) { testTaskTurns(t, newStore(t)) })
 
@@ -1135,6 +1136,30 @@ func testTargetAgentAuthStatus(t *testing.T, s registry.Store) {
 	}
 	if len(got) != 1 || got[0].AuthStatus != registry.AgentAuthLoggedOut {
 		t.Fatalf("ListTargetAgents = %+v, want one row logged out", got)
+	}
+}
+
+func testListTargetHealth(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	if got, err := s.ListTargetHealth(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("ListTargetHealth (none) = %v, %v; want empty", got, err)
+	}
+	probed := createTestTarget(t, s)
+	if err := s.CreateTarget(ctx, &registry.Target{ID: "never-probed", Name: "never-probed", Kind: registry.TargetKindLocal}); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	at := time.Now().UTC().Truncate(time.Second)
+	if err := s.SetTargetHealth(ctx, &registry.TargetHealth{TargetID: probed.ID, Reachable: true, Latency: 40 * time.Millisecond,
+		TmuxVersion: "tmux 3.4", DiskFreeBytes: 7, ProbedAt: at}); err != nil {
+		t.Fatalf("SetTargetHealth: %v", err)
+	}
+	got, err := s.ListTargetHealth(ctx)
+	if err != nil {
+		t.Fatalf("ListTargetHealth: %v", err)
+	}
+	if len(got) != 1 || got[0].TargetID != probed.ID || !got[0].Reachable || got[0].Latency != 40*time.Millisecond ||
+		got[0].TmuxVersion != "tmux 3.4" || got[0].DiskFreeBytes != 7 || !got[0].ProbedAt.Equal(at) {
+		t.Fatalf("ListTargetHealth = %+v", got)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,9 +141,9 @@ type TargetStore interface {
 	// ListTargetAgents backs GET /targets/{id}/agents (LOOM-71): the
 	// recorded agent CLI availability on a target.
 	ListTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error)
-	// GetTargetHealth backs each target's health in GET /targets
-	// (LOOM-86); registry.ErrNotFound means never probed.
-	GetTargetHealth(ctx context.Context, targetID string) (*registry.TargetHealth, error)
+	// ListTargetHealth backs each target's health in GET /targets
+	// (LOOM-86); a target never probed has no entry.
+	ListTargetHealth(ctx context.Context) ([]*registry.TargetHealth, error)
 }
 
 // TargetProber probes a target's health and agent CLIs now and records
@@ -218,6 +219,7 @@ type Server struct {
 	taskTurns          TaskTurnStore
 	workspaceManager   WorkspaceManager
 	taskCanceller      TaskCanceller
+	agentTypes         []string
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
@@ -284,6 +286,13 @@ func WithWorkspaceManager(m WorkspaceManager) Option {
 // WithTaskCanceller enables POST /api/v1/tasks/{id}/cancel (LOOM-99).
 func WithTaskCanceller(c TaskCanceller) Option {
 	return func(s *Server) { s.taskCanceller = c }
+}
+
+// WithAgentTypes names the agent types this server can launch, so a
+// target's allowed_agent_types can be checked against them (LOOM-122).
+// Without it any non-blank name is accepted.
+func WithAgentTypes(names []string) Option {
+	return func(s *Server) { s.agentTypes = append([]string(nil), names...) }
 }
 
 // WithTaskTurns enables GET /api/v1/tasks/{id}/transcript (LOOM-91).
@@ -1349,7 +1358,7 @@ type listTargetsResponse struct {
 // the one validation path every entry point shares (LOOM-65). It writes
 // the error response itself and reports whether the caller should
 // continue.
-func decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.Target) (*registry.Target, bool) {
+func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.Target) (*registry.Target, bool) {
 	var req targetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed request body")
@@ -1398,6 +1407,15 @@ func decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.
 		writeError(w, http.StatusBadRequest, err.Error())
 		return nil, false
 	}
+	if s.agentTypes != nil {
+		for _, a := range target.Policy.AllowedAgentTypes {
+			if !slices.Contains(s.agentTypes, a) {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("allowed_agent_types: unknown agent type %q (known: %s)",
+					a, strings.Join(s.agentTypes, ", ")))
+				return nil, false
+			}
+		}
+	}
 	return target, true
 }
 
@@ -1407,7 +1425,7 @@ func decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.
 // invites collisions and the hand-minted ids this endpoint exists to
 // replace.
 func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
-	target, ok := decodeTargetRequest(w, r, nil)
+	target, ok := s.decodeTargetRequest(w, r, nil)
 	if !ok {
 		return
 	}
@@ -1431,16 +1449,20 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not list targets")
 		return
 	}
+	healths, err := s.targets.ListTargetHealth(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read target health")
+		return
+	}
+	healthByTarget := make(map[string]*registry.TargetHealth, len(healths))
+	for _, h := range healths {
+		healthByTarget[h.TargetID] = h
+	}
 	out := make([]targetResponse, 0, len(targets))
 	for _, t := range targets {
 		resp := newTargetResponse(t)
-		h, err := s.targets.GetTargetHealth(r.Context(), t.ID)
-		switch {
-		case err == nil:
+		if h := healthByTarget[t.ID]; h != nil {
 			resp.Health = newTargetHealthResponse(h)
-		case !errors.Is(err, registry.ErrNotFound):
-			writeError(w, http.StatusInternalServerError, "could not read target health")
-			return
 		}
 		out = append(out, resp)
 	}
@@ -1465,7 +1487,7 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not fetch target")
 		return
 	}
-	target, ok := decodeTargetRequest(w, r, existing)
+	target, ok := s.decodeTargetRequest(w, r, existing)
 	if !ok {
 		return
 	}
