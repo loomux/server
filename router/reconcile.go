@@ -2,10 +2,20 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
+)
+
+// bootRetry and bootRetryFor pace startup reconciliation's retries of a
+// target it can't reach yet: right after a restart the network sidecar
+// may not be up, which says nothing about the target (LOOM-82).
+var (
+	bootRetry    = 5 * time.Second
+	bootRetryFor = 2 * time.Minute
 )
 
 // restartLostReason is why a task whose session vanished while loomuxd
@@ -38,7 +48,7 @@ func (r *Router) ResumeDispatch(ctx context.Context, d *registry.Dispatch) (task
 		failClass := registry.ErrorClassInternal
 		defer func() { r.failTurnOnError(ctx, log, task.ID, failClass, err) }()
 
-		live, err := r.sessionIsLive(ctx, task)
+		live, err := r.sessionIsLiveAtBoot(ctx, task)
 		if err != nil {
 			return "", fmt.Errorf("router: resume: %w", err)
 		}
@@ -85,41 +95,86 @@ func (r *Router) ReconcileTasks(ctx context.Context, skip map[string]bool) {
 		r.logger.Error("startup task reconciliation failed", "error", err)
 		return
 	}
+	var pending []*registry.Task
 	for _, t := range tasks {
-		if t.Status != registry.TaskStatusRunning || skip[t.ID] {
-			continue
+		if t.Status == registry.TaskStatusRunning && !skip[t.ID] {
+			pending = append(pending, t)
 		}
-		log := r.logger.With("task_id", t.ID, "workspace_id", t.WorkspaceID, "task_kind", string(t.Kind))
-		exec, err := r.executorFor(ctx, t)
-		if err != nil {
-			log.Warn("task not reconciled", "error", err)
-			continue
-		}
-		live, err := exec.HasSession(ctx, t.TmuxSession)
-		if err != nil {
-			log.Warn("task not reconciled", "error", err)
-			continue
-		}
-		if !live {
-			if err := r.orch.Fail(ctx, t.ID, registry.TaskFailure{Class: registry.ErrorClassSessionLost, Reason: restartLostReason}); err != nil {
-				log.Error("task not reconciled", "error", err)
-				continue
+	}
+	// A target that can't be reached yet is retried until bootRetryFor.
+	deadline := time.Now().Add(bootRetryFor)
+	for len(pending) > 0 {
+		var retry []*registry.Task
+		for _, t := range pending {
+			if errors.Is(r.reconcileTask(ctx, t), targets.ErrUnreachable) {
+				retry = append(retry, t)
 			}
-			log.Info("failed a task whose session was gone after the restart")
-			continue
 		}
-		if t.Kind != registry.TaskKindCommand {
-			log.Info("left a live agent task for the next message")
-			continue
+		if len(retry) == 0 || time.Now().After(deadline) {
+			for _, t := range retry {
+				r.logger.Warn("task not reconciled: its target stayed unreachable", "task_id", t.ID)
+			}
+			return
 		}
-		exit, err := exec.PaneExited(ctx, t.TmuxSession)
-		if err != nil || exit == nil {
-			continue
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(bootRetry):
 		}
-		if err := r.orch.FinishCommand(ctx, t.ID, exit.Status); err != nil {
+		pending = retry
+	}
+}
+
+// reconcileTask settles one task for ReconcileTasks. It returns an
+// error only when the target couldn't be reached.
+func (r *Router) reconcileTask(ctx context.Context, t *registry.Task) error {
+	log := r.logger.With("task_id", t.ID, "workspace_id", t.WorkspaceID, "task_kind", string(t.Kind))
+	exec, err := r.executorFor(ctx, t)
+	if err != nil {
+		log.Warn("task not reconciled", "error", err)
+		return nil
+	}
+	live, err := exec.HasSession(ctx, t.TmuxSession)
+	if err != nil {
+		return err
+	}
+	if !live {
+		if err := r.orch.Fail(ctx, t.ID, registry.TaskFailure{Class: registry.ErrorClassSessionLost, Reason: restartLostReason}); err != nil {
 			log.Error("task not reconciled", "error", err)
-			continue
+			return nil
 		}
-		log.Info("finished a command that exited while loomuxd was down", "exit_code", exit.Status)
+		log.Info("failed a task whose session was gone after the restart")
+		return nil
+	}
+	if t.Kind != registry.TaskKindCommand {
+		log.Info("left a live agent task for the next message")
+		return nil
+	}
+	exit, err := exec.PaneExited(ctx, t.TmuxSession)
+	if err != nil || exit == nil {
+		return nil
+	}
+	if err := r.orch.FinishCommand(ctx, t.ID, exit.Status); err != nil {
+		log.Error("task not reconciled", "error", err)
+		return nil
+	}
+	log.Info("finished a command that exited while loomuxd was down", "exit_code", exit.Status)
+	return nil
+}
+
+// sessionIsLiveAtBoot is sessionIsLive, retrying a target that can't be
+// reached yet (see bootRetry).
+func (r *Router) sessionIsLiveAtBoot(ctx context.Context, task *registry.Task) (bool, error) {
+	deadline := time.Now().Add(bootRetryFor)
+	for {
+		live, err := r.sessionIsLive(ctx, task)
+		if !errors.Is(err, targets.ErrUnreachable) || time.Now().After(deadline) {
+			return live, err
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(bootRetry):
+		}
 	}
 }
