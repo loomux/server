@@ -159,6 +159,9 @@ func agentDescriptionsFor(agentTypes router.AgentTypeRegistry) map[string]string
 	return out
 }
 
+// reconcileTimeout bounds startup task reconciliation (LOOM-82).
+const reconcileTimeout = 2 * time.Minute
+
 func dispatchableAgentTypeNames(agentTypes router.AgentTypeRegistry) []string {
 	names := make([]string, 0, len(agentTypes))
 	for name := range agentTypes {
@@ -267,6 +270,17 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		dispatch.WithMaxDuration(cfg.DispatchMaxDuration),
 		dispatch.WithLogger(cfg.Logger),
 	}
+	// Tasks a resumed dispatch waits on (LOOM-82), which startup
+	// reconciliation leaves to it.
+	resumed := make(map[string]bool)
+	dispatchOpts = append(dispatchOpts, dispatch.WithResumer(func(ctx context.Context, d *registry.Dispatch) dispatch.RunFunc {
+		taskID, run := rtr.ResumeDispatch(ctx, d)
+		if run == nil {
+			return nil
+		}
+		resumed[taskID] = true
+		return run
+	}))
 	dispatches := dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
 		opts := []router.DispatchOption{router.WithDispatchID(d.ID), router.WithUserMessageLogged()}
 		if d.WorkspaceHint != "" {
@@ -274,14 +288,23 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		}
 		return rtr.Dispatch(ctx, d.ConversationID, d.Message, opts...)
 	}, dispatchOpts...)
-	// Before anything can submit: no job a previous process left behind
-	// may still claim to be in flight.
+	// Before anything can submit, startup reconciliation (LOOM-82): every
+	// job a previous process left behind is run, resumed or marked
+	// interrupted, then the tasks no resumed job is waiting on are
+	// settled.
 	if _, err := dispatches.Recover(context.Background()); err != nil {
 		stopReaper()
 		<-reaperDone
 		_ = store.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	}
+	// In the background, bounded: an unreachable target mustn't hold up
+	// startup.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), reconcileTimeout)
+		defer cancel()
+		rtr.ReconcileTasks(ctx, resumed)
+	}()
 	dispatchDrain := cfg.DispatchDrain
 	if dispatchDrain == 0 {
 		dispatchDrain = defaultDispatchDrain

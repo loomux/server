@@ -116,10 +116,23 @@ func WithErrorClassifier(f func(error) registry.ErrorClass) Option {
 	}
 }
 
+// ResumeFunc is offered each job a previous process left running
+// (LOOM-82). It returns how to carry that job on — in production, by
+// waiting on its agent's still-running turn — or nil when it can't be,
+// and the job is marked interrupted.
+type ResumeFunc func(ctx context.Context, d *registry.Dispatch) RunFunc
+
+// WithResumer sets how Recover carries on jobs left running (LOOM-82).
+// Without one they are all marked interrupted.
+func WithResumer(f ResumeFunc) Option {
+	return func(s *Service) { s.resume = f }
+}
+
 // Service accepts, runs and tracks dispatch jobs.
 type Service struct {
 	store       Store
 	run         RunFunc
+	resume      ResumeFunc
 	maxDuration time.Duration
 	logger      *slog.Logger
 	classify    func(error) registry.ErrorClass
@@ -201,11 +214,7 @@ func (s *Service) Submit(ctx context.Context, req Request) (*registry.Dispatch, 
 
 	// The runner owns d from here on; the caller gets a snapshot.
 	queued := copyDispatch(d)
-	jobCtx, cancel := context.WithCancelCause(context.Background())
-	j := &job{cancel: cancel, done: make(chan struct{})}
-	s.jobs[d.ID] = j
-	s.wg.Add(1)
-	go s.runJob(jobCtx, j, d)
+	s.start(d, s.run)
 
 	s.logger.Info("dispatch queued", "dispatch_id", d.ID, "conversation_id", d.ConversationID,
 		"idempotency_key_set", req.IdempotencyKey != "")
@@ -252,7 +261,18 @@ func (s *Service) createConflict(ctx context.Context, req Request, hash string, 
 	return nil, fmt.Errorf("dispatch: submit: %w", err)
 }
 
-func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch) {
+// start runs d as a job with run. Callers hold s.mu.
+func (s *Service) start(d *registry.Dispatch, run RunFunc) {
+	jobCtx, cancel := context.WithCancelCause(context.Background())
+	j := &job{cancel: cancel, done: make(chan struct{})}
+	s.jobs[d.ID] = j
+	s.wg.Add(1)
+	go s.runJob(jobCtx, j, d, run)
+}
+
+// runJob runs d with run. A queued d is moved to running first; a d
+// already running is one Recover is carrying on (LOOM-82).
+func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run RunFunc) {
 	defer s.wg.Done()
 	defer func() {
 		close(j.done)
@@ -268,14 +288,16 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch) {
 	bookCtx := context.WithoutCancel(ctx)
 
 	started := time.Now().UTC()
-	d.Status = registry.DispatchStatusRunning
-	d.StartedAt = &started
-	if err := s.store.TransitionDispatch(bookCtx, d, registry.DispatchStatusQueued); err != nil {
-		log.Info("dispatch not started", "reason", err)
-		return
+	if d.Status == registry.DispatchStatusQueued {
+		d.Status = registry.DispatchStatusRunning
+		d.StartedAt = &started
+		if err := s.store.TransitionDispatch(bookCtx, d, registry.DispatchStatusQueued); err != nil {
+			log.Info("dispatch not started", "reason", err)
+			return
+		}
 	}
 
-	reply, err := s.safeRun(ctx, d)
+	reply, err := s.safeRun(ctx, d, run)
 
 	finished := time.Now().UTC()
 	d.FinishedAt = &finished
@@ -306,13 +328,13 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch) {
 
 // safeRun turns a panic in run into a failed job rather than a dead
 // server.
-func (s *Service) safeRun(ctx context.Context, d *registry.Dispatch) (reply string, err error) {
+func (s *Service) safeRun(ctx context.Context, d *registry.Dispatch, run RunFunc) (reply string, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("dispatch: run panicked: %v", p)
 		}
 	}()
-	return s.run(ctx, copyDispatch(d))
+	return run(ctx, copyDispatch(d))
 }
 
 // Wait blocks until dispatch id is finished or ctx is done, and returns
@@ -383,17 +405,34 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Recover marks every dispatch a previous process left queued or running
-// as interrupted, and returns how many it marked. Call it once at
-// startup, before Submit. Re-attaching to a still-running agent is
-// LOOM-82's job; this only makes sure no job claims to be in flight.
+// Recover deals with every dispatch a previous process left unfinished
+// (LOOM-82), and returns how many it marked interrupted. A queued job
+// never started, so it is simply run now. A running one is offered to
+// the resumer, which can carry it on — its agent may still be working —
+// and is otherwise marked interrupted. Call it once at startup, before
+// Submit.
 func (s *Service) Recover(ctx context.Context) (int, error) {
 	left, err := s.store.ListDispatchesByStatus(ctx, registry.DispatchStatusQueued, registry.DispatchStatusRunning)
 	if err != nil {
 		return 0, fmt.Errorf("dispatch: recover: %w", err)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	n := 0
 	for _, d := range left {
+		log := s.logger.With("dispatch_id", d.ID, "conversation_id", d.ConversationID)
+		if d.Status == registry.DispatchStatusQueued {
+			log.Info("running a dispatch a previous run left queued")
+			s.start(d, s.run)
+			continue
+		}
+		if s.resume != nil {
+			if run := s.resume(ctx, copyDispatch(d)); run != nil {
+				log.Info("resuming a dispatch a previous run left running")
+				s.start(d, run)
+				continue
+			}
+		}
 		if s.markInterrupted(ctx, d, "interrupted: the server restarted before this dispatch finished") {
 			n++
 		}
