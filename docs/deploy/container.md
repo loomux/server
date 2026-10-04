@@ -213,6 +213,16 @@ error. Defaults and what each flag permits: `agents/README.md`. The
 effective profile per agent type is logged at startup as
 `agent launch profile`.
 
+**Notifications (LOOM-102, optional):** `LOOMUX_NTFY_URL` and
+`LOOMUX_NTFY_TOPIC` (both or neither) turn on an ntfy notification when a
+turn ends: done, failed, or stopped on a prompt only you can answer
+("needs you"). `LOOMUX_NTFY_TOKEN` authenticates to a protected topic (keep
+it in the Secret). `LOOMUX_NOTIFY_EVENTS` narrows which ones are sent
+(`done,failed,needs_you`); `LOOMUX_NOTIFY_MIN_DURATION` (30s) skips turns
+quick enough that you were likely watching; `LOOMUX_PUBLIC_URL` (e.g.
+`https://loomux.example`) makes each notification open its conversation.
+At most 5 go out at once, then one a minute.
+
 ## Metrics (LOOM-103)
 
 `loomuxd` exposes Prometheus metrics on `LOOMUX_METRICS_ADDR` (default
