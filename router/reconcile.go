@@ -31,6 +31,7 @@ func (r *Router) ResumeDispatch(ctx context.Context, d *registry.Dispatch) (task
 		return "", nil
 	}
 	return task.ID, func(ctx context.Context, d *registry.Dispatch) (reply string, err error) {
+		defer r.conversations.lock(d.ConversationID)()
 		ctx = withTurnLog(ctx, turnLog{dispatchID: d.ID, userMessageLogged: true})
 		log := r.logger.With("conversation_id", d.ConversationID, "dispatch_id", d.ID, "workspace_id", task.WorkspaceID,
 			"task_id", task.ID, "agent_type", task.AgentType)
