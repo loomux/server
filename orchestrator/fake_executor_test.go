@@ -27,6 +27,9 @@ type fakeExecutor struct {
 	mu          sync.Mutex
 	sessions    map[string]*fakeSession
 	unreachable bool
+	// onKill, if set, runs after KillSession succeeds — a test's hook for
+	// something happening concurrently with a reap.
+	onKill func()
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -101,6 +104,9 @@ func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, 
 func (e *fakeExecutor) KillSession(ctx context.Context, session string) error {
 	if e.unreachable {
 		return targets.ErrUnreachable
+	}
+	if e.onKill != nil {
+		defer e.onKill()
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -302,9 +302,8 @@ func (o *Orchestrator) Reap(ctx context.Context, taskID string) error {
 		}
 	}
 
-	now := time.Now().UTC()
-	task.ReapedAt = &now
-	if err := o.store.UpdateTask(ctx, task); err != nil {
+	// Only reaped_at: the row read above may be stale by now (LOOM-120).
+	if err := o.store.SetTaskReapedAt(ctx, task.ID, time.Now().UTC()); err != nil {
 		return fmt.Errorf("orchestrator: reap: %w", err)
 	}
 	return nil

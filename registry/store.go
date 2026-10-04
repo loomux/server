@@ -43,6 +43,11 @@ type Store interface {
 	// unfiltered view rather than ListTasksByWorkspace.
 	ListTasks(ctx context.Context) ([]*Task, error)
 	UpdateTask(ctx context.Context, t *Task) error
+	// SetTaskReapedAt records that the idle reaper tore the task's
+	// session down, touching nothing else (LOOM-120): a whole-row
+	// UpdateTask from the reaper could revert a concurrent status change.
+	// ErrNotFound for an unknown id.
+	SetTaskReapedAt(ctx context.Context, id string, at time.Time) error
 	DeleteTask(ctx context.Context, id string) error
 
 	// CreateMessage and ListMessagesByConversation store the per-turn

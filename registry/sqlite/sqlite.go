@@ -442,6 +442,19 @@ func (s *Store) ListTasksByWorkspace(ctx context.Context, workspaceID string) ([
 	return out, nil
 }
 
+func (s *Store) SetTaskReapedAt(ctx context.Context, id string, at time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET reaped_at = ?, updated_at = ? WHERE id = ?`, at, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: set task reaped_at: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("sqlite: set task reaped_at: %w", err)
+	} else if n == 0 {
+		return fmt.Errorf("%w: task %q", registry.ErrNotFound, id)
+	}
+	return nil
+}
+
 func (s *Store) UpdateTask(ctx context.Context, t *registry.Task) error {
 	t.UpdatedAt = time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `

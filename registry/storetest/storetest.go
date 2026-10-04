@@ -43,6 +43,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TaskRequiresValidWorkspace", func(t *testing.T) { testTaskRequiresValidWorkspace(t, newStore(t)) })
 	t.Run("TaskListByWorkspace", func(t *testing.T) { testTaskListByWorkspace(t, newStore(t)) })
 	t.Run("TaskListAll", func(t *testing.T) { testTaskListAll(t, newStore(t)) })
+	t.Run("TaskSetReapedAtTouchesNothingElse", func(t *testing.T) { testTaskSetReapedAt(t, newStore(t)) })
 	t.Run("DeleteWorkspaceWithTasksRejected", func(t *testing.T) { testDeleteWorkspaceWithTasksRejected(t, newStore(t)) })
 	t.Run("DeleteTargetWithWorkspacesRejected", func(t *testing.T) { testDeleteTargetWithWorkspacesRejected(t, newStore(t)) })
 
@@ -1364,5 +1365,32 @@ func testDispatchListByStatus(t *testing.T, s registry.Store) {
 func testDispatchNotFound(t *testing.T, s registry.Store) {
 	if _, err := s.GetDispatch(context.Background(), "missing"); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("GetDispatch(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+func testTaskSetReapedAt(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{ID: "reap-" + t.Name(), WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "s", Status: registry.TaskStatusFailed, ConversationID: "c", FailureReason: "gone", ErrorClass: registry.ErrorClassSessionLost}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	at := time.Now().UTC().Truncate(time.Second)
+	if err := s.SetTaskReapedAt(ctx, task.ID, at); err != nil {
+		t.Fatalf("SetTaskReapedAt: %v", err)
+	}
+	got, err := s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.ReapedAt == nil || !got.ReapedAt.Equal(at) {
+		t.Errorf("ReapedAt = %v, want %v", got.ReapedAt, at)
+	}
+	if got.Status != registry.TaskStatusFailed || got.FailureReason != "gone" || got.ErrorClass != registry.ErrorClassSessionLost {
+		t.Errorf("other fields changed: %+v", got)
+	}
+	if err := s.SetTaskReapedAt(ctx, "missing", at); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("SetTaskReapedAt(missing) = %v, want ErrNotFound", err)
 	}
 }
