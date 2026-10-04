@@ -396,7 +396,8 @@ kept per target, shown on `GET /api/v1/targets` (`health`, with
 `last_probed_at`), fed to the routing model (a target marked "unusable
 right now" is avoided), and exported as `loomux_target_up` /
 `loomux_target_disk_free_bytes`. A dispatch, command or provisioning
-aimed at a target recorded unhealthy re-probes it first: recovered, the
+aimed at a target recorded unhealthy re-probes it first (unless that
+record is under 30s old, which is trusted as it stands): recovered, the
 work goes ahead; still broken, it fails at once with the probe's reason
 (error class `target_unreachable`, or `target_unhealthy` for no tmux /
 a nearly full disk) instead of a raw error minutes into the turn. A new
