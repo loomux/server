@@ -120,9 +120,14 @@ func (w *MarkerWatcher) Wait(ctx context.Context, task *registry.Task, target *r
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
+	var down outage
 	for {
 		exists, err := exec.FileExists(ctx, path)
-		if err != nil {
+		switch {
+		case err == nil:
+			down.clear()
+		case down.tolerate(err):
+		default:
 			return err
 		}
 		if exists {
