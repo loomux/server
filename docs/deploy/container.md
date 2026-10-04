@@ -200,7 +200,8 @@ defaults for three of them.
 
 **Optional:** `LOOMUX_SESSION_TTL`, `LOOMUX_MARKER_DIR`,
 `LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
-`LOOMUX_TARGET_PROBE_INTERVAL` (5m),
+`LOOMUX_TARGET_PROBE_INTERVAL` (5m), `LOOMUX_TURN_RETENTION` (720h; `0` keeps
+per-turn transcripts forever),
 `LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
 provisioning and dispatch — see below), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a

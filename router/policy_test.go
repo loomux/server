@@ -260,3 +260,39 @@ func TestPolicy_OffersRecheckedOnYes(t *testing.T) {
 		}
 	})
 }
+
+// LOOM-122: a follow-up whose pane is gone (reaped, killed, or its agent
+// exited) would launch a fresh agent, so it is new work and asked about
+// again; only a live pane carries the earlier confirmation.
+func TestPolicy_RequireConfirmation_AskedAgainWhenThePaneIsGone(t *testing.T) {
+	h := newAvailabilityHarness(t)
+	h.probes.install("codex")
+	ws := h.policyWorkspace(t)
+	h.setPolicy(t, registry.TargetPolicy{RequireConfirmation: true})
+	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
+	ctx := context.Background()
+	if _, err := h.r.Dispatch(ctx, "conv-1", "start"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if _, err := h.r.Dispatch(ctx, "conv-1", "yes"); err != nil {
+		t.Fatalf("Dispatch(yes): %v", err)
+	}
+	tasks, err := h.store.ListTasksByWorkspace(ctx, ws.ID)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("tasks = %v, %v; want the one launched", tasks, err)
+	}
+	if err := h.exec.KillSession(ctx, tasks[0].TmuxSession); err != nil {
+		t.Fatalf("KillSession: %v", err)
+	}
+
+	reply, err := h.r.Dispatch(ctx, "conv-1", "and now the tests")
+	if err != nil {
+		t.Fatalf("Dispatch(follow-up): %v", err)
+	}
+	if !strings.Contains(reply, `"yes"`) {
+		t.Errorf("relaunch into a dead pane's workspace wasn't confirmed: %q", reply)
+	}
+	if n := len(h.exec.launchedCommands()); n != 1 {
+		t.Errorf("launched %d, want still only the first", n)
+	}
+}

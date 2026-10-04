@@ -347,3 +347,30 @@ func TestReap_ConcurrentFailIsNotReverted(t *testing.T) {
 		t.Error("ReapedAt not set")
 	}
 }
+
+// LOOM-122: with a turn retention set, each sweep deletes turns recorded
+// before it; without one, turns are kept.
+func TestReaper_TurnRetention(t *testing.T) {
+	store, ws, _, _, o := setup(t)
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, "c", registry.TaskKindShell, "", "ls")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if err := store.CreateTaskTurn(ctx, &registry.TaskTurn{ID: "turn-1", TaskID: task.ID}); err != nil {
+		t.Fatalf("CreateTaskTurn: %v", err)
+	}
+
+	orchestrator.NewReaper(o, time.Hour).Sweep(ctx)
+	if turns, _ := store.ListTaskTurns(ctx, task.ID); len(turns) != 1 {
+		t.Fatalf("turns after a sweep without retention = %d, want 1", len(turns))
+	}
+	orchestrator.NewReaper(o, time.Hour, orchestrator.WithTurnRetention(time.Hour)).Sweep(ctx)
+	if turns, _ := store.ListTaskTurns(ctx, task.ID); len(turns) != 1 {
+		t.Fatalf("a fresh turn was deleted by a 1h retention")
+	}
+	orchestrator.NewReaper(o, time.Hour, orchestrator.WithTurnRetention(time.Nanosecond)).Sweep(ctx)
+	if turns, _ := store.ListTaskTurns(ctx, task.ID); len(turns) != 0 {
+		t.Fatalf("turns past retention = %d, want 0", len(turns))
+	}
+}

@@ -68,3 +68,54 @@ func TestTaskTranscript(t *testing.T) {
 		t.Errorf("no transcript store: status = %d, want 501", off.StatusCode)
 	}
 }
+
+// LOOM-122: the transcript comes a page at a time, latest page first;
+// next_before fetches the one before it.
+func TestTaskTranscript_Paged(t *testing.T) {
+	srv, _, store := newTestServerWith(t, func(s registry.Store) []api.Option { return []api.Option{api.WithTaskTurns(s)} })
+	token, _ := login(t, srv.URL, testPassword)
+	ctx := context.Background()
+	ws := createTestWorkspace(t, store, "paged", registry.WorkspaceStatusIdle)
+	if err := store.CreateTask(ctx, &registry.Task{ID: "task-p", WorkspaceID: ws.ID, Kind: registry.TaskKindAgent,
+		TmuxSession: "loomux-p", Status: registry.TaskStatusCompleted, ConversationID: "conv"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	for _, msg := range []string{"1", "2", "3"} {
+		if err := store.CreateTaskTurn(ctx, &registry.TaskTurn{ID: "turn-" + msg, TaskID: "task-p", UserMessage: msg}); err != nil {
+			t.Fatalf("CreateTaskTurn: %v", err)
+		}
+	}
+	type page struct {
+		Turns []struct {
+			ID          string `json:"id"`
+			UserMessage string `json:"user_message"`
+		} `json:"turns"`
+		HasMore    bool   `json:"has_more"`
+		NextBefore string `json:"next_before"`
+	}
+	get := func(query string) (page, int) {
+		resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/tasks/task-p/transcript"+query, token, nil)
+		defer resp.Body.Close()
+		var p page
+		_ = json.NewDecoder(resp.Body).Decode(&p)
+		return p, resp.StatusCode
+	}
+
+	p, status := get("?limit=2")
+	if status != http.StatusOK || len(p.Turns) != 2 || p.Turns[0].UserMessage != "2" || p.Turns[1].ID != "turn-3" ||
+		!p.HasMore || p.NextBefore != "turn-2" {
+		t.Fatalf("first page = %d %+v", status, p)
+	}
+	p, _ = get("?limit=2&before=" + p.NextBefore)
+	if len(p.Turns) != 1 || p.Turns[0].UserMessage != "1" || p.HasMore || p.NextBefore != "" {
+		t.Fatalf("second page = %+v", p)
+	}
+	for _, bad := range []string{"?limit=0", "?limit=x", "?limit=101"} {
+		if _, status := get(bad); status != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", bad, status)
+		}
+	}
+	if _, status := get("?before=turn-nope"); status != http.StatusBadRequest {
+		t.Errorf("unknown before: status %d, want 400", status)
+	}
+}

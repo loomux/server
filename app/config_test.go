@@ -193,3 +193,19 @@ func TestLoadConfig_NotifyInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfig_TurnRetention(t *testing.T) {
+	setRouterEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.TurnRetention != defaultTurnRetention {
+		t.Fatalf("default TurnRetention = %v, %v; want %v", cfg.TurnRetention, err, defaultTurnRetention)
+	}
+	t.Setenv("LOOMUX_TURN_RETENTION", "0")
+	if cfg, err := LoadConfig(); err != nil || cfg.TurnRetention != 0 {
+		t.Fatalf("TurnRetention=0 = %v, %v; want 0 (keep)", cfg.TurnRetention, err)
+	}
+	t.Setenv("LOOMUX_TURN_RETENTION", "-1h")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatalf("a negative retention was accepted")
+	}
+}
