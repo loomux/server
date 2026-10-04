@@ -1116,12 +1116,14 @@ func newTargetResponse(t *registry.Target) targetResponse {
 // field: ids are server-minted (see handleCreateTarget), so a client
 // that sends one has it ignored rather than silently honoured.
 type targetRequest struct {
-	Name          string `json:"name"`
-	Kind          string `json:"kind"`
-	Host          string `json:"host"`
-	User          string `json:"user"`
-	SSHKeyRef     string `json:"ssh_key_ref"`
-	WorkspaceRoot string `json:"workspace_root"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Host string `json:"host"`
+	User string `json:"user"`
+	// SSHKeyRef and WorkspaceRoot are optional (LOOM-119): omitted on a
+	// PUT keeps what's stored, an explicit "" clears it.
+	SSHKeyRef     *string `json:"ssh_key_ref"`
+	WorkspaceRoot *string `json:"workspace_root"`
 }
 
 type listTargetsResponse struct {
@@ -1133,19 +1135,28 @@ type listTargetsResponse struct {
 // the one validation path every entry point shares (LOOM-65). It writes
 // the error response itself and reports whether the caller should
 // continue.
-func decodeTargetRequest(w http.ResponseWriter, r *http.Request) (*registry.Target, bool) {
+func decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.Target) (*registry.Target, bool) {
 	var req targetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed request body")
 		return nil, false
 	}
 	target := &registry.Target{
-		Name:          strings.TrimSpace(req.Name),
-		Kind:          registry.TargetKind(req.Kind),
-		Host:          req.Host,
-		User:          req.User,
-		SSHKeyRef:     req.SSHKeyRef,
-		WorkspaceRoot: req.WorkspaceRoot,
+		Name: strings.TrimSpace(req.Name),
+		Kind: registry.TargetKind(req.Kind),
+		Host: req.Host,
+		User: req.User,
+	}
+	// base is the stored target on an update: its optional fields stand
+	// unless the request names them (LOOM-119).
+	if base != nil {
+		target.SSHKeyRef, target.WorkspaceRoot = base.SSHKeyRef, base.WorkspaceRoot
+	}
+	if req.SSHKeyRef != nil {
+		target.SSHKeyRef = *req.SSHKeyRef
+	}
+	if req.WorkspaceRoot != nil {
+		target.WorkspaceRoot = *req.WorkspaceRoot
 	}
 	if err := target.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1160,7 +1171,7 @@ func decodeTargetRequest(w http.ResponseWriter, r *http.Request) (*registry.Targ
 // invites collisions and the hand-minted ids this endpoint exists to
 // replace.
 func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
-	target, ok := decodeTargetRequest(w, r)
+	target, ok := decodeTargetRequest(w, r, nil)
 	if !ok {
 		return
 	}
@@ -1199,11 +1210,20 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 // passed to UpdateTarget: that call fills in UpdatedAt but not
 // CreatedAt, so only a read gives the client a canonical row.
 func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
-	target, ok := decodeTargetRequest(w, r)
+	id := r.PathValue("id")
+	existing, err := s.targets.GetTarget(r.Context(), id)
+	if errors.Is(err, registry.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "no such target")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not fetch target")
+		return
+	}
+	target, ok := decodeTargetRequest(w, r, existing)
 	if !ok {
 		return
 	}
-	id := r.PathValue("id")
 	target.ID = id
 	if err := s.targets.UpdateTarget(r.Context(), target); err != nil {
 		switch {
