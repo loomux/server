@@ -877,6 +877,24 @@ func (r *Router) interruptAgent(ctx context.Context, task *registry.Task) {
 	r.logger.Info("agent interrupted after timeout", "task_id", task.ID, "agent_type", task.AgentType)
 }
 
+// trustWorkspace runs the agent-type's TrustCommand for the workspace's
+// path on its target, so the agent doesn't stop at a "do you trust this
+// folder?" dialog. Best effort: if it fails the agent shows the dialog,
+// which is surfaced like any other prompt.
+func (r *Router) trustWorkspace(ctx context.Context, target *registry.Target, ws *registry.Workspace, entry AgentType) {
+	if entry.Profile.TrustCommand == nil {
+		return
+	}
+	exec, err := r.newExecutor(target)
+	if err == nil {
+		defer exec.Close()
+		_, err = exec.RunOnce(ctx, entry.Profile.TrustCommand(ws.Path))
+	}
+	if err != nil {
+		r.logger.Warn("workspace not pre-trusted", "workspace_id", ws.ID, "error", err)
+	}
+}
+
 // retireStalePanes tears down the panes failed agent turns left in a
 // workspace (LOOM-117) — kept for inspection, but a fresh agent launched
 // next to one would be a second agent in the same directory. Each is
@@ -1056,11 +1074,17 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		return nil, false, fmt.Errorf("router: dispatch: retire stale panes: %w", err)
 	}
 
+	target, err := r.store.GetTarget(ctx, ws.TargetID)
+	if err != nil {
+		return nil, false, fmt.Errorf("router: dispatch: %w", err)
+	}
+	r.trustWorkspace(ctx, target, ws, entry)
+
 	prompt := ""
 	if entry.Profile.PromptAsArg {
 		prompt = message
 	}
-	task, err = r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID, prefix+envPrefix+withResolvedBinary(entry.launchCommand(ws.Path, prompt), entry.Binary, resolvedPath))
+	task, err = r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID, prefix+envPrefix+withResolvedBinary(entry.launchCommand(ws.Path, prompt, target.PermissionMode), entry.Binary, resolvedPath))
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: launch: %w", err)
 	}

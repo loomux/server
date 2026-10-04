@@ -200,20 +200,97 @@ func TestAdapters_VersionFloorsAreTheVerifiedOnes(t *testing.T) {
 	}
 }
 
-// TestClaudeCode_Profile pins the unattended defaults (LOOM-78):
-// acceptEdits (file edits in the workspace without asking; shell
-// commands and other tools still ask), no per-launch trust mechanism,
-// and the first prompt as an argument.
+// TestClaudeCode_Profile pins the unattended defaults: auto permission
+// mode (classifier-gated; not bypass), named modes a target can pick,
+// the workspace pre-trusted before launch, interruptible, and the first
+// prompt as an argument.
 func TestClaudeCode_Profile(t *testing.T) {
-	p := agents.ClaudeCode().Profile
-	if got := strings.Join(p.PermissionArgs, " "); got != "--permission-mode acceptEdits" {
-		t.Errorf("PermissionArgs = %q", got)
+	at := agents.ClaudeCode()
+	p := at.Profile
+	if got := strings.Join(p.PermissionArgs, " "); got != "--permission-mode auto" {
+		t.Errorf("PermissionArgs = %q, want auto mode", got)
 	}
-	if p.TrustArgs != nil {
-		t.Error("TrustArgs set: Claude Code has no per-launch trust flag, and ~/.claude.json must not be edited")
+	for mode, want := range map[string]string{
+		"auto": "--permission-mode auto", "accept-edits": "--permission-mode acceptEdits", "manual": "--permission-mode manual",
+	} {
+		if got := strings.Join(p.PermissionModes[mode], " "); got != want {
+			t.Errorf("PermissionModes[%q] = %q, want %q", mode, got, want)
+		}
+	}
+	for _, args := range p.PermissionModes {
+		for _, a := range args {
+			if strings.Contains(a, "bypass") || strings.Contains(a, "dangerously") {
+				t.Errorf("a permission mode bypasses permissions: %q", args)
+			}
+		}
+	}
+	if p.TrustCommand == nil {
+		t.Error("TrustCommand nil: every new workspace would stop at Claude's folder-trust dialog")
+	}
+	if strings.Join(at.InterruptKeys, ",") != "Escape" {
+		t.Errorf("InterruptKeys = %q, want Escape (LOOM-117)", at.InterruptKeys)
 	}
 	if !p.PromptAsArg {
 		t.Error("PromptAsArg = false, want the first prompt passed as an argument")
+	}
+}
+
+// The trust command marks exactly that workspace path trusted in
+// ~/.claude.json, keeping everything else in the file — never a global
+// trust. Run for real under sh with a scratch HOME.
+func TestClaudeCode_TrustCommandMarksOnlyThatPath(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+	home := t.TempDir()
+	ws := filepath.Join(home, "loomux-workspaces", `my "ws" $x`)
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(home, "other")
+	before := map[string]any{
+		"numStartups": 7,
+		"projects":    map[string]any{other: map[string]any{"hasTrustDialogAccepted": false, "allowedTools": []any{"x"}}},
+	}
+	raw, _ := json.Marshal(before)
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("sh", "-c", agents.ClaudeCode().Profile.TrustCommand(ws))
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("trust command: %v\n%s", err, out)
+	}
+	var after map[string]any
+	data, _ := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err := json.Unmarshal(data, &after); err != nil {
+		t.Fatalf("~/.claude.json no longer JSON: %v", err)
+	}
+	projects := after["projects"].(map[string]any)
+	if got := projects[ws].(map[string]any)["hasTrustDialogAccepted"]; got != true {
+		t.Errorf("workspace trust = %v, want true", got)
+	}
+	if got := projects[other].(map[string]any); got["hasTrustDialogAccepted"] != false || got["allowedTools"] == nil {
+		t.Errorf("another project was changed: %v", got)
+	}
+	if after["numStartups"] != float64(7) || len(projects) != 2 {
+		t.Errorf("rest of the file changed: %v", after)
+	}
+	if info, _ := os.Stat(filepath.Join(home, ".claude.json")); info.Mode().Perm() != 0o600 {
+		t.Errorf("file mode = %v, want 0600 kept", info.Mode().Perm())
+	}
+
+	// No ~/.claude.json yet: created with just that trust.
+	home2 := t.TempDir()
+	cmd = exec.Command("sh", "-c", agents.ClaudeCode().Profile.TrustCommand(ws))
+	cmd.Env = append(os.Environ(), "HOME="+home2)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("trust command (no file): %v\n%s", err, out)
+	}
+	data, _ = os.ReadFile(filepath.Join(home2, ".claude.json"))
+	if !strings.Contains(string(data), "hasTrustDialogAccepted") {
+		t.Errorf("new ~/.claude.json = %s", data)
 	}
 }
 

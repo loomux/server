@@ -175,3 +175,51 @@ func TestApplyProfileOverrides(t *testing.T) {
 		t.Fatal("override for an unregistered agent type: want error, got nil")
 	}
 }
+
+// The profile's trust command runs on the target, for that workspace's
+// path, before the agent launches (user decision 2026-10-04: pre-trust
+// the exact workspace path, never trust-all).
+func TestDispatch_TrustCommandRunsBeforeLaunch(t *testing.T) {
+	var ran []string
+	_, ws, exec, r := profileRouter(t, router.AgentType{
+		LaunchTemplate: "agent",
+		Profile: router.LaunchProfile{
+			TrustCommand: func(dir string) string { return "trust " + dir },
+		},
+	})
+	exec.runOnce = func(command string) (string, error) {
+		ran = append(ran, command)
+		if len(exec.sessions) != 0 {
+			t.Errorf("trust ran after the session started")
+		}
+		return "", nil
+	}
+	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(ran) != 1 || ran[0] != "trust "+ws.Path {
+		t.Errorf("RunOnce = %q, want the trust command for %s", ran, ws.Path)
+	}
+}
+
+// A target's permission_mode picks the profile's args for that mode.
+func TestDispatch_TargetPermissionMode(t *testing.T) {
+	store, ws, exec, r := profileRouter(t, router.AgentType{
+		LaunchTemplate: "agent",
+		Profile: router.LaunchProfile{
+			PermissionArgs:  []string{"--mode", "auto"},
+			PermissionModes: map[string][]string{"auto": {"--mode", "auto"}, "manual": {"--mode", "manual"}},
+		},
+	})
+	target, _ := store.GetTarget(context.Background(), ws.TargetID)
+	target.PermissionMode = "manual"
+	if err := store.UpdateTarget(context.Background(), target); err != nil {
+		t.Fatalf("UpdateTarget: %v", err)
+	}
+	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if cmd := onlySession(t, exec).command; !strings.Contains(cmd, `agent '--mode' 'manual'`) {
+		t.Errorf("command = %q, want the target's manual mode", cmd)
+	}
+}

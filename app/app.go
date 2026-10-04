@@ -199,7 +199,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		for _, name := range names {
 			p := agentTypes[name].Profile
 			cfg.Logger.Info("agent launch profile", "agent_type", name,
-				"permission_args", p.PermissionArgs, "pre_trust", p.TrustArgs != nil, "prompt_as_arg", p.PromptAsArg)
+				"permission_args", p.PermissionArgs, "pre_trust", p.TrustArgs != nil || p.TrustCommand != nil, "prompt_as_arg", p.PromptAsArg)
 		}
 	}
 

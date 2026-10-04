@@ -106,3 +106,12 @@ func TestTargetValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestTargetValidate_PermissionMode(t *testing.T) {
+	for mode, ok := range map[string]bool{"": true, "auto": true, "accept-edits": true, "manual": true, "bypass": false, "yolo": false} {
+		target := &registry.Target{Name: "t", Kind: registry.TargetKindLocal, PermissionMode: mode}
+		if err := target.Validate(); (err == nil) != ok {
+			t.Errorf("Validate(permission_mode=%q) = %v, want ok=%v", mode, err, ok)
+		}
+	}
+}

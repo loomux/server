@@ -117,14 +117,24 @@ func (r AgentTypeRegistry) LaunchCommand(agentType string) (string, error) {
 	return at.LaunchTemplate, nil
 }
 
+// permissionArgs are the profile's flags for mode (a target's
+// PermissionMode), or its default PermissionArgs when mode is empty or
+// the profile has no flags for it.
+func (at AgentType) permissionArgs(mode string) []string {
+	if args, ok := at.Profile.PermissionModes[mode]; ok && mode != "" {
+		return args
+	}
+	return at.Profile.PermissionArgs
+}
+
 // launchCommand is the agent CLI invocation launchAgent runs (before any
 // env prefix), each argument shell-quoted: LaunchTemplate, the profile's
 // permission args, its trust args for workspaceDir, CompletionHookArgs,
 // then — when the profile passes the first prompt as an argument and
 // there is one — "--" and the prompt. "--" keeps a message that starts
 // with "-" from being read as a flag.
-func (at AgentType) launchCommand(workspaceDir, prompt string) string {
-	args := append([]string{}, at.Profile.PermissionArgs...)
+func (at AgentType) launchCommand(workspaceDir, prompt, permissionMode string) string {
+	args := append([]string{}, at.permissionArgs(permissionMode)...)
 	if at.Profile.TrustArgs != nil {
 		args = append(args, at.Profile.TrustArgs(workspaceDir)...)
 	}

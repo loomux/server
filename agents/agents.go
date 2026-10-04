@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 )
 
@@ -55,21 +56,28 @@ func ClaudeCode() router.AgentType {
 		AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
 		LaunchTemplate: "claude",
 		Binary:         "claude",
+		InterruptKeys:  []string{"Escape"},
 		Description: `Anthropic's Claude Code CLI ("claude"). A general coding agent: reads, edits and runs code ` +
 			`in the workspace. The default when the user doesn't name an agent.`,
 		CompletionHookArgs: []string{"--settings", claudeStopHookSettings()},
 		Profile: router.LaunchProfile{
-			// acceptEdits: file creates/edits inside the working
-			// directory (and any --add-dir) go ahead without asking.
-			// Shell commands, web fetches and MCP tools still stop for
-			// approval in the pane.
-			PermissionArgs: []string{"--permission-mode", "acceptEdits"},
-			// No TrustArgs: Claude Code has no per-launch way to trust a
-			// folder. Trust lives in the user's ~/.claude.json, which
-			// Loomux doesn't edit. Claude Code does treat a folder as
-			// trusted when an ancestor is, so trust the workspace root on
-			// each target once (see README.md).
-			PromptAsArg: true,
+			// auto: Claude Code's classifier-gated automatic mode — routine
+			// edits and commands go ahead, risky ones still stop for
+			// approval (which Loomux surfaces as needs-attention). Never
+			// bypassPermissions (user decision 2026-10-04). A target can
+			// pick another mode (registry.Target.PermissionMode).
+			PermissionArgs: []string{"--permission-mode", "auto"},
+			PermissionModes: map[string][]string{
+				registry.PermissionModeAuto:        {"--permission-mode", "auto"},
+				registry.PermissionModeAcceptEdits: {"--permission-mode", "acceptEdits"},
+				registry.PermissionModeManual:      {"--permission-mode", "manual"},
+			},
+			// Claude Code has no per-launch way to trust a folder: trust
+			// lives in ~/.claude.json. Before each launch Loomux marks that
+			// one workspace path trusted there (approved 2026-10-04 for this
+			// narrow purpose; never a global trust).
+			TrustCommand: claudeTrustCommand,
+			PromptAsArg:  true,
 		},
 		VersionCheck: &router.VersionCheck{
 			Command:  "claude --version",
@@ -128,9 +136,16 @@ func Codex() router.AgentType {
 			// write inside the workspace (and temp dirs), with no network.
 			// on-request: the model asks before anything that needs to
 			// leave the sandbox.
+			// This pair is Codex's automatic mode (what --full-auto sets),
+			// the nearest equivalent of Claude Code's auto.
 			PermissionArgs: []string{"--ask-for-approval", "on-request", "--sandbox", "workspace-write"},
-			TrustArgs:      codexTrustArgs,
-			PromptAsArg:    true,
+			PermissionModes: map[string][]string{
+				registry.PermissionModeAuto:        {"--ask-for-approval", "on-request", "--sandbox", "workspace-write"},
+				registry.PermissionModeAcceptEdits: {"--ask-for-approval", "untrusted", "--sandbox", "workspace-write"},
+				registry.PermissionModeManual:      {"--ask-for-approval", "untrusted", "--sandbox", "read-only"},
+			},
+			TrustArgs:   codexTrustArgs,
+			PromptAsArg: true,
 		},
 		VersionCheck: &router.VersionCheck{
 			Command:  "codex --version",
@@ -161,6 +176,31 @@ func codexNotifyArgv() []string {
 // -c splits dotted keys on every ".", including dots inside the path.
 // For this process, it replaces the user's [projects] table. Nothing
 // is written to ~/.codex/config.toml.
+// claudeTrustScript sets projects[<realpath of argv[1]>].hasTrustDialogAccepted
+// in ~/.claude.json, keeping every other key, writing atomically and
+// keeping the file's mode. Python 3 because the target may have neither
+// jq nor Node (Claude Code's native install brings no Node).
+const claudeTrustScript = `import json, os, sys, tempfile
+p = os.path.expanduser("~/.claude.json")
+d = {}
+if os.path.exists(p):
+    with open(p) as f:
+        d = json.load(f)
+ws = os.path.realpath(os.path.expanduser(sys.argv[1]))
+d.setdefault("projects", {}).setdefault(ws, {})["hasTrustDialogAccepted"] = True
+mode = os.stat(p).st_mode & 0o777 if os.path.exists(p) else 0o600
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".claude.json.")
+with os.fdopen(fd, "w") as f:
+    json.dump(d, f, indent=2)
+os.chmod(tmp, mode)
+os.replace(tmp, p)
+`
+
+// claudeTrustCommand marks exactly dir trusted for Claude Code.
+func claudeTrustCommand(dir string) string {
+	return "python3 -c " + router.ShellQuote(claudeTrustScript) + " " + router.ShellQuote(dir)
+}
+
 func codexTrustArgs(dir string) []string {
 	return []string{"-c", "projects={" + tomlString(dir) + `={trust_level="trusted"}}`}
 }
