@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/registry"
 )
 
@@ -321,22 +322,13 @@ func (r *Router) redactSecrets(ctx context.Context, workspaceID, agentType, text
 // install) but could still print one. If the vault can't be read, the
 // output is withheld rather than shown unscrubbed.
 func (r *Router) redactAllSecrets(ctx context.Context, text string) string {
-	creds, err := r.store.ListCredentials(ctx)
+	out, err := credentials.RedactAll(ctx, r.store, text)
 	if err != nil {
 		return "[output withheld: credentials could not be read to redact it]"
 	}
-	values := make(map[string]string, len(creds))
-	for _, c := range creds {
-		values[c.ID] = c.Value
-	}
-	return redactValues(text, values)
+	return out
 }
 
 func redactValues(text string, secrets map[string]string) string {
-	for _, v := range secrets {
-		if len(v) >= 6 {
-			text = strings.ReplaceAll(text, v, "[redacted]")
-		}
-	}
-	return text
+	return credentials.RedactValues(text, secrets)
 }

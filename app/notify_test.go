@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,13 +14,21 @@ import (
 	"github.com/Loomux/server/registry/sqlite"
 )
 
-func TestTurnNotifierEvent(t *testing.T) {
-	ctx := context.Background()
-	store, err := sqlite.Open(filepath.Join(t.TempDir(), "n.db"))
+// openNotifyStore opens a store whose vault can be read, as the
+// notifier's redaction needs.
+func openNotifyStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "n.db"), sqlite.WithMasterKey(bytes.Repeat([]byte{3}, 32)))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func TestTurnNotifierEvent(t *testing.T) {
+	ctx := context.Background()
+	store := openNotifyStore(t)
 	if err := store.CreateTarget(ctx, &registry.Target{ID: "t", Name: "jet01", Kind: registry.TargetKindLocal}); err != nil {
 		t.Fatalf("CreateTarget: %v", err)
 	}
@@ -80,11 +91,7 @@ func TestTurnNotifierEvent(t *testing.T) {
 // workspace; without a public URL there is no link.
 func TestTurnNotifierEventNoTask(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlite.Open(filepath.Join(t.TempDir(), "n.db"))
-	if err != nil {
-		t.Fatalf("sqlite.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := openNotifyStore(t)
 	start := time.Now().UTC().Add(-time.Hour)
 	end := start.Add(time.Minute)
 	n := &turnNotifier{store: store, minDuration: 30 * time.Second}
@@ -92,4 +99,64 @@ func TestTurnNotifierEventNoTask(t *testing.T) {
 	if !ok || e != (notify.Event{Kind: notify.KindDone, Summary: "hi"}) {
 		t.Fatalf("event = %+v, %v", e, ok)
 	}
+}
+
+// LOOM-102 review: nothing a notification carries leaves Loomux with a
+// credential value in it; with the vault unreadable, the body says only
+// to open Loomux.
+func TestTurnNotifierEventRedacts(t *testing.T) {
+	ctx := context.Background()
+	store := openNotifyStore(t)
+	const secret = "ghp_s3cretvalue"
+	if err := store.CreateCredential(ctx, &registry.Credential{ID: "c", Name: "GH_TOKEN", Value: secret}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	if err := store.CreateTarget(ctx, &registry.Target{ID: "t", Name: "jet01", Kind: registry.TargetKindLocal}); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	if err := store.CreateWorkspace(ctx, &registry.Workspace{ID: "w", Name: "ws", Path: "/p", TargetID: "t", Status: registry.WorkspaceStatusIdle}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	start := time.Now().UTC().Add(-time.Hour)
+	end := start.Add(time.Minute)
+	n := &turnNotifier{store: store}
+	d := &registry.Dispatch{ConversationID: "c1", Status: registry.DispatchStatusSucceeded, Reply: "pushed with " + secret,
+		CreatedAt: start, FinishedAt: &end}
+
+	check := func(what string) {
+		t.Helper()
+		e, ok := n.event(ctx, d)
+		if !ok || strings.Contains(e.Summary, secret) || !strings.Contains(e.Summary, "[redacted]") {
+			t.Errorf("%s: summary %q", what, e.Summary)
+		}
+	}
+	check("reply")
+
+	if err := store.CreateTask(ctx, &registry.Task{ID: "task", WorkspaceID: "w", Kind: registry.TaskKindAgent, TmuxSession: "s",
+		Status: registry.TaskStatusNeedsAttention, ConversationID: "c1",
+		Attention: &registry.Attention{Title: "Bash command", Detail: "curl -H 'Authorization: Bearer " + secret + "'"}}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	check("attention detail")
+
+	d.Status, d.Error = registry.DispatchStatusFailed, "push rejected for "+secret
+	check("error")
+
+	// The vault unreadable (no key to decrypt it): fail closed.
+	locked, err := sqlite.Open(filepath.Join(t.TempDir(), "locked.db"))
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = locked.Close() })
+	n.store = failingCreds{locked}
+	e, ok := n.event(ctx, d)
+	if !ok || e.Summary != withheldSummary {
+		t.Errorf("unreadable vault: summary %q, want %q", e.Summary, withheldSummary)
+	}
+}
+
+type failingCreds struct{ registry.Store }
+
+func (failingCreds) ListCredentials(context.Context) ([]*registry.Credential, error) {
+	return nil, errors.New("vault locked")
 }

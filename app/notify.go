@@ -7,12 +7,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/registry"
 )
 
 // notifyTimeout bounds one notification's delivery.
 const notifyTimeout = 15 * time.Second
+
+// withheldSummary is a notification's body when the vault can't be read
+// to scrub the real one: it leaves Loomux, so it fails closed.
+const withheldSummary = "Open Loomux to see it."
 
 // turnNotifier tells the user when a turn they may not be watching ends
 // (LOOM-102): done, failed, or stopped on a prompt only they can answer.
@@ -78,6 +83,13 @@ func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.
 	if d.Status == registry.DispatchStatusFailed {
 		e.Kind, e.Summary = notify.KindFailed, d.Error
 	}
+	// The body leaves Loomux, often for a shared ntfy server: every
+	// credential value in the vault is scrubbed from it first.
+	summary, err := credentials.RedactAll(ctx, n.store, e.Summary)
+	if err != nil {
+		summary = withheldSummary
+	}
+	e.Summary = summary
 	if n.publicURL != "" {
 		e.Link = strings.TrimRight(n.publicURL, "/") + "/conversations/" + url.PathEscape(d.ConversationID)
 	}

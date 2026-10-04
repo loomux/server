@@ -160,3 +160,15 @@ func TestParseKinds(t *testing.T) {
 		t.Fatalf("ParseKinds accepted an unknown kind")
 	}
 }
+
+// On a public ntfy server the topic is the secret: a delivery error must
+// not carry the URL (LOOM-102 review).
+func TestNtfyErrorHidesTopic(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	err := notify.NewNtfy(url, "s3cret-topic", "").Notify(context.Background(), notify.Event{Kind: notify.KindDone})
+	if err == nil || strings.Contains(err.Error(), "s3cret-topic") {
+		t.Fatalf("err = %v, want a delivery error without the topic", err)
+	}
+}

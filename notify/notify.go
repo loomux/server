@@ -5,8 +5,10 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -66,7 +68,7 @@ func NewNtfy(baseURL, topic, token string) *Ntfy {
 func (n *Ntfy) Notify(ctx context.Context, e Event) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, strings.NewReader(truncate(e.Summary, maxBodyRunes)))
 	if err != nil {
-		return fmt.Errorf("notify: ntfy: %w", err)
+		return errors.New("notify: ntfy: invalid server URL")
 	}
 	req.Header.Set("Title", title(e))
 	tag, priority := "white_check_mark", "default"
@@ -86,6 +88,12 @@ func (n *Ntfy) Notify(ctx context.Context, e Event) error {
 	}
 	resp, err := n.client.Do(req)
 	if err != nil {
+		// A *url.Error's message holds the URL, and so the topic — on a
+		// public server, the one secret guarding it. Keep only its cause.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return fmt.Errorf("notify: ntfy: %w", err)
 	}
 	resp.Body.Close()
