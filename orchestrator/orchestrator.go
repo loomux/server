@@ -23,6 +23,13 @@ var ErrHumanTakeover = errors.New("orchestrator: task is under human takeover")
 // task that has already completed or failed.
 var ErrTaskInactive = errors.New("orchestrator: task is not active")
 
+// ErrInterrupted is the cancellation cause of a turn's context when the
+// server is shutting down underneath it (LOOM-80). It is not the task's
+// failure: the agent may well finish, and startup reconciliation
+// (LOOM-82) can pick its task back up, so code that would fail a task on
+// a cancelled context leaves it as it is when context.Cause is this.
+var ErrInterrupted = errors.New("orchestrator: interrupted by server shutdown")
+
 // ProcessExitedError is what a CompletionDetector returns when the
 // process a task's pane was running exits while it was waiting for a
 // turn to complete (LOOM-71) — an agent CLI that isn't installed, or one
