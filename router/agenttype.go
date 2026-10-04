@@ -43,6 +43,11 @@ type AgentType struct {
 	// someone else. Each element is shell-quoted as one word. Empty means
 	// the agent signals some other way (or, for TierIdle, not at all).
 	CompletionHookArgs []string
+	// LastMessageKey names the field of the completion hook's saved
+	// payload (completion.ReplyPath) that holds the turn's final message
+	// (LOOM-91): what is relayed, when present, instead of the pane's
+	// screen. Empty means the pane is always captured.
+	LastMessageKey string
 	// Profile is how the CLI is started unattended: permission/sandbox
 	// flags, workspace pre-trust, first prompt as an argument (LOOM-78).
 	// The zero value adds nothing to the command.

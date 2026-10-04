@@ -302,6 +302,22 @@ const (
 	ErrorClassInternal ErrorClass = "internal"
 )
 
+// TaskTurn is what one turn of a task produced (LOOM-91), kept after the
+// task ends so a person can see what actually happened, not only the
+// relay's summary of it. Credential values are redacted before storing.
+type TaskTurn struct {
+	ID     string
+	TaskID string
+	// UserMessage is the message the turn sent the agent.
+	UserMessage string
+	// AgentMessage is the agent's own final message for the turn, from
+	// its completion hook; empty when it saved none.
+	AgentMessage string
+	// Pane is the pane's scrollback when the turn ended, bounded.
+	Pane      string
+	CreatedAt time.Time
+}
+
 // TaskFailure is what a failing task records (see Task.FailureReason).
 type TaskFailure struct {
 	Class      ErrorClass

@@ -737,6 +737,11 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	// shows the agent is waiting for input.
 	failClass = registry.ErrorClassSendFailed
 	if !promptSent {
+		if entry, err := r.agentTypes.Get(task.AgentType); err == nil && entry.Tier == completion.TierMarker {
+			if exec, err := r.executorFor(ctx, task); err == nil {
+				r.clearTurnFiles(ctx, exec, task)
+			}
+		}
 		if err := r.orch.SendMessage(ctx, task.ID, agentMessage); err != nil {
 			return "", fmt.Errorf("router: dispatch: send message: %w", err)
 		}
@@ -777,10 +782,11 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
-	captured, err := exec.CapturePane(ctx, task.TmuxSession)
+	captured, agentMessage, err := r.turnOutput(ctx, exec, task)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: capture pane: %w", err)
 	}
+	r.recordTurn(ctx, exec, task, message, agentMessage)
 
 	result, err := r.model.Relay(ctx, captured)
 	if err != nil {

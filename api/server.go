@@ -126,6 +126,13 @@ type TargetProber interface {
 	ProbeTarget(ctx context.Context, targetID string) (*registry.TargetHealth, []*registry.TargetAgent, error)
 }
 
+// TaskTurnStore is what GET /tasks/{id}/transcript reads (LOOM-91) —
+// satisfied by any registry.Store.
+type TaskTurnStore interface {
+	GetTask(ctx context.Context, id string) (*registry.Task, error)
+	ListTaskTurns(ctx context.Context, taskID string) ([]*registry.TaskTurn, error)
+}
+
 // AgentProber re-probes a target for every probe-able agent CLI and
 // records the results (LOOM-71) — satisfied by *app.App. Optional: with
 // none configured (WithAgentProber), the refresh endpoint answers 501.
@@ -182,6 +189,7 @@ type Server struct {
 	targets            TargetStore
 	agentProber        AgentProber
 	targetProber       TargetProber
+	taskTurns          TaskTurnStore
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
@@ -239,6 +247,11 @@ func WithTargetProber(p TargetProber) Option {
 	return func(s *Server) { s.targetProber = p }
 }
 
+// WithTaskTurns enables GET /api/v1/tasks/{id}/transcript (LOOM-91).
+func WithTaskTurns(t TaskTurnStore) Option {
+	return func(s *Server) { s.taskTurns = t }
+}
+
 // WithHealthChecker sets the checker used by /api/v1/health and
 // /api/v1/health/deep (LOOM-105). A nil value is accepted and ignored.
 func WithHealthChecker(h HealthChecker) Option {
@@ -281,6 +294,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/conversations/{id}", s.requireAuth(s.handleGetConversation))
 	mux.HandleFunc("GET /api/v1/conversations/{id}/stream", s.requireAuth(s.handleStream))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attach-info", s.requireAuth(s.handleAttachInfo))
+	mux.HandleFunc("GET /api/v1/tasks/{id}/transcript", s.requireAuth(s.handleTaskTranscript))
 	mux.HandleFunc("POST /api/v1/targets", s.requireAuth(s.handleCreateTarget))
 	mux.HandleFunc("GET /api/v1/targets", s.requireAuth(s.handleListTargets))
 	mux.HandleFunc("PUT /api/v1/targets/{id}", s.requireAuth(s.handleUpdateTarget))
@@ -1448,6 +1462,50 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 type probeTargetResponse struct {
 	Health *targetHealthResponse `json:"health"`
 	Agents []targetAgentResponse `json:"agents"`
+}
+
+type taskTurnResponse struct {
+	UserMessage string `json:"user_message"`
+	// AgentMessage is the agent's own final message for the turn; empty
+	// when its completion hook saved none (Pane is then all there is).
+	AgentMessage string    `json:"agent_message"`
+	Pane         string    `json:"pane"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type taskTranscriptResponse struct {
+	TaskID string             `json:"task_id"`
+	Turns  []taskTurnResponse `json:"turns"`
+}
+
+// handleTaskTranscript returns what each turn of a task produced, oldest
+// first (LOOM-91): the message sent, the agent's own final message and
+// the pane's scrollback at the turn's end, credentials redacted.
+func (s *Server) handleTaskTranscript(w http.ResponseWriter, r *http.Request) {
+	if s.taskTurns == nil {
+		writeError(w, http.StatusNotImplemented, "task transcripts are not configured on this server")
+		return
+	}
+	id := r.PathValue("id")
+	if _, err := s.taskTurns.GetTask(r.Context(), id); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no such task")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not fetch task")
+		return
+	}
+	turns, err := s.taskTurns.ListTaskTurns(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list the task's turns")
+		return
+	}
+	out := taskTranscriptResponse{TaskID: id, Turns: make([]taskTurnResponse, 0, len(turns))}
+	for _, t := range turns {
+		out.Turns = append(out.Turns, taskTurnResponse{UserMessage: t.UserMessage, AgentMessage: t.AgentMessage,
+			Pane: t.Pane, CreatedAt: t.CreatedAt})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type errorResponse struct {

@@ -240,6 +240,21 @@ Lifecycle for an `agent` task:
    workspace registry row persists regardless; only the task-scoped pane
    goes away. Sessions are created 220x50 rather than tmux's detached
    default of 80x24, which wrapped and truncated an agent's answer.
+
+   **What is relayed, and kept (LOOM-91).** A TierMarker agent's
+   completion hook saves its CLI's payload beside the marker
+   (`<marker>.reply`) before touching the marker. Claude Code's Stop hook
+   hands it `last_assistant_message`, and Codex's notify
+   `last-assistant-message`: the turn's whole final answer. The router
+   relays that (bounded to 64 KiB, the start kept) rather than the
+   pane's visible screen, which cut long answers to their last screenful.
+   With no payload, the pane is captured as before. The files are read
+   once, then removed, and cleared before each follow-up turn, so a turn
+   that finished after it was given up on can't end or answer the next.
+   Every finished turn is also stored (`task_turns`): the message sent,
+   the agent's own message and the pane's last 3000 lines of scrollback,
+   with credential values redacted. They are served at
+   `GET /api/v1/tasks/{id}/transcript` after the task ends.
 4. At any point, attaching via `ssh` + `tmux -L loomux attach` to watch is
    free and has no side effects. Taking over (see §4) pauses automated dispatch for that
    task until released.
