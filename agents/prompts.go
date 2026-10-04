@@ -218,11 +218,6 @@ func parsePlain(lines []string, cursor int) (options []registry.AttentionOption,
 	return options, selected, first
 }
 
-// splitHeader splits what's above a prompt's options into its question
-// (the last line asking one) and the heading and detail lines around
-// it. Claude Code draws a solid rule above a prompt, which bounds it;
-// with no rule (Codex), what's above the question is the agent's
-// earlier output, so only the lines after the question are kept.
 // isContinuation reports whether t reads as the rest of a wrapped
 // sentence rather than a line of its own: it starts in lower case or
 // with punctuation.
@@ -231,6 +226,17 @@ func isContinuation(t string) bool {
 	return unicode.IsLower(r) || unicode.IsPunct(r)
 }
 
+// endsSentence reports whether t ends with a sentence's closing
+// punctuation, so nothing wraps on from it.
+func endsSentence(t string) bool {
+	return strings.HasSuffix(t, ".") || strings.HasSuffix(t, "!") || strings.HasSuffix(t, "?")
+}
+
+// splitHeader splits what's above a prompt's options into its question
+// (the last line asking one) and the heading and detail lines around
+// it. Claude Code draws a solid rule above a prompt, which bounds it;
+// with no rule (Codex), what's above the question is the agent's
+// earlier output, so only the lines after the question are kept.
 func splitHeader(lines []string) (question string, header []string) {
 	start, bounded := 0, false
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -240,21 +246,27 @@ func splitHeader(lines []string) (question string, header []string) {
 			break
 		}
 	}
-	inTip := false
+	// tipOpen: the line before was a tip that may wrap onto this one.
+	tipOpen := false
 	for _, l := range lines[start:] {
 		t := strings.TrimSpace(l)
 		if t == "" || isRule(l) {
-			inTip = false
+			tipOpen = false
 			continue
 		}
-		// A tip is the CLI's own advice, not the prompt's. In a narrow
-		// pane it wraps: its tail lines carry on a sentence, so they
-		// don't start with a capital.
-		if strings.HasPrefix(t, "Tip:") || (inTip && isContinuation(t)) {
-			inTip = true
+		// A tip is the CLI's own advice, not the prompt's. It can wrap
+		// onto one more line, which carries on its sentence, so doesn't
+		// start with a capital. Only one: what follows is the prompt's
+		// own detail, even if it starts in lower case.
+		if strings.HasPrefix(t, "Tip:") {
+			tipOpen = !endsSentence(t)
 			continue
 		}
-		inTip = false
+		if tipOpen && isContinuation(t) {
+			tipOpen = false
+			continue
+		}
+		tipOpen = false
 		header = append(header, t)
 	}
 	q := -1

@@ -88,3 +88,27 @@ func TestDetectPromptIgnoresAWorkingAgent(t *testing.T) {
 		t.Errorf("DetectPrompt = %+v, want nil", got)
 	}
 }
+
+// A wrapped tip's tail is one line at most, and a tip that ends its
+// sentence has none: a lower-case description after it is detail.
+func TestSplitHeaderTipContinuationBounded(t *testing.T) {
+	rule := "────────────────────────────────────────"
+	cases := []struct {
+		name  string
+		lines []string
+	}{
+		{"wrapped tip", []string{rule, " Bash command", " Tip: auto mode handles these prompts for you — choose \"switch to auto mode\"",
+			" below", " git status of the repo", " Do you want to proceed?"}},
+		{"finished tip", []string{rule, " Bash command", " Tip: auto mode handles these prompts for you.",
+			" git status of the repo", " Do you want to proceed?"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, header := splitHeader(tc.lines)
+			want := []string{"Bash command", "git status of the repo"}
+			if q != "Do you want to proceed?" || !reflect.DeepEqual(header, want) {
+				t.Errorf("splitHeader = %q, %q; want the question and %q", q, header, want)
+			}
+		})
+	}
+}
