@@ -361,12 +361,15 @@ func TestComplete(t *testing.T) {
 		t.Fatalf("CompletedAt is nil")
 	}
 
+	// LOOM-91: the pane outlives the task for a grace period, so a
+	// person can still attach and see what happened; SweepFinishedPanes
+	// tears it down later.
 	exists, err := exec.HasSession(ctx, task.TmuxSession)
 	if err != nil {
 		t.Fatalf("HasSession: %v", err)
 	}
-	if exists {
-		t.Fatalf("session still exists after Complete")
+	if !exists {
+		t.Fatalf("session killed by Complete, want it kept for the grace period")
 	}
 
 	updatedWS, err := store.GetWorkspace(ctx, ws.ID)

@@ -218,9 +218,9 @@ isn't installed, a crash — leaves a dead pane whose exit status
 (`#{pane_dead_status}`) and final output (including scrollback, where tmux
 pushes a fast command's output) can still be read. Before this, such a
 session vanished with its process and every later tmux call failed with
-"can't find pane". Whoever owns the session still kills it: on completion
-as before, and a failed task's dead pane is left for inspection like any
-other failure.
+"can't find pane". Whoever owns the session still kills it: after a
+completed task's grace period (step 3 below), and a failed task's dead pane
+is left for inspection like any other failure.
 
 Lifecycle for an `agent` task:
 
@@ -233,9 +233,13 @@ Lifecycle for an `agent` task:
 3. The orchestrator watches for a completion signal (§5). On completion, the
    router relays/summarizes the captured output back to chat, the
    workspace's rolling summary is updated (replaced, not appended), and —
-   if the task itself (not just the turn) is finished — the pane is torn
-   down. The workspace registry row persists regardless; only the
-   task-scoped pane goes away.
+   if the task itself (not just the turn) is finished — the task is
+   completed and its pane is torn down 15 minutes later (LOOM-91), so a
+   person can still attach and see what the agent did. A minute-by-minute
+   finished-pane sweep does the teardown and marks the task reaped. The
+   workspace registry row persists regardless; only the task-scoped pane
+   goes away. Sessions are created 220x50 rather than tmux's detached
+   default of 80x24, which wrapped and truncated an agent's answer.
 4. At any point, attaching via `ssh` + `tmux -L loomux attach` to watch is
    free and has no side effects. Taking over (see §4) pauses automated dispatch for that
    task until released.

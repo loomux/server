@@ -94,8 +94,10 @@ func TestDispatch_NotDone_KeepsTaskOpenForFollowUp(t *testing.T) {
 	if !contains(sess.keys, "keep going") {
 		t.Fatalf("session keys = %+v, want them to include the follow-up message %q", sess.keys, "keep going")
 	}
-	if sess.alive {
-		t.Fatal("session still alive after Done: true, want torn down")
+	// Done completes the task but keeps its pane for a grace period
+	// (LOOM-91); the finished-pane sweep tears it down later.
+	if !sess.alive {
+		t.Fatal("session torn down at Done: true, want it kept for the grace period")
 	}
 
 	tasks, err = store.ListTasksByWorkspace(context.Background(), ws.ID)

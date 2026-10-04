@@ -121,9 +121,11 @@ func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 			if err != nil {
 				t.Fatalf("HasSession: %v", err)
 			}
-			if exists {
-				t.Fatalf("real tmux session %q still exists after Dispatch completed", task.TmuxSession)
+			// Kept for the grace period after completing (LOOM-91).
+			if !exists {
+				t.Fatalf("real tmux session %q torn down at completion, want it kept for the grace period", task.TmuxSession)
 			}
+			t.Cleanup(func() { _ = realExec.KillSession(context.Background(), task.TmuxSession) })
 
 			// MarkerWatcher removes the marker file (best-effort) once it
 			// detects it — confirms the whole loop closed cleanly, not

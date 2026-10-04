@@ -162,20 +162,14 @@ func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) err
 	return nil
 }
 
-// Complete tears the task's session down and marks it finished. summary
-// is applied to the workspace's rolling summary verbatim — Complete
-// never generates or condenses it itself (that's the router's job).
+// Complete marks the task finished. Its session is left running for a
+// grace period (LOOM-91), so a person can still attach and see what the
+// agent did; a FinishedPaneSweeper tears it down after. summary is applied
+// to the workspace's rolling summary verbatim — Complete never generates
+// or condenses it itself (that's the router's job).
 func (o *Orchestrator) Complete(ctx context.Context, taskID, summary string) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
-		return fmt.Errorf("orchestrator: complete: %w", err)
-	}
-	exec, err := o.executorFor(ctx, task)
-	if err != nil {
-		return fmt.Errorf("orchestrator: complete: %w", err)
-	}
-
-	if err := exec.KillSession(ctx, task.TmuxSession); err != nil {
 		return fmt.Errorf("orchestrator: complete: %w", err)
 	}
 

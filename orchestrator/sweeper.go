@@ -108,3 +108,69 @@ func (s *OrphanSweeper) Sweep(ctx context.Context) int {
 	}
 	return killed
 }
+
+// finishedPaneHorizon is how far back FinishedPaneSweeper looks: a task
+// completed longer ago than this was finished before panes were kept
+// (LOOM-91), or its target has been unreachable all that time; either
+// way the orphan sweep is what cleans up after it.
+const finishedPaneHorizon = 24 * time.Hour
+
+// FinishedPaneSweeper tears down the sessions of completed tasks once
+// they have been finished for its grace period, marking each reaped
+// (LOOM-91): Complete leaves the pane so a person can still attach and
+// see what the agent did.
+type FinishedPaneSweeper struct {
+	orch   *Orchestrator
+	grace  time.Duration
+	logger *slog.Logger
+}
+
+// NewFinishedPaneSweeper constructs a FinishedPaneSweeper with the given
+// grace period. A nil logger discards.
+func NewFinishedPaneSweeper(orch *Orchestrator, grace time.Duration, logger *slog.Logger) *FinishedPaneSweeper {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &FinishedPaneSweeper{orch: orch, grace: grace, logger: logger}
+}
+
+// Run sweeps every interval until ctx is done.
+func (s *FinishedPaneSweeper) Run(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.Sweep(ctx)
+		}
+	}
+}
+
+// Sweep runs one pass and returns how many panes it tore down. A target
+// it can't reach is retried on the next sweep.
+func (s *FinishedPaneSweeper) Sweep(ctx context.Context) int {
+	tasks, err := s.orch.store.ListTasks(ctx)
+	if err != nil {
+		s.logger.Error("finished-pane sweep failed", "error", err)
+		return 0
+	}
+	now := time.Now().UTC()
+	reaped := 0
+	for _, t := range tasks {
+		if t.Status != registry.TaskStatusCompleted || t.ReapedAt != nil || t.CompletedAt == nil {
+			continue
+		}
+		if age := now.Sub(*t.CompletedAt); age < s.grace || age > finishedPaneHorizon {
+			continue
+		}
+		if err := s.orch.Reap(ctx, t.ID); err != nil {
+			s.logger.Warn("finished pane not torn down", "task_id", t.ID, "error", err)
+			continue
+		}
+		reaped++
+		s.logger.Info("finished pane torn down", "task_id", t.ID, "session", t.TmuxSession)
+	}
+	return reaped
+}

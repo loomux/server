@@ -197,6 +197,13 @@ const (
 	orphanTTL           = 24 * time.Hour
 )
 
+// A completed task's pane is kept this long, so a person can attach and
+// see what the agent did (LOOM-91), checked every finishedPaneSweep.
+const (
+	finishedPaneGrace = 15 * time.Minute
+	finishedPaneSweep = time.Minute
+)
+
 // reconcileTimeout bounds startup task reconciliation (LOOM-82).
 const reconcileTimeout = 2 * time.Minute
 
@@ -298,6 +305,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}()
 	// The orphan sweep (LOOM-93) shares the reaper's lifetime.
 	go orchestrator.NewOrphanSweeper(orch, orphanTTL, cfg.Logger).Run(reaperCtx, orphanSweepInterval)
+	go orchestrator.NewFinishedPaneSweeper(orch, finishedPaneGrace, cfg.Logger).Run(reaperCtx, finishedPaneSweep)
 
 	// Health probes bypass the metrics-wrapped executor so periodic
 	// liveness checks don't pollute the target operation latency/error

@@ -130,6 +130,13 @@ func NewExecutorWithMetrics(t *registry.Target, met *metrics.Metrics) (TargetExe
 	}
 }
 
+// The size a session's window is created at (LOOM-91). A person who
+// attaches resizes it to their own terminal.
+const (
+	sessionWidth  = "220"
+	sessionHeight = "50"
+)
+
 // newSessionArgs is the tmux argument list NewSession runs, shared by the
 // local and remote executors. remain-on-exit is set in the same tmux
 // invocation, after new-session: tmux runs a client's command list to
@@ -137,7 +144,9 @@ func NewExecutorWithMetrics(t *registry.Target, met *metrics.Metrics) (TargetExe
 // command that dies instantly (an agent CLI that isn't installed) can't
 // take its session down before the option is in place (LOOM-71).
 func newSessionArgs(session, dir, command string) []string {
-	args := []string{"new-session", "-d", "-s", session}
+	// Sized (LOOM-91): a detached session is otherwise tmux's default
+	// 80x24, and an agent's TUI wraps and truncates its answer to fit.
+	args := []string{"new-session", "-d", "-s", session, "-x", sessionWidth, "-y", sessionHeight}
 	if dir != "" {
 		args = append(args, "-c", dir)
 	}

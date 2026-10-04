@@ -183,8 +183,8 @@ func TestDispatch_UseWorkspace(t *testing.T) {
 		t.Fatalf("RollingSummary = %q, want %q", updatedWS.RollingSummary, "condensed reply")
 	}
 
-	// Exactly one session was created (the agent dispatch) and it was
-	// torn down by the end of Dispatch.
+	// Exactly one session was created (the agent dispatch), kept after
+	// the task completed for the grace period (LOOM-91).
 	if len(exec.sessions) != 1 {
 		t.Fatalf("sessions = %+v, want exactly 1", exec.sessions)
 	}
@@ -192,8 +192,8 @@ func TestDispatch_UseWorkspace(t *testing.T) {
 	for _, s := range exec.sessions {
 		sess = s
 	}
-	if sess.alive {
-		t.Fatalf("session still alive after Dispatch, want torn down (Complete)")
+	if !sess.alive {
+		t.Fatalf("session torn down by Complete, want it kept for the grace period")
 	}
 	if !strings.Contains(sess.command, "MY_TOKEN=") {
 		t.Fatalf("session command = %q, want it to contain the credential env assignment", sess.command)
@@ -244,14 +244,20 @@ func TestDispatch_ProvisionWorkspace(t *testing.T) {
 	}
 
 	// Two sessions: the shell-kind provisioning task, then the
-	// agent-kind dispatch task. Both torn down by the end.
+	// agent-kind dispatch task. The provisioning pane is torn down when
+	// its command finishes; the agent's is kept for the grace period
+	// (LOOM-91).
 	if len(exec.sessions) != 2 {
 		t.Fatalf("sessions = %+v, want exactly 2 (provisioning + agent dispatch)", exec.sessions)
 	}
-	for name, s := range exec.sessions {
+	alive := 0
+	for _, s := range exec.sessions {
 		if s.alive {
-			t.Fatalf("session %q still alive after Dispatch, want torn down", name)
+			alive++
 		}
+	}
+	if alive != 1 {
+		t.Fatalf("%d sessions alive after Dispatch, want 1 (the completed agent's, in its grace period)", alive)
 	}
 }
 
