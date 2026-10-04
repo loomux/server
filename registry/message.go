@@ -26,8 +26,8 @@ type Message struct {
 	// empty for a message written outside one (e.g. the in-process CLI).
 	DispatchID string
 	Role       MessageRole
-	Content   string
-	CreatedAt time.Time
+	Content    string
+	CreatedAt  time.Time
 }
 
 // ConversationActivity is one conversation's footprint in the message

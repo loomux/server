@@ -68,7 +68,7 @@ func TestIntegration_Dispatch_NoTargets_ClearAnswerNot500(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
-	server := api.NewServer(realApp, realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
+	server := api.NewServer(realApp.Dispatches(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), realApp.Store(), []byte(hash), api.WithLoginBackoff(0, time.Second))
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 

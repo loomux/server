@@ -15,14 +15,19 @@ import (
 	"time"
 
 	"github.com/Loomux/server/api"
+	"github.com/Loomux/server/dispatch"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
 )
 
 const testPassword = "correct-horse-battery-staple"
 
+// fakeDispatcher stands in for the router: tests set DispatchFunc, and a
+// real dispatch.Service (Jobs) runs it as a job, exactly as app wires the
+// router in production (LOOM-80).
 type fakeDispatcher struct {
 	DispatchFunc func(ctx context.Context, conversationID, message, workspaceHint string) (string, error)
+	Jobs         *dispatch.Service
 }
 
 func (f *fakeDispatcher) Dispatch(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
@@ -51,7 +56,15 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 	}
 	dispatcher := &fakeDispatcher{}
 	store := newTestStore(t)
-	server := api.NewServer(dispatcher, store, store, store, store, store, store, []byte(hash), opts...)
+	dispatcher.Jobs = dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
+		return dispatcher.Dispatch(ctx, d.ConversationID, d.Message, d.WorkspaceHint)
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = dispatcher.Jobs.Shutdown(ctx)
+	})
+	server := api.NewServer(dispatcher.Jobs, store, store, store, store, store, store, []byte(hash), opts...)
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 	return httpSrv, dispatcher, store

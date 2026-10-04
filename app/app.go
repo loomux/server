@@ -11,6 +11,7 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/dispatch"
 	"github.com/Loomux/server/internal/health"
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/orchestrator"
@@ -40,6 +41,26 @@ type App struct {
 	reaperDone    chan struct{}
 	metrics       *metrics.Metrics
 	healthChecker *health.Checker
+	dispatches    *dispatch.Service
+	dispatchDrain time.Duration
+}
+
+// Dispatches is the dispatch-job service (LOOM-80) the client API
+// submits chat messages to: each runs through the router as a job on a
+// server-owned context, outliving the request that submitted it.
+func (a *App) Dispatches() *dispatch.Service {
+	return a.dispatches
+}
+
+// DrainDispatches stops accepting dispatch jobs and gives in-flight ones
+// the configured drain time to finish; any still running are then marked
+// interrupted, their tasks left for startup reconciliation (LOOM-82).
+// Call it on shutdown before the HTTP server's own Shutdown, so blocking
+// requests waiting on a job get their answer first.
+func (a *App) DrainDispatches() error {
+	ctx, cancel := context.WithTimeout(context.Background(), a.dispatchDrain)
+	defer cancel()
+	return a.dispatches.Shutdown(ctx)
 }
 
 // Dispatch routes one chat message through the full pipeline. See
@@ -86,6 +107,13 @@ func (a *App) HealthChecker() *health.Checker {
 // Close stops the background idle reaper (LOOM-16) and releases the
 // store's resources (its DB connection).
 func (a *App) Close() error {
+	if a.dispatches != nil {
+		// Normally already drained (DrainDispatches); otherwise interrupt
+		// whatever is still running rather than wait for it.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = a.dispatches.Shutdown(ctx)
+	}
 	if a.stopReaper != nil {
 		a.stopReaper()
 		<-a.reaperDone
@@ -220,8 +248,36 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// counters (LOOM-105).
 	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr)
 
+	rtr := router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...)
+	dispatchOpts := []dispatch.Option{
+		dispatch.WithErrorClassifier(router.ClassifyError),
+		dispatch.WithMaxDuration(cfg.DispatchMaxDuration),
+		dispatch.WithLogger(cfg.Logger),
+	}
+	dispatches := dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
+		opts := []router.DispatchOption{router.WithDispatchID(d.ID), router.WithUserMessageLogged()}
+		if d.WorkspaceHint != "" {
+			opts = append(opts, router.WithWorkspaceHint(d.WorkspaceHint))
+		}
+		return rtr.Dispatch(ctx, d.ConversationID, d.Message, opts...)
+	}, dispatchOpts...)
+	// Before anything can submit: no job a previous process left behind
+	// may still claim to be in flight.
+	if _, err := dispatches.Recover(context.Background()); err != nil {
+		stopReaper()
+		<-reaperDone
+		_ = store.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
+	dispatchDrain := cfg.DispatchDrain
+	if dispatchDrain == 0 {
+		dispatchDrain = defaultDispatchDrain
+	}
+
 	return &App{
-		router:        router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...),
+		router:        rtr,
+		dispatches:    dispatches,
+		dispatchDrain: dispatchDrain,
 		store:         store,
 		stopReaper:    stopReaper,
 		reaperDone:    reaperDone,

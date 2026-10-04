@@ -60,16 +60,25 @@ type Config struct {
 	// argument. Keyed by agent-type name. Nil keeps every default (see
 	// agents/README.md); naming an unregistered agent-type fails Build.
 	AgentProfiles map[string]router.ProfileOverride
+	// DispatchMaxDuration bounds one dispatch job end to end (LOOM-80).
+	// Zero means the dispatch package's own default.
+	DispatchMaxDuration time.Duration
+	// DispatchDrain is how long shutdown lets in-flight dispatch jobs
+	// finish before marking them interrupted (LOOM-80). Zero means
+	// defaultDispatchDrain.
+	DispatchDrain time.Duration
 }
 
 const (
-	envDBPath            = "LOOMUX_DB_PATH"
-	envMarkerDir         = "LOOMUX_MARKER_DIR"
-	envMasterKey         = "LOOMUX_MASTER_KEY"
-	envReapIdleThreshold = "LOOMUX_REAP_IDLE_THRESHOLD"
-	envReapInterval      = "LOOMUX_REAP_INTERVAL"
-	envLogLevel          = "LOOMUX_LOG_LEVEL"
-	envAgentProfiles     = "LOOMUX_AGENT_PROFILES"
+	envDBPath              = "LOOMUX_DB_PATH"
+	envMarkerDir           = "LOOMUX_MARKER_DIR"
+	envMasterKey           = "LOOMUX_MASTER_KEY"
+	envReapIdleThreshold   = "LOOMUX_REAP_IDLE_THRESHOLD"
+	envReapInterval        = "LOOMUX_REAP_INTERVAL"
+	envLogLevel            = "LOOMUX_LOG_LEVEL"
+	envAgentProfiles       = "LOOMUX_AGENT_PROFILES"
+	envDispatchMaxDuration = "LOOMUX_DISPATCH_MAX_DURATION"
+	envDispatchDrain       = "LOOMUX_DISPATCH_DRAIN"
 
 	defaultDBPath = "loomux.db"
 
@@ -78,6 +87,9 @@ const (
 	// doc comments.
 	defaultReapIdleThreshold = 24 * time.Hour
 	defaultReapInterval      = time.Hour
+	// defaultDispatchDrain fits inside Kubernetes' default 30s
+	// termination grace, leaving room for the HTTP server's own shutdown.
+	defaultDispatchDrain = 20 * time.Second
 )
 
 // LoadConfig reads Config from the environment, failing fast on
@@ -121,6 +133,23 @@ func LoadConfig() (Config, error) {
 		reapInterval = d
 	}
 
+	var dispatchMaxDuration time.Duration
+	if raw := os.Getenv(envDispatchMaxDuration); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration: %w", envDispatchMaxDuration, err)
+		}
+		dispatchMaxDuration = d
+	}
+	dispatchDrain := defaultDispatchDrain
+	if raw := os.Getenv(envDispatchDrain); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration: %w", envDispatchDrain, err)
+		}
+		dispatchDrain = d
+	}
+
 	var logLevel slog.Level
 	if raw := os.Getenv(envLogLevel); raw != "" {
 		if err := logLevel.UnmarshalText([]byte(raw)); err != nil {
@@ -138,13 +167,15 @@ func LoadConfig() (Config, error) {
 	}
 
 	return Config{
-		AgentProfiles:     agentProfiles,
-		DBPath:            dbPath,
-		MarkerDir:         os.Getenv(envMarkerDir),
-		MasterKey:         masterKey,
-		Router:            routerCfg,
-		ReapIdleThreshold: reapIdleThreshold,
-		ReapInterval:      reapInterval,
+		AgentProfiles:       agentProfiles,
+		DBPath:              dbPath,
+		MarkerDir:           os.Getenv(envMarkerDir),
+		MasterKey:           masterKey,
+		Router:              routerCfg,
+		ReapIdleThreshold:   reapIdleThreshold,
+		ReapInterval:        reapInterval,
+		DispatchMaxDuration: dispatchMaxDuration,
+		DispatchDrain:       dispatchDrain,
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil

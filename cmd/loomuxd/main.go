@@ -118,7 +118,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		opts = append(opts, api.WithStaticDir(apiCfg.StaticDir))
 	}
 
-	server := api.NewServer(loomux, loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), apiCfg.PasswordHash, opts...)
+	server := api.NewServer(loomux.Dispatches(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), apiCfg.PasswordHash, opts...)
 	httpServer := &http.Server{Addr: apiCfg.Addr, Handler: server}
 
 	var metricsServer *http.Server
@@ -134,6 +134,12 @@ func runServer(ctx context.Context, loomux *app.App) {
 
 	go func() {
 		<-ctx.Done()
+		// Dispatch jobs first (LOOM-80): they get the drain time to finish,
+		// the rest are marked interrupted, and a blocking request waiting
+		// on one gets its answer before the HTTP server stops.
+		if err := loomux.DrainDispatches(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)

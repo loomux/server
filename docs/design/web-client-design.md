@@ -46,7 +46,12 @@ All under `/api/v1/`, Bearer-token auth except `/login` and `/version`
 - `POST /login` — `{password}` → `{token}`
 - `POST /logout` — auth'd, revokes the presented token
 - `POST /dispatch` — auth'd, `{conversation_id, message}` → `{reply}`
-  (blocking — this is still the only source of actual reply text)
+  (blocking by default). Since LOOM-80 the turn runs as a server-side job
+  either way, and `Prefer: respond-async` makes it answer `202
+  {dispatch_id, conversation_id, status}` at once instead; results then
+  come from `GET /dispatches/{id}`, the stream's `dispatch_update` events
+  and the conversation's history. The web moves to async in LOOM-81 — see
+  `docs/design/async-dispatch-design.md`, "Web impact".
 - `GET /workspaces` — auth'd, `{workspaces: [{id, name, target_id,
   status, tags, description, capabilities, rolling_summary, is_dynamic,
   last_used_at?}, ...]}`
