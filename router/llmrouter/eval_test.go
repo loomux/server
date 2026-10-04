@@ -235,8 +235,12 @@ func TestEvalRouting(t *testing.T) {
 		return router.Decision{}, err
 	}
 
+	only := os.Getenv("ROUTEREVAL_CASES") // comma-separated name prefixes, for iterating on a few
 	var results []evalResult
 	for _, c := range evalCases() {
+		if only != "" && !matchesAny(c.name, strings.Split(only, ",")) {
+			continue
+		}
 		res := evalResult{Case: c.name, Runs: evalRuns}
 		for run := range evalRuns {
 			raw, err := decide(c, &res)
@@ -281,6 +285,12 @@ func TestEvalRouting(t *testing.T) {
 func describeDecision(d router.Decision) string {
 	s := string(d.Action)
 	switch d.Action {
+	case router.ActionAnswerDirectly:
+		a := []rune(d.DirectAnswer)
+		if len(a) > 60 {
+			a = append(a[:60], '…')
+		}
+		s += fmt.Sprintf(" %q", string(a))
 	case router.ActionUseWorkspace:
 		s += fmt.Sprintf(" %s/%s", d.WorkspaceID, d.AgentType)
 	case router.ActionProvisionWorkspace:
@@ -308,4 +318,13 @@ func errClass(err error) string {
 		}
 		return msg
 	}
+}
+
+func matchesAny(name string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if p != "" && strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }

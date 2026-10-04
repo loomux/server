@@ -247,3 +247,30 @@ func TestDispatch_NoOpenTask_LastWorkspacePassed(t *testing.T) {
 		t.Errorf("last workspace = %q/%q, want %s", o.LastWorkspaceID, o.LastWorkspaceName, h.ws.ID)
 	}
 }
+
+// A run_command or provision_workspace decision is a deliberate,
+// structured choice of something other than the open task — the model
+// leaving it as surely as with leave_open_task — so it isn't overridden.
+// (Routing evals showed the model reliably choosing run_command for an
+// unrelated machine question mid-task, but often without the flag.)
+func TestApplyAffinity_StructuredActionsLeaveOpenTask(t *testing.T) {
+	open := &router.OpenTaskSnapshot{WorkspaceID: "ws-1", AgentType: "claude-code"}
+	for _, d := range []router.Decision{
+		{Action: router.ActionRunCommand, TargetID: "t-jet01", Command: "uptime"},
+		{Action: router.ActionProvisionWorkspace, AgentType: "claude-code", NewWorkspace: router.ProvisionSpec{Name: "x"}},
+	} {
+		got, from := router.ApplyAffinity(d, open)
+		if from != "" || got.Action != d.Action {
+			t.Errorf("ApplyAffinity(%s) = %+v (overridden from %q), want it kept", d.Action, got, from)
+		}
+	}
+	for _, d := range []router.Decision{
+		{Action: router.ActionAnswerDirectly, DirectAnswer: "Sure!"},
+		{Action: router.ActionUseWorkspace, WorkspaceID: "ws-other", AgentType: "claude-code"},
+	} {
+		got, from := router.ApplyAffinity(d, open)
+		if from != string(d.Action) || got.Action != router.ActionUseWorkspace || got.WorkspaceID != "ws-1" {
+			t.Errorf("ApplyAffinity(%s) = %+v (from %q), want overridden to the open task", d.Action, got, from)
+		}
+	}
+}

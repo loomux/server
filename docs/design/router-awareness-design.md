@@ -155,8 +155,16 @@ if decision is use_workspace for the open task's workspace:
     decision.AgentType = openTask.AgentType   // same pane, whatever the model wrote
 ```
 
-So "yes, go ahead" reaches the same pane even if the model answers it directly. The model leaves the task
-only by saying so explicitly. Pending install/clone/run offers (answered before routing) are untouched.
+So "yes, go ahead" reaches the same pane even if the model answers it directly. Pending
+install/clone/run offers (answered before routing) are untouched.
+
+**Changed during implementation (2026-10-04, from eval evidence):** `run_command` and
+`provision_workspace` count as an explicit opt-out, like `leave_open_task`. The first eval runs showed the
+model reliably choosing `run_command "uptime"` on jet01 for "what's the uptime on jet01?" mid-task, but
+setting `leave_open_task` only 1 time in 3, so the strict rule typed an unrelated question into the agent's
+pane. What is overridden is what affinity exists for: the router answering a follow-up itself
+(`answer_directly`) or sending it to another workspace (`use_workspace` elsewhere). This is in its own
+commit so it can be reverted alone.
 
 ### Web (loomux/web, separate PR)
 

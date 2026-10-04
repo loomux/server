@@ -119,7 +119,7 @@ func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool
 		"action": map[string]any{
 			"type":        "string",
 			"enum":        actions,
-			"description": "What to do with the incoming message.",
+			"description": "What to do with the incoming message. answer_directly is never for a question about a machine's live state (disk, memory, uptime, processes, files): use run_command for those.",
 		},
 		"direct_answer": map[string]any{
 			"type":        "string",
@@ -308,8 +308,8 @@ func renderConversation(b *strings.Builder, o router.DispatchOptions) {
 		fmt.Fprintf(b, "If the message continues this task (an answer, a confirmation, a choice, a follow-up), "+
 			"choose use_workspace with workspace_id %s. If the message is clearly unrelated to it (a new "+
 			"topic or a different machine), handle it as you would otherwise and set leave_open_task to true: "+
-			"any decision other than use_workspace %s without leave_open_task is sent to this task instead.\n\n",
-			t.WorkspaceID, t.WorkspaceID)
+			"an answer_directly, or a use_workspace for another workspace, without leave_open_task is sent to this task instead.\n\n",
+			t.WorkspaceID)
 	} else if o.LastWorkspaceID != "" {
 		fmt.Fprintf(b, "This conversation last worked in workspace %s (id %s).\n\n", o.LastWorkspaceName, o.LastWorkspaceID)
 	}
