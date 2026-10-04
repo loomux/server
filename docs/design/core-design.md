@@ -131,7 +131,10 @@ anything runs, whatever the model chose:
   where shell is off, or an agent type not on the list.
 - On a require-confirmation target, new work waits for a "yes" in chat
   to the plan: a new workspace, a verbatim command, or an agent started
-  in a workspace. The policy is checked again at the "yes".
+  in a workspace. The policy is checked again at the "yes" — of this and
+  of every other offer (an agent install, a clone the user didn't name,
+  a command not given verbatim), so a policy tightened after the offer
+  still holds.
 - Follow-up turns in the conversation's open pane there aren't asked
   again.
 

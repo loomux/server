@@ -195,3 +195,68 @@ func TestPolicy_RequireConfirmation_NotAskedForFollowUps(t *testing.T) {
 		t.Errorf("follow-up asked for confirmation again: %q", reply)
 	}
 }
+
+// Every other offer is re-checked against the policy at its "yes" too: an
+// install, a clone the user didn't name and a command not given verbatim
+// were all allowed when offered, then the policy was tightened.
+func TestPolicy_OffersRecheckedOnYes(t *testing.T) {
+	ctx := context.Background()
+	confirmRefused := func(t *testing.T, h *availabilityHarness, want string) {
+		t.Helper()
+		reply, err := h.r.Dispatch(ctx, "conv-1", "yes")
+		if err != nil {
+			t.Fatalf("Dispatch(yes): %v", err)
+		}
+		if !strings.Contains(reply, want) {
+			t.Errorf("reply = %q, want the refusal (%q)", reply, want)
+		}
+		h.noSideEffects(t)
+	}
+	offered := func(t *testing.T, h *availabilityHarness, message string) {
+		t.Helper()
+		reply, err := h.r.Dispatch(ctx, "conv-1", message)
+		if err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		if !strings.Contains(reply, `"yes"`) {
+			t.Fatalf("no offer made:\n%s", reply)
+		}
+	}
+
+	t.Run("install, provisioning since forbidden", func(t *testing.T) {
+		h := newAvailabilityHarness(t)
+		h.decide(h.provisionDecision("codex"))
+		offered(t, h, "run hostname on jet01 with codex")
+		h.setPolicy(t, registry.TargetPolicy{NoProvision: true})
+		confirmRefused(t, h, "new workspaces")
+	})
+	t.Run("install, agent since disallowed", func(t *testing.T) {
+		h := newAvailabilityHarness(t)
+		ws := h.policyWorkspace(t)
+		h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
+		offered(t, h, "use codex there")
+		h.setPolicy(t, registry.TargetPolicy{AllowedAgentTypes: []string{"claude-code"}})
+		confirmRefused(t, h, "allows only claude-code")
+	})
+	t.Run("clone, provisioning since forbidden", func(t *testing.T) {
+		h := newAvailabilityHarness(t)
+		h.probes.install("codex")
+		h.decide(router.Decision{Action: router.ActionProvisionWorkspace, AgentType: "codex", NewWorkspace: router.ProvisionSpec{
+			Name: "server", TargetID: h.target.ID, Kind: router.ProvisionGitClone, GitRemote: "https://github.com/loomux/server.git",
+		}})
+		offered(t, h, "set up the loomux server repo")
+		h.setPolicy(t, registry.TargetPolicy{NoProvision: true})
+		confirmRefused(t, h, "new workspaces")
+	})
+	t.Run("command, shell since forbidden", func(t *testing.T) {
+		h := newCommandHarness(t)
+		h.decideCommand("hostname && uptime")
+		h.outputs["hostname && uptime"] = "jet01"
+		offered(t, h.availabilityHarness, "how long has jet01 been up?")
+		h.setPolicy(t, registry.TargetPolicy{NoShell: true})
+		confirmRefused(t, h.availabilityHarness, "shell commands")
+		if n := len(h.commandTasks(t)); n != 0 {
+			t.Errorf("%d command tasks, want none", n)
+		}
+	})
+}
