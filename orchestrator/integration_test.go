@@ -91,12 +91,24 @@ func TestIntegration_RealLocalTmux(t *testing.T) {
 		t.Fatalf("Complete: %v", err)
 	}
 
+	// The pane outlives Complete for a grace period (LOOM-91), then the
+	// finished-pane sweep tears it down.
 	exists, err = realExec.HasSession(ctx, task.TmuxSession)
 	if err != nil {
 		t.Fatalf("HasSession (verify complete): %v", err)
 	}
+	if !exists {
+		t.Fatalf("real tmux session %q killed by Complete, want it kept for the grace period", task.TmuxSession)
+	}
+	if n := orchestrator.NewFinishedPaneSweeper(o, 0, nil).Sweep(ctx); n != 1 {
+		t.Fatalf("finished-pane sweep reaped %d, want 1", n)
+	}
+	exists, err = realExec.HasSession(ctx, task.TmuxSession)
+	if err != nil {
+		t.Fatalf("HasSession (verify sweep): %v", err)
+	}
 	if exists {
-		t.Fatalf("real tmux session %q still exists after Complete", task.TmuxSession)
+		t.Fatalf("real tmux session %q still exists after the finished-pane sweep", task.TmuxSession)
 	}
 
 	stored, err := store.GetTask(ctx, task.ID)

@@ -192,9 +192,12 @@ func TestBuild_EndToEnd_Continuation_RealTmux(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HasSession (turn 2): %v", err)
 	}
-	if exists {
-		t.Fatal("real tmux session still alive after turn 2, want torn down (Done: true)")
+	// Done completes the task; its pane is kept for the grace period
+	// (LOOM-91).
+	if !exists {
+		t.Fatal("real tmux session torn down after turn 2, want it kept for the grace period")
 	}
+	t.Cleanup(func() { _ = realExec.KillSession(context.Background(), tasks[0].TmuxSession) })
 
 	ws, err = a.store.GetWorkspace(ctx, workspaceID)
 	if err != nil {

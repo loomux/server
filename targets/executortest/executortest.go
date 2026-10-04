@@ -26,6 +26,27 @@ func Run(t *testing.T, newExecutor func(t *testing.T) targets.TargetExecutor) {
 	t.Run("RunOnce", func(t *testing.T) { testRunOnce(t, newExecutor(t)) })
 	t.Run("PaneSurvivesCommandExit", func(t *testing.T) { testPaneSurvivesCommandExit(t, newExecutor(t)) })
 	t.Run("NoReparseByOtherShells", func(t *testing.T) { testNoReparseByOtherShells(t, newExecutor(t)) })
+	t.Run("SessionIsSized", func(t *testing.T) { testSessionIsSized(t, newExecutor(t)) })
+}
+
+// testSessionIsSized checks a new session is created wide and tall
+// (LOOM-91), not tmux's detached default of 80x24 that truncates an
+// agent's answer.
+func testSessionIsSized(t *testing.T, exec targets.TargetExecutor) {
+	ctx := context.Background()
+	session := uniqueSessionName(t)
+	if err := exec.NewSession(ctx, session, "", "sleep 30"); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
+	out, err := exec.RunOnce(ctx, "tmux -L "+targets.TmuxSocket+" display-message -p -t "+posixQuote(session)+
+		" '#{window_width}x#{window_height}'")
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := strings.TrimSpace(out); got != "220x50" {
+		t.Errorf("session size = %q, want 220x50", got)
+	}
 }
 
 // posixQuote single-quotes s for POSIX sh.
