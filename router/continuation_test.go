@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -293,37 +294,56 @@ func TestDispatch_ActiveTaskUnderTakeover_RefusesRatherThanDoubleLaunch(t *testi
 	}
 }
 
-// TestDispatch_MoreThanOneActiveTaskForSameConversation_Errors defends
-// findActiveTask's ambiguity guard: this shouldn't be reachable through
-// Dispatch itself (which always reuses a found task rather than
-// creating a second one), but if it ever is — e.g. data seeded another
-// way — Dispatch must fail loudly rather than silently pick one.
-func TestDispatch_MoreThanOneActiveTaskForSameConversation_Errors(t *testing.T) {
-	store, _, r, model := setup(t)
+// LOOM-83: two active tasks for one conversation + workspace shouldn't
+// be reachable, but if they ever are (data seeded another way, a past
+// race) the next dispatch heals it instead of wedging the conversation:
+// it keeps the newest task with a live session, and fails the other and
+// kills its pane.
+func TestDispatch_DuplicateActiveTasksHeal(t *testing.T) {
+	store, exec, r, model := setup(t)
 	ws := createFixtureWorkspace(t, store)
 
-	for i := 0; i < 2; i++ {
+	var tasks []*registry.Task
+	for i, live := range []bool{true, false} { // older one live, newer one's session gone
 		task := &registry.Task{
-			ID:             uuid.NewString(),
-			WorkspaceID:    ws.ID,
-			Kind:           registry.TaskKindAgent,
-			AgentType:      "claude-code",
-			TmuxSession:    "loomux-" + uuid.NewString(),
-			Status:         registry.TaskStatusAwaitingInput,
-			ConversationID: "conv-1",
+			ID: uuid.NewString(), WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+			TmuxSession: "loomux-" + uuid.NewString(), Status: registry.TaskStatusAwaitingInput, ConversationID: "conv-1",
 		}
 		if err := store.CreateTask(context.Background(), task); err != nil {
 			t.Fatalf("CreateTask: %v", err)
 		}
+		if live {
+			_ = exec.NewSession(context.Background(), task.TmuxSession, ws.Path, "claude")
+		}
+		tasks = append(tasks, task)
+		if i == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
-
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
 	}
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
+		return router.RelayResult{Reply: "ok"}, nil
+	}
 
-	_, err := r.Dispatch(context.Background(), "conv-1", "hi")
-	if err == nil {
-		t.Fatal("Dispatch with two ambiguous active tasks: got nil error")
+	if _, err := r.Dispatch(context.Background(), "conv-1", "hi"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	kept, _ := store.GetTask(context.Background(), tasks[0].ID)
+	retired, _ := store.GetTask(context.Background(), tasks[1].ID)
+	if kept.Status != registry.TaskStatusAwaitingInput {
+		t.Errorf("live task = %s, want it kept and used", kept.Status)
+	}
+	if !contains(exec.sessionFor(kept.TmuxSession).keys, "hi") {
+		t.Error("the message didn't go to the kept task's pane")
+	}
+	if retired.Status != registry.TaskStatusFailed || retired.ReapedAt == nil {
+		t.Errorf("duplicate = %s (reaped %v), want failed and reaped", retired.Status, retired.ReapedAt)
+	}
+	all, _ := store.ListTasksByWorkspace(context.Background(), ws.ID)
+	if len(all) != 2 {
+		t.Errorf("tasks = %d, want no new launch", len(all))
 	}
 }
 

@@ -66,6 +66,8 @@ type Router struct {
 	// decisions, and task lifecycle events (LOOM-103). Never nil — New
 	// defaults it to a no-op nil *metrics.Metrics.
 	metrics *metrics.Metrics
+	// conversations serializes turns per conversation (LOOM-83).
+	conversations convLocks
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -139,6 +141,7 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 // decision, provisioning, and the agent turn, with any failure at error
 // level. The message body itself is never logged — only its length.
 func (r *Router) Dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
+	defer r.conversations.lock(conversationID)()
 	start := time.Now()
 	var o DispatchOptions
 	for _, opt := range opts {
@@ -1165,16 +1168,20 @@ func (r *Router) verifyAgentVersion(ctx context.Context, workspaceID string, vc 
 // for this workspace + conversation. A registry.TaskStatusHumanTakeover
 // task counts as active too, so a message arriving mid-takeover cleanly
 // refuses via orchestrator.SendMessage's own ErrHumanTakeover rather
-// than silently launching a second, conflicting session. More than one
-// match is a correctness violation this shouldn't be able to reach —
-// surfaced as an error rather than silently picking one.
+// than silently launching a second, conflicting session.
+//
+// More than one match shouldn't happen — dispatches are serialized per
+// conversation (LOOM-83) — but if it does, it heals rather than wedging
+// the conversation: the newest one with a live session is kept, and every
+// other is failed and its pane killed (it's a second agent in the same
+// directory), with a warning.
 func (r *Router) findActiveTask(ctx context.Context, workspaceID, conversationID string) (*registry.Task, error) {
 	tasks, err := r.store.ListTasksByWorkspace(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 
-	var active *registry.Task
+	var active []*registry.Task
 	for _, t := range tasks {
 		if t.ConversationID != conversationID {
 			continue
@@ -1182,13 +1189,54 @@ func (r *Router) findActiveTask(ctx context.Context, workspaceID, conversationID
 		switch t.Status {
 		case registry.TaskStatusRunning, registry.TaskStatusAwaitingInput, registry.TaskStatusHumanTakeover,
 			registry.TaskStatusNeedsAttention:
-			if active != nil {
-				return nil, fmt.Errorf("more than one active task for workspace %q conversation %q", workspaceID, conversationID)
-			}
-			active = t
+			active = append(active, t)
 		}
 	}
-	return active, nil
+	if len(active) <= 1 {
+		if len(active) == 0 {
+			return nil, nil
+		}
+		return active[0], nil
+	}
+	return r.healDuplicateTasks(ctx, active)
+}
+
+// healDuplicateTasks keeps the newest of tasks whose session is live (or
+// the newest outright, if none is) and retires the rest (LOOM-83).
+func (r *Router) healDuplicateTasks(ctx context.Context, tasks []*registry.Task) (*registry.Task, error) {
+	sort.SliceStable(tasks, func(i, j int) bool { return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt) })
+	keep := tasks[0]
+	for _, t := range tasks {
+		live, err := r.sessionIsLive(ctx, t)
+		if err != nil {
+			return nil, err
+		}
+		if live {
+			keep = t
+			break
+		}
+	}
+	for _, t := range tasks {
+		if t == keep {
+			continue
+		}
+		r.logger.Warn("more than one active task; retiring the extra one", "task_id", t.ID, "kept_task_id", keep.ID,
+			"workspace_id", t.WorkspaceID, "conversation_id", t.ConversationID)
+		if err := r.orch.Fail(ctx, t.ID, registry.TaskFailure{
+			Class: registry.ErrorClassInternal, Reason: "a second active task in the same conversation and workspace; retired",
+		}); err != nil {
+			return nil, err
+		}
+		if exec, err := r.executorFor(ctx, t); err == nil {
+			if live, _ := exec.HasSession(ctx, t.TmuxSession); live {
+				_ = exec.KillSession(ctx, t.TmuxSession)
+			}
+		}
+		if err := r.store.SetTaskReapedAt(ctx, t.ID, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+	}
+	return keep, nil
 }
 
 // sessionIsLive reports whether task's tracked tmux session still
