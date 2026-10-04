@@ -73,7 +73,7 @@ type AgentConfig struct {
 type Config map[string]AgentConfig
 
 const (
-	defaultIdleTimeout  = 30 * time.Second
+	defaultIdleTimeout = 30 * time.Second
 	// defaultPollInterval paces marker, idle and exit checks: each is an ssh
 	// round trip on a remote target, so it is kept slow enough that many
 	// waiting tasks stay well inside a target's ssh budget (LOOM-84).
