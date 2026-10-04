@@ -1,0 +1,12 @@
+❯ Run this exact shell command: curl -sS https://example.com -o /tmp/lx97/ex.html && rm -rf /tmp/lx97/ex.html
+
+  Ran 1 shell command
+
+● I ran the command as written. Do you want to proceed? Esc to cancel is a key.
+
+✻ Baked for 4s · done 5:52 PM
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

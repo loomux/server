@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/Loomux/server/orchestrator"
@@ -59,6 +60,11 @@ type AgentConfig struct {
 	// agent blocked on an approval prompt, say (LOOM-76). Zero means the
 	// package default (ten minutes); negative disables it.
 	NoProgressTimeout time.Duration
+	// DetectPrompt, for TierMarker only, reads the prompt an agent is
+	// stopped at off its pane, nil for none (LOOM-97). A prompt showing
+	// on two consecutive progress checks ends the wait with an
+	// *orchestrator.NeedsAttentionError. nil disables it.
+	DetectPrompt func(screen string) *registry.Attention
 }
 
 // Config maps agent-type name to its AgentConfig. An agent-type with no
@@ -153,8 +159,17 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 		})
 		defer timer.Stop()
 	}
-	if limit := orDefault(cfg.NoProgressTimeout, defaultNoProgressTimeout); tier == TierMarker && limit > 0 {
-		go d.watchProgress(waitCtx, exec, task, limit, cancel)
+	if limit := orDefault(cfg.NoProgressTimeout, defaultNoProgressTimeout); tier == TierMarker && (limit > 0 || cfg.DetectPrompt != nil) {
+		go d.watchProgress(waitCtx, exec, task, limit, cfg.DetectPrompt, cancel)
+	}
+	// A settle bound (orchestrator.WithSettle) ends the turn once the pane
+	// stops changing, whatever the tier's own signal.
+	if settle := orchestrator.SettleFrom(ctx); settle > 0 && tier == TierMarker {
+		go func() {
+			if d.idle.Wait(waitCtx, task, target, settle) == nil {
+				cancel(errSettled)
+			}
+		}()
 	}
 	exited := make(chan *targets.PaneExit, 1)
 	go func() {
@@ -180,13 +195,24 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 	default:
 	}
 	if err != nil && ctx.Err() == nil {
+		cause := context.Cause(waitCtx)
 		var timeout *orchestrator.TurnTimeoutError
-		if errors.As(context.Cause(waitCtx), &timeout) {
+		var attention *orchestrator.NeedsAttentionError
+		switch {
+		case errors.As(cause, &timeout):
 			return timeout
+		case errors.As(cause, &attention):
+			return attention
+		case errors.Is(cause, errSettled):
+			return nil
 		}
 	}
 	return err
 }
+
+// errSettled is a wait's cancellation cause when its pane settled
+// (orchestrator.WithSettle): the turn is over.
+var errSettled = errors.New("completion: the pane settled")
 
 // orDefault resolves a LOOM-76 bound: zero means def, negative disabled
 // (returned as 0).
@@ -201,14 +227,17 @@ func orDefault(d, def time.Duration) time.Duration {
 }
 
 // watchProgress ends the wait (via cancel) once the pane's contents have
-// been unchanged for limit. Capture errors are ignored: this is only an
+// been unchanged for limit (zero: never), or once detect finds the same
+// prompt on two consecutive checks (LOOM-97) — twice, so a prompt caught
+// mid-redraw isn't reported. Capture errors are ignored: this is only an
 // extra bound, and the tier's own watcher reports a pane it can't reach.
 func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, limit time.Duration,
-	cancel context.CancelCauseFunc) {
+	detect func(string) *registry.Attention, cancel context.CancelCauseFunc) {
 	ticker := time.NewTicker(d.progressPollInterval)
 	defer ticker.Stop()
 	var last string
 	var lastChange time.Time
+	var lastPrompt *registry.Attention
 	for {
 		select {
 		case <-ctx.Done():
@@ -219,12 +248,20 @@ func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecuto
 		if err != nil {
 			continue
 		}
+		if detect != nil {
+			prompt := detect(out)
+			if prompt != nil && lastPrompt != nil && reflect.DeepEqual(prompt, lastPrompt) {
+				cancel(&orchestrator.NeedsAttentionError{Attention: prompt})
+				return
+			}
+			lastPrompt = prompt
+		}
 		now := time.Now()
 		if lastChange.IsZero() || out != last {
 			last, lastChange = out, now
 			continue
 		}
-		if now.Sub(lastChange) >= limit {
+		if limit > 0 && now.Sub(lastChange) >= limit {
 			cancel(&orchestrator.TurnTimeoutError{Reason: orchestrator.TimeoutNoProgress, Limit: limit})
 			return
 		}

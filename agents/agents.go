@@ -53,7 +53,7 @@ const (
 // TierMarker signal.
 func ClaudeCode() router.AgentType {
 	return router.AgentType{
-		AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
+		AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker, DetectPrompt: DetectPrompt},
 		LaunchTemplate: "claude",
 		Binary:         "claude",
 		InterruptKeys:  []string{"Escape"},
@@ -125,7 +125,7 @@ func claudeStopHookSettings() string {
 // themselves (Codex has one notify program, not a list).
 func Codex() router.AgentType {
 	return router.AgentType{
-		AgentConfig:        completion.AgentConfig{Tier: completion.TierMarker},
+		AgentConfig:        completion.AgentConfig{Tier: completion.TierMarker, DetectPrompt: DetectPrompt},
 		LaunchTemplate:     "codex",
 		Binary:             "codex",
 		InterruptKeys:      []string{"Escape"},

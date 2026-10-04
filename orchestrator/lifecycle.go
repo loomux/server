@@ -336,6 +336,7 @@ func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task, failur
 	task.FailureReason = failure.Reason
 	task.ErrorClass = failure.Class
 	task.OutputTail = failure.OutputTail
+	task.Attention = nil
 	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
 	if err := o.store.UpdateTask(ctx, task); err != nil {
 		return err
@@ -350,4 +351,44 @@ func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task, failur
 	}
 	ws.Status = registry.WorkspaceStatusIdle
 	return o.store.UpdateWorkspace(ctx, ws)
+}
+
+// NeedAttention records that task's agent is stopped at a prompt only a
+// human can answer (LOOM-97): status needs-attention, with the prompt.
+// Its pane is left as it is, showing the prompt.
+func (o *Orchestrator) NeedAttention(ctx context.Context, taskID string, attention *registry.Attention) error {
+	task, err := o.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: need attention: %w", err)
+	}
+	if task.Status != registry.TaskStatusRunning && task.Status != registry.TaskStatusNeedsAttention {
+		return fmt.Errorf("orchestrator: need attention: task %q is %s: %w", taskID, task.Status, ErrTaskInactive)
+	}
+	prev := task.Status
+	task.Status, task.Attention = registry.TaskStatusNeedsAttention, attention
+	if prev != task.Status {
+		o.recordTaskTransition(string(prev), string(task.Status), task.Kind)
+	}
+	if err := o.store.UpdateTask(ctx, task); err != nil {
+		return fmt.Errorf("orchestrator: need attention: %w", err)
+	}
+	return nil
+}
+
+// Resume returns a needs-attention task to running once its prompt has
+// been answered (LOOM-97), clearing the prompt.
+func (o *Orchestrator) Resume(ctx context.Context, taskID string) error {
+	task, err := o.store.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: resume: %w", err)
+	}
+	if task.Status != registry.TaskStatusNeedsAttention {
+		return fmt.Errorf("orchestrator: resume: task %q is %s, not needs-attention", taskID, task.Status)
+	}
+	task.Status, task.Attention = registry.TaskStatusRunning, nil
+	o.recordTaskTransition(string(registry.TaskStatusNeedsAttention), string(task.Status), task.Kind)
+	if err := o.store.UpdateTask(ctx, task); err != nil {
+		return fmt.Errorf("orchestrator: resume: %w", err)
+	}
+	return nil
 }

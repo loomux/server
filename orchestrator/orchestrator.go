@@ -76,6 +76,35 @@ func (e *TurnTimeoutError) Error() string {
 	return fmt.Sprintf("the turn ran past its %s limit", e.Limit)
 }
 
+// NeedsAttentionError is what a CompletionDetector returns when the
+// agent stops at a prompt only a human can answer (LOOM-97) — an
+// approval, a question, a trust dialog, a sign-in screen — instead of
+// waiting out its no-progress timeout. The pane is untouched, still
+// showing the prompt.
+type NeedsAttentionError struct {
+	Attention *registry.Attention
+}
+
+func (e *NeedsAttentionError) Error() string {
+	return fmt.Sprintf("the agent is waiting on a %s prompt", e.Attention.Kind)
+}
+
+type settleKey struct{}
+
+// WithSettle asks the CompletionDetector to also treat the agent's pane
+// going unchanged for d as the end of the turn (LOOM-97): a turn the
+// user ended by denying a permission or cancelling a question finishes
+// without the agent's completion signal. Zero means not.
+func WithSettle(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, settleKey{}, d)
+}
+
+// SettleFrom is the WithSettle duration on ctx, or zero.
+func SettleFrom(ctx context.Context) time.Duration {
+	d, _ := ctx.Value(settleKey{}).(time.Duration)
+	return d
+}
+
 // CompletionDetector learns when a task's current turn is done. The real
 // tiered strategy (native hooks / self-report / idle heuristic, design
 // spec §5) is a separate concern (LOOM-6) — this seam exists so

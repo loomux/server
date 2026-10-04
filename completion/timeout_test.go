@@ -122,3 +122,69 @@ func TestDetector_CancelIsNotTimeout(t *testing.T) {
 		t.Errorf("Wait = %v, want the caller's own context error, not a turn timeout", err)
 	}
 }
+
+// LOOM-97: a prompt the agent-type's DetectPrompt recognises, showing on
+// two consecutive checks, ends the wait at once with the prompt — not
+// after the no-progress timeout.
+func TestDetector_PromptNeedsAttention(t *testing.T) {
+	store := newTestStore(t)
+	ws := createFixtureWorkspace(t, store, registry.TargetKindLocal)
+	task := &registry.Task{ID: uuid.NewString(), WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "agent", TmuxSession: "s"}
+	exec := &stuckExecutor{scriptedExecutor: *newScriptedExecutor([]string{""})}
+	factory := func(*registry.Target) (targets.TargetExecutor, error) { return exec, nil }
+	detect := func(screen string) *registry.Attention {
+		if screen == "Allow this command? [y/n]" {
+			return &registry.Attention{Kind: registry.AttentionPermission, Question: screen}
+		}
+		return nil
+	}
+	d := completion.NewDetector(store, factory, completion.Config{"agent": {
+		Tier: completion.TierMarker, MaxTurnDuration: time.Hour, NoProgressTimeout: time.Hour, DetectPrompt: detect,
+	}}, t.TempDir(), completion.WithProgressPollInterval(20*time.Millisecond))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := d.Wait(ctx, task)
+	var attention *orchestrator.NeedsAttentionError
+	if !errors.As(err, &attention) {
+		t.Fatalf("Wait = %v, want *orchestrator.NeedsAttentionError", err)
+	}
+	if attention.Attention.Kind != registry.AttentionPermission || attention.Attention.Question != "Allow this command? [y/n]" {
+		t.Errorf("attention = %+v", attention.Attention)
+	}
+}
+
+// A busy pane that never shows a prompt is never reported as one.
+func TestDetector_NoPromptOnBusyPane(t *testing.T) {
+	store := newTestStore(t)
+	ws := createFixtureWorkspace(t, store, registry.TargetKindLocal)
+	task := &registry.Task{ID: uuid.NewString(), WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "agent", TmuxSession: "s"}
+	exec := &stuckExecutor{scriptedExecutor: *newScriptedExecutor([]string{""}), busy: true}
+	factory := func(*registry.Target) (targets.TargetExecutor, error) { return exec, nil }
+	detect := func(string) *registry.Attention { return nil }
+	d := completion.NewDetector(store, factory, completion.Config{"agent": {
+		Tier: completion.TierMarker, MaxTurnDuration: 300 * time.Millisecond, DetectPrompt: detect,
+	}}, t.TempDir(), completion.WithProgressPollInterval(20*time.Millisecond))
+	if timeout := waitTimedOut(t, d, task, 3*time.Second); timeout.Reason != orchestrator.TimeoutMaxTurnDuration {
+		t.Errorf("timeout = %+v, want the max-turn limit", timeout)
+	}
+}
+
+// orchestrator.WithSettle: a turn that ends without its completion
+// signal (the user denied a permission) is over once the pane settles.
+func TestDetector_Settle(t *testing.T) {
+	store := newTestStore(t)
+	ws := createFixtureWorkspace(t, store, registry.TargetKindLocal)
+	task := &registry.Task{ID: uuid.NewString(), WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "agent", TmuxSession: "s"}
+	exec := &stuckExecutor{scriptedExecutor: *newScriptedExecutor([]string{""})}
+	factory := func(*registry.Target) (targets.TargetExecutor, error) { return exec, nil }
+	d := completion.NewDetector(store, factory, completion.Config{"agent": {
+		Tier: completion.TierMarker, MaxTurnDuration: time.Hour, NoProgressTimeout: time.Hour,
+	}}, t.TempDir())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.Wait(orchestrator.WithSettle(ctx, 300*time.Millisecond), task); err != nil {
+		t.Errorf("Wait = %v, want the settled pane to end the turn", err)
+	}
+}
