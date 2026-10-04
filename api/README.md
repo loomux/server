@@ -250,6 +250,14 @@ not engineering taste):
     up where it was) but not ones already finished. With the reply on the
     `succeeded` event, in the job and in the conversation's messages, an
     async client no longer has to hold a request open for the reply text.
+
+    Since LOOM-121 it also carries `event: message_added`,
+    `data: {message_id, task_id?, role, created_at}`, for each message
+    logged to the conversation while the stream is open (messages there
+    on connect aren't replayed). An agent can end its turn early — a job
+    left running in the background — and report later; the server relays
+    that report as an assistant message no dispatch carries, so this
+    event is how a client learns to refetch the conversation.
   - `GET /api/v1/tasks/{id}/attach-info` — auth-gated (LOOM-20), resolves
     a task down to the target+session a human would SSH into to attach
     (design spec §4): `{task_id, tmux_session, target: {id, name, kind,

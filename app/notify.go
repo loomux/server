@@ -43,15 +43,39 @@ func (n *turnNotifier) finished(d *registry.Dispatch) {
 		if !ok {
 			return
 		}
-		sent, err := n.filter.Notify(ctx, e)
-		log := n.logger.With("dispatch_id", d.ID, "kind", string(e.Kind))
-		switch {
-		case err != nil:
-			log.Warn("notification not delivered", "error", err)
-		case sent:
-			log.Info("notification sent")
-		}
+		n.send(ctx, e, n.logger.With("dispatch_id", d.ID, "kind", string(e.Kind)))
 	}()
+}
+
+// lateReply is the router's WithLateReplyHook (LOOM-121): an agent
+// reported after the turn it ended early. There is no turn length to go
+// by, and the user has likely moved on: it is always news.
+func (n *turnNotifier) lateReply(task *registry.Task, reply string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+		defer cancel()
+		e := n.lateReplyEvent(ctx, task, reply)
+		n.send(ctx, e, n.logger.With("task_id", task.ID, "kind", string(e.Kind)))
+	}()
+}
+
+// lateReplyEvent builds the notification for task's late reply.
+func (n *turnNotifier) lateReplyEvent(ctx context.Context, task *registry.Task, reply string) notify.Event {
+	e := notify.Event{Kind: notify.KindDone, Summary: strings.TrimSpace(reply)}
+	if ws, err := n.store.GetWorkspace(ctx, task.WorkspaceID); err == nil {
+		e.Workspace = ws.Name
+	}
+	return n.finish(ctx, e, task.ConversationID)
+}
+
+func (n *turnNotifier) send(ctx context.Context, e notify.Event, log *slog.Logger) {
+	sent, err := n.filter.Notify(ctx, e)
+	switch {
+	case err != nil:
+		log.Warn("notification not delivered", "error", err)
+	case sent:
+		log.Info("notification sent")
+	}
 }
 
 // event builds d's notification, or reports false when d doesn't warrant
@@ -84,6 +108,11 @@ func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.
 	if d.Status == registry.DispatchStatusFailed {
 		e.Kind, e.Summary = notify.KindFailed, d.Error
 	}
+	return n.finish(ctx, e, d.ConversationID), true
+}
+
+// finish scrubs e's body and links it to conversationID.
+func (n *turnNotifier) finish(ctx context.Context, e notify.Event, conversationID string) notify.Event {
 	// The body leaves Loomux, often for a shared ntfy server: every
 	// credential value in the vault is scrubbed from it first.
 	summary, err := credentials.RedactAll(ctx, n.store, e.Summary)
@@ -92,9 +121,9 @@ func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.
 	}
 	e.Summary = summary
 	if n.publicURL != "" {
-		e.Link = strings.TrimRight(n.publicURL, "/") + "/conversations/" + url.PathEscape(d.ConversationID)
+		e.Link = strings.TrimRight(n.publicURL, "/") + "/conversations/" + url.PathEscape(conversationID)
 	}
-	return e, true
+	return e
 }
 
 // turnTask is the task d's turn worked in: the conversation's most

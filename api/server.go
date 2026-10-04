@@ -968,7 +968,9 @@ type taskUpdateEvent struct {
 // Server-Sent Events reporting task status transitions for one
 // conversation, so a client can watch a dispatch progress, and (LOOM-80)
 // dispatch_update events for its dispatch jobs, which carry the reply
-// once a job succeeds (see sendDispatchUpdates). No 404 for an unknown conversation_id: a client may
+// once a job succeeds (see sendDispatchUpdates), and (LOOM-121)
+// message_added events for messages logged while it is open (see
+// sendMessagesAdded). No 404 for an unknown conversation_id: a client may
 // open the stream before ever calling dispatch, to catch the very first
 // transition. Implemented as a polling loop against TaskLister (the same
 // seam LOOM-18's conversation endpoints use) rather than a push-based
@@ -1003,6 +1005,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// finished when the stream opens are recorded unreported: only what
 	// is still in flight is news to a client connecting now.
 	var dispatchSeen map[string]dispatchUpdateEvent
+	// messagesSeen is every message ID reported, or there when the
+	// stream opened (LOOM-121): nil until the first poll.
+	var messagesSeen map[string]bool
 	for {
 		select {
 		case <-r.Context().Done():
@@ -1012,6 +1017,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case <-poll.C:
 			dispatchSeen = s.sendDispatchUpdates(r.Context(), w, flusher, id, dispatchSeen)
+			messagesSeen = s.sendMessagesAdded(r.Context(), w, flusher, id, messagesSeen)
 			ev, err := s.latestConversationTaskEvent(r.Context(), id)
 			if err != nil || ev == nil {
 				continue
@@ -1028,6 +1034,50 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// messageAddedEvent is the data of a stream's `event: message_added`
+// (LOOM-121): a message was logged to the conversation. A client
+// refetches the conversation to show it; it matters most for an agent's
+// late reply, which no dispatch the client follows carries.
+type messageAddedEvent struct {
+	MessageID string    `json:"message_id"`
+	TaskID    string    `json:"task_id,omitempty"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// sendMessagesAdded reports conversationID's messages not in seen, and
+// returns seen with them added. The first call (seen nil) records what
+// is there unreported: only messages logged while the stream is open
+// are news.
+func (s *Server) sendMessagesAdded(ctx context.Context, w http.ResponseWriter, flusher http.Flusher,
+	conversationID string, seen map[string]bool) map[string]bool {
+	messages, err := s.messages.ListMessagesByConversation(ctx, conversationID)
+	if err != nil {
+		return seen
+	}
+	first := seen == nil
+	if first {
+		seen = make(map[string]bool, len(messages))
+	}
+	for _, m := range messages {
+		if seen[m.ID] {
+			continue
+		}
+		seen[m.ID] = true
+		if first {
+			continue
+		}
+		data, err := json.Marshal(messageAddedEvent{MessageID: m.ID, TaskID: m.TaskID,
+			Role: string(m.Role), CreatedAt: m.CreatedAt})
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(w, "event: message_added\ndata: %s\n\n", data)
+		flusher.Flush()
+	}
+	return seen
 }
 
 // latestConversationTaskEvent finds conversationID's most-recently-

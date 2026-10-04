@@ -102,7 +102,9 @@ const relaySystemPrompt = `You are Loomux's relay model. You are given the raw c
 	`conversation is expected to continue (the agent is asking a clarifying question, waiting on ` +
 	`confirmation, or mid-way through a multi-step task) — false keeps the same session open so the ` +
 	`next message is typed into it directly rather than starting a fresh one. If the agent's last ` +
-	`message asks the user anything or says it is waiting for them, done is false.`
+	`message asks the user anything or says it is waiting for them, done is false. If it says work is ` +
+	`still running (a command left in the background, a build or job it will report on later), done ` +
+	`is false: its report comes into the same session.`
 
 // buildDecideTool builds the forced tool/function-call schema for Decide.
 // Flat rather than a conditional schema keyed on action — conditional

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/Loomux/server/agents"
@@ -287,6 +288,25 @@ const (
 // reconcileTimeout bounds startup task reconciliation (LOOM-82).
 const reconcileTimeout = 2 * time.Minute
 
+// lateOutputInterval is how often agents waiting for input are checked
+// for output written after their turn was relayed (LOOM-121).
+const lateOutputInterval = 15 * time.Second
+
+// runLateOutputRelay relays late agent output (router.RelayLateOutput)
+// every interval until ctx is done.
+func runLateOutputRelay(ctx context.Context, rtr *router.Router, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			rtr.RelayLateOutput(ctx)
+		}
+	}
+}
+
 func dispatchableAgentTypeNames(agentTypes router.AgentTypeRegistry) []string {
 	names := make([]string, 0, len(agentTypes))
 	for name := range agentTypes {
@@ -374,6 +394,25 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		routerOpts = append(routerOpts, router.WithLogger(cfg.Logger))
 	}
 	routerOpts = append(routerOpts, router.WithMetrics(met))
+	// The notifier (LOOM-102) hears of finished turns from the dispatch
+	// service and of late replies (LOOM-121) from the router.
+	var notifier *turnNotifier
+	if cfg.Notify.NtfyURL != "" {
+		logger := cfg.Logger
+		if logger == nil {
+			logger = slog.New(slog.DiscardHandler)
+		}
+		notifier = &turnNotifier{
+			store: store,
+			filter: notify.NewFilter(notify.NewNtfy(cfg.Notify.NtfyURL, cfg.Notify.NtfyTopic, cfg.Notify.NtfyToken), notify.FilterConfig{
+				Events: cfg.Notify.Events, Burst: notifyBurst, Refill: notifyRefill,
+			}),
+			minDuration: cfg.Notify.MinDuration,
+			publicURL:   cfg.Notify.PublicURL,
+			logger:      logger,
+		}
+		routerOpts = append(routerOpts, router.WithLateReplyHook(notifier.lateReply))
+	}
 
 	reaper := orchestrator.NewReaper(orch, threshold, orchestrator.WithReaperMetrics(met),
 		orchestrator.WithStaleProvisioningAfter(staleProvisioningAfter))
@@ -393,8 +432,9 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr)
 
 	rtr := router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...)
-	// The target health probe (LOOM-86) shares the reaper's lifetime too,
-	// and Close waits for it: a probe mid-flight writes to the store.
+	// The target health probe (LOOM-86) and the late-output relay
+	// (LOOM-121) share the reaper's lifetime too, and Close waits for
+	// them: either, mid-flight, writes to the store.
 	probeInterval := cfg.TargetProbeInterval
 	if probeInterval == 0 {
 		probeInterval = defaultTargetProbeInterval
@@ -402,7 +442,10 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	proberDone := make(chan struct{})
 	go func() {
 		defer close(proberDone)
+		var late sync.WaitGroup
+		late.Go(func() { runLateOutputRelay(reaperCtx, rtr, lateOutputInterval) })
 		runTargetProber(reaperCtx, rtr, probeInterval)
+		late.Wait()
 	}()
 	dispatchOpts := []dispatch.Option{
 		dispatch.WithErrorClassifier(router.ClassifyError),
@@ -420,21 +463,8 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		resumed[taskID] = true
 		return run
 	}))
-	if cfg.Notify.NtfyURL != "" {
-		logger := cfg.Logger
-		if logger == nil {
-			logger = slog.New(slog.DiscardHandler)
-		}
-		n := &turnNotifier{
-			store: store,
-			filter: notify.NewFilter(notify.NewNtfy(cfg.Notify.NtfyURL, cfg.Notify.NtfyTopic, cfg.Notify.NtfyToken), notify.FilterConfig{
-				Events: cfg.Notify.Events, Burst: notifyBurst, Refill: notifyRefill,
-			}),
-			minDuration: cfg.Notify.MinDuration,
-			publicURL:   cfg.Notify.PublicURL,
-			logger:      logger,
-		}
-		dispatchOpts = append(dispatchOpts, dispatch.WithOnFinished(n.finished))
+	if notifier != nil {
+		dispatchOpts = append(dispatchOpts, dispatch.WithOnFinished(notifier.finished))
 	}
 	dispatches := dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
 		opts := []router.DispatchOption{router.WithDispatchID(d.ID), router.WithUserMessageLogged()}
