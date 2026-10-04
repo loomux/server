@@ -80,6 +80,10 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("CredentialRequiresValidWorkspace", func(t *testing.T) { testCredentialRequiresValidWorkspace(t, newStore(t)) })
 	t.Run("CredentialListIncludesGlobalAndScoped", func(t *testing.T) { testCredentialListIncludesGlobalAndScoped(t, newStore(t)) })
 	t.Run("DeleteWorkspaceWithCredentialRejected", func(t *testing.T) { testDeleteWorkspaceWithCredentialRejected(t, newStore(t)) })
+	t.Run("DeleteWorkspaceAndTasks", func(t *testing.T) { testDeleteWorkspaceAndTasks(t, newStore(t)) })
+	t.Run("DeleteWorkspaceAndTasksKeepsCredentialScoped", func(t *testing.T) {
+		testDeleteWorkspaceAndTasksKeepsCredentialScoped(t, newStore(t))
+	})
 
 	t.Run("Session", func(t *testing.T) { testSessionCRUD(t, newStore(t)) })
 	t.Run("SessionNotFound", func(t *testing.T) { testSessionNotFound(t, newStore(t)) })
@@ -821,6 +825,66 @@ func testDeleteWorkspaceWithCredentialRejected(t *testing.T, s registry.Store) {
 	}
 	if err := s.DeleteWorkspace(ctx, ws.ID); !errors.Is(err, registry.ErrConflict) {
 		t.Fatalf("DeleteWorkspace with a credential attached: err = %v, want ErrConflict", err)
+	}
+}
+
+func testDeleteWorkspaceAndTasks(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{
+		ID: "doomed-task", WorkspaceID: ws.ID, Kind: registry.TaskKindShell,
+		TmuxSession: "sess", Status: registry.TaskStatusAwaitingInput, ConversationID: "conv",
+	}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := s.CreateTaskTurn(ctx, &registry.TaskTurn{ID: "turn-1", TaskID: task.ID, UserMessage: "hi"}); err != nil {
+		t.Fatalf("CreateTaskTurn: %v", err)
+	}
+	msg := &registry.Message{ID: "msg-1", ConversationID: "conv", Role: registry.MessageRoleUser, Content: "hi", TaskID: task.ID}
+	if err := s.CreateMessage(ctx, msg); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+
+	if err := s.DeleteWorkspaceAndTasks(ctx, ws.ID); err != nil {
+		t.Fatalf("DeleteWorkspaceAndTasks: %v", err)
+	}
+	if _, err := s.GetWorkspace(ctx, ws.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetWorkspace after delete: err = %v, want ErrNotFound", err)
+	}
+	if _, err := s.GetTask(ctx, task.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetTask after delete: err = %v, want ErrNotFound", err)
+	}
+	// The chat transcript outlives the task: only its task link goes.
+	msgs, err := s.ListMessagesByConversation(ctx, "conv")
+	if err != nil || len(msgs) != 1 || msgs[0].TaskID != "" {
+		t.Fatalf("messages after delete = %+v, %v; want the one message, unlinked", msgs, err)
+	}
+	if err := s.DeleteWorkspaceAndTasks(ctx, ws.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("DeleteWorkspaceAndTasks again: err = %v, want ErrNotFound", err)
+	}
+}
+
+func testDeleteWorkspaceAndTasksKeepsCredentialScoped(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{
+		ID: "kept-task", WorkspaceID: ws.ID, Kind: registry.TaskKindShell,
+		TmuxSession: "sess", Status: registry.TaskStatusCompleted, ConversationID: "conv",
+	}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	cred := &registry.Credential{ID: "scoped-cred", Name: "TOKEN", WorkspaceID: ws.ID, Value: "v"}
+	if err := s.CreateCredential(ctx, cred); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	if err := s.DeleteWorkspaceAndTasks(ctx, ws.ID); !errors.Is(err, registry.ErrConflict) {
+		t.Fatalf("DeleteWorkspaceAndTasks with a credential attached: err = %v, want ErrConflict", err)
+	}
+	// All or nothing: the task is still there.
+	if _, err := s.GetTask(ctx, task.ID); err != nil {
+		t.Fatalf("GetTask after a refused delete: %v", err)
 	}
 }
 

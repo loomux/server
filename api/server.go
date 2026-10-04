@@ -45,6 +45,19 @@ type Dispatcher interface {
 	ListByConversation(ctx context.Context, conversationID string) ([]*registry.Dispatch, error)
 }
 
+// WorkspaceManager deletes and repairs workspaces (LOOM-70). Satisfied
+// by *app.App. Optional: with none configured (WithWorkspaceManager),
+// DELETE and PATCH /api/v1/workspaces/{id} answer 501.
+type WorkspaceManager interface {
+	// DeleteWorkspace deletes a workspace and its tasks and kills their
+	// sessions, returning those it couldn't kill. registry.ErrNotFound for
+	// an unknown id; a *registry.ConflictError says what blocks it.
+	DeleteWorkspace(ctx context.Context, id string) ([]string, error)
+	// SetWorkspaceStatus moves a workspace to idle (back in service) or
+	// archived (out of it); errors as for DeleteWorkspace.
+	SetWorkspaceStatus(ctx context.Context, id string, status registry.WorkspaceStatus) error
+}
+
 // SessionStore is the session-related slice of registry.Store this
 // package needs — satisfied structurally by any registry.Store
 // (including *app.App.Store()). ListSessions backs LOOM-47's
@@ -190,6 +203,7 @@ type Server struct {
 	agentProber        AgentProber
 	targetProber       TargetProber
 	taskTurns          TaskTurnStore
+	workspaceManager   WorkspaceManager
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
@@ -247,6 +261,12 @@ func WithTargetProber(p TargetProber) Option {
 	return func(s *Server) { s.targetProber = p }
 }
 
+// WithWorkspaceManager enables DELETE and PATCH /api/v1/workspaces/{id}
+// (LOOM-70).
+func WithWorkspaceManager(m WorkspaceManager) Option {
+	return func(s *Server) { s.workspaceManager = m }
+}
+
 // WithTaskTurns enables GET /api/v1/tasks/{id}/transcript (LOOM-91).
 func WithTaskTurns(t TaskTurnStore) Option {
 	return func(s *Server) { s.taskTurns = t }
@@ -290,6 +310,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
 	mux.HandleFunc("GET /api/v1/dispatches/{id}", s.requireAuth(s.handleGetDispatch))
 	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
+	mux.HandleFunc("DELETE /api/v1/workspaces/{id}", s.requireAuth(s.handleDeleteWorkspace))
+	mux.HandleFunc("PATCH /api/v1/workspaces/{id}", s.requireAuth(s.handlePatchWorkspace))
 	mux.HandleFunc("GET /api/v1/conversations", s.requireAuth(s.handleListConversations))
 	mux.HandleFunc("GET /api/v1/conversations/{id}", s.requireAuth(s.handleGetConversation))
 	mux.HandleFunc("GET /api/v1/conversations/{id}/stream", s.requireAuth(s.handleStream))
@@ -521,6 +543,70 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, listWorkspacesResponse{Workspaces: out})
+}
+
+type deleteWorkspaceResponse struct {
+	// SessionsNotKilled are tmux sessions of the deleted tasks that
+	// couldn't be killed (the target unreachable, say); the orphan sweep
+	// removes them later.
+	SessionsNotKilled []string `json:"sessions_not_killed"`
+}
+
+// handleDeleteWorkspace deletes a workspace, its tasks and their tmux
+// sessions (LOOM-70). The chat transcript stays; the workspace's files
+// on the target are not touched. 409 says what blocks the delete.
+func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	if s.workspaceManager == nil {
+		writeError(w, http.StatusNotImplemented, "workspace management is not configured on this server")
+		return
+	}
+	left, err := s.workspaceManager.DeleteWorkspace(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeWorkspaceManageError(w, err, "could not delete workspace")
+		return
+	}
+	writeJSON(w, http.StatusOK, deleteWorkspaceResponse{SessionsNotKilled: orEmpty(left)})
+}
+
+type patchWorkspaceRequest struct {
+	Status string `json:"status"`
+}
+
+// handlePatchWorkspace sets a workspace's status (LOOM-70): "idle" puts a
+// failed or archived one back in service once its directory is confirmed
+// on the target, "archived" takes one out. Nothing else is settable.
+func (s *Server) handlePatchWorkspace(w http.ResponseWriter, r *http.Request) {
+	if s.workspaceManager == nil {
+		writeError(w, http.StatusNotImplemented, "workspace management is not configured on this server")
+		return
+	}
+	var req patchWorkspaceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed request body")
+		return
+	}
+	status := registry.WorkspaceStatus(req.Status)
+	if status != registry.WorkspaceStatusIdle && status != registry.WorkspaceStatusArchived {
+		writeError(w, http.StatusBadRequest, `status must be "idle" or "archived"`)
+		return
+	}
+	if err := s.workspaceManager.SetWorkspaceStatus(r.Context(), r.PathValue("id"), status); err != nil {
+		writeWorkspaceManageError(w, err, "could not update workspace")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeWorkspaceManageError(w http.ResponseWriter, err error, fallback string) {
+	var conflict *registry.ConflictError
+	switch {
+	case errors.Is(err, registry.ErrNotFound):
+		writeError(w, http.StatusNotFound, "no such workspace")
+	case errors.As(err, &conflict):
+		writeError(w, http.StatusConflict, conflict.Reason)
+	default:
+		writeError(w, http.StatusInternalServerError, fallback)
+	}
 }
 
 // orEmpty returns s when non-nil, otherwise an empty (non-nil) slice. It
