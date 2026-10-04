@@ -28,6 +28,9 @@ type Model struct {
 	primaryTimeout    time.Duration
 	escalationTimeout time.Duration
 	metrics           *metrics.Metrics
+	// agentDescriptions is a one-line description per agent type for the
+	// system prompt (LOOM-88), so the model can tell them apart.
+	agentDescriptions map[string]string
 }
 
 // Option configures a Model constructed via New.
@@ -43,6 +46,13 @@ func WithPrimaryTimeout(d time.Duration) Option {
 // escalation tier.
 func WithEscalationTimeout(d time.Duration) Option {
 	return func(m *Model) { m.escalationTimeout = d }
+}
+
+// WithAgentDescriptions sets each agent type's one-line description,
+// listed in the routing system prompt (LOOM-88). An agent type without
+// one is listed by name only.
+func WithAgentDescriptions(d map[string]string) Option {
+	return func(m *Model) { m.agentDescriptions = d }
 }
 
 // WithMetrics sets the Prometheus metrics bundle the model should record

@@ -23,6 +23,8 @@ type decideArguments struct {
 	NewWorkspace decideArgumentsWorkspace `json:"new_workspace"`
 	TargetID     string                   `json:"target_id"`
 	Command      string                   `json:"command"`
+	// LeaveOpenTask (LOOM-87) is only offered while a task is open.
+	LeaveOpenTask bool `json:"leave_open_task"`
 }
 
 // decideArgumentsWorkspace is structured data only (LOOM-90): no command
@@ -50,7 +52,7 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 		opt(&o)
 	}
 
-	dec, err := m.decideWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, message, workspaces, targets, o.WorkspaceHint)
+	dec, err := m.decideWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, message, workspaces, targets, o)
 	if err == nil {
 		return dec, nil
 	}
@@ -60,7 +62,7 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 	}
 
 	m.metrics.RecordRouterEscalation(metrics.RouterOpDecide)
-	dec, err2 := m.decideWith(ctx, "escalation", *m.cfg.Escalation, m.escalationTimeout, message, workspaces, targets, o.WorkspaceHint)
+	dec, err2 := m.decideWith(ctx, "escalation", *m.cfg.Escalation, m.escalationTimeout, message, workspaces, targets, o)
 	if err2 != nil {
 		m.metrics.RecordRouterCall(metrics.RouterOpDecide, "escalation", metrics.OutcomeFailure, m.escalationTimeout)
 		return router.Decision{}, fmt.Errorf(
@@ -69,7 +71,7 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 	return dec, nil
 }
 
-func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, timeout time.Duration, message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, workspaceHint string) (router.Decision, error) {
+func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, timeout time.Duration, message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, o router.DispatchOptions) (router.Decision, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -87,10 +89,10 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 	resp, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: tier.Model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(decideSystemPrompt),
-			openai.UserMessage(decideUserPrompt(message, workspaces, targets, workspaceHint)),
+			openai.SystemMessage(m.systemPrompt()),
+			openai.UserMessage(decideUserPrompt(message, workspaces, targets, o)),
 		},
-		Tools: []openai.ChatCompletionToolUnionParam{buildDecideTool(m.agentTypes, workspaceIDs, targetIDs)},
+		Tools: []openai.ChatCompletionToolUnionParam{buildDecideTool(m.agentTypes, workspaceIDs, targetIDs, o.OpenTask != nil)},
 		ToolChoice: openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
 			Name: decideToolName,
 		}),
@@ -118,6 +120,7 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 	}
 
 	decision, err := m.validateDecision(args, workspaceIDs, targetIDs)
+	decision.LeaveOpenTask = err == nil && o.OpenTask != nil && args.LeaveOpenTask
 	outcome := metrics.OutcomeSuccess
 	if err != nil {
 		outcome = metrics.OutcomeFailure

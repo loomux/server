@@ -90,3 +90,23 @@ escalation vars are set partially rather than all-or-nothing.
 
 All tests run against `httptest.Server` fakes standing in for both tiers —
 no real network calls, no live API keys. Run `go test ./router/llmrouter/...`.
+
+### Routing evals (real model)
+
+`eval_test.go` (build tag `routereval`, LOOM-88/LOOM-87) runs ten routing
+cases against the real primary tier, three times each, and needs every
+run to pass: agent availability, command-vs-agent, agent by name,
+reusing a matching workspace, and conversation follow-ups. A decision is
+scored after `router.ApplyAffinity`, as the router acts on it. Not part
+of the normal run:
+
+```
+LOOMUX_ROUTER_PRIMARY_BASE_URL=… LOOMUX_ROUTER_PRIMARY_API_KEY=… LOOMUX_ROUTER_PRIMARY_MODEL=… \
+  go test -tags routereval ./router/llmrouter/ -run Eval -v
+```
+
+Calls are paced (`ROUTEREVAL_PACE`, default 20s) for a free-tier
+tokens-per-minute limit; errored calls are retried and reported as
+infrastructure errors, not wrong decisions. `ROUTEREVAL_OUT` writes a
+JSON summary.
+

@@ -9,7 +9,7 @@ import (
 // built tool schema.
 func targetIDProperty(t *testing.T, targetIDs []string) map[string]any {
 	t.Helper()
-	tool := buildDecideTool([]string{"claude-code"}, []string{"ws-1"}, targetIDs)
+	tool := buildDecideTool([]string{"claude-code"}, []string{"ws-1"}, targetIDs, false)
 	params := map[string]any(tool.OfFunction.Function.Parameters)
 	properties, ok := params["properties"].(map[string]any)
 	if !ok {
@@ -60,7 +60,7 @@ func TestBuildDecideTool_NoTargets_TargetIDUnconstrained(t *testing.T) {
 // actionEnum returns the action enum the decide tool offers the model.
 func actionEnum(t *testing.T, targetIDs []string) []string {
 	t.Helper()
-	tool := buildDecideTool([]string{"claude-code"}, nil, targetIDs)
+	tool := buildDecideTool([]string{"claude-code"}, nil, targetIDs, false)
 	params := tool.OfFunction.Function.Parameters
 	props, _ := params["properties"].(map[string]any)
 	action, _ := props["action"].(map[string]any)

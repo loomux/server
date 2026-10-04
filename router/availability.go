@@ -204,19 +204,25 @@ func (r *Router) RefreshTargetAgents(ctx context.Context, targetID string) ([]*r
 
 // agentAvailability reads a target's recorded probe results into
 // TargetSnapshot.Agents' shape.
-func (r *Router) agentAvailability(ctx context.Context, targetID string) (map[string]bool, error) {
+func (r *Router) agentAvailability(ctx context.Context, targetID string) (available map[string]bool, versions map[string]string, err error) {
 	rows, err := r.store.ListTargetAgents(ctx, targetID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(rows) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	out := make(map[string]bool, len(rows))
+	available = make(map[string]bool, len(rows))
 	for _, a := range rows {
-		out[a.AgentType] = a.Available
+		available[a.AgentType] = a.Available
+		if a.Available && a.Version != "" {
+			if versions == nil {
+				versions = make(map[string]string)
+			}
+			versions[a.AgentType] = a.Version
+		}
 	}
-	return out, nil
+	return available, versions, nil
 }
 
 // Output quoted back into chat or an error — an exited agent's last

@@ -245,3 +245,13 @@ func TestCodex_TrustArgsEscapeControlCharacters(t *testing.T) {
 		t.Fatalf("TrustArgs = %q, want [-c %s]", args, want)
 	}
 }
+
+// LOOM-88: each agent type describes itself for the routing prompt, by
+// the name a user would call it.
+func TestAgentDescriptions(t *testing.T) {
+	for name, at := range map[string]router.AgentType{"claude": agents.ClaudeCode(), "codex": agents.Codex()} {
+		if !strings.Contains(strings.ToLower(at.Description), name) {
+			t.Errorf("%s description = %q, want it to name %q", name, at.Description, name)
+		}
+	}
+}

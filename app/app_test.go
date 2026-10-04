@@ -245,3 +245,12 @@ func scrapeMetrics(t *testing.T, m *metrics.Metrics) string {
 	}
 	return string(body)
 }
+
+// LOOM-88: the routing model is given each dispatchable agent type's
+// description.
+func TestAgentDescriptionsFor(t *testing.T) {
+	got := agentDescriptionsFor(DefaultAgentTypes())
+	if _, ok := got[""]; ok || got["claude-code"] == "" || got["codex"] == "" {
+		t.Errorf("agentDescriptionsFor = %v", got)
+	}
+}

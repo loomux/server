@@ -32,7 +32,20 @@ replies, and updating each workspace's rolling summary).
   both, via the same pending-offer mechanism as installs), the per-target `shell@<target>` workspace, and
   the verbatim, bounded, vault-redacted output reply.
 - `routing.go` — `RoutingModel` (the swappable seam), `Decision`,
-  `WorkspaceSnapshot`, `ProvisionSpec`, `RelayResult`.
+  `WorkspaceSnapshot` (status, target name, last use, summary — LOOM-88),
+  `TargetSnapshot` (agent availability and versions), `ProvisionSpec`,
+  `RelayResult`, and the conversation context `DispatchOptions` carries to
+  `Decide` (`History`, `OpenTask`, `LastWorkspaceID` — LOOM-87).
+- `agentchoice.go` — `checkAgentChoice` (LOOM-88): a decision naming an
+  agent the target is recorded not to have is corrected before any row is
+  written — an installed agent is substituted (logged as
+  `agent_substituted_from`, noted in the reply) unless the user named the
+  missing one, which keeps the LOOM-71 install offer.
+- `conversation.go` — `conversationContext` (the last turns, bounded; the
+  task awaiting input; the last workspace) and `ApplyAffinity` (LOOM-87):
+  with a task open, a decision that doesn't continue it is overridden to,
+  unless the model set `leave_open_task` — logged as
+  `affinity_override_from`.
 - `router.go` — `Router`, the actual composition: `Dispatch` routes a
   message, resolves or provisions a workspace, then `dispatchToAgent`
   finds the task already open for that workspace + conversation

@@ -141,7 +141,7 @@ func TestDispatch_NoWorkspaceHint_OptionsAreZeroValue(t *testing.T) {
 	if _, err := r.Dispatch(context.Background(), "conv-1", "what's up"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	if model.LastDecideOptions != (router.DispatchOptions{}) {
+	if o := model.LastDecideOptions; o.WorkspaceHint != "" || o.OpenTask != nil || len(o.History) != 0 {
 		t.Fatalf("Decide's options = %+v, want zero value", model.LastDecideOptions)
 	}
 }
