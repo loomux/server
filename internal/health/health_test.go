@@ -24,6 +24,8 @@ func (e *fakeExecutor) NewSession(ctx context.Context, session, dir, command str
 func (e *fakeExecutor) HasSession(ctx context.Context, session string) (bool, error) {
 	return false, nil
 }
+func (e *fakeExecutor) SendKey(ctx context.Context, target, key string) error { return nil }
+
 func (e *fakeExecutor) SendKeys(ctx context.Context, target, keys string, enter bool) error {
 	return nil
 }

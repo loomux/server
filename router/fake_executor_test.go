@@ -17,6 +17,8 @@ type fakeSession struct {
 	command string
 	alive   bool
 	keys    []string
+	// namedKeys are keys sent by name (SendKey), e.g. "Escape".
+	namedKeys []string
 }
 
 // fakeExecutor is an in-memory targets.TargetExecutor for router's fast
@@ -116,6 +118,20 @@ func (e *fakeExecutor) SendKeys(ctx context.Context, target, keys string, enter 
 	if e.onSendKeys != nil {
 		defer e.onSendKeys()
 	}
+	return nil
+}
+
+func (e *fakeExecutor) SendKey(ctx context.Context, target, key string) error {
+	if e.unreachable {
+		return targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.sessions[target]
+	if !ok || !s.alive {
+		return fmt.Errorf("fakeExecutor: no such session %q", target)
+	}
+	s.namedKeys = append(s.namedKeys, key)
 	return nil
 }
 

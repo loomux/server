@@ -51,6 +51,14 @@ func (e *LocalExecutor) HasSession(ctx context.Context, session string) (bool, e
 	return false, err
 }
 
+// SendKey sends one key by its tmux name to target.
+func (e *LocalExecutor) SendKey(ctx context.Context, target, key string) error {
+	if _, err := e.run(ctx, "send-keys", "-t", target, key); err != nil {
+		return fmt.Errorf("targets: send key: %w", err)
+	}
+	return nil
+}
+
 func (e *LocalExecutor) SendKeys(ctx context.Context, target, keys string, enter bool) error {
 	if _, err := e.run(ctx, "send-keys", "-t", target, "-l", "--", keys); err != nil {
 		return err

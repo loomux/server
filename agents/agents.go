@@ -120,6 +120,7 @@ func Codex() router.AgentType {
 		AgentConfig:        completion.AgentConfig{Tier: completion.TierMarker},
 		LaunchTemplate:     "codex",
 		Binary:             "codex",
+		InterruptKeys:      []string{"Escape"},
 		Description:        `OpenAI's Codex CLI ("codex"). A coding agent; choose it when the user asks for Codex or OpenAI.`,
 		CompletionHookArgs: []string{"-c", "notify=" + tomlStringArray(codexNotifyArgv())},
 		Profile: router.LaunchProfile{

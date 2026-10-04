@@ -29,6 +29,8 @@ func newScriptedExecutor(outputs []string) *scriptedExecutor {
 
 func (e *scriptedExecutor) NewSession(context.Context, string, string, string) error { return nil }
 func (e *scriptedExecutor) HasSession(context.Context, string) (bool, error)         { return true, nil }
+func (e *scriptedExecutor) SendKey(ctx context.Context, target, key string) error { return nil }
+
 func (e *scriptedExecutor) SendKeys(context.Context, string, string, bool) error     { return nil }
 func (e *scriptedExecutor) KillSession(context.Context, string) error                { return nil }
 func (e *scriptedExecutor) Close() error                                             { return nil }

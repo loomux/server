@@ -826,8 +826,66 @@ func (r *Router) turnTimedOut(ctx context.Context, task *registry.Task, timeout 
 	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{Class: registry.ErrorClassTimeout, Reason: reason}); err != nil {
 		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 	}
-	return fmt.Errorf("router: dispatch: %s. It's still running — attach on %s with `tmux attach -t %s` to see it: %w",
+	// The turn is failed, so its agent mustn't carry on unsupervised
+	// (LOOM-117): interrupt it, keeping the pane for a human to inspect.
+	r.interruptAgent(cleanupCtx, task)
+	return fmt.Errorf("router: dispatch: %s. Loomux interrupted it and kept the pane — attach on %s with `tmux attach -t %s` to see it: %w",
 		reason, targetName, task.TmuxSession, timeout)
+}
+
+// interruptAgent sends the agent-type's interrupt keys to task's pane,
+// best effort: a failure is logged, not returned.
+func (r *Router) interruptAgent(ctx context.Context, task *registry.Task) {
+	entry, err := r.agentTypes.Get(task.AgentType)
+	if err != nil || len(entry.InterruptKeys) == 0 {
+		return
+	}
+	exec, err := r.executorFor(ctx, task)
+	if err != nil {
+		r.logger.Error("agent not interrupted", "task_id", task.ID, "error", err)
+		return
+	}
+	for _, key := range entry.InterruptKeys {
+		if err := exec.SendKey(ctx, task.TmuxSession, key); err != nil {
+			r.logger.Error("agent not interrupted", "task_id", task.ID, "error", err)
+			return
+		}
+	}
+	r.logger.Info("agent interrupted after timeout", "task_id", task.ID, "agent_type", task.AgentType)
+}
+
+// retireStalePanes tears down the panes failed agent turns left in a
+// workspace (LOOM-117) — kept for inspection, but a fresh agent launched
+// next to one would be a second agent in the same directory. Each is
+// recorded as reaped; the task stays failed.
+func (r *Router) retireStalePanes(ctx context.Context, workspaceID string) error {
+	tasks, err := r.store.ListTasksByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	for _, t := range tasks {
+		if t.Kind != registry.TaskKindAgent || t.Status != registry.TaskStatusFailed || t.ReapedAt != nil {
+			continue
+		}
+		exec, err := r.executorFor(ctx, t)
+		if err != nil {
+			return err
+		}
+		live, err := exec.HasSession(ctx, t.TmuxSession)
+		if err != nil {
+			return err
+		}
+		if live {
+			if err := exec.KillSession(ctx, t.TmuxSession); err != nil {
+				return err
+			}
+			r.logger.Info("retired a failed turn's pane before launching", "task_id", t.ID, "workspace_id", workspaceID)
+		}
+		if err := r.store.SetTaskReapedAt(ctx, t.ID, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // taskFailure builds a TaskFailure from err, classing an unreachable
@@ -969,6 +1027,10 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	envPrefix, err := r.agentEnvPrefix(ctx, workspaceID, taskID, entry)
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: %w", err)
+	}
+
+	if err := r.retireStalePanes(ctx, workspaceID); err != nil {
+		return nil, false, fmt.Errorf("router: dispatch: retire stale panes: %w", err)
 	}
 
 	prompt := ""
