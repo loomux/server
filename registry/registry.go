@@ -38,9 +38,51 @@ type Target struct {
 	// each agent-type's own default. Per-target, so policy (LOOM-89) can
 	// tighten it on, say, a work-only host.
 	PermissionMode string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// Policy is what Loomux may do on this target (LOOM-89). The zero
+	// value allows everything, as before policies existed.
+	Policy    TargetPolicy
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
+
+// TargetPolicy is what Loomux may do on a target (LOOM-89), enforced by
+// the router after the routing decision, before anything runs — never
+// left to the routing model. Its zero value allows everything.
+type TargetPolicy struct {
+	// Purpose is TargetPurposePersonal or TargetPurposeWork; empty is
+	// personal. A work machine runs agents under the user's work logins.
+	Purpose string
+	// AllowedAgentTypes, if non-empty, are the only agent types that may
+	// run there.
+	AllowedAgentTypes []string
+	// NoProvision forbids creating workspaces there; NoShell forbids
+	// running plain shell commands.
+	NoProvision bool
+	NoShell     bool
+	// RequireConfirmation makes new work there — a new workspace, a
+	// command, an agent started in a workspace — wait for the user's
+	// "yes" in chat to the plan.
+	RequireConfirmation bool
+}
+
+// AllowsAgent reports whether agentType may run under p.
+func (p TargetPolicy) AllowsAgent(agentType string) bool {
+	if len(p.AllowedAgentTypes) == 0 {
+		return true
+	}
+	for _, a := range p.AllowedAgentTypes {
+		if a == agentType {
+			return true
+		}
+	}
+	return false
+}
+
+// Target purposes (TargetPolicy.Purpose).
+const (
+	TargetPurposePersonal = "personal"
+	TargetPurposeWork     = "work"
+)
 
 // Validate enforces the invariants the execution layer assumes but
 // cannot itself check at registration time, so a target that could never
@@ -82,6 +124,16 @@ func (t *Target) Validate() error {
 	case "", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual:
 	default:
 		return fmt.Errorf("permission_mode must be empty, %q, %q or %q", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual)
+	}
+	switch t.Policy.Purpose {
+	case "", TargetPurposePersonal, TargetPurposeWork:
+	default:
+		return fmt.Errorf("purpose must be empty, %q or %q", TargetPurposePersonal, TargetPurposeWork)
+	}
+	for _, a := range t.Policy.AllowedAgentTypes {
+		if strings.TrimSpace(a) == "" || a != strings.TrimSpace(a) {
+			return errors.New("allowed_agent_types must not contain blank or padded names")
+		}
 	}
 	if t.WorkspaceRoot != "" {
 		switch {

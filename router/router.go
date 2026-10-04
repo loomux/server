@@ -193,6 +193,13 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				return r.act(ctx, log, conversationID, p.message, Decision{
 					Action: ActionProvisionWorkspace, AgentType: p.agentType, NewWorkspace: *p.provision,
 				}, true, start, m)
+			case pendingPolicyConfirm:
+				reply, err := r.confirmPolicy(ctx, log, conversationID, p, start, m)
+				if err != nil {
+					m.outcome = metrics.OutcomeFailure
+					m.errClass = classifyDispatchError(err)
+				}
+				return reply, err
 			case pendingRunCommand:
 				m.action = string(ActionRunCommand)
 				reply, err := r.confirmCommand(ctx, log, conversationID, message, p, start)
@@ -279,6 +286,17 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	}
 	logDecision(log, decision, substitutedFrom, affinityFrom)
 	r.metrics.RecordRoutingDecision(string(decision.Action))
+
+	// The target's policy (LOOM-89) has the last word, whatever the
+	// routing model chose.
+	continuing := openTask != nil && decision.Action == ActionUseWorkspace && decision.WorkspaceID == openTask.WorkspaceID
+	if reply, handled, err := r.enforcePolicy(ctx, log, conversationID, message, decision, continuing, start); handled {
+		m.action = string(decision.Action)
+		if err != nil {
+			m.outcome, m.errClass = metrics.OutcomeFailure, classifyDispatchError(err)
+		}
+		return reply, err
+	}
 
 	reply, err := r.act(ctx, log, conversationID, message, decision, false, start, m)
 	if err == nil {
@@ -1333,6 +1351,7 @@ func (r *Router) snapshotTargets(ctx context.Context, targets []*registry.Target
 			Agents:        agents,
 			AgentVersions: versions,
 			Problem:       problem,
+			Policy:        t.Policy,
 		}
 	}
 	return out, nil

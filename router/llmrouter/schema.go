@@ -9,6 +9,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
 
+	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 )
 
@@ -43,7 +44,10 @@ const decideSystemPrompt = `You are Loomux's routing model. Loomux dispatches ch
 	`rather than run it. "not checked yet" means availability is unknown; Loomux checks before ` +
 	`launching. A target marked "unusable right now" failed its last health check: don't send ` +
 	`work there; if the user asked for that machine, answer directly and tell them what is wrong ` +
-	`with it. A new workspace is described only by its name, kind (empty, git_clone or ` +
+	`with it. A target's "policy" line says what Loomux may do there: never provision on one with ` +
+	`"no new workspaces", run_command on one with "no shell commands", or choose an agent_type its ` +
+	`"only" list leaves out — Loomux refuses those regardless; prefer another target, or answer ` +
+	`directly and say why. A new workspace is described only by its name, kind (empty, git_clone or ` +
 	`existing_dir) and, for git_clone, the git_remote URL: Loomux creates it under the target's ` +
 	`workspace root itself, so you never supply a path or any provisioning command. ` +
 	`Choose "run_command" when the user asks to run a plain shell command on a machine ` +
@@ -227,6 +231,28 @@ func enumStringProperty(description string, values []string) map[string]any {
 // against; a var so tests can pin it.
 var nowFunc = time.Now
 
+// renderPolicy describes a target's policy (LOOM-89), "" for the default
+// allow-everything one.
+func renderPolicy(p registry.TargetPolicy) string {
+	var parts []string
+	if p.Purpose == registry.TargetPurposeWork {
+		parts = append(parts, "work machine")
+	}
+	if p.NoProvision {
+		parts = append(parts, "no new workspaces")
+	}
+	if p.NoShell {
+		parts = append(parts, "no shell commands")
+	}
+	if len(p.AllowedAgentTypes) > 0 {
+		parts = append(parts, "only "+strings.Join(p.AllowedAgentTypes, ", "))
+	}
+	if p.RequireConfirmation {
+		parts = append(parts, "asks the user to confirm new work")
+	}
+	return strings.Join(parts, "; ")
+}
+
 // renderAgents lists a target's recorded agent availability (LOOM-71)
 // in a stable order, with each available agent's probed version
 // (LOOM-88), e.g. "claude-code: available (2.1.4), codex: not installed".
@@ -350,6 +376,9 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n  agents: %s\n", t.ID, t.Name, t.Kind, renderAgents(t.Agents, t.AgentVersions))
 		if t.Problem != "" {
 			fmt.Fprintf(&b, "  unusable right now: %s\n", t.Problem)
+		}
+		if p := renderPolicy(t.Policy); p != "" {
+			fmt.Fprintf(&b, "  policy: %s\n", p)
 		}
 	}
 	if o.WorkspaceHint != "" {

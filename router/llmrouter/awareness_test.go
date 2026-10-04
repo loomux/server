@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 )
 
@@ -82,6 +83,22 @@ func TestDecideUserPrompt_TargetProblem(t *testing.T) {
 	}
 	if strings.Count(prompt, "unusable right now") != 1 {
 		t.Errorf("a healthy target is marked unusable:\n%s", prompt)
+	}
+}
+
+// LOOM-89: a target's policy is spelled out; a default one adds nothing.
+func TestDecideUserPrompt_TargetPolicy(t *testing.T) {
+	prompt := decideUserPrompt("hi", nil, []router.TargetSnapshot{
+		{ID: "t1", Name: "sc1", Kind: "remote", Policy: registry.TargetPolicy{Purpose: "work",
+			AllowedAgentTypes: []string{"claude-code"}, NoProvision: true, NoShell: true, RequireConfirmation: true}},
+		{ID: "t2", Name: "jet01", Kind: "remote"},
+	}, router.DispatchOptions{})
+	want := "  policy: work machine; no new workspaces; no shell commands; only claude-code; asks the user to confirm new work\n"
+	if !strings.Contains(prompt, want) {
+		t.Errorf("prompt missing %q:\n%s", want, prompt)
+	}
+	if strings.Count(prompt, "policy:") != 1 {
+		t.Errorf("a default policy is rendered:\n%s", prompt)
 	}
 }
 

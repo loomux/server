@@ -23,6 +23,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("Target", func(t *testing.T) { testTargetCRUD(t, newStore(t)) })
 	t.Run("TargetNotFound", func(t *testing.T) { testTargetNotFound(t, newStore(t)) })
 	t.Run("TargetDuplicateName", func(t *testing.T) { testTargetDuplicateName(t, newStore(t)) })
+	t.Run("TargetPolicy", func(t *testing.T) { testTargetPolicy(t, newStore(t)) })
 
 	t.Run("TargetAgentUpsertAndList", func(t *testing.T) { testTargetAgentUpsertAndList(t, newStore(t)) })
 	t.Run("TargetAgentPathAndVersion", func(t *testing.T) { testTargetAgentPathAndVersion(t, newStore(t)) })
@@ -1548,5 +1549,30 @@ func testTaskTurns(t *testing.T, s registry.Store) {
 	}
 	if got, _ := s.ListTaskTurns(ctx, task.ID); len(got) != 0 {
 		t.Errorf("turns outlived their task: %+v", got)
+	}
+}
+
+func testTargetPolicy(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+	got, err := s.GetTarget(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	if !reflect.DeepEqual(got.Policy, registry.TargetPolicy{}) {
+		t.Fatalf("new target's policy = %+v, want the zero (allow-all) policy", got.Policy)
+	}
+	want := registry.TargetPolicy{Purpose: registry.TargetPurposeWork, AllowedAgentTypes: []string{"claude-code"},
+		NoProvision: true, NoShell: true, RequireConfirmation: true}
+	got.Policy = want
+	if err := s.UpdateTarget(ctx, got); err != nil {
+		t.Fatalf("UpdateTarget: %v", err)
+	}
+	list, err := s.ListTargets(ctx)
+	if err != nil {
+		t.Fatalf("ListTargets: %v", err)
+	}
+	if len(list) != 1 || !reflect.DeepEqual(list[0].Policy, want) {
+		t.Fatalf("stored policy = %+v, want %+v", list[0].Policy, want)
 	}
 }

@@ -120,6 +120,24 @@ own — Loomux doesn't push those sessions over SSH. API-key-style secrets are
 injected as env vars via the SSH exec at launch time (see §7, Credential
 Model).
 
+**Target policy (LOOM-89).** Each target carries a policy saying what
+Loomux may do there: `purpose` (personal or work), `allowed_agent_types`
+(empty: all), `allow_provision`, `allow_shell` and `require_confirmation`.
+The defaults allow everything, as before. The routing model is told each
+policy, but the router enforces it after the decision and before
+anything runs, whatever the model chose:
+- A forbidden decision ends the turn with a plain refusal and no side
+  effects: a new workspace where provisioning is off, a shell command
+  where shell is off, or an agent type not on the list.
+- On a require-confirmation target, new work waits for a "yes" in chat
+  to the plan: a new workspace, a verbatim command, or an agent started
+  in a workspace. The policy is checked again at the "yes".
+- Follow-up turns in the conversation's open pane there aren't asked
+  again.
+
+A shared work machine such as sc1 is meant to be `purpose: work`,
+`allow_provision: false`, `require_confirmation: true`.
+
 ### 2. Workspace registry
 
 A **workspace** is a directory (with an optional git remote) bound to

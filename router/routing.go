@@ -2,7 +2,11 @@ package router
 
 import "time"
 
-import "context"
+import (
+	"context"
+
+	"github.com/Loomux/server/registry"
+)
 
 // DecisionAction identifies what a RoutingModel decided to do with an
 // incoming message.
@@ -72,6 +76,9 @@ type TargetSnapshot struct {
 	// (LOOM-86) — unreachable, no tmux — or "" if nothing is wrong or it
 	// has never been probed.
 	Problem string
+	// Policy is what Loomux may do there (LOOM-89), so the model can
+	// avoid what the router would refuse anyway.
+	Policy registry.TargetPolicy
 }
 
 // ProvisionKind is how a new dynamic workspace's directory comes to be

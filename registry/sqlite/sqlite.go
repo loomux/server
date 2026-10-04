@@ -100,13 +100,19 @@ func (s *Store) Ping(ctx context.Context) error {
 }
 
 func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
+	allowed, err := marshalAllowedAgents(t.Policy.AllowedAgentTypes)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	t.CreatedAt = now
 	t.UpdatedAt = now
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode, t.CreatedAt, t.UpdatedAt,
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
+			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
+		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.CreatedAt, t.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -119,7 +125,7 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 
 func (s *Store) GetTarget(ctx context.Context, id string) (*registry.Target, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode, created_at, updated_at
+		SELECT `+targetColumns+`
 		FROM targets WHERE id = ?`, id)
 	t, err := scanTarget(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -133,7 +139,7 @@ func (s *Store) GetTarget(ctx context.Context, id string) (*registry.Target, err
 
 func (s *Store) ListTargets(ctx context.Context) ([]*registry.Target, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode, created_at, updated_at
+		SELECT `+targetColumns+`
 		FROM targets ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list targets: %w", err)
@@ -155,11 +161,17 @@ func (s *Store) ListTargets(ctx context.Context) ([]*registry.Target, error) {
 }
 
 func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
+	allowed, err := marshalAllowedAgents(t.Policy.AllowedAgentTypes)
+	if err != nil {
+		return err
+	}
 	t.UpdatedAt = time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?, updated_at = ?
+		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
+			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, updated_at = ?
 		WHERE id = ?`,
-		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode, t.UpdatedAt, t.ID,
+		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
+		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.UpdatedAt, t.ID,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -898,14 +910,38 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// targetColumns is what scanTarget reads, in order.
+const targetColumns = `id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
+	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, created_at, updated_at`
+
 func scanTarget(row rowScanner) (*registry.Target, error) {
 	var t registry.Target
-	var kind string
-	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	var kind, allowed string
+	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode,
+		&t.Policy.Purpose, &allowed, &t.Policy.NoProvision, &t.Policy.NoShell, &t.Policy.RequireConfirmation,
+		&t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.Kind = registry.TargetKind(kind)
+	if err := json.Unmarshal([]byte(allowed), &t.Policy.AllowedAgentTypes); err != nil {
+		return nil, fmt.Errorf("unmarshal allowed agent types: %w", err)
+	}
+	if len(t.Policy.AllowedAgentTypes) == 0 {
+		t.Policy.AllowedAgentTypes = nil
+	}
 	return &t, nil
+}
+
+// marshalAllowedAgents stores a policy's agent-type list (LOOM-89).
+func marshalAllowedAgents(agents []string) (string, error) {
+	if agents == nil {
+		agents = []string{}
+	}
+	b, err := json.Marshal(agents)
+	if err != nil {
+		return "", fmt.Errorf("sqlite: marshal allowed agent types: %w", err)
+	}
+	return string(b), nil
 }
 
 func requireRowAffected(res sql.Result, entity, id string) error {
