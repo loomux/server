@@ -521,6 +521,45 @@ func (s *Store) DeleteTask(ctx context.Context, id string) error {
 	return requireRowAffected(res, "task", id)
 }
 
+// CreateTaskTurn records one turn of a task (LOOM-91).
+func (s *Store) CreateTaskTurn(ctx context.Context, t *registry.TaskTurn) error {
+	t.CreatedAt = time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO task_turns (id, task_id, user_message, agent_message, pane, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		t.ID, t.TaskID, t.UserMessage, t.AgentMessage, t.Pane, t.CreatedAt,
+	)
+	if isForeignKeyConstraintErr(err) {
+		return fmt.Errorf("%w: task %q does not exist", registry.ErrConflict, t.TaskID)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: create task turn: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ListTaskTurns(ctx context.Context, taskID string) ([]*registry.TaskTurn, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, task_id, user_message, agent_message, pane, created_at FROM task_turns
+		WHERE task_id = ? ORDER BY created_at, rowid`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list task turns: %w", err)
+	}
+	defer rows.Close()
+	out := []*registry.TaskTurn{}
+	for rows.Next() {
+		var t registry.TaskTurn
+		if err := rows.Scan(&t.ID, &t.TaskID, &t.UserMessage, &t.AgentMessage, &t.Pane, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: list task turns: %w", err)
+		}
+		out = append(out, &t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list task turns: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Store) ListTasks(ctx context.Context) ([]*registry.Task, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks ORDER BY created_at`)
 	if err != nil {

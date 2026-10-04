@@ -2,6 +2,7 @@ package router_test
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -139,5 +140,62 @@ func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 				t.Fatalf("marker file %q still exists after detection, want it removed", markerPath)
 			}
 		})
+	}
+}
+
+// TestIntegration_RealDispatch_RelaysSavedLastMessage runs the LOOM-91
+// path for real: the agent's hook saves its payload beside the marker
+// (as agents' hooks do), and the relay gets the message from it — not
+// the pane, which shows something else — with the payload removed after.
+func TestIntegration_RealDispatch_RelaysSavedLastMessage(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	target := &registry.Target{ID: uuid.NewString(), Name: "real-target", Kind: registry.TargetKindLocal}
+	if err := store.CreateTarget(ctx, target); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "real-ws", Path: t.TempDir(), TargetID: target.ID,
+		Status: registry.WorkspaceStatusIdle}
+	if err := store.CreateWorkspace(ctx, ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	const hook = `sh -c 'echo on-screen-only; ` +
+		`printf "%s" "{\"last_assistant_message\":\"the whole answer\"}" > "$LOOMUX_MARKER_PATH.reply"; ` +
+		`touch "$LOOMUX_MARKER_PATH"; sleep 30'`
+	agentTypes := router.AgentTypeRegistry{
+		"claude-code": router.AgentType{
+			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker},
+			LaunchTemplate: hook, LastMessageKey: "last_assistant_message",
+		},
+	}
+	markerDir := t.TempDir()
+	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
+	orch := orchestrator.New(store, targets.NewExecutor, detector)
+	var relayed string
+	model := &routertest.StubRoutingModel{
+		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+			return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+		},
+		RelayFunc: func(ctx context.Context, captured string) (router.RelayResult, error) {
+			relayed = captured
+			return router.RelayResult{Reply: "ok", Done: true}, nil
+		},
+	}
+	r := router.New(store, orch, targets.NewExecutor, credentials.NewResolver(store), agentTypes, model, markerDir)
+	dispatchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if _, err := r.Dispatch(dispatchCtx, "conv-real", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	tasks, _ := store.ListTasksByWorkspace(ctx, ws.ID)
+	if len(tasks) == 1 {
+		t.Cleanup(func() { _ = targets.NewLocalExecutor().KillSession(context.Background(), tasks[0].TmuxSession) })
+	}
+	if relayed != "the whole answer" {
+		t.Fatalf("relayed %q, want the saved last message", relayed)
+	}
+	matches, _ := filepath.Glob(filepath.Join(markerDir, "*.reply"))
+	if len(matches) != 0 {
+		t.Errorf("payload left behind: %v", matches)
 	}
 }

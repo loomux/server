@@ -50,6 +50,12 @@ func newTestStore(t *testing.T) registry.Store {
 
 func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDispatcher, registry.Store) {
 	t.Helper()
+	return newTestServerWith(t, func(registry.Store) []api.Option { return opts })
+}
+
+// newTestServerWith is newTestServer for options that need the store.
+func newTestServerWith(t *testing.T, optsFor func(registry.Store) []api.Option) (*httptest.Server, *fakeDispatcher, registry.Store) {
+	t.Helper()
 	hash, err := api.HashPassword(testPassword)
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
@@ -64,7 +70,7 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 		defer cancel()
 		_ = dispatcher.Jobs.Shutdown(ctx)
 	})
-	server := api.NewServer(dispatcher.Jobs, store, store, store, store, store, store, []byte(hash), opts...)
+	server := api.NewServer(dispatcher.Jobs, store, store, store, store, store, store, []byte(hash), optsFor(store)...)
 	httpSrv := httptest.NewServer(server)
 	t.Cleanup(httpSrv.Close)
 	return httpSrv, dispatcher, store

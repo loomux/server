@@ -188,6 +188,9 @@ func TestDispatch_TrustCommandRunsBeforeLaunch(t *testing.T) {
 		},
 	})
 	exec.runOnce = func(command string) (string, error) {
+		if strings.Contains(command, "capture-pane") {
+			return "", nil // the finished turn's transcript (LOOM-91)
+		}
 		ran = append(ran, command)
 		if len(exec.sessions) != 0 {
 			t.Errorf("trust ran after the session started")

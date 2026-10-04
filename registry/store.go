@@ -56,6 +56,13 @@ type Store interface {
 	// ErrNotFound for an unknown id.
 	SetTaskReapedAt(ctx context.Context, id string, at time.Time) error
 	DeleteTask(ctx context.Context, id string) error
+	// CreateTaskTurn records one turn of a task (LOOM-91), stamping
+	// CreatedAt; a task that doesn't exist is ErrConflict. Deleting a
+	// task deletes its turns.
+	CreateTaskTurn(ctx context.Context, t *TaskTurn) error
+	// ListTaskTurns returns taskID's turns, oldest first; none (or an
+	// unknown task) is an empty slice.
+	ListTaskTurns(ctx context.Context, taskID string) ([]*TaskTurn, error)
 
 	// CreateMessage and ListMessagesByConversation store the per-turn
 	// chat transcript (design spec docs/design/message-logging-design.md).

@@ -72,6 +72,13 @@ func MarkerPath(dir, taskID string) string {
 	return filepath.Join(dir, taskID+".done")
 }
 
+// ReplyPath is where a TierMarker agent's completion hook saves the
+// turn's payload — the JSON its CLI hands the hook — beside markerPath
+// (LOOM-91), so the agent's own final message can be relayed.
+func ReplyPath(markerPath string) string {
+	return markerPath + ".reply"
+}
+
 // MarkerWatcher implements the shared mechanism behind design spec §5's
 // tiers 1 and 2 (native hook vs. prompt-engineered self-report): watch a
 // deterministic per-task marker file for existence. Content doesn't

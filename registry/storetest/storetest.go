@@ -7,6 +7,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -31,6 +32,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TargetHealthRoundTrip", func(t *testing.T) { testTargetHealthRoundTrip(t, newStore(t)) })
 	t.Run("TargetHealthRequiresValidTarget", func(t *testing.T) { testTargetHealthRequiresValidTarget(t, newStore(t)) })
 	t.Run("TargetHealthDeletedWithTarget", func(t *testing.T) { testTargetHealthDeletedWithTarget(t, newStore(t)) })
+
+	t.Run("TaskTurns", func(t *testing.T) { testTaskTurns(t, newStore(t)) })
 
 	t.Run("Workspace", func(t *testing.T) { testWorkspaceCRUD(t, newStore(t)) })
 	t.Run("WorkspaceStatusFailed", func(t *testing.T) { testWorkspaceStatusFailed(t, newStore(t)) })
@@ -1506,5 +1509,44 @@ func testTaskSetReapedAt(t *testing.T, s registry.Store) {
 	}
 	if err := s.SetTaskReapedAt(ctx, "missing", at); !errors.Is(err, registry.ErrNotFound) {
 		t.Errorf("SetTaskReapedAt(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+func testTaskTurns(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{ID: "turns-task", WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "loomux-turns", Status: registry.TaskStatusRunning, ConversationID: "conv"}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if got, err := s.ListTaskTurns(ctx, task.ID); err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("ListTaskTurns (none) = %v, %v; want an empty slice", got, err)
+	}
+	for i, msg := range []string{"first", "second"} {
+		turn := &registry.TaskTurn{ID: fmt.Sprintf("turn-%d", i), TaskID: task.ID, UserMessage: msg,
+			AgentMessage: "answer to " + msg, Pane: "screen " + msg}
+		if err := s.CreateTaskTurn(ctx, turn); err != nil {
+			t.Fatalf("CreateTaskTurn: %v", err)
+		}
+		if turn.CreatedAt.IsZero() {
+			t.Error("CreateTaskTurn did not stamp CreatedAt")
+		}
+	}
+	got, err := s.ListTaskTurns(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("ListTaskTurns: %v", err)
+	}
+	if len(got) != 2 || got[0].UserMessage != "first" || got[1].AgentMessage != "answer to second" || got[1].Pane != "screen second" {
+		t.Fatalf("ListTaskTurns = %+v", got)
+	}
+	if err := s.CreateTaskTurn(ctx, &registry.TaskTurn{ID: "orphan", TaskID: "no-such-task"}); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("CreateTaskTurn on unknown task: err = %v, want ErrConflict", err)
+	}
+	if err := s.DeleteTask(ctx, task.ID); err != nil {
+		t.Fatalf("DeleteTask with turns: %v", err)
+	}
+	if got, _ := s.ListTaskTurns(ctx, task.ID); len(got) != 0 {
+		t.Errorf("turns outlived their task: %+v", got)
 	}
 }

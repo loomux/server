@@ -22,13 +22,21 @@ import (
 	"github.com/Loomux/server/router"
 )
 
-// touchMarker is the shell snippet both adapters' completion hooks run:
+// markerHook is the shell snippet both adapters' completion hooks run:
 // create the marker's directory if it's gone (router creates it 0700
-// before launch; umask 077 keeps a re-created one private too) and touch
-// the marker. A no-op
-// when LOOMUX_MARKER_PATH is unset, so the hook is harmless in any
-// process that inherits it without being a Loomux task.
-const touchMarker = `[ -z "$LOOMUX_MARKER_PATH" ] || { umask 077 && mkdir -p "$(dirname "$LOOMUX_MARKER_PATH")" && touch "$LOOMUX_MARKER_PATH"; }`
+// before launch; umask 077 keeps a re-created one private too), save the
+// turn's payload — what saveReply prints — beside the marker
+// (completion.ReplyPath, LOOM-91), then touch the marker. The payload is
+// written whole before it is renamed into place, and before the marker
+// exists, so whoever sees the marker sees the finished payload; a payload
+// that can't be saved still leaves the marker. A no-op when
+// LOOMUX_MARKER_PATH is unset, so the hook is harmless in any process
+// that inherits it without being a Loomux task.
+func markerHook(saveReply string) string {
+	return `[ -z "$LOOMUX_MARKER_PATH" ] || { umask 077 && mkdir -p "$(dirname "$LOOMUX_MARKER_PATH")" && ` +
+		`{ { ` + saveReply + ` > "$LOOMUX_MARKER_PATH.reply.tmp" && ` +
+		`mv -f "$LOOMUX_MARKER_PATH.reply.tmp" "$LOOMUX_MARKER_PATH.reply"; }; touch "$LOOMUX_MARKER_PATH"; }; }`
+}
 
 // The version check and the launch both run against the absolute path
 // probed for Binary on the target (LOOM-71/79), so a CLI that's only in
@@ -63,7 +71,8 @@ func ClaudeCode() router.AgentType {
 			LoggedIn:  regexp.MustCompile(`"loggedIn":\s*true`),
 			LoggedOut: regexp.MustCompile(`"loggedIn":\s*false`),
 		},
-		InterruptKeys: []string{"Escape"},
+		LastMessageKey: "last_assistant_message",
+		InterruptKeys:  []string{"Escape"},
 		Description: `Anthropic's Claude Code CLI ("claude"). A general coding agent: reads, edits and runs code ` +
 			`in the workspace. The default when the user doesn't name an agent.`,
 		CompletionHookArgs: []string{"--settings", claudeStopHookSettings()},
@@ -111,7 +120,8 @@ func claudeStopHookSettings() string {
 		Hooks []hook `json:"hooks"`
 	}
 	settings := map[string]map[string][]matcher{
-		"hooks": {"Stop": {{Hooks: []hook{{Type: "command", Command: touchMarker}}}}},
+		// The Stop hook's stdin is its JSON payload.
+		"hooks": {"Stop": {{Hooks: []hook{{Type: "command", Command: markerHook("cat")}}}}},
 	}
 	var b strings.Builder
 	enc := json.NewEncoder(&b)
@@ -141,6 +151,7 @@ func Codex() router.AgentType {
 			LoggedIn:  regexp.MustCompile(`(?im)^\s*logged in\b`),
 			LoggedOut: regexp.MustCompile(`(?i)\bnot logged in\b`),
 		},
+		LastMessageKey:     "last-assistant-message",
 		InterruptKeys:      []string{"Escape"},
 		Description:        `OpenAI's Codex CLI ("codex"). A coding agent; choose it when the user asks for Codex or OpenAI.`,
 		CompletionHookArgs: []string{"-c", "notify=" + tomlStringArray(codexNotifyArgv())},
@@ -178,7 +189,7 @@ func Codex() router.AgentType {
 
 func codexNotifyArgv() []string {
 	// sh -c SCRIPT NAME EVENT: NAME becomes $0, Codex's event JSON $1.
-	script := `case "$1" in *'"agent-turn-complete"'*) ` + touchMarker + ` ;; esac`
+	script := `case "$1" in *'"agent-turn-complete"'*) ` + markerHook(`printf '%s' "$1"`) + ` ;; esac`
 	return []string{"sh", "-c", script, "loomux-notify"}
 }
 

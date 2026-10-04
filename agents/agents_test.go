@@ -19,7 +19,14 @@ import (
 // way the agent CLI would run its hook.
 func runShell(t *testing.T, markerPath string, argv ...string) {
 	t.Helper()
+	runShellStdin(t, markerPath, "", argv...)
+}
+
+// runShellStdin is runShell with stdin.
+func runShellStdin(t *testing.T, markerPath, stdin string, argv ...string) {
+	t.Helper()
 	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Env = os.Environ()
 	if markerPath != "" {
 		cmd.Env = append(cmd.Env, "LOOMUX_MARKER_PATH="+markerPath)
@@ -136,6 +143,45 @@ func TestCodex_NotifyTouchesMarkerOnTurnComplete(t *testing.T) {
 	runShell(t, marker, append(argv, payload)...)
 	if !fileExists(marker) {
 		t.Fatalf("notify did not create %s on agent-turn-complete", marker)
+	}
+}
+
+// LOOM-91: the hooks leave the turn's payload beside the marker, so the
+// router relays the agent's own final message rather than a screenful.
+func TestClaudeCode_StopHookSavesPayload(t *testing.T) {
+	command := claudeStopHookCommand(t, agents.ClaudeCode())
+	marker := filepath.Join(t.TempDir(), "not", "yet", "task.done")
+	payload := `{"hook_event_name":"Stop","last_assistant_message":"line 1\nline 2"}`
+	runShellStdin(t, marker, payload, "sh", "-c", command)
+	if !fileExists(marker) {
+		t.Fatalf("Stop hook did not create %s", marker)
+	}
+	got, err := os.ReadFile(marker + ".reply")
+	if err != nil || string(got) != payload {
+		t.Fatalf("saved payload = %q (%v), want %q", got, err, payload)
+	}
+	if fileExists(marker + ".reply.tmp") {
+		t.Error("temporary payload file left behind")
+	}
+}
+
+func TestCodex_NotifySavesPayload(t *testing.T) {
+	argv := codexNotifyArgv(t, agents.Codex())
+	marker := filepath.Join(t.TempDir(), "task.done")
+	payload := `{"type":"agent-turn-complete","last-assistant-message":"it's done"}`
+	runShell(t, marker, append(argv, payload)...)
+	got, err := os.ReadFile(marker + ".reply")
+	if err != nil || string(got) != payload {
+		t.Fatalf("saved payload = %q (%v), want %q", got, err, payload)
+	}
+}
+
+func TestAdapters_DeclareLastMessageKey(t *testing.T) {
+	if k := agents.ClaudeCode().LastMessageKey; k != "last_assistant_message" {
+		t.Errorf("claude LastMessageKey = %q", k)
+	}
+	if k := agents.Codex().LastMessageKey; k != "last-assistant-message" {
+		t.Errorf("codex LastMessageKey = %q", k)
 	}
 }
 
