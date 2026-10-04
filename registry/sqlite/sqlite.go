@@ -389,11 +389,11 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 		INSERT INTO tasks (
 			id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
 			created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code,
-			failure_reason, error_class, output_tail
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			failure_reason, error_class, output_tail, attention
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.WorkspaceID, string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
 		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.Command, t.ExitCode,
-		t.FailureReason, string(t.ErrorClass), t.OutputTail,
+		t.FailureReason, string(t.ErrorClass), t.OutputTail, attentionJSON(t.Attention),
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: workspace %q does not exist", registry.ErrConflict, t.WorkspaceID)
@@ -407,7 +407,7 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 const taskColumns = `
 	id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
 	created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code,
-	failure_reason, error_class, output_tail`
+	failure_reason, error_class, output_tail, attention`
 
 func (s *Store) GetTask(ctx context.Context, id string) (*registry.Task, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = ?`, id)
@@ -461,11 +461,11 @@ func (s *Store) UpdateTask(ctx context.Context, t *registry.Task) error {
 		UPDATE tasks SET
 			kind = ?, agent_type = ?, tmux_session = ?, status = ?, conversation_id = ?,
 			updated_at = ?, started_at = ?, completed_at = ?, reaped_at = ?, command = ?, exit_code = ?,
-			failure_reason = ?, error_class = ?, output_tail = ?
+			failure_reason = ?, error_class = ?, output_tail = ?, attention = ?
 		WHERE id = ?`,
 		string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
 		t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.Command, t.ExitCode,
-		t.FailureReason, string(t.ErrorClass), t.OutputTail, t.ID,
+		t.FailureReason, string(t.ErrorClass), t.OutputTail, attentionJSON(t.Attention), t.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: update task: %w", err)
@@ -504,18 +504,38 @@ func (s *Store) ListTasks(ctx context.Context) ([]*registry.Task, error) {
 
 func scanTask(row rowScanner) (*registry.Task, error) {
 	var t registry.Task
-	var kind, status, errorClass string
+	var kind, status, errorClass, attention string
 	if err := row.Scan(
 		&t.ID, &t.WorkspaceID, &kind, &t.AgentType, &t.TmuxSession, &status, &t.ConversationID,
 		&t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.CompletedAt, &t.ReapedAt, &t.Command, &t.ExitCode,
-		&t.FailureReason, &errorClass, &t.OutputTail,
+		&t.FailureReason, &errorClass, &t.OutputTail, &attention,
 	); err != nil {
 		return nil, err
+	}
+	if attention != "" {
+		t.Attention = new(registry.Attention)
+		if err := json.Unmarshal([]byte(attention), t.Attention); err != nil {
+			return nil, fmt.Errorf("task %q attention: %w", t.ID, err)
+		}
 	}
 	t.ErrorClass = registry.ErrorClass(errorClass)
 	t.Kind = registry.TaskKind(kind)
 	t.Status = registry.TaskStatus(status)
 	return &t, nil
+}
+
+// attentionJSON is how a task's Attention is stored: JSON, or empty for
+// none.
+func attentionJSON(a *registry.Attention) string {
+	if a == nil {
+		return ""
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		// Only plain strings and ints: Marshal can't fail.
+		panic(err)
+	}
+	return string(b)
 }
 
 func (s *Store) CreateMessage(ctx context.Context, m *registry.Message) error {

@@ -514,6 +514,26 @@ Four independent axes:
   completion, not silent cleanup of something that went wrong. A request
   cancelled by its caller is not a timeout. Provisioning (10 min) and
   direct commands (2 min, then left running) have their own bounds.
+- **Agent stopped at a prompt** (LOOM-97): auto mode still asks a human
+  about some things. Every progress check of a marker-tier agent's pane
+  also reads it for a prompt (`agents.DetectPrompt`: a permission
+  request, an AskUserQuestion, the folder-trust dialog, a sign-in
+  screen). The same prompt on two consecutive checks ends the wait at
+  once, rather than after the no-progress timeout. A sign-in screen
+  fails the task with error class `login_required`, the pane kept so a
+  human can attach and finish the login; Loomux never signs an agent in.
+  Anything else makes the task `needs-attention`, with the prompt stored
+  on it (`attention`: title, detail, question, options, cursor) and shown
+  in chat. The conversation's next message is the answer, read
+  deterministically, never by the routing model: a yes/approve word picks
+  the first "Yes" option, a no/deny word the "No" option (or Escape), a
+  number that option, and other words are typed into a question's "Type
+  something" field or, for a permission, deny it and go to the agent as
+  its next turn. Keys are arrow moves plus Enter, the same for Claude
+  Code and Codex. A denied permission ends the agent's turn without its
+  completion signal, so after a deny the turn also ends once the pane
+  has been unchanged for 3 s. Then the turn carries on as any other:
+  wait, relay, apply.
 - **Router model unavailable/erroring**: an explicit "routing failed"
   message to the user, never a silently dropped message or a wild guess at
   a workspace.

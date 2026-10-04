@@ -7,6 +7,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 
 	t.Run("Task", func(t *testing.T) { testTaskCRUD(t, newStore(t)) })
 	t.Run("CommandTaskRoundTrip", func(t *testing.T) { testCommandTaskRoundTrip(t, newStore(t)) })
+	t.Run("TaskAttentionRoundTrip", func(t *testing.T) { testTaskAttentionRoundTrip(t, newStore(t)) })
 	t.Run("TaskFailureRoundTrip", func(t *testing.T) { testTaskFailureRoundTrip(t, newStore(t)) })
 	t.Run("WorkspaceStatusReasonRoundTrip", func(t *testing.T) { testWorkspaceStatusReasonRoundTrip(t, newStore(t)) })
 	t.Run("TaskNotFound", func(t *testing.T) { testTaskNotFound(t, newStore(t)) })
@@ -1123,6 +1125,40 @@ func testTaskFailureRoundTrip(t *testing.T, s registry.Store) {
 	}
 	if got.FailureReason != task.FailureReason || got.ErrorClass != registry.ErrorClassAgentExited || got.OutputTail != task.OutputTail {
 		t.Errorf("failure after round trip = %q / %q / %q", got.FailureReason, got.ErrorClass, got.OutputTail)
+	}
+}
+
+func testTaskAttentionRoundTrip(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{ID: "asking", WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "sess", Status: registry.TaskStatusRunning, ConversationID: "c"}
+	if err := s.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if got, err := s.GetTask(ctx, task.ID); err != nil || got.Attention != nil {
+		t.Fatalf("fresh task: Attention = %+v, err %v; want nil", got.Attention, err)
+	}
+	task.Status = registry.TaskStatusNeedsAttention
+	task.Attention = &registry.Attention{Kind: registry.AttentionPermission, Title: "Bash command",
+		Detail: "touch a.txt", Question: "Do you want to proceed?",
+		Options: []registry.AttentionOption{{Label: "Yes"}, {Label: "No", Description: "stop"}}, Selected: 1}
+	if err := s.UpdateTask(ctx, task); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	got, err := s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != registry.TaskStatusNeedsAttention || !reflect.DeepEqual(got.Attention, task.Attention) {
+		t.Errorf("after round trip: status %q, attention %+v; want %+v", got.Status, got.Attention, task.Attention)
+	}
+	task.Status, task.Attention = registry.TaskStatusRunning, nil
+	if err := s.UpdateTask(ctx, task); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if got, err := s.GetTask(ctx, task.ID); err != nil || got.Attention != nil {
+		t.Errorf("cleared: Attention = %+v, err %v; want nil", got.Attention, err)
 	}
 }
 

@@ -634,6 +634,9 @@ type conversationTask struct {
 	FailureReason string `json:"failure_reason,omitempty"`
 	ErrorClass    string `json:"error_class,omitempty"`
 	OutputTail    string `json:"output_tail,omitempty"`
+	// Attention is the prompt a needs-attention task is stopped at
+	// (LOOM-97), for a client to show with its options.
+	Attention *registry.Attention `json:"attention,omitempty"`
 }
 
 type messageSummary struct {
@@ -694,6 +697,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 			FailureReason: t.FailureReason,
 			ErrorClass:    string(t.ErrorClass),
 			OutputTail:    t.OutputTail,
+			Attention:     t.Attention,
 		})
 	}
 

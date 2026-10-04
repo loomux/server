@@ -75,8 +75,12 @@ target can tighten this with `permission_mode` (`auto`, `accept-edits` or
 `manual`; empty means the agent-type's default, `auto`). Each agent-type
 maps the modes to its own flags (`LaunchProfile.PermissionModes`), so
 per-target policy (LOOM-89) can restrict, say, a work-only host. Anything
-a mode still asks about stops at a prompt in the pane; LOOM-97 surfaces
-those in chat.
+a mode still asks about stops at a prompt in the pane. LOOM-97 surfaces
+those in chat: `DetectPrompt` (prompts.go) reads the prompt off the pane,
+the task becomes `needs-attention`, and the next chat message answers it
+(see the design spec's failure modes). `testdata/` holds the Claude Code
+screens it is tested against, captured from a real target. The Codex ones
+are reconstructed, not captured, so re-check them against a real Codex.
 
 **Claude Code workspace trust.** Claude Code has no per-launch flag to
 trust a folder; trust lives in the user's `~/.claude.json`. Before every

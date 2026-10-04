@@ -170,8 +170,13 @@ const (
 	TaskStatusRunning       TaskStatus = "running"
 	TaskStatusAwaitingInput TaskStatus = "awaiting-input"
 	TaskStatusHumanTakeover TaskStatus = "human-takeover"
-	TaskStatusCompleted     TaskStatus = "completed"
-	TaskStatusFailed        TaskStatus = "failed"
+	// TaskStatusNeedsAttention: the agent is stopped at a prompt only a
+	// human can answer — an approval its permission mode still asks for,
+	// a question, a trust dialog (LOOM-97). Task.Attention says what it
+	// shows; the conversation's next message answers it.
+	TaskStatusNeedsAttention TaskStatus = "needs-attention"
+	TaskStatusCompleted      TaskStatus = "completed"
+	TaskStatusFailed         TaskStatus = "failed"
 )
 
 // Task is a single tmux pane's lifecycle record, scoped to a workspace.
@@ -211,6 +216,49 @@ type Task struct {
 	FailureReason string
 	ErrorClass    ErrorClass
 	OutputTail    string
+	// Attention is the prompt a TaskStatusNeedsAttention task is stopped
+	// at (LOOM-97); nil otherwise.
+	Attention *Attention
+}
+
+// AttentionKind says what an agent's prompt asks a human for (LOOM-97).
+type AttentionKind string
+
+const (
+	// AttentionPermission: approve or deny something the agent wants to
+	// do (run a command, edit a file).
+	AttentionPermission AttentionKind = "permission"
+	// AttentionQuestion: the agent asks the user to pick an answer or
+	// type one.
+	AttentionQuestion AttentionKind = "question"
+	// AttentionTrust: the agent asks whether to trust the workspace's
+	// folder.
+	AttentionTrust AttentionKind = "trust"
+	// AttentionLogin: the agent CLI isn't signed in. Loomux never answers
+	// this one: the task fails with ErrorClassLoginRequired.
+	AttentionLogin AttentionKind = "login"
+)
+
+// Attention is a prompt read off an agent's pane (LOOM-97): what a chat
+// client shows so the user can answer it without attaching.
+type Attention struct {
+	Kind AttentionKind `json:"kind"`
+	// Title is the prompt's heading ("Bash command"), Detail what it is
+	// about (the command, the file), Question what it asks ("Do you want
+	// to proceed?"). Any may be empty.
+	Title    string `json:"title,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	Question string `json:"question,omitempty"`
+	// Options are the choices the prompt lists, in order.
+	Options []AttentionOption `json:"options,omitempty"`
+	// Selected is the index of the option the prompt's cursor is on.
+	Selected int `json:"selected"`
+}
+
+// AttentionOption is one choice an Attention offers.
+type AttentionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 // ErrorClass is a stable, machine-readable category for a task failure
@@ -243,6 +291,9 @@ const (
 	// ErrorClassSessionLost: the task's session was gone (reaped,
 	// crashed, killed) when the next message arrived.
 	ErrorClassSessionLost ErrorClass = "session_lost"
+	// ErrorClassLoginRequired: the agent CLI asked to be signed in
+	// (LOOM-97). Its pane is left for a human to complete the login.
+	ErrorClassLoginRequired ErrorClass = "login_required"
 	// ErrorClassInternal: anything else.
 	ErrorClassInternal ErrorClass = "internal"
 )

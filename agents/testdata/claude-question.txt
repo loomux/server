@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.289
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/lx97
+
+▎ Your voice can help guide AI
+▎ Take 15 min to share your experiences with Anthropic Interviewer. Start now
+  1 more notice hidden
+
+❯ Run this exact shell command: curl -sS https://example.com -o /tmp/lx97/ex.html && rm -rf /tmp/lx97/ex.html
+
+  Ran 1 shell command
+
+● I ran the command as written. curl downloaded https://example.com to /tmp/lx97/ex.html without errors, and then rm -rf deleted the file. There was no output,
+  and nothing is left on disk.
+
+✻ Baked for 4s · done 5:52 PM
+
+❯ Use your AskUserQuestion tool to ask me whether I prefer red or blue. Do nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Color
+
+Do you prefer red or blue?
+
+❯ 1. Red
+     You prefer red.
+  2. Blue
+     You prefer blue.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
