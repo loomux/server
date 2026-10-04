@@ -52,7 +52,7 @@ func TestDispatch_TurnTimeout(t *testing.T) {
 		t.Errorf("error %v doesn't carry the TurnTimeoutError", err)
 	}
 	task := onlyTask(t, store, ws.ID)
-	for _, want := range []string{"claude-code", "timed out", task.TmuxSession, "tmux attach"} {
+	for _, want := range []string{"claude-code", "timed out", "tmux -L loomux attach -t " + task.TmuxSession} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %q: %v", want, err)
 		}

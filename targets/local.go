@@ -18,7 +18,7 @@ func NewLocalExecutor() *LocalExecutor {
 }
 
 func (e *LocalExecutor) run(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-L", TmuxSocket}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -39,7 +39,7 @@ func (e *LocalExecutor) PaneExited(ctx context.Context, target string) (*PaneExi
 }
 
 func (e *LocalExecutor) HasSession(ctx context.Context, session string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", session)
+	cmd := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "has-session", "-t", session)
 	err := cmd.Run()
 	if err == nil {
 		return true, nil

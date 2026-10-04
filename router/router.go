@@ -849,8 +849,8 @@ func (r *Router) turnTimedOut(ctx context.Context, task *registry.Task, timeout 
 	// The turn is failed, so its agent mustn't carry on unsupervised
 	// (LOOM-117): interrupt it, keeping the pane for a human to inspect.
 	r.interruptAgent(cleanupCtx, task)
-	return fmt.Errorf("router: dispatch: %s. Loomux interrupted it and kept the pane — attach on %s with `tmux attach -t %s` to see it: %w",
-		reason, targetName, task.TmuxSession, timeout)
+	return fmt.Errorf("router: dispatch: %s. Loomux interrupted it and kept the pane — attach on %s with `%s` to see it: %w",
+		reason, targetName, targets.AttachCommand(task.TmuxSession), timeout)
 }
 
 // AsksUser reports whether a relayed reply puts a question to the user

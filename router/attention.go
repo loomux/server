@@ -11,6 +11,7 @@ import (
 
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 )
 
 // answerSettle is how long an agent's pane must stay unchanged, after an
@@ -38,8 +39,8 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 		}
 		log.Warn("agent needs a login", "task_id", task.ID)
 		return "", fmt.Errorf("router: dispatch: %s (it shows %q). Loomux doesn't sign agents in: attach on %s with "+
-			"`tmux attach -t %s` and finish the login there, or store an API key credential for %s, then send your message again",
-			reason, a.Detail, targetName, task.TmuxSession, task.AgentType)
+			"`%s` and finish the login there, or store an API key credential for %s, then send your message again",
+			reason, a.Detail, targetName, targets.AttachCommand(task.TmuxSession), task.AgentType)
 	}
 	if err := r.orch.NeedAttention(ctx, task.ID, a); err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)

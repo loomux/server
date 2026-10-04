@@ -191,7 +191,7 @@ func TestDispatch_LoginRequired(t *testing.T) {
 		t.Errorf("took %s, want it fast", time.Since(start))
 	}
 	task := onlyTask(t, store, ws.ID)
-	for _, want := range []string{"isn't signed in", "tmux attach -t " + task.TmuxSession} {
+	for _, want := range []string{"isn't signed in", "tmux -L loomux attach -t " + task.TmuxSession} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %q: %v", want, err)
 		}

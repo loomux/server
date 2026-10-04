@@ -23,6 +23,22 @@ var ErrUnreachable = errors.New("targets: target unreachable")
 // target parameters are plain tmux target-spec strings (a session name, or
 // "session:window.pane") — this package doesn't model window/pane
 // semantics beyond that; that belongs to the orchestrator.
+// TmuxSocket is the tmux server Loomux runs every session on (LOOM-93):
+// `tmux -L loomux`, never the user's default one, so the user's tmux
+// config and plugins don't apply to agents, Loomux sessions don't show
+// in their `tmux ls`, and the orphan sweep can only ever see Loomux's
+// own sessions.
+const TmuxSocket = "loomux"
+
+// SessionPrefix starts the name of every session Loomux creates.
+const SessionPrefix = "loomux-"
+
+// AttachCommand is the command a human runs on a target to attach to a
+// Loomux session.
+func AttachCommand(session string) string {
+	return "tmux -L " + TmuxSocket + " attach -t " + session
+}
+
 type TargetExecutor interface {
 	// NewSession creates a new detached tmux session. dir may be empty to
 	// use the default working directory; command may be empty to start
