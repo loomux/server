@@ -55,6 +55,14 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("ConversationActivity", func(t *testing.T) { testConversationActivity(t, newStore(t)) })
 	t.Run("ConversationActivityEmpty", func(t *testing.T) { testConversationActivityEmpty(t, newStore(t)) })
 
+	t.Run("Dispatch", func(t *testing.T) { testDispatchCRUD(t, newStore(t)) })
+	t.Run("DispatchWithUserMessage", func(t *testing.T) { testDispatchWithUserMessage(t, newStore(t)) })
+	t.Run("DispatchIdempotencyKeyUnique", func(t *testing.T) { testDispatchIdempotencyKeyUnique(t, newStore(t)) })
+	t.Run("DispatchOneActivePerConversation", func(t *testing.T) { testDispatchOneActivePerConversation(t, newStore(t)) })
+	t.Run("DispatchTransitionCompareAndSet", func(t *testing.T) { testDispatchTransitionCompareAndSet(t, newStore(t)) })
+	t.Run("DispatchListByStatus", func(t *testing.T) { testDispatchListByStatus(t, newStore(t)) })
+	t.Run("DispatchNotFound", func(t *testing.T) { testDispatchNotFound(t, newStore(t)) })
+
 	t.Run("Credential", func(t *testing.T) { testCredentialCRUD(t, newStore(t)) })
 	t.Run("CredentialNotFound", func(t *testing.T) { testCredentialNotFound(t, newStore(t)) })
 	t.Run("CredentialWorkspaceScoped", func(t *testing.T) { testCredentialWorkspaceScoped(t, newStore(t)) })
@@ -1147,5 +1155,214 @@ func testTargetAgentPathAndVersion(t *testing.T, s registry.Store) {
 	}
 	if got[0].Path != "/home/u/.local/bin/claude" || got[0].Version != "2.1.251 (Claude Code)" {
 		t.Errorf("path/version = %q / %q", got[0].Path, got[0].Version)
+	}
+}
+
+func newTestDispatch(id, conversationID string) *registry.Dispatch {
+	return &registry.Dispatch{
+		ID: id, ConversationID: conversationID, Message: "hello", WorkspaceHint: "ws-hint",
+		RequestHash: "hash-" + id, Status: registry.DispatchStatusQueued,
+	}
+}
+
+func testDispatchCRUD(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	d := newTestDispatch("d-1", "conv-d")
+	d.IdempotencyKey = "key-1"
+	if err := s.CreateDispatch(ctx, d, nil); err != nil {
+		t.Fatalf("CreateDispatch: %v", err)
+	}
+	if d.CreatedAt.IsZero() || d.UpdatedAt.IsZero() {
+		t.Fatalf("CreateDispatch did not stamp times: %+v", d)
+	}
+	got, err := s.GetDispatch(ctx, "d-1")
+	if err != nil {
+		t.Fatalf("GetDispatch: %v", err)
+	}
+	if got.ConversationID != "conv-d" || got.Message != "hello" || got.WorkspaceHint != "ws-hint" ||
+		got.IdempotencyKey != "key-1" || got.RequestHash != "hash-d-1" || got.Status != registry.DispatchStatusQueued ||
+		got.StartedAt != nil || got.FinishedAt != nil {
+		t.Fatalf("GetDispatch = %+v", got)
+	}
+	byKey, err := s.GetDispatchByIdempotencyKey(ctx, "key-1")
+	if err != nil || byKey.ID != "d-1" {
+		t.Fatalf("GetDispatchByIdempotencyKey = %+v, %v", byKey, err)
+	}
+
+	started := time.Now().UTC()
+	got.Status = registry.DispatchStatusRunning
+	got.StartedAt = &started
+	if err := s.TransitionDispatch(ctx, got, registry.DispatchStatusQueued); err != nil {
+		t.Fatalf("TransitionDispatch queued→running: %v", err)
+	}
+	finished := time.Now().UTC()
+	got.Status = registry.DispatchStatusFailed
+	got.Error = "boom"
+	got.ErrorClass = registry.ErrorClassTimeout
+	got.FinishedAt = &finished
+	if err := s.TransitionDispatch(ctx, got, registry.DispatchStatusRunning); err != nil {
+		t.Fatalf("TransitionDispatch running→failed: %v", err)
+	}
+	list, err := s.ListDispatchesByConversation(ctx, "conv-d")
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListDispatchesByConversation = %+v, %v", list, err)
+	}
+	if l := list[0]; l.Status != registry.DispatchStatusFailed || l.Error != "boom" || l.ErrorClass != registry.ErrorClassTimeout ||
+		l.StartedAt == nil || l.FinishedAt == nil {
+		t.Fatalf("after transitions = %+v", l)
+	}
+	empty, err := s.ListDispatchesByConversation(ctx, "conv-unknown")
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("ListDispatchesByConversation(unknown) = %#v, %v; want empty, non-nil", empty, err)
+	}
+}
+
+func testDispatchWithUserMessage(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	d := newTestDispatch("d-msg", "conv-msg")
+	msg := &registry.Message{ID: "m-user", ConversationID: "conv-msg", Role: registry.MessageRoleUser, Content: "hello"}
+	if err := s.CreateDispatch(ctx, d, msg); err != nil {
+		t.Fatalf("CreateDispatch: %v", err)
+	}
+	msgs, err := s.ListMessagesByConversation(ctx, "conv-msg")
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("ListMessagesByConversation = %+v, %v", msgs, err)
+	}
+	if msgs[0].DispatchID != "d-msg" || msgs[0].Content != "hello" {
+		t.Fatalf("user message = %+v, want dispatch_id d-msg", msgs[0])
+	}
+
+	// A failing dispatch insert must not leave its message behind.
+	dup := newTestDispatch("d-msg", "conv-msg-2")
+	orphan := &registry.Message{ID: "m-orphan", ConversationID: "conv-msg-2", Role: registry.MessageRoleUser, Content: "x"}
+	if err := s.CreateDispatch(ctx, dup, orphan); err == nil {
+		t.Fatalf("CreateDispatch with duplicate id succeeded")
+	}
+	if msgs, _ := s.ListMessagesByConversation(ctx, "conv-msg-2"); len(msgs) != 0 {
+		t.Fatalf("message written despite failed dispatch insert: %+v", msgs)
+	}
+
+	// A message with a dispatch id round-trips through CreateMessage too.
+	reply := &registry.Message{ID: "m-reply", ConversationID: "conv-msg", DispatchID: "d-msg", Role: registry.MessageRoleAssistant, Content: "hi"}
+	if err := s.CreateMessage(ctx, reply); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	msgs, _ = s.ListMessagesByConversation(ctx, "conv-msg")
+	if len(msgs) != 2 || msgs[1].DispatchID != "d-msg" {
+		t.Fatalf("messages = %+v", msgs)
+	}
+}
+
+func testDispatchIdempotencyKeyUnique(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	a := newTestDispatch("d-a", "conv-a")
+	a.IdempotencyKey = "same"
+	if err := s.CreateDispatch(ctx, a, nil); err != nil {
+		t.Fatalf("CreateDispatch a: %v", err)
+	}
+	b := newTestDispatch("d-b", "conv-b")
+	b.IdempotencyKey = "same"
+	if err := s.CreateDispatch(ctx, b, nil); !errors.Is(err, registry.ErrIdempotencyKeyExists) {
+		t.Fatalf("CreateDispatch with reused key = %v, want ErrIdempotencyKeyExists", err)
+	}
+	// No key at all is never a conflict.
+	c, d := newTestDispatch("d-c", "conv-c"), newTestDispatch("d-d", "conv-d2")
+	if err := s.CreateDispatch(ctx, c, nil); err != nil {
+		t.Fatalf("CreateDispatch c: %v", err)
+	}
+	if err := s.CreateDispatch(ctx, d, nil); err != nil {
+		t.Fatalf("CreateDispatch d: %v", err)
+	}
+	if _, err := s.GetDispatchByIdempotencyKey(ctx, "nope"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetDispatchByIdempotencyKey(unknown) = %v, want ErrNotFound", err)
+	}
+}
+
+func testDispatchOneActivePerConversation(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	first := newTestDispatch("d-first", "conv-busy")
+	if err := s.CreateDispatch(ctx, first, nil); err != nil {
+		t.Fatalf("CreateDispatch first: %v", err)
+	}
+	second := newTestDispatch("d-second", "conv-busy")
+	if err := s.CreateDispatch(ctx, second, nil); !errors.Is(err, registry.ErrConversationBusy) {
+		t.Fatalf("CreateDispatch while queued = %v, want ErrConversationBusy", err)
+	}
+	first.Status = registry.DispatchStatusRunning
+	if err := s.TransitionDispatch(ctx, first, registry.DispatchStatusQueued); err != nil {
+		t.Fatalf("TransitionDispatch: %v", err)
+	}
+	if err := s.CreateDispatch(ctx, second, nil); !errors.Is(err, registry.ErrConversationBusy) {
+		t.Fatalf("CreateDispatch while running = %v, want ErrConversationBusy", err)
+	}
+	first.Status = registry.DispatchStatusSucceeded
+	if err := s.TransitionDispatch(ctx, first, registry.DispatchStatusRunning); err != nil {
+		t.Fatalf("TransitionDispatch: %v", err)
+	}
+	if err := s.CreateDispatch(ctx, second, nil); err != nil {
+		t.Fatalf("CreateDispatch after the first finished: %v", err)
+	}
+}
+
+func testDispatchTransitionCompareAndSet(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	d := newTestDispatch("d-cas", "conv-cas")
+	if err := s.CreateDispatch(ctx, d, nil); err != nil {
+		t.Fatalf("CreateDispatch: %v", err)
+	}
+	d.Status = registry.DispatchStatusInterrupted
+	if err := s.TransitionDispatch(ctx, d, registry.DispatchStatusQueued); err != nil {
+		t.Fatalf("TransitionDispatch: %v", err)
+	}
+	late := *d
+	late.Status = registry.DispatchStatusSucceeded
+	late.Reply = "too late"
+	if err := s.TransitionDispatch(ctx, &late, registry.DispatchStatusRunning); !errors.Is(err, registry.ErrDispatchStateChanged) {
+		t.Fatalf("stale TransitionDispatch = %v, want ErrDispatchStateChanged", err)
+	}
+	got, _ := s.GetDispatch(ctx, "d-cas")
+	if got.Status != registry.DispatchStatusInterrupted || got.Reply != "" {
+		t.Fatalf("stale transition overwrote the row: %+v", got)
+	}
+	ghost := newTestDispatch("d-ghost", "conv-ghost")
+	if err := s.TransitionDispatch(ctx, ghost, registry.DispatchStatusQueued); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("TransitionDispatch(unknown) = %v, want ErrNotFound", err)
+	}
+}
+
+func testDispatchListByStatus(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	for _, id := range []string{"q1", "r1", "s1"} {
+		if err := s.CreateDispatch(ctx, newTestDispatch(id, "conv-"+id), nil); err != nil {
+			t.Fatalf("CreateDispatch %s: %v", id, err)
+		}
+	}
+	r1, _ := s.GetDispatch(ctx, "r1")
+	r1.Status = registry.DispatchStatusRunning
+	if err := s.TransitionDispatch(ctx, r1, registry.DispatchStatusQueued); err != nil {
+		t.Fatalf("TransitionDispatch: %v", err)
+	}
+	s1, _ := s.GetDispatch(ctx, "s1")
+	s1.Status = registry.DispatchStatusSucceeded
+	if err := s.TransitionDispatch(ctx, s1, registry.DispatchStatusQueued); err != nil {
+		t.Fatalf("TransitionDispatch: %v", err)
+	}
+	active, err := s.ListDispatchesByStatus(ctx, registry.DispatchStatusQueued, registry.DispatchStatusRunning)
+	if err != nil {
+		t.Fatalf("ListDispatchesByStatus: %v", err)
+	}
+	var ids []string
+	for _, d := range active {
+		ids = append(ids, d.ID)
+	}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"q1", "r1"}) {
+		t.Fatalf("ListDispatchesByStatus(queued, running) = %v", ids)
+	}
+}
+
+func testDispatchNotFound(t *testing.T, s registry.Store) {
+	if _, err := s.GetDispatch(context.Background(), "missing"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetDispatch(missing) = %v, want ErrNotFound", err)
 	}
 }

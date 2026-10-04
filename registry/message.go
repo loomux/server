@@ -21,8 +21,11 @@ type Message struct {
 	ConversationID string
 	// TaskID is empty when this turn never touched a task (an
 	// answer_directly turn).
-	TaskID    string
-	Role      MessageRole
+	TaskID string
+	// DispatchID is the dispatch job this message belongs to (LOOM-80),
+	// empty for a message written outside one (e.g. the in-process CLI).
+	DispatchID string
+	Role       MessageRole
 	Content   string
 	CreatedAt time.Time
 }
