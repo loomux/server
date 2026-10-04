@@ -494,3 +494,39 @@ func TestCreateTarget_WorkspaceRoot(t *testing.T) {
 		bad.Body.Close()
 	}
 }
+
+// LOOM-119: a PUT that omits the optional ssh_key_ref or workspace_root
+// keeps what's stored; an explicit "" clears it.
+func TestUpdateTarget_OmittedOptionalFieldsKept(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+	created, _ := createTarget(t, srv.URL, token, map[string]any{
+		"name": "jet01", "kind": "remote", "host": "jet01.example.net", "user": "orski",
+		"ssh_key_ref": "jet01-key", "workspace_root": "/srv/work",
+	})
+
+	put := func(body map[string]any) *registry.Target {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		resp := authedRequest(t, http.MethodPut, srv.URL+"/api/v1/targets/"+created.ID, token, raw)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT status = %d", resp.StatusCode)
+		}
+		stored, err := store.GetTarget(context.Background(), created.ID)
+		if err != nil {
+			t.Fatalf("GetTarget: %v", err)
+		}
+		return stored
+	}
+
+	got := put(map[string]any{"name": "jet01", "kind": "remote", "host": "jet01.example.net", "user": "orski2"})
+	if got.User != "orski2" || got.SSHKeyRef != "jet01-key" || got.WorkspaceRoot != "/srv/work" {
+		t.Errorf("after a PUT omitting them: ssh_key_ref=%q workspace_root=%q user=%q, want kept", got.SSHKeyRef, got.WorkspaceRoot, got.User)
+	}
+	got = put(map[string]any{"name": "jet01", "kind": "remote", "host": "jet01.example.net", "user": "orski2",
+		"ssh_key_ref": "", "workspace_root": ""})
+	if got.SSHKeyRef != "" || got.WorkspaceRoot != "" {
+		t.Errorf("after a PUT with \"\": ssh_key_ref=%q workspace_root=%q, want cleared", got.SSHKeyRef, got.WorkspaceRoot)
+	}
+}

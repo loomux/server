@@ -53,6 +53,11 @@ type AgentType struct {
 	// Description is one line telling the routing model what this agent
 	// is and when to choose it (LOOM-88), by the name a user would use.
 	Description string
+	// InterruptKeys are the keys (tmux names) that stop the agent's
+	// current work without exiting it — sent when a turn times out
+	// (LOOM-117), so a failed turn's agent doesn't carry on unsupervised.
+	// Empty means it isn't interrupted.
+	InterruptKeys []string
 	// Install, if set, is how to put the CLI on a target that lacks it —
 	// offered to the user, and run only on their explicit confirmation.
 	Install *AgentInstall

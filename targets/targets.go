@@ -48,6 +48,10 @@ type TargetExecutor interface {
 	// Enter.
 	SendKeys(ctx context.Context, target, keys string, enter bool) error
 
+	// SendKey sends one key by its tmux name (e.g. "Escape", "C-c") to
+	// target — not typed text (LOOM-117: interrupting an agent).
+	SendKey(ctx context.Context, target, key string) error
+
 	// CapturePane returns the current visible contents of target's pane.
 	CapturePane(ctx context.Context, target string) (string, error)
 

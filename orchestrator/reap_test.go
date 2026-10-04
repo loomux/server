@@ -317,3 +317,33 @@ func TestReaper_Run_FailsStaleProvisioningAtStart(t *testing.T) {
 		}
 	}
 }
+
+// LOOM-120: a task failed while Reap is tearing its session down (the
+// router's stale-session fallback, say) stays failed — Reap records only
+// ReapedAt, never the row it read before the kill.
+func TestReap_ConcurrentFailIsNotReverted(t *testing.T) {
+	store, ws, exec, _, o := setup(t)
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindAgent, "claude-code", "claude")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	exec.onKill = func() {
+		if err := o.Fail(ctx, task.ID, registry.TaskFailure{Class: registry.ErrorClassSessionLost, Reason: "session no longer exists"}); err != nil {
+			t.Errorf("Fail: %v", err)
+		}
+	}
+	if err := o.Reap(ctx, task.ID); err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	stored, err := store.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if stored.Status != registry.TaskStatusFailed || stored.ErrorClass != registry.ErrorClassSessionLost {
+		t.Errorf("task after a concurrent Fail = %s/%s, want failed/session_lost kept", stored.Status, stored.ErrorClass)
+	}
+	if stored.ReapedAt == nil {
+		t.Error("ReapedAt not set")
+	}
+}
