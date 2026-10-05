@@ -31,8 +31,7 @@ func (e *LocalExecutor) run(ctx context.Context, args ...string) (string, error)
 }
 
 func (e *LocalExecutor) NewSession(ctx context.Context, session, dir, command string) error {
-	_, err := e.run(ctx, newSessionArgs(session, dir, command)...)
-	return err
+	return newSession(ctx, e.run, session, dir, command)
 }
 
 func (e *LocalExecutor) PaneExited(ctx context.Context, target string) (*PaneExit, error) {

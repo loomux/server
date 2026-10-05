@@ -246,3 +246,21 @@ var (
 	deadPaneRecaptures     = 10
 	deadPaneRecaptureDelay = 100 * time.Millisecond
 )
+
+// newSession is NewSession for either executor, given its tmux runner.
+// tmux stops its server when the last session closes, and a new-session
+// racing that shutdown fails with "server exited unexpectedly": nothing
+// was created, so it's tried once more, which starts a fresh server.
+func newSession(ctx context.Context, run func(context.Context, ...string) (string, error), session, dir, command string) error {
+	_, err := run(ctx, newSessionArgs(session, dir, command)...)
+	if err == nil || !strings.Contains(err.Error(), "server exited unexpectedly") {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return err
+	case <-time.After(50 * time.Millisecond):
+	}
+	_, err = run(ctx, newSessionArgs(session, dir, command)...)
+	return err
+}
