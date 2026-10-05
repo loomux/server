@@ -138,3 +138,55 @@ func must(s string, err error) string {
 	}
 	return s
 }
+
+// LOOM-129 review: two merges racing for the next version both get one.
+// The fake gh refuses the first tag as if another run had just created
+// it (and that run's tag appears, as a fetch would bring it); reserve
+// takes the next.
+func TestReleaseReserve(t *testing.T) {
+	dir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "base")
+	git("tag", "v0.1.0")
+	git("commit", "-q", "--allow-empty", "-m", "other merge")
+	other := git("rev-parse", "HEAD")
+	git("commit", "-q", "--allow-empty", "-m", "this merge")
+	sha := git("rev-parse", "HEAD")
+
+	bin := t.TempDir()
+	created := filepath.Join(bin, "created")
+	fake := `#!/bin/sh
+case "$*" in
+*refs/tags/v0.1.1*) git -C "` + dir + `" tag v0.1.1 ` + other + `; echo 'gh: Reference already exists (HTTP 422)' >&2; exit 1 ;;
+*) echo "$*" >> "` + created + `"; exit 0 ;;
+esac
+`
+	os.WriteFile(filepath.Join(bin, "gh"), []byte(fake), 0o755)
+	script := filepath.Join(must(os.Getwd()), "../deploy/release.sh")
+	reserve := func(sha, kind string) (string, bool) {
+		cmd := exec.Command("sh", script, "reserve", sha, kind)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_REPOSITORY=loomux/x")
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err == nil
+	}
+	if got, ok := reserve(sha, "patch"); !ok || got != "0.1.2" {
+		t.Fatalf("reserve = %q, %v; want 0.1.2 after losing 0.1.1", got, ok)
+	}
+	if b, _ := os.ReadFile(created); !strings.Contains(string(b), "ref=refs/tags/v0.1.2") || !strings.Contains(string(b), "sha="+sha) {
+		t.Errorf("gh calls = %q", b)
+	}
+	// Asked again for the same commit (a re-run), it keeps its version.
+	if got, ok := reserve(sha, "patch"); !ok || got != "0.1.2" {
+		t.Errorf("re-run reserve = %q, %v; want 0.1.2 again", got, ok)
+	}
+}

@@ -23,29 +23,21 @@ Loomux follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 ## How the server pipeline does it (`.github/workflows/image.yml`)
 
-1. A push to `main` builds the image as before.
-2. It also finds the highest `vX.Y.Z` tag reachable from the commit
-   (`deploy/release.sh latest`) and computes the next patch. The image
-   is built with that version (`server_version` = `0.1.N (web …)`) and
-   pushed as `:0.1.N` and `:<sha>`; `:main` still follows main.
-3. The `release` job then tags the merge commit `v0.1.N` and creates
-   the GitHub pre-release.
-4. Guards:
-   - Runs on `main` and tag pushes share one concurrency group, so two
-     merges in quick succession get 0.1.N and 0.1.N+1, never the same.
-   - A commit that already has a version tag (a re-run) keeps it and
-     isn't tagged again.
-   - A manual rebuild (`workflow_dispatch` without bump = minor)
-     releases nothing.
-   - Until the first tag exists there is no line, and nothing is
-     released.
-5. A hand-pushed tag (`v0.1.0`, `v1.0.0-rc.1`) must be `v` + SemVer
-   2.0.0 without build metadata, on `main`, with a `CHANGELOG.md`
-   section; it's built and released the same way.
-6. The deploy script keeps taking the short sha:
-   `loomux-deploy-test-instance <sha> "v0.1.N"`.
+1. **`version` job** (main pushes and hand tags only):
+   - **A merge:** it **reserves** the next version, so every merge gets its own:
+     - `deploy/release.sh reserve` takes the highest `vX.Y.Z` tag in the repository plus one;
+     - it creates that tag on the merge commit through the GitHub API, which refuses a tag that already exists;
+     - when two merges race, the loser fetches the tags and takes the next number.
+     Nothing is queued or cancelled: no concurrency group, so every merge's run builds. A re-run of a commit that already has a version keeps it.
+   - **A hand-pushed tag** (`v0.1.0`, a milestone, an `-rc`) must be `v` + SemVer 2.0.0 with no build metadata, on `main`, with a `CHANGELOG.md` section.
+   - **A plain manual rebuild, or a PR,** has no version.
+2. **`image`** builds with that version (`server_version` = `0.1.N (web 0.1.M)`) and pushes `:<sha>`, `:main` for main, and `:0.1.N`. The tag already exists by then.
+3. **`unreserve`:** if the build fails, the reserved tag is deleted, but only while it still points at that commit. Tags never move and creating an existing one is refused, so the delete can't hit a newer reservation. The image is pushed last, so nothing was published under that number, and a later merge may take it.
+4. **`release`** creates the GitHub pre-release for the tag (never "latest"). The notes are the merged PR's title, or the version's CHANGELOG section for a milestone, plus the web version pinned.
+5. **MINOR:** run the workflow on `main` with **bump = minor**.
+6. **Deploy** as before: `loomux-deploy-test-instance <sha> "v0.1.N"`.
 
-loomux/web does the same in its own CI (its version line, its tags).
+loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, release.
 
 ## Release notes and `CHANGELOG.md`
 
@@ -55,10 +47,11 @@ loomux/web does the same in its own CI (its version line, its tags).
   section collects what's coming, and a milestone (each MINOR, the base
   0.1.0, rc and 1.0.0) gets a written section, which then becomes that
   release's notes.
-- Not every patch is committed back to `CHANGELOG.md` by a bot. That
-  would be a bot commit to `main` per merge, triggering CI again, and
-  loomux/web's protected `main` (pull requests only) rejects it. The
-  GitHub releases list is the per-merge changelog.
+- Nothing commits back to `main`: loomux/web's `main` is protected
+  (pull requests only, admins included), and loomux/server is meant to
+  get the same protection once v0.1.0 exists. Releases only create tags,
+  which branch protection doesn't cover. The GitHub releases list is the
+  per-merge changelog.
 
 ## Cutting the base, v0.1.0
 
