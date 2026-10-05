@@ -109,7 +109,7 @@ USER loomux
 WORKDIR /var/lib/loomux
 EXPOSE 8080
 
-# GET /api/v1/version is the one unauthenticated route — use it for k8s
+# GET /api/v1/health (unauthenticated) is the route for k8s
 # liveness/readiness probes.
 #
 # Arguments are forwarded to loomuxd unchanged, so `docker run <image>

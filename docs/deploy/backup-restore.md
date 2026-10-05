@@ -81,7 +81,7 @@ These steps assume you have access to a consistent backup file (either from
    rm -f /data/loomux.db-journal /data/loomux.db-wal /data/loomux.db-shm
    # The debug pod runs as root: restore the ownership/mode loomuxd (uid 10001, fsGroup 10001) needs,
    # or it starts but can't write ("attempt to write a readonly database").
-   chown 1000:10001 /data/loomux.db && chmod 664 /data/loomux.db
+   chown 10001:10001 /data/loomux.db && chmod 664 /data/loomux.db
    ls -la /data/
    ```
    `keinos/sqlite3` is a BusyBox-based image and this pod runs as root, so it has no
