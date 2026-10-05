@@ -44,6 +44,8 @@ type Request struct {
 	ConversationID string
 	Message        string
 	WorkspaceHint  string
+	// ConfirmationID names the offer the message answers (LOOM-123).
+	ConfirmationID string
 	// IdempotencyKey, when set, makes a repeated Submit of the same
 	// request return the original dispatch instead of starting another.
 	IdempotencyKey string
@@ -210,6 +212,7 @@ func (s *Service) Submit(ctx context.Context, req Request) (*registry.Dispatch, 
 		ConversationID: req.ConversationID,
 		Message:        req.Message,
 		WorkspaceHint:  req.WorkspaceHint,
+		ConfirmationID: req.ConfirmationID,
 		IdempotencyKey: req.IdempotencyKey,
 		RequestHash:    hash,
 		Status:         registry.DispatchStatusQueued,
@@ -511,7 +514,7 @@ func (s *Service) markInterrupted(ctx context.Context, d *registry.Dispatch, rea
 
 func requestHash(req Request) string {
 	h := sha256.New()
-	for _, part := range []string{req.ConversationID, req.Message, req.WorkspaceHint} {
+	for _, part := range []string{req.ConversationID, req.Message, req.WorkspaceHint, req.ConfirmationID} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})
 	}

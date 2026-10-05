@@ -114,10 +114,16 @@ func (r *Router) enforcePolicy(ctx context.Context, log *slog.Logger, conversati
 		return "", true, fmt.Errorf("router: dispatch: policy: %w", err)
 	}
 	d := decision
-	r.pending.put(conversationID, pendingInstall{
+	conf := registry.Confirmation{Kind: registry.ConfirmationPolicy, TargetName: target.Name, Command: decision.Command}
+	if decision.Action == ActionProvisionWorkspace {
+		conf.Workspace, conf.GitRemote = decision.NewWorkspace.Name, decision.NewWorkspace.GitRemote
+	}
+	if err := r.offer(ctx, conversationID, pendingInstall{
 		kind: pendingPolicyConfirm, targetID: target.ID, agentType: decision.AgentType,
-		decision: &d, message: message, expires: time.Now().Add(pendingTTL),
-	})
+		decision: &d, message: message,
+	}, conf); err != nil {
+		return "", true, fmt.Errorf("router: dispatch: policy: %w", err)
+	}
 	purpose := ""
 	if target.Policy.Purpose == registry.TargetPurposeWork {
 		purpose = " (a work machine)"

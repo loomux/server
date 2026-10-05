@@ -186,6 +186,10 @@ type DispatchOptions struct {
 	// UserMessageLogged says the user message is already stored (a
 	// dispatch job writes it at submit), so only the reply is logged.
 	UserMessageLogged bool
+	// ConfirmationID says the message answers that offer, from its card
+	// (LOOM-123). Unless it is still the offer awaiting an answer, the
+	// message runs nothing and isn't routed.
+	ConfirmationID string
 
 	// History, OpenTask and LastWorkspaceID/Name are the conversation's
 	// context (LOOM-87), filled in by the router itself — not callers —
@@ -252,6 +256,11 @@ func WithWorkspaceHint(workspaceID string) DispatchOption {
 // WithDispatchID sets DispatchOptions.DispatchID.
 func WithDispatchID(id string) DispatchOption {
 	return func(o *DispatchOptions) { o.DispatchID = id }
+}
+
+// WithConfirmationID sets DispatchOptions.ConfirmationID.
+func WithConfirmationID(id string) DispatchOption {
+	return func(o *DispatchOptions) { o.ConfirmationID = id }
 }
 
 // WithUserMessageLogged sets DispatchOptions.UserMessageLogged.

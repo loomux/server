@@ -112,6 +112,7 @@ type TaskLister interface {
 type MessageLister interface {
 	ListMessagesByConversation(ctx context.Context, conversationID string) ([]*registry.Message, error)
 	ListConversationActivity(ctx context.Context) ([]*registry.ConversationActivity, error)
+	ListConfirmationsByConversation(ctx context.Context, conversationID string) ([]*registry.Confirmation, error)
 }
 
 // AttachInfoStore is the get-chain slice of registry.Store LOOM-20's
@@ -812,6 +813,26 @@ type getConversationResponse struct {
 	// (LOOM-80): a client reopening a conversation sees a turn still in
 	// flight, or one that failed, here.
 	Dispatches []dispatchResponse `json:"dispatches"`
+	// Confirmations is every offer the router made in the conversation
+	// and how it was answered, oldest first (LOOM-123): a card with
+	// Approve and Deny under the offer's reply, by dispatch_id.
+	Confirmations []confirmationResponse `json:"confirmations"`
+}
+
+type confirmationResponse struct {
+	ID         string     `json:"id"`
+	DispatchID string     `json:"dispatch_id,omitempty"`
+	Kind       string     `json:"kind"`
+	TargetID   string     `json:"target_id,omitempty"`
+	TargetName string     `json:"target_name,omitempty"`
+	AgentType  string     `json:"agent_type,omitempty"`
+	Command    string     `json:"command,omitempty"`
+	Workspace  string     `json:"workspace,omitempty"`
+	GitRemote  string     `json:"git_remote,omitempty"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
 // handleGetConversation returns a conversation's full task history (every
@@ -883,6 +904,27 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		dispatchOut = append(dispatchOut, newDispatchResponse(d))
 	}
 
+	confirmations, err := s.messages.ListConfirmationsByConversation(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not fetch conversation")
+		return
+	}
+	now := time.Now()
+	confOut := make([]confirmationResponse, 0, len(confirmations))
+	for _, c := range confirmations {
+		status := c.Status
+		// Past its deadline, an offer no longer runs on a yes, though its
+		// row is only settled by the next message.
+		if status == registry.ConfirmationPending && now.After(c.ExpiresAt) {
+			status = registry.ConfirmationExpired
+		}
+		confOut = append(confOut, confirmationResponse{
+			ID: c.ID, DispatchID: c.DispatchID, Kind: c.Kind, TargetID: c.TargetID, TargetName: c.TargetName,
+			AgentType: c.AgentType, Command: c.Command, Workspace: c.Workspace, GitRemote: c.GitRemote,
+			Status: string(status), CreatedAt: c.CreatedAt, ExpiresAt: c.ExpiresAt, ResolvedAt: c.ResolvedAt,
+		})
+	}
+
 	// A conversation is only truly unknown if it has neither task
 	// history nor any logged messages — an answer_directly-only
 	// conversation (LOOM-31) has messages but zero tasks, and must not
@@ -892,7 +934,8 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out, Messages: msgOut, Dispatches: dispatchOut})
+	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out, Messages: msgOut, Dispatches: dispatchOut,
+		Confirmations: confOut})
 }
 
 type attachTargetInfo struct {

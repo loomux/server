@@ -12,7 +12,7 @@ import (
 )
 
 const dispatchColumns = `id, conversation_id, message, workspace_hint, idempotency_key, request_hash, status,
-	reply, error, error_class, created_at, updated_at, started_at, finished_at`
+	reply, error, error_class, created_at, updated_at, started_at, finished_at, confirmation_id`
 
 // CreateDispatch inserts d and, if given, its user message in one
 // transaction. The two partial unique indexes (idempotency key, one
@@ -33,9 +33,9 @@ func (s *Store) CreateDispatch(ctx context.Context, d *registry.Dispatch, userMe
 	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx, `INSERT INTO dispatches (`+dispatchColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.ID, d.ConversationID, d.Message, d.WorkspaceHint, nullIfEmpty(d.IdempotencyKey), d.RequestHash, string(d.Status),
-		d.Reply, d.Error, string(d.ErrorClass), d.CreatedAt, d.UpdatedAt, d.StartedAt, d.FinishedAt,
+		d.Reply, d.Error, string(d.ErrorClass), d.CreatedAt, d.UpdatedAt, d.StartedAt, d.FinishedAt, d.ConfirmationID,
 	)
 	switch {
 	case isUniqueConstraintErr(err) && strings.Contains(err.Error(), "dispatches.idempotency_key"):
@@ -155,7 +155,7 @@ func scanDispatch(row rowScanner) (*registry.Dispatch, error) {
 	var key sql.NullString
 	var status, errorClass string
 	if err := row.Scan(&d.ID, &d.ConversationID, &d.Message, &d.WorkspaceHint, &key, &d.RequestHash, &status,
-		&d.Reply, &d.Error, &errorClass, &d.CreatedAt, &d.UpdatedAt, &d.StartedAt, &d.FinishedAt); err != nil {
+		&d.Reply, &d.Error, &errorClass, &d.CreatedAt, &d.UpdatedAt, &d.StartedAt, &d.FinishedAt, &d.ConfirmationID); err != nil {
 		return nil, err
 	}
 	d.IdempotencyKey = key.String
