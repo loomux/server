@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/registry"
@@ -215,9 +216,33 @@ func paneExited(ctx context.Context, run func(context.Context, ...string) (strin
 	if err != nil || !exited {
 		return nil, err
 	}
-	captured, err := run(ctx, paneHistoryArgs(target)...)
-	if err != nil {
-		return nil, err
+	// tmux can mark a pane dead before it has read the process's last
+	// output from the pty: a capture taken right then has nothing but the
+	// "Pane is dead" line, and the failure would be reported without its
+	// reason. Capture again, briefly, until the output shows up.
+	var output string
+	for i := 0; ; i++ {
+		captured, err := run(ctx, paneHistoryArgs(target)...)
+		if err != nil {
+			return nil, err
+		}
+		output = trimDeadPaneOutput(captured)
+		if output != "" || i >= deadPaneRecaptures {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(deadPaneRecaptureDelay):
+		}
 	}
-	return &PaneExit{Status: status, Output: trimDeadPaneOutput(captured)}, nil
+	return &PaneExit{Status: status, Output: output}, nil
 }
+
+// How long paneExited waits for a dead pane's last output: up to
+// deadPaneRecaptures more captures, deadPaneRecaptureDelay apart. A
+// process that printed nothing costs that once.
+var (
+	deadPaneRecaptures     = 10
+	deadPaneRecaptureDelay = 100 * time.Millisecond
+)
