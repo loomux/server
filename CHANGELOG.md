@@ -31,6 +31,10 @@ milestones.
   `loomux_target_op_errors_total{reason="unreachable_<class>"}`, and
   ssh's banner lines (the post-quantum warning) no longer replace the
   real error or leak into command output.
+- The routing model sees at most 25 workspaces per message (LOOM-107):
+  the most recently used, plus, however old, the one the client hinted,
+  the conversation's last and open-task workspaces, and any the message
+  names. Failed, archived and shell workspaces were already left out.
 
 ## [0.1.0] - 2026-10-05
 
