@@ -13,6 +13,8 @@ import (
 func TestProvisionSpecValidate(t *testing.T) {
 	ok := []ProvisionSpec{
 		{Name: "hostname-uptime", TargetID: "t", Kind: ProvisionEmpty},
+		// Underscores, as in names given before this rule (LOOM-130).
+		{Name: "jet01_connectivity_test", TargetID: "t", Kind: ProvisionEmpty},
 		{Name: "api", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "https://github.com/loomux/server.git"},
 		{Name: "api2", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "git@github.com:loomux/server.git"},
 		{Name: "api3", TargetID: "t", Kind: ProvisionGitClone, GitRemote: "ssh://git@example.com:22/loomux/server.git"},
@@ -31,6 +33,7 @@ func TestProvisionSpecValidate(t *testing.T) {
 		{Name: "a/b", TargetID: "t", Kind: ProvisionEmpty},
 		{Name: "Hostname_Uptime", TargetID: "t", Kind: ProvisionEmpty},
 		{Name: "-rf", TargetID: "t", Kind: ProvisionEmpty},
+		{Name: "_hidden", TargetID: "t", Kind: ProvisionEmpty},
 		{Name: strings.Repeat("a", 64), TargetID: "t", Kind: ProvisionEmpty},
 		{Name: "x", TargetID: "t", Kind: "run_anything"},
 		{Name: "x", TargetID: "t", Kind: ""},
