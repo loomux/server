@@ -6,7 +6,9 @@
 #      (loomux/web), which publishes each tested main commit as a
 #      pre-release `web-<short sha>` (LOOM-58; loomux/web docs/release.md).
 #      This workflow downloads the release deploy/web-ref pins and checks
-#      its sha256. Its GITHUB_TOKEN is scoped to loomux/server and cannot
+#      its tarball against deploy/web-sha256: the expected digest lives in
+#      this repo, so a release replaced after review (web-release.json
+#      included) can't change what ships. Its GITHUB_TOKEN is scoped to loomux/server and cannot
 #      read loomux/web, so a dedicated token is required — see the "guard"
 #      step, which fails loudly rather than letting the image ship with the
 #      placeholder UI.
@@ -24,6 +26,10 @@ on:
     inputs:
       web_ref:
         description: "loomux/web commit sha whose web-<sha> release to use (default: deploy/web-ref)"
+        required: false
+        type: string
+      web_sha256:
+        description: "sha256 of that release's tarball (required with web_ref)"
         required: false
         type: string
 
@@ -57,14 +63,29 @@ jobs:
         id: webref
         env:
           OVERRIDE: ${{ inputs.web_ref }}
+          OVERRIDE_SHA256: ${{ inputs.web_sha256 }}
         run: |
-          ref="${OVERRIDE:-$(tr -d '[:space:]' < deploy/web-ref)}"
+          if [ -n "${OVERRIDE}" ]; then
+            ref="${OVERRIDE}"
+            sha256="${OVERRIDE_SHA256}"
+          else
+            ref="$(tr -d '[:space:]' < deploy/web-ref)"
+            sha256="$(tr -d '[:space:]' < deploy/web-sha256)"
+          fi
           if ! [[ "${ref}" =~ ^[0-9a-f]{7,40}$ ]]; then
             echo "::error::loomux/web ref '${ref}' is not a commit sha. deploy/web-ref (or the" \
                  "override) must name a commit on loomux/web main: its web-<sha> release is used."
             exit 1
           fi
+          # The trust anchor: the digest reviewed in this repo, not the one
+          # the release says about itself.
+          if ! [[ "${sha256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::expected sha256 '${sha256}' is not 64 hex characters. deploy/web-sha256" \
+                 "(or web_sha256 with a web_ref override) must be the release tarball's sha256."
+            exit 1
+          fi
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
           echo "short=${ref:0:7}" >> "$GITHUB_OUTPUT"
           echo "Using the UI from loomux/web release web-${ref:0:7}"
 
@@ -74,6 +95,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.WEB_REPO_TOKEN }}
           REF: ${{ steps.webref.outputs.ref }}
+          SHA256: ${{ steps.webref.outputs.sha256 }}
           TAG: web-${{ steps.webref.outputs.short }}
         run: |
           set -euo pipefail
@@ -93,7 +115,15 @@ jobs:
             echo "::error::unexpected tarball name in web-release.json: ${tarball}"
             exit 1
           fi
-          echo "$(jq -r .sha256 web-release/web-release.json)  web-release/${tarball}" | sha256sum -c -
+          if ! echo "${SHA256}  web-release/${tarball}" | sha256sum -c -; then
+            echo "::error::${TAG}'s tarball doesn't match deploy/web-sha256. The release changed" \
+                 "since the pin was reviewed, or the pin is wrong: don't build from it."
+            exit 1
+          fi
+          if [[ "$(jq -r .sha256 web-release/web-release.json)" != "${SHA256}" ]]; then
+            echo "::error::${TAG}'s web-release.json disagrees with deploy/web-sha256."
+            exit 1
+          fi
           mkdir .web-dist
           tar -xzf "web-release/${tarball}" -C .web-dist --no-same-owner
 

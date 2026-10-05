@@ -105,10 +105,18 @@ holding `loomux-web-<short>.tar.gz` (the built `dist/`) and
 `web-release.json` (`commit`, `tarball`, `sha256`, …; format in
 `loomux/web` `docs/release.md`).
 
-`deploy/web-ref` names a `loomux/web` commit. The image workflow downloads
-its release with `WEB_REPO_TOKEN`, refuses one whose `commit` doesn't match
-or whose tarball fails the `sha256` check, and unpacks it into
-`.web-dist/`. So the bundle in the image is the one `loomux/web`'s own CI
+`deploy/web-ref` names a `loomux/web` commit and `deploy/web-sha256` the
+sha256 of its release tarball. The image workflow downloads the release
+with `WEB_REPO_TOKEN`, refuses one whose `commit` doesn't match or whose
+tarball doesn't hash to `deploy/web-sha256` (or whose `web-release.json`
+says otherwise), and unpacks it into `.web-dist/`. The digest is pinned
+here, not taken from the release, because a release can be edited after
+the fact: `web-release.json` describes the bundle but isn't a trust
+anchor. Every web bump is therefore a reviewed server PR changing both
+lines; get the digest with
+`gh release download web-<short> -R loomux/web -p web-release.json -O - | jq -r .sha256`
+and check it against the tarball you download. A manual
+`workflow_dispatch` with `web_ref` must pass `web_sha256` too. So the bundle in the image is the one `loomux/web`'s own CI
 built and tested, byte for byte. The server build needs no Node toolchain,
 and a commit without a release (anything pushed before LOOM-58) fails the
 build loudly. LOOM-118's in-app updater reads the same `web-release.json`.
