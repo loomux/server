@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
@@ -40,6 +41,15 @@ func statement(t *testing.T, digest, commit string) []byte {
 var virtualOpts = []verify.VerifierOption{verify.WithTransparencyLog(1), verify.WithIntegratedTimestamps(1)}
 
 func TestVerifyAttestation(t *testing.T) {
+	// The test CA issues certificates with a SAN and issuer only: check
+	// those here, the source extensions in TestAttestationIdentity.
+	identityFor = func(repo, commit string) (verify.CertificateIdentity, error) {
+		id, err := attestationIdentity(repo, commit)
+		id.Extensions = certificate.Extensions{}
+		return id, err
+	}
+	t.Cleanup(func() { identityFor = attestationIdentity })
+
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatal(err)
@@ -89,5 +99,44 @@ func TestVerifyAttestation(t *testing.T) {
 	}
 	if err := verifyAttestation(vs, foreign, "loomux/web", rel, virtualOpts...); err == nil {
 		t.Error("an attestation from an untrusted Sigstore verified")
+	}
+}
+
+// TestAttestationIdentity checks the source extensions the test CA can't
+// issue: a certificate with the right SAN must also be for loomux/web's
+// main at the release's commit. A reusable ci.yml called from another
+// repository, or a run for another commit, is refused.
+func TestAttestationIdentity(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	id, err := attestationIdentity("loomux/web", commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genuine := certificate.Summary{
+		CertificateIssuer:      githubActionsIssuer,
+		SubjectAlternativeName: ciMain,
+		Extensions: certificate.Extensions{
+			Issuer:                 githubActionsIssuer,
+			SourceRepositoryURI:    "https://github.com/loomux/web",
+			SourceRepositoryRef:    "refs/heads/main",
+			SourceRepositoryDigest: commit,
+		},
+	}
+	if err := id.Verify(genuine); err != nil {
+		t.Fatalf("genuine certificate refused: %v", err)
+	}
+	for name, mutate := range map[string]func(*certificate.Summary){
+		"called from another repo": func(c *certificate.Summary) { c.SourceRepositoryURI = "https://github.com/someone/web" },
+		"another ref":              func(c *certificate.Summary) { c.SourceRepositoryRef = "refs/heads/feature" },
+		"another commit":           func(c *certificate.Summary) { c.SourceRepositoryDigest = strings.Repeat("c", 40) },
+		"no extensions":            func(c *certificate.Summary) { c.Extensions = certificate.Extensions{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := genuine
+			mutate(&c)
+			if err := id.Verify(c); err == nil {
+				t.Error("verified")
+			}
+		})
 	}
 }

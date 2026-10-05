@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
@@ -27,8 +28,10 @@ const slsaProvenanceV1 = "https://slsa.dev/provenance/v1"
 //     production): certificate chain, transparency log, timestamp;
 //   - the signing certificate was issued to repo's workflow
 //     .github/workflows/ci.yml running for refs/heads/main, by GitHub
-//     Actions' OIDC issuer: a workflow on any other branch, a pull
-//     request, or another workflow file can't produce one;
+//     Actions' OIDC issuer, and its source repository, ref and commit
+//     are repo, refs/heads/main and rel.Commit: a workflow on any other
+//     branch, a pull request, another workflow file, or another
+//     repository calling it as a reusable workflow can't produce one;
 //   - its subject is the tarball's sha256, rel.SHA256 (which the
 //     Manager then checks the download against);
 //   - the provenance's source commit is rel.Commit, so a genuine
@@ -49,8 +52,7 @@ func verifyAttestation(trusted root.TrustedMaterial, entity verify.SignedEntity,
 	if err != nil {
 		return fmt.Errorf("webbundle: attestation verifier: %w", err)
 	}
-	san := "^https://github\\.com/" + regexp.QuoteMeta(repo) + "/\\.github/workflows/ci\\.yml@refs/heads/main$"
-	id, err := verify.NewShortCertificateIdentity(githubActionsIssuer, "", "", san)
+	id, err := identityFor(repo, rel.Commit)
 	if err != nil {
 		return fmt.Errorf("webbundle: attestation identity: %w", err)
 	}
@@ -69,6 +71,34 @@ func verifyAttestation(trusted root.TrustedMaterial, entity verify.SignedEntity,
 		return fmt.Errorf("webbundle: attestation for %s is for commit %s, not %s", rel.Tag, commit, rel.Commit)
 	}
 	return nil
+}
+
+// identityFor is the signing identity verifyAttestation requires;
+// attestationIdentity, except in tests whose CA can't issue certificates
+// with the source extensions (TestAttestationIdentity covers those).
+var identityFor = attestationIdentity
+
+// attestationIdentity is the certificate a web release's attestation must
+// be signed with: issued by GitHub Actions to repo's
+// .github/workflows/ci.yml running for refs/heads/main, for commit. The
+// SAN names the workflow file that ran, which for a reusable workflow is
+// the called one, not the caller: so the source repository, ref and
+// commit the run was for are bound too.
+func attestationIdentity(repo, commit string) (verify.CertificateIdentity, error) {
+	san := "^https://github\\.com/" + regexp.QuoteMeta(repo) + "/\\.github/workflows/ci\\.yml@refs/heads/main$"
+	sanMatcher, err := verify.NewSANMatcher("", san)
+	if err != nil {
+		return verify.CertificateIdentity{}, err
+	}
+	issuerMatcher, err := verify.NewIssuerMatcher(githubActionsIssuer, "")
+	if err != nil {
+		return verify.CertificateIdentity{}, err
+	}
+	return verify.NewCertificateIdentity(sanMatcher, issuerMatcher, certificate.Extensions{
+		SourceRepositoryURI:    "https://github.com/" + repo,
+		SourceRepositoryRef:    "refs/heads/main",
+		SourceRepositoryDigest: commit,
+	})
 }
 
 // provenanceCommit is the git commit a SLSA v1 provenance predicate says
