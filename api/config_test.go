@@ -160,3 +160,23 @@ func TestLoadConfig_WebUpdates(t *testing.T) {
 		t.Errorf("overridden web config = %q, %q", cfg.WebBundlesDir, cfg.WebReleasesToken)
 	}
 }
+
+// LOOM-118: how the web client updates. Unset follows the token (how it
+// was switched on before); anything else is an error.
+func TestLoadConfig_WebUpdatesMode(t *testing.T) {
+	t.Setenv("LOOMUX_AUTH_PASSWORD_HASH", validPasswordHashEnv(t))
+	for _, tc := range []struct{ updates, token, want string }{
+		{"", "", "off"}, {"", "tok", "attested"}, {"pinned", "", "pinned"}, {"off", "tok", "off"},
+	} {
+		t.Setenv("LOOMUX_WEB_UPDATES", tc.updates)
+		t.Setenv("LOOMUX_WEB_RELEASES_TOKEN", tc.token)
+		cfg, err := api.LoadConfig()
+		if err != nil || cfg.WebUpdates != tc.want {
+			t.Errorf("updates %q token %q: %q, %v; want %q", tc.updates, tc.token, cfg.WebUpdates, err, tc.want)
+		}
+	}
+	t.Setenv("LOOMUX_WEB_UPDATES", "always")
+	if _, err := api.LoadConfig(); err == nil {
+		t.Error("an unknown mode was accepted")
+	}
+}

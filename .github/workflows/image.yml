@@ -59,7 +59,6 @@ jobs:
       contents: write
     outputs:
       version: ${{ steps.v.outputs.version }}
-      reserved: ${{ steps.v.outputs.reserved }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,7 +70,6 @@ jobs:
         run: |
           set -eu
           version=""
-          reserved=false
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
             version="$(deploy/release.sh version "${GITHUB_REF_NAME}")"
             git merge-base --is-ancestor HEAD origin/main || {
@@ -79,15 +77,12 @@ jobs:
             deploy/release.sh notes "${version}" >/dev/null
           elif [ "${GITHUB_REF}" = refs/heads/main ] &&
                { [ "${GITHUB_EVENT_NAME}" = push ] || [ "${BUMP:-none}" = minor ]; }; then
-            had="$(git tag --points-at HEAD --list 'v*' | head -n 1)"
             kind=patch
             if [ "${BUMP:-none}" = minor ]; then kind=minor; fi
             version="$(deploy/release.sh reserve "${GITHUB_SHA}" "${kind}")"
-            if [ -n "${version}" ] && [ -z "${had}" ]; then reserved=true; fi
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "reserved=${reserved}" >> "$GITHUB_OUTPUT"
-          echo "Version: ${version:-none}${version:+ (tag v${version}$( [ "${reserved}" = true ] && echo ', reserved now'))}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version: ${version:-none}" >> "$GITHUB_STEP_SUMMARY"
 
   image:
     needs: version

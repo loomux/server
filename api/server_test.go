@@ -11,8 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/dispatch"
@@ -48,6 +51,23 @@ func newTestStore(t *testing.T) registry.Store {
 	return store
 }
 
+// testPasswordHash is testPassword's bcrypt hash at the minimum cost,
+// made once: the default cost, on every test server and login under
+// -race, made this package the slowest in the suite.
+var testPasswordHash = func() func(t *testing.T) string {
+	var once sync.Once
+	var hash []byte
+	var err error
+	return func(t *testing.T) string {
+		t.Helper()
+		once.Do(func() { hash, err = bcrypt.GenerateFromPassword([]byte(testPassword), bcrypt.MinCost) })
+		if err != nil {
+			t.Fatalf("bcrypt: %v", err)
+		}
+		return string(hash)
+	}
+}()
+
 func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDispatcher, registry.Store) {
 	t.Helper()
 	return newTestServerWith(t, func(registry.Store) []api.Option { return opts })
@@ -56,10 +76,7 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 // newTestServerWith is newTestServer for options that need the store.
 func newTestServerWith(t *testing.T, optsFor func(registry.Store) []api.Option) (*httptest.Server, *fakeDispatcher, registry.Store) {
 	t.Helper()
-	hash, err := api.HashPassword(testPassword)
-	if err != nil {
-		t.Fatalf("HashPassword: %v", err)
-	}
+	hash := testPasswordHash(t)
 	dispatcher := &fakeDispatcher{}
 	store := newTestStore(t)
 	dispatcher.Jobs = dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {

@@ -2,6 +2,7 @@ package llmrouter
 
 import (
 	"reflect"
+	"regexp"
 	"testing"
 )
 
@@ -81,5 +82,29 @@ func TestBuildDecideTool_NoTargets_HidesTargetActions(t *testing.T) {
 	if got, want := actionEnum(t, []string{"target-1"}),
 		[]string{"answer_directly", "use_workspace", "provision_workspace", "run_command"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("one target: action enum = %v, want %v", got, want)
+	}
+}
+
+// TestBuildDecideTool_WorkspaceNamePatternAcceptsUnderscore proves the
+// schema's name pattern is the provisioner's: a name the provisioner
+// accepts (underscores included) must not be rejected by the schema.
+func TestBuildDecideTool_WorkspaceNamePatternAcceptsUnderscore(t *testing.T) {
+	tool := buildDecideTool([]string{"claude-code"}, []string{"ws-1"}, []string{"target-1"}, false)
+	params := map[string]any(tool.OfFunction.Function.Parameters)
+	nested := params["properties"].(map[string]any)["new_workspace"].(map[string]any)["properties"].(map[string]any)
+	pattern, ok := nested["name"].(map[string]any)["pattern"].(string)
+	if !ok {
+		t.Fatalf("new_workspace.name has no string pattern: %+v", nested["name"])
+	}
+	re := regexp.MustCompile(pattern)
+	for _, name := range []string{"my_ws", "web-app", "a1"} {
+		if !re.MatchString(name) {
+			t.Errorf("schema pattern %q rejects %q", pattern, name)
+		}
+	}
+	for _, name := range []string{"_ws", "Web", "a/b"} {
+		if re.MatchString(name) {
+			t.Errorf("schema pattern %q accepts %q", pattern, name)
+		}
 	}
 }

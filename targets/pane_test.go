@@ -9,10 +9,12 @@ func TestParsePaneDead(t *testing.T) {
 		wantStatus int
 		wantErr    bool
 	}{
-		{"0 \n", false, 0, false},
-		{"1 127\n", true, 127, false},
-		{"1 0\n", true, 0, false},
-		{"1 \n", true, -1, false}, // killed by a signal: no exit status
+		{"0  \n", false, 0, false},
+		{"1 127 \n", true, 127, false},
+		{"1 0 \n", true, 0, false},
+		{"1  9\n", true, -1, false},           // killed by a signal: no exit status
+		{"1  \n", true, statusPending, false}, // dead, not reaped yet
+		{"1 \n", true, statusPending, false},  // same, from a tmux without pane_dead_signal
 		{"", false, 0, true},
 		{"1 x\n", false, 0, true},
 	}

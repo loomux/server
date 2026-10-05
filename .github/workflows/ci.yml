@@ -30,7 +30,10 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      - run: go test -race ./...
+      # -shuffle=on surfaces tests that depend on order (the seed is in the
+      # log to reproduce); the timeout is above Go's 10m default, which the
+      # slowest package nears on a loaded runner.
+      - run: go test -race -shuffle=on -timeout 20m ./...
 
   vulncheck:
     runs-on: ubuntu-latest
