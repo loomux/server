@@ -10,7 +10,11 @@ milestones.
 
 ## [Unreleased]
 
-The first release, collecting everything built so far.
+## [0.1.0] - 2026-10-05
+
+The first release, collecting everything built so far, with web client
+0.1.0. From here on, every merge to main is a patch release with its
+own notes.
 
 ### Added
 - Chat-driven orchestration: one-password login, conversations, and a
@@ -53,3 +57,6 @@ The first release, collecting everything built so far.
   (LOOM-111), and no target onboarding API (LOOM-114).
 - The relay model still sees non-secret agent output from every target,
   work machines included; a per-target setting is planned.
+
+[Unreleased]: https://github.com/loomux/server/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/loomux/server/releases/tag/v0.1.0
