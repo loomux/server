@@ -32,7 +32,11 @@ Loomux follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
    - **A hand-pushed tag** (`v0.1.0`, a milestone, an `-rc`) must be `v` + SemVer 2.0.0 with no build metadata, on `main`, with a `CHANGELOG.md` section.
    - **A plain manual rebuild, or a PR,** has no version.
 2. **`image`** builds with that version (`server_version` = `0.1.N (web 0.1.M)`) and pushes `:<sha>`, `:main` for main, and `:0.1.N`. The tag already exists by then.
-3. **`unreserve`:** if the build fails, the reserved tag is deleted, but only while it still points at that commit. Tags never move and creating an existing one is refused, so the delete can't hit a newer reservation. The image is pushed last, so nothing was published under that number, and a later merge may take it.
+3. **A failed build burns its number.** v* tags are immutable (a
+   ruleset on both repositories: no update or delete), so a reserved tag
+   is never given back. A re-run of that commit finds its tag and builds
+   the same version; otherwise the next merge takes the next number, and
+   the line has a gap. SemVer allows gaps, and no version is ever reused.
 4. **`release`** creates the GitHub pre-release for the tag (never "latest"). The notes are the merged PR's title, or the version's CHANGELOG section for a milestone, plus the web version pinned.
 5. **MINOR:** run the workflow on `main` with **bump = minor**.
 6. **Deploy** as before: `loomux-deploy-test-instance <sha> "v0.1.N"`.

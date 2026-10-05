@@ -83,10 +83,11 @@ the Alpine mirrors.
 
 ### Rejected: clone `loomux/web` inside a Dockerfile build stage
 
-1. **It needs a cross-repo credential inside the build.** `loomux/web` is
-   private. A workflow in `loomux/server` gets a `GITHUB_TOKEN` scoped to
-   `loomux/server` only — it cannot read `loomux/web`. So this needs a
-   separate PAT threaded into the build. The obvious way to do that,
+1. **It needed a cross-repo credential inside the build.** When this was
+   decided `loomux/web` was private, and a workflow in `loomux/server` gets
+   a `GITHUB_TOKEN` scoped to `loomux/server` only, so cloning it needed a
+   separate PAT threaded into the build (`loomux/web` has been public since
+   2026-10-05, but the other reasons stand). The obvious way to do that,
    `ARG GITHUB_TOKEN`, **bakes the token into the image history**, where
    anyone who can pull the image can read it back. Doing it safely requires
    BuildKit `--mount=type=secret`, which adds a hard builder requirement
@@ -107,7 +108,7 @@ holding `loomux-web-<short>.tar.gz` (the built `dist/`) and
 
 `deploy/web-ref` names a `loomux/web` commit and `deploy/web-sha256` the
 sha256 of its release tarball. The image workflow downloads the release
-with `WEB_REPO_TOKEN`, refuses one whose `commit` doesn't match or whose
+with the workflow's own token (`loomux/web` is public), refuses one whose `commit` doesn't match or whose
 tarball doesn't hash to `deploy/web-sha256` (or whose `web-release.json`
 says otherwise), and unpacks it into `.web-dist/`. The digest is pinned
 here, not taken from the release, because a release can be edited after

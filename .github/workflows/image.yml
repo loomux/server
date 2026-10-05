@@ -2,16 +2,17 @@
 #
 # Two things here are less boilerplate than they look:
 #
-#   1. The web client's static bundle comes from a *separate, private* repo
-#      (loomux/web), which publishes each tested main commit as a
+#   1. The web client's static bundle comes from a separate repo
+#      (loomux/web, public), which publishes each tested main commit as a
 #      pre-release `web-<short sha>` (LOOM-58; loomux/web docs/release.md).
 #      This workflow downloads the release deploy/web-ref pins and checks
 #      its tarball against deploy/web-sha256: the expected digest lives in
 #      this repo, so a release replaced after review (web-release.json
-#      included) can't change what ships. Its GITHUB_TOKEN is scoped to loomux/server and cannot
-#      read loomux/web, so a dedicated token is required — see the "guard"
-#      step, which fails loudly rather than letting the image ship with the
-#      placeholder UI.
+#      included) can't change what ships. loomux/web is public, so this
+#      workflow's own token reads its releases: no cross-repo secret, and a
+#      fork's pull request builds too. A missing bundle still fails the
+#      build loudly rather than shipping the placeholder UI (see the
+#      "Guard" step below).
 #   2. The image is verified by *running it* before it is pushed. loomuxd
 #      execs ssh/tmux/sh at runtime, so a green `go build` says nothing
 #      about whether the image can actually dispatch. See
@@ -106,18 +107,6 @@ jobs:
           # The version tags, to continue the release line.
           fetch-depth: 0
 
-      - name: Guard — cross-repo token for loomux/web
-        env:
-          WEB_REPO_TOKEN: ${{ secrets.WEB_REPO_TOKEN }}
-        run: |
-          if [ -z "${WEB_REPO_TOKEN}" ]; then
-            echo "::error::WEB_REPO_TOKEN is not set. It must be a token with read access" \
-                 "to the private loomux/web repo; this workflow's GITHUB_TOKEN is scoped to" \
-                 "loomux/server only. Failing rather than shipping an image whose UI is the" \
-                 "placeholder page (see docs/deploy/container.md)."
-            exit 1
-          fi
-
       - name: Resolve the loomux/web commit
         id: webref
         env:
@@ -152,7 +141,7 @@ jobs:
       # and web-release.json naming its commit and sha256 (LOOM-58).
       - name: Download the loomux/web release
         env:
-          GH_TOKEN: ${{ secrets.WEB_REPO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           REF: ${{ steps.webref.outputs.ref }}
           SHA256: ${{ steps.webref.outputs.sha256 }}
           TAG: web-${{ steps.webref.outputs.short }}
@@ -202,7 +191,7 @@ jobs:
         id: meta
         env:
           RELEASE: ${{ needs.version.outputs.version }}
-          GH_TOKEN: ${{ secrets.WEB_REPO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           WEB_REF: ${{ steps.webref.outputs.ref }}
         run: |
           set -eu
@@ -296,30 +285,6 @@ jobs:
             echo ""
             echo "UI from loomux/web release \`web-${{ steps.webref.outputs.short }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  # A version reserved for a build that then failed is given back, so no
-  # tag is left on a commit without an image. Only if the tag still points
-  # at this commit: tags never move and creating one that exists is
-  # refused, so no newer reservation can hold the name. The image is
-  # pushed last, so nothing was published under the number, and a later
-  # merge may take it.
-  unreserve:
-    needs: [version, image]
-    if: ${{ failure() && needs.version.outputs.reserved == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: v${{ needs.version.outputs.version }}
-        run: |
-          set -eu
-          at="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq .object.sha)"
-          if [ "${at}" = "${GITHUB_SHA}" ]; then
-            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}"
-            echo "Gave back ${TAG}: the build failed." >> "$GITHUB_STEP_SUMMARY"
-          fi
 
   # The GitHub release for a version, once its image is pushed (LOOM-129).
   # Its tag already exists (reserved above, or pushed by hand). The notes
