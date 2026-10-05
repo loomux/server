@@ -1214,6 +1214,11 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 			if line, _, _ := strings.Cut(strings.TrimSpace(out), "\n"); line != "" {
 				msg += ": " + line
 			}
+			// An UnreachableError holds only ssh's own stderr, never the
+			// script, so it can be kept for its class and hint (LOOM-85).
+			if u, ok := targets.AsUnreachable(err); ok {
+				return nil, false, fmt.Errorf("%s: %w", msg, u)
+			}
 			if errors.Is(err, targets.ErrUnreachable) {
 				return nil, false, fmt.Errorf("%s: %w", msg, targets.ErrUnreachable)
 			}
