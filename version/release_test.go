@@ -190,3 +190,36 @@ esac
 		t.Errorf("re-run reserve = %q, %v; want 0.1.2 again", got, ok)
 	}
 }
+
+// Review on #203: when a newer merge's run released first, the older
+// merge (an ancestor of it) releases nothing rather than take a higher
+// version than its successor.
+func TestReleaseReserveOlderMergeAfterNewer(t *testing.T) {
+	dir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "base")
+	git("tag", "v0.1.0")
+	git("commit", "-q", "--allow-empty", "-m", "older merge")
+	older := git("rev-parse", "HEAD")
+	git("commit", "-q", "--allow-empty", "-m", "newer merge")
+	git("tag", "v0.1.1")
+
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho called >&2; exit 1\n"), 0o755)
+	cmd := exec.Command("sh", filepath.Join(must(os.Getwd()), "../deploy/release.sh"), "reserve", older, "patch")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_REPOSITORY=loomux/x")
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "" {
+		t.Errorf("reserve for the older merge = %q, %v; want nothing released", out, err)
+	}
+}

@@ -91,6 +91,13 @@ reserve)
       [ "$kind" != minor ] || die "reserve: no release line yet; cut the first version by hand"
       exit 0
     fi
+    # A merge whose run comes after a newer merge's has already released:
+    # the newer one includes this commit, so this one releases nothing
+    # rather than take a higher number than its successor.
+    at="$(git rev-list -n 1 "v$latest" 2>/dev/null || true)"
+    if [ -n "$at" ] && [ "$at" != "$sha" ] && git merge-base --is-ancestor "$sha" "$at" 2>/dev/null; then
+      exit 0
+    fi
     v="$("$0" next "$kind" "$latest")"
     if gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/v$v" -f sha="$sha" >/dev/null 2>"$err"; then
       git tag "v$v" "$sha" 2>/dev/null || true
