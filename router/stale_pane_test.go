@@ -15,7 +15,8 @@ import (
 )
 
 // timeoutHarness: a claude-code turn that never signals completion and
-// times out after 300ms.
+// times out after 2s (seconds, so a slow CI runner can't make a cancelled
+// turn look like a timed-out one).
 func timeoutHarness(t *testing.T) (registry.Store, *fakeExecutor, *router.Router, *routertest.StubRoutingModel, *registry.Workspace) {
 	t.Helper()
 	store := newTestStore(t)
@@ -23,7 +24,7 @@ func timeoutHarness(t *testing.T) (registry.Store, *fakeExecutor, *router.Router
 	agentTypes := router.AgentTypeRegistry{
 		"": router.AgentType{AgentConfig: completion.AgentConfig{Tier: completion.TierIdle, IdleTimeout: 20 * time.Millisecond}},
 		"claude-code": router.AgentType{
-			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker, MaxTurnDuration: 300 * time.Millisecond, NoProgressTimeout: -1},
+			AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker, MaxTurnDuration: 2 * time.Second, NoProgressTimeout: -1},
 			LaunchTemplate: "claude",
 			InterruptKeys:  []string{"Escape"},
 		},
@@ -98,8 +99,8 @@ func TestDispatch_UserCancel_InterruptsAndFailsCancelled(t *testing.T) {
 	if _, err := r.Dispatch(ctx, "conv-1", "do something long"); err == nil {
 		t.Fatal("Dispatch: nil error for a cancelled turn")
 	}
-	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
-		t.Errorf("cancel took %s to end the turn, want it before the 300ms timeout", elapsed)
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Errorf("cancel took %s to end the turn, want it well before the 2s timeout", elapsed)
 	}
 	task := onlyTask(t, store, ws.ID)
 	if task.Status != registry.TaskStatusFailed || task.ErrorClass != registry.ErrorClassCancelled {

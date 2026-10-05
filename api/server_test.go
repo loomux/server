@@ -389,7 +389,10 @@ func TestListSessions_MultipleLogins_ListsAllMarkingCurrent(t *testing.T) {
 // still sit in the store, unexpired-looking, until someone tried to use
 // it.
 func TestListSessions_ExpiredSession_ExcludedFromListing(t *testing.T) {
-	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(50*time.Millisecond))
+	// Seconds, not milliseconds: a bcrypt login under -race on a slow CI
+	// runner can take longer than a short TTL, expiring the fresh session
+	// before it's used.
+	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(2*time.Second))
 	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
@@ -399,7 +402,7 @@ func TestListSessions_ExpiredSession_ExcludedFromListing(t *testing.T) {
 		t.Fatalf("login (stale) status = %d", status)
 	}
 
-	time.Sleep(100 * time.Millisecond) // past sessionTTL, staleToken's session is now expired
+	time.Sleep(2500 * time.Millisecond) // past sessionTTL, staleToken's session is now expired
 
 	freshToken, status := login(t, srv.URL, testPassword)
 	if status != http.StatusOK {
@@ -539,7 +542,7 @@ func TestSession_ExpiresAfterTTL(t *testing.T) {
 }
 
 func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
-	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(150*time.Millisecond))
+	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(2*time.Second))
 	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
@@ -550,7 +553,7 @@ func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
 	// the clock — proving activity keeps the session alive well past
 	// what a single fixed expiration from login time would allow.
 	for i := 0; i < 3; i++ {
-		time.Sleep(80 * time.Millisecond)
+		time.Sleep(1200 * time.Millisecond)
 		resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
