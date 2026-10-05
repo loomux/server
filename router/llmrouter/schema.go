@@ -152,7 +152,7 @@ func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool
 				"name": map[string]any{
 					"type":        "string",
 					"pattern":     "^[a-z0-9][a-z0-9-]{0,62}$",
-					"description": "Workspace name, also its directory under the target's workspace root: lowercase letters, digits and dashes.",
+					"description": "Workspace name, also its directory under the target's workspace root: lowercase letters, digits, dashes and underscores, starting with a letter or digit.",
 				},
 				"kind": map[string]any{
 					"type":        "string",
