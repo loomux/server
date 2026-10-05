@@ -4,8 +4,14 @@
 #   deploy/release.sh version <tag>            print the version a tag names
 #   deploy/release.sh prerelease <version>     exit 0 if it's a pre-release
 #   deploy/release.sh notes <version> [file]   print its CHANGELOG section
-#   deploy/release.sh latest [rev]             the highest vX.Y.Z tag reachable
-#                                              from rev (HEAD), or nothing
+#   deploy/release.sh latest [rev|--all]       the highest vX.Y.Z tag reachable
+#                                              from rev (HEAD), or of all tags
+#   deploy/release.sh reserve <sha> <patch|minor>
+#                                              create the next version's tag on
+#                                              sha through the GitHub API and
+#                                              print the version (or the one sha
+#                                              already has; nothing before the
+#                                              first release)
 #   deploy/release.sh next <patch|minor> <version>
 #                                              the version after it
 #
@@ -49,7 +55,8 @@ notes)
   ;;
 latest)
   # Only plain X.Y.Z tags start the line: a -rc tag doesn't.
-  git tag --merged "${2:-HEAD}" --list 'v*' |
+  if [ "${2:-}" = --all ]; then merged=""; else merged="--merged=${2:-HEAD}"; fi
+  git tag ${merged} --list 'v*' |
     sed -n 's/^v\(\(0\|[1-9][0-9]*\)\.\(0\|[1-9][0-9]*\)\.\(0\|[1-9][0-9]*\)\)$/\1/p' |
     sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1
   ;;
@@ -65,7 +72,37 @@ next)
   *) die "next: kind must be patch or minor" ;;
   esac
   ;;
+reserve)
+  # Every merge gets its own version, even when merges race: the tag is
+  # created through the API, which refuses one that exists; the loser
+  # fetches the tags and takes the next. Needs GH_TOKEN and
+  # GITHUB_REPOSITORY (LOOM-129).
+  sha="${2:-}"
+  kind="${3:-patch}"
+  existing="$(git tag --points-at "$sha" --list 'v*' |
+    sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' | head -n 1)"
+  if [ -n "$existing" ]; then echo "$existing"; exit 0; fi
+  err="$(mktemp)"
+  trap 'rm -f "$err"' EXIT
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    git fetch -q --tags --force origin 2>/dev/null || true
+    latest="$("$0" latest --all)"
+    if [ -z "$latest" ]; then
+      [ "$kind" != minor ] || die "reserve: no release line yet; cut the first version by hand"
+      exit 0
+    fi
+    v="$("$0" next "$kind" "$latest")"
+    if gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/v$v" -f sha="$sha" >/dev/null 2>"$err"; then
+      git tag "v$v" "$sha" 2>/dev/null || true
+      echo "$v"
+      exit 0
+    fi
+    grep -q 'Reference already exists' "$err" || die "reserve: creating tag v$v failed: $(cat "$err")"
+    sleep 1
+  done
+  die "reserve: gave up after 10 tries"
+  ;;
 *)
-  die "usage: $0 version <tag> | prerelease <version> | notes <version> [file] | latest [rev] | next <patch|minor> <version>"
+  die "usage: $0 version <tag> | prerelease <version> | notes <version> [file] | latest [rev|--all] | next <patch|minor> <version> | reserve <sha> <patch|minor>"
   ;;
 esac
