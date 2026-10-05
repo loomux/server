@@ -21,6 +21,8 @@ name: image
 on:
   push:
     branches: [main]
+    # A release (LOOM-129, docs/release/versioning.md): v + SemVer 2.0.0.
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -142,9 +144,21 @@ jobs:
       - name: Compute tags
         id: meta
         run: |
+          set -eu
           short="$(git rev-parse --short HEAD)"
           echo "sha=${short}" >> "$GITHUB_OUTPUT"
-          echo "version=${short} (web ${{ steps.webref.outputs.short }})" >> "$GITHUB_OUTPUT"
+          version="${short}"
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            # A release tag must name a SemVer version and a commit on main:
+            # only reviewed code is released.
+            version="$(deploy/release.sh version "${GITHUB_REF_NAME}")"
+            git fetch -q --depth=1000 origin main
+            git merge-base --is-ancestor HEAD FETCH_HEAD || {
+              echo "::error::${GITHUB_REF_NAME} is not on main"; exit 1; }
+            deploy/release.sh notes "${version}" >/dev/null
+            echo "release=${version}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${version} (web ${{ steps.webref.outputs.short }})" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -208,12 +222,44 @@ jobs:
       # tag; :main exists for humans and for "what is current".
       - name: Push
         if: github.event_name != 'pull_request'
+        env:
+          RELEASE: ${{ steps.meta.outputs.release }}
         run: |
-          docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:main"
           docker push "${IMAGE}:${{ steps.meta.outputs.sha }}"
-          docker push "${IMAGE}:main"
+          if [ -n "${RELEASE}" ]; then
+            # A release adds its version tag; :main stays with main.
+            docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:${RELEASE}"
+            docker push "${IMAGE}:${RELEASE}"
+          else
+            docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:main"
+            docker push "${IMAGE}:main"
+          fi
           {
-            echo "### Pushed \`${IMAGE}:${{ steps.meta.outputs.sha }}\`"
+            echo "### Pushed \`${IMAGE}:${{ steps.meta.outputs.sha }}\`${RELEASE:+ and \`:${RELEASE}\`}"
             echo ""
             echo "UI from loomux/web release \`web-${{ steps.webref.outputs.short }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # A release tag's GitHub release, once its image is pushed (LOOM-129). The
+  # only job here that can write the repository. Notes are the version's
+  # CHANGELOG.md section. 0.y.z and -pre versions are pre-releases, and a
+  # release is never marked "latest" by this job: that's the user's call.
+  release:
+    needs: image
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          version="$(deploy/release.sh version "${GITHUB_REF_NAME}")"
+          deploy/release.sh notes "${version}" > notes.md
+          pre=""
+          if deploy/release.sh prerelease "${version}"; then pre="--prerelease"; fi
+          gh release create "${GITHUB_REF_NAME}" --verify-tag ${pre} --latest=false \
+            --title "Loomux ${version}" --notes-file notes.md
