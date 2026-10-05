@@ -119,7 +119,9 @@ and check it against the tarball you download. A manual
 `workflow_dispatch` with `web_ref` must pass `web_sha256` too. So the bundle in the image is the one `loomux/web`'s own CI
 built and tested, byte for byte. The server build needs no Node toolchain,
 and a commit without a release (anything pushed before LOOM-58) fails the
-build loudly. LOOM-118's in-app updater reads the same `web-release.json`.
+build loudly. The image build copies `web-release.json` into the bundle,
+so loomuxd knows which release it serves; LOOM-118's in-app updater reads
+the same file (see Configuration).
 
 ### The tradeoff being accepted
 
@@ -239,6 +241,30 @@ it in the Secret). `LOOMUX_NOTIFY_EVENTS` narrows which ones are sent
 quick enough that you were likely watching; `LOOMUX_PUBLIC_URL` (e.g.
 `https://loomux.example`) makes each notification open its conversation.
 At most 5 go out at once, then one a minute.
+
+**Web client updates (LOOM-118, optional):** with
+`LOOMUX_WEB_RELEASES_TOKEN` set (a fine-grained, read-only token for
+`loomux/web`, Contents: read; keep it in the Secret), the web UI shows the
+version it runs against the newest `loomux/web` release and can install
+that release without rebuilding the image. `POST /api/v1/web/update`
+installs it and `POST /api/v1/web/rollback` returns to the bundle it
+replaced; `GET /api/v1/web/version` reports both. All three need a
+session. Installed bundles live in `LOOMUX_WEB_BUNDLES_DIR`, by default
+`web-bundles` next to the database, so they survive restarts on the data
+volume. `LOOMUX_WEB_RELEASES_REPO` defaults to `loomux/web`. Without the
+token, the version is still reported and nothing can be installed.
+
+What's trusted: unlike the image build, which checks the bundle against
+the sha256 pinned in this repo (`deploy/web-sha256`), an in-place update
+has no reviewed pin. It installs only a release created by
+`github-actions[bot]` (loomux/web's CI, not a person's upload) whose tag,
+commit and tarball name agree, whose commit is on `loomux/web` `main`, and
+whose tarball matches the sha256 in its `web-release.json`. It unpacks
+regular files and directories only, into a fresh directory, and switches
+to it only once it's whole and has an `index.html`. A newer image always
+wins over an older installed bundle: the image's own bundle (with its
+`web-release.json`, copied in by the image build) is served whenever it
+is newer.
 
 ## Metrics (LOOM-103)
 

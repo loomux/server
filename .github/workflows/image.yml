@@ -126,6 +126,9 @@ jobs:
           fi
           mkdir .web-dist
           tar -xzf "web-release/${tarball}" -C .web-dist --no-same-owner
+          # The bundle says what it is, so loomuxd can compare it with newer
+          # releases (LOOM-118).
+          cp web-release/web-release.json .web-dist/web-release.json
 
       - name: Guard — the bundle actually exists
         run: |

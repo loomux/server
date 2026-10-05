@@ -25,6 +25,7 @@ import (
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/app"
 	"github.com/Loomux/server/version"
+	"github.com/Loomux/server/webbundle"
 )
 
 func main() {
@@ -119,7 +120,22 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithTaskTurns(loomux.Store()),
 		api.WithHealthChecker(loomux.HealthChecker()),
 	}
-	if apiCfg.StaticDir != "" {
+	switch {
+	case apiCfg.StaticDir != "" && apiCfg.WebBundlesDir != "":
+		// The web client can be updated in place (LOOM-118).
+		var source webbundle.Source
+		if apiCfg.WebReleasesToken != "" {
+			source = webbundle.NewGitHub(apiCfg.WebReleasesRepo, apiCfg.WebReleasesToken)
+		}
+		web, err := webbundle.New(apiCfg.StaticDir, apiCfg.WebBundlesDir, source)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "loomuxd: serving web client %s from %s (updates enabled: %v)\n",
+			web.Current(), web.Root(), web.Enabled())
+		opts = append(opts, api.WithWebBundles(web))
+	case apiCfg.StaticDir != "":
 		opts = append(opts, api.WithStaticDir(apiCfg.StaticDir))
 	}
 

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -40,6 +41,18 @@ type Config struct {
 	// need in-cluster scraping must set this explicitly to ":9090" or a
 	// pod IP.
 	MetricsAddr string
+	// WebBundlesDir, if set together with StaticDir, is where web client
+	// updates are installed (LOOM-118): StaticDir is then the image's own
+	// bundle, served until a newer one is installed here. It must persist
+	// across restarts, so it defaults to web-bundles next to the database
+	// (LOOMUX_DB_PATH), which lives on the data volume.
+	WebBundlesDir string
+	// WebReleasesToken is a read-only GitHub token for WebReleasesRepo's
+	// releases. Empty: the bundle served is reported, but nothing can be
+	// installed.
+	WebReleasesToken string
+	// WebReleasesRepo is the repository web bundles are published in.
+	WebReleasesRepo string
 }
 
 const (
@@ -48,9 +61,16 @@ const (
 	envSessionTTL   = "LOOMUX_SESSION_TTL"
 	envStaticDir    = "LOOMUX_STATIC_DIR"
 	envMetricsAddr  = "LOOMUX_METRICS_ADDR"
+	envWebBundles   = "LOOMUX_WEB_BUNDLES_DIR"
+	envWebToken     = "LOOMUX_WEB_RELEASES_TOKEN"
+	envWebRepo      = "LOOMUX_WEB_RELEASES_REPO"
+	// envDBPath is app's (app.Config); read here only to place
+	// WebBundlesDir beside the database.
+	envDBPath = "LOOMUX_DB_PATH"
 
 	defaultAddr        = ":8080"
 	defaultMetricsAddr = "127.0.0.1:9090"
+	defaultWebRepo     = "loomux/web"
 )
 
 // LoadConfig reads Config from the environment, failing fast on a
@@ -86,5 +106,17 @@ func LoadConfig() (Config, error) {
 		metricsAddr = raw
 	}
 
-	return Config{PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl, StaticDir: os.Getenv(envStaticDir), MetricsAddr: metricsAddr}, nil
+	webBundles := os.Getenv(envWebBundles)
+	if db := os.Getenv(envDBPath); webBundles == "" && db != "" {
+		webBundles = filepath.Join(filepath.Dir(db), "web-bundles")
+	}
+	webRepo := os.Getenv(envWebRepo)
+	if webRepo == "" {
+		webRepo = defaultWebRepo
+	}
+
+	return Config{
+		PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl, StaticDir: os.Getenv(envStaticDir), MetricsAddr: metricsAddr,
+		WebBundlesDir: webBundles, WebReleasesToken: os.Getenv(envWebToken), WebReleasesRepo: webRepo,
+	}, nil
 }

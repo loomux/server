@@ -226,6 +226,7 @@ type Server struct {
 	loginThrottle      *loginThrottle
 	streamPollInterval time.Duration
 	staticDir          string
+	web                WebBundles
 	static             http.HandlerFunc
 	mux                *http.ServeMux
 }
@@ -326,8 +327,12 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	for _, opt := range opts {
 		opt(s)
 	}
-	if s.staticDir != "" {
-		s.static = newStaticHandler(s.staticDir)
+	switch {
+	case s.web != nil:
+		s.static = newStaticHandler(s.web.Root)
+	case s.staticDir != "":
+		dir := s.staticDir
+		s.static = newStaticHandler(func() string { return dir })
 	}
 
 	mux := http.NewServeMux()
@@ -357,6 +362,9 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/health/deep", s.requireAuth(s.handleHealthDeep))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
+	mux.HandleFunc("GET /api/v1/web/version", s.requireAuth(s.handleWebVersion))
+	mux.HandleFunc("POST /api/v1/web/update", s.requireAuth(s.handleWebUpdate))
+	mux.HandleFunc("POST /api/v1/web/rollback", s.requireAuth(s.handleWebRollback))
 	s.mux = mux
 	return s
 }
@@ -1192,10 +1200,8 @@ func (s *Server) handleUnsupportedAPIPath(w http.ResponseWriter, r *http.Request
 // rewriting every fallback request's path to literally "/index.html" and
 // handing it back to fileServer would hit that special case on every
 // single fallback and redirect-loop forever.
-func newStaticHandler(dir string) http.HandlerFunc {
-	root := http.Dir(dir)
-	fileServer := http.FileServer(root)
-	serveIndex := func(w http.ResponseWriter, r *http.Request) {
+func newStaticHandler(dir func() string) http.HandlerFunc {
+	serveIndex := func(w http.ResponseWriter, r *http.Request, root http.Dir) {
 		f, err := root.Open("/index.html")
 		if err != nil {
 			http.NotFound(w, r)
@@ -1213,15 +1219,17 @@ func newStaticHandler(dir string) http.HandlerFunc {
 		http.ServeContent(w, r, "index.html", info.ModTime(), f)
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Read per request: a web update (LOOM-118) swaps the directory.
+		root := http.Dir(dir())
 		f, err := root.Open(r.URL.Path)
 		if err != nil {
-			serveIndex(w, r)
+			serveIndex(w, r, root)
 			return
 		}
 		info, statErr := f.Stat()
 		f.Close()
 		if statErr != nil || info.IsDir() || r.URL.Path == "/index.html" {
-			serveIndex(w, r)
+			serveIndex(w, r, root)
 			return
 		}
 		// Vite names every built asset by its content hash, so one never
@@ -1229,7 +1237,7 @@ func newStaticHandler(dir string) http.HandlerFunc {
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
-		fileServer.ServeHTTP(w, r)
+		http.FileServer(root).ServeHTTP(w, r)
 	}
 }
 
