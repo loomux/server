@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +38,15 @@ func TestCredential_WrongMasterKeyFailsToDecrypt(t *testing.T) {
 
 	if _, err := storeB.GetCredential(ctx, cred.ID); err == nil {
 		t.Fatalf("GetCredential with the wrong master key: got nil error, want a decryption failure")
+	}
+	// LOOM-134: the rows can still be listed and deleted, so a wrong key
+	// isn't a dead end.
+	info, err := storeB.ListCredentialInfo(ctx)
+	if err != nil || len(info) != 1 || info[0].ID != cred.ID {
+		t.Fatalf("ListCredentialInfo with the wrong master key = %+v, %v", info, err)
+	}
+	if err := storeB.DeleteCredential(ctx, cred.ID); err != nil {
+		t.Fatalf("DeleteCredential with the wrong master key: %v", err)
 	}
 }
 
@@ -77,5 +87,25 @@ func TestCredential_EncryptedAtRest(t *testing.T) {
 	}
 	if bytes.Contains(raw, []byte(distinctive)) {
 		t.Fatalf("plaintext credential value appears verbatim in the raw database file")
+	}
+}
+
+// LOOM-134: two unscoped credentials of the same name are a conflict, as
+// two at the same workspace or agent-type scope always were.
+func TestCredential_UnscopedDuplicateConflicts(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"), sqlite.WithMasterKey(bytes.Repeat([]byte("K"), 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.CreateCredential(ctx, &registry.Credential{ID: "c1", Name: "TOKEN", Value: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateCredential(ctx, &registry.Credential{ID: "c2", Name: "TOKEN", Value: "b"}); !errors.Is(err, registry.ErrConflict) {
+		t.Fatalf("second unscoped TOKEN: err = %v, want ErrConflict", err)
+	}
+	if err := store.CreateCredential(ctx, &registry.Credential{ID: "c3", Name: "TOKEN", AgentType: "codex", Value: "c"}); err != nil {
+		t.Fatalf("the same name at another scope: %v", err)
 	}
 }

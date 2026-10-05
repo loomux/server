@@ -544,6 +544,16 @@ Two different problems, two different solutions:
   pattern, but database-backed and access-scoped rather than one flat file
   everything reads from.
 
+  The vault is managed through `/api/v1/credentials` (LOOM-134), and its
+  values are **write-only**: `POST` creates one (`name` — an env var
+  name — `value`, and optional `workspace_id`/`agent_type` scope),
+  `PUT /{id}/value` replaces a value, `DELETE /{id}` removes it, and
+  `GET` lists names and scopes only. No API response ever carries a
+  value. One name per scope. When an agent launches, the most specific
+  match wins (workspace and agent type, then either, then unscoped). The
+  listing reads no ciphertext, so a vault whose master key no longer
+  matches can still be listed and its rows deleted.
+
 The router model's own credential (the LLM vendor API key(s) used for
 routing/relay, §6) is a partial exception to both cases above: it's needed
 before any workspace or agent-type is even chosen, so it fits neither the
