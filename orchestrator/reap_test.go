@@ -249,8 +249,10 @@ func TestReaper_Sweep_FailsStaleProvisioningWorkspaces(t *testing.T) {
 	ctx := context.Background()
 
 	stale := newProvisioningWorkspace(t, store, ws.TargetID, "stale")
-	staleAfter := 50 * time.Millisecond
-	time.Sleep(staleAfter + 30*time.Millisecond)
+	// A second, not milliseconds: on a slow CI runner the "fresh" row
+	// below must not age past the bound before the sweep.
+	staleAfter := time.Second
+	time.Sleep(staleAfter + 100*time.Millisecond)
 	fresh := newProvisioningWorkspace(t, store, ws.TargetID, "fresh")
 
 	reaper := orchestrator.NewReaper(o, time.Hour,

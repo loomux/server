@@ -21,6 +21,12 @@ jobs:
       # The orchestrator and router integration tests drive a real tmux.
       - name: Install tmux
         run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+      # Test packages run in parallel and share the "loomux" tmux socket.
+      # tmux stops its server when the last session closes, so one package
+      # could hit it mid-exit ("server exited unexpectedly"). A session
+      # that lives for the whole run keeps the server up.
+      - name: Keep the loomux tmux server up
+        run: tmux -L loomux new-session -d -s ci-keepalive
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
