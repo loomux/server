@@ -1,0 +1,38 @@
+# Tests and a vulnerability scan for every PR and main push (LOOM-125).
+# image.yml builds and verifies the image; this is the code itself.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # The orchestrator and router integration tests drive a real tmux.
+      - name: Install tmux
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Fails on a vulnerability the code can reach; one only in a module it
+      # requires but never calls is reported, not failed.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
