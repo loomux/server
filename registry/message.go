@@ -25,10 +25,21 @@ type Message struct {
 	// DispatchID is the dispatch job this message belongs to (LOOM-80),
 	// empty for a message written outside one (e.g. the in-process CLI).
 	DispatchID string
-	Role       MessageRole
-	Content    string
-	CreatedAt  time.Time
+	// Origin is where the turn ran, recorded when it's logged so it
+	// survives the task's deletion: the purpose of the target it acted
+	// on (TargetPurposePersonal or TargetPurposeWork), MessageOriginNone
+	// for a turn that touched no target, or empty when unknown — a user
+	// message stored at submit, before routing, or one from before
+	// origins were recorded.
+	Origin    string
+	Role      MessageRole
+	Content   string
+	CreatedAt time.Time
 }
+
+// MessageOriginNone is Message.Origin for a turn that touched no target:
+// the router's own answer.
+const MessageOriginNone = "none"
 
 // ConversationActivity is one conversation's footprint in the message
 // log: every conversation with at least one logged turn has one, whether
