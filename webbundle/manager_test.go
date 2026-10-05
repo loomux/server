@@ -204,6 +204,7 @@ func TestInstallFollowsThePinNotDates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.latestTTL = 0 // the pin changes below, within the cache's minute
 	if _, err := m.Install(context.Background()); !errors.Is(err, ErrUpToDate) || src.gets != 0 {
 		t.Errorf("Install = %v (downloads %d), want ErrUpToDate without downloading", err, src.gets)
 	}
