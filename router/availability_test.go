@@ -53,11 +53,19 @@ type probeScript struct {
 	probes    int
 	// auth is what each binary's auth check prints, when asked (LOOM-86).
 	auth map[string]string
+	// envScripts are the env-file scripts run (LOOM-113).
+	envScripts []string
 }
 
 func (p *probeScript) runOnce(command string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// An agent's secrets written to their env file (LOOM-113), or the
+	// file removed after a failed launch.
+	if strings.Contains(command, ".loomux/env/") {
+		p.envScripts = append(p.envScripts, command)
+		return "", nil
+	}
 	if !strings.Contains(command, "command -v") {
 		return "", errors.New("unexpected RunOnce: " + command)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // LocalExecutor runs tmux operations directly on the local machine.
@@ -107,7 +108,11 @@ func (e *LocalExecutor) RemoveFile(ctx context.Context, path string) error {
 // stdout+stderr — e.g. many CLIs print --version to stderr, so both
 // streams are captured rather than just stdout.
 func (e *LocalExecutor) RunOnce(ctx context.Context, command string) (string, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	// The script goes to sh on stdin, as it does over SSH, not as an
+	// argument: what it carries (an env file's secrets, LOOM-113) stays
+	// off the process list.
+	cmd := exec.CommandContext(ctx, "sh")
+	cmd.Stdin = strings.NewReader("{\n" + command + "\n} </dev/null\n")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

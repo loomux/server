@@ -2,6 +2,7 @@ package router_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -195,8 +196,18 @@ func TestDispatch_UseWorkspace(t *testing.T) {
 	if !sess.alive {
 		t.Fatalf("session torn down by Complete, want it kept for the grace period")
 	}
-	if !strings.Contains(sess.command, "MY_TOKEN=") {
-		t.Fatalf("session command = %q, want it to contain the credential env assignment", sess.command)
+	// The credential reaches the agent through an env file written over
+	// RunOnce (stdin) and sourced by the session, never on its command
+	// line (LOOM-113).
+	if strings.Contains(sess.command, "secret-value") || !strings.Contains(sess.command, ".loomux/env/") {
+		t.Fatalf("session command = %q, want it to source the env file and not carry the value", sess.command)
+	}
+	var wrote bool
+	for _, c := range exec.runOnceCommands {
+		wrote = wrote || (strings.Contains(c, ".loomux/env/") && strings.Contains(c, "MY_TOKEN='secret-value'"))
+	}
+	if !wrote {
+		t.Fatalf("RunOnce scripts = %q, want the env file written with MY_TOKEN", exec.runOnceCommands)
 	}
 	if !strings.Contains(sess.command, "claude") {
 		t.Fatalf("session command = %q, want it to contain the resolved launch template", sess.command)
@@ -318,5 +329,44 @@ func TestDispatch_ProvisioningFailure_LeavesWorkspaceRowInPlace(t *testing.T) {
 	// provisioning.
 	if list[0].Status != registry.WorkspaceStatusFailed {
 		t.Fatalf("workspace status = %q, want %q", list[0].Status, registry.WorkspaceStatusFailed)
+	}
+}
+
+// LOOM-113 review: RunOnce's errors quote the script they ran, and the
+// env-file script holds the secrets. A failed write must not carry them
+// into the dispatch error, the logs or a task's failure reason.
+func TestDispatch_EnvFileWriteFailureLeaksNoSecret(t *testing.T) {
+	store, exec, r, model := setup(t)
+	ws := createFixtureWorkspace(t, store)
+	if err := store.CreateCredential(context.Background(), &registry.Credential{
+		ID: uuid.NewString(), Name: "MY_TOKEN", Value: "sk-PROBE-secret-value-123",
+	}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	exec.runOnce = func(command string) (string, error) {
+		if strings.Contains(command, ".loomux/env/") && strings.Contains(command, "cat >") {
+			return "mkdir: cannot create directory: Not a directory\n", fmt.Errorf("targets: run once: %s: exit status 1", command)
+		}
+		return "", nil
+	}
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+	}
+
+	_, err := r.Dispatch(context.Background(), "conv-1", "do the thing")
+	if err == nil {
+		t.Fatal("Dispatch succeeded with the env file unwritten")
+	}
+	if strings.Contains(err.Error(), "sk-PROBE") {
+		t.Errorf("dispatch error carries the secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Not a directory") {
+		t.Errorf("dispatch error = %v, want the target's own reason", err)
+	}
+	tasks, _ := store.ListTasks(context.Background())
+	for _, task := range tasks {
+		if strings.Contains(task.FailureReason, "sk-PROBE") {
+			t.Errorf("task failure reason carries the secret: %q", task.FailureReason)
+		}
 	}
 }

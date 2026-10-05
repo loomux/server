@@ -1181,16 +1181,46 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		}
 	}
 
+	taskID := uuid.NewString()
 	secrets, err := r.creds.Resolve(ctx, workspaceID, agentType)
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
 	}
-	prefix, err := credentials.ShellEnvPrefix(secrets)
-	if err != nil {
-		return nil, false, fmt.Errorf("router: dispatch: %w", err)
+	// Secrets go through a file the launch command sources and deletes,
+	// never onto the command line (LOOM-113).
+	var prefix string
+	var envFile credentials.EnvFile
+	if len(secrets) > 0 {
+		if envFile, err = credentials.NewEnvFile(taskID, secrets); err != nil {
+			return nil, false, fmt.Errorf("router: dispatch: %w", err)
+		}
+		exec, err := r.executorForWorkspace(ctx, workspaceID)
+		if err != nil {
+			return nil, false, fmt.Errorf("router: dispatch: %w", err)
+		}
+		if out, err := exec.RunOnce(ctx, envFile.Write); err != nil {
+			// Never wrapped: RunOnce's error quotes the script it ran, and
+			// this one holds the secrets. The target's own first line of
+			// output says what went wrong.
+			msg := "router: dispatch: could not write the agent's environment on the target"
+			if line, _, _ := strings.Cut(strings.TrimSpace(out), "\n"); line != "" {
+				msg += ": " + line
+			}
+			if errors.Is(err, targets.ErrUnreachable) {
+				return nil, false, fmt.Errorf("%s: %w", msg, targets.ErrUnreachable)
+			}
+			return nil, false, errors.New(msg)
+		}
+		defer func() {
+			// Sourced and deleted by the pane on a good launch; otherwise
+			// nothing will, so remove it here.
+			if task == nil {
+				_, _ = exec.RunOnce(context.WithoutCancel(ctx), envFile.Remove)
+			}
+		}()
+		prefix = envFile.Source
 	}
 
-	taskID := uuid.NewString()
 	envPrefix, err := r.agentEnvPrefix(ctx, workspaceID, taskID, entry)
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: %w", err)

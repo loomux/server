@@ -61,6 +61,8 @@ type fakeExecutor struct {
 	// per-command answer — e.g. an agent CLI probe that answers
 	// differently before and after an install.
 	runOnce func(command string) (string, error)
+	// runOnceCommands is every script RunOnce was given, in order.
+	runOnceCommands []string
 	// captureFunc, when set, replaces capture with a fresh value per call
 	// (e.g. output that never goes quiet). onSendKeys, when set, runs
 	// after every successful SendKeys (e.g. to cancel a request mid-turn).
@@ -197,6 +199,9 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 	if e.unreachable {
 		return "", targets.ErrUnreachable
 	}
+	e.mu.Lock()
+	e.runOnceCommands = append(e.runOnceCommands, command)
+	e.mu.Unlock()
 	if e.runOnce != nil {
 		return e.runOnce(command)
 	}
