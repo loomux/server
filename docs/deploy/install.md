@@ -73,9 +73,13 @@ LOOMUX_NTFY_TOPIC=loomux
 LOOMUX_METRICS_ADDR=:9090                # default is loopback only
 ```
 
-Web client updates in place are off unless `LOOMUX_WEB_UPDATES` says
-otherwise; a production install normally leaves them off, so the UI
-changes only with the server image ([`container.md`](container.md)).
+Web client updates in place (`LOOMUX_WEB_UPDATES`): `off`, `attested`
+(install the newest bundle loomux/web's CI built on main, verified by
+its build-provenance attestation) or `pinned` (the bundle loomux/server's main
+pins in `deploy/web-ref` and `deploy/web-sha256`). Unset, it's `attested` if
+`LOOMUX_WEB_RELEASES_TOKEN` is set and `off` otherwise. A production
+install normally sets `LOOMUX_WEB_UPDATES=off`, so the UI changes only
+with the server image ([`container.md`](container.md)).
 
 ## 5. Run it
 
