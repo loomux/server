@@ -119,7 +119,9 @@ and check it against the tarball you download. A manual
 `workflow_dispatch` with `web_ref` must pass `web_sha256` too. So the bundle in the image is the one `loomux/web`'s own CI
 built and tested, byte for byte. The server build needs no Node toolchain,
 and a commit without a release (anything pushed before LOOM-58) fails the
-build loudly. LOOM-118's in-app updater reads the same `web-release.json`.
+build loudly. The image build copies `web-release.json` into the bundle,
+so loomuxd knows which release it serves; LOOM-118's in-app updater reads
+the same file (see Configuration).
 
 ### The tradeoff being accepted
 
@@ -239,6 +241,34 @@ it in the Secret). `LOOMUX_NOTIFY_EVENTS` narrows which ones are sent
 quick enough that you were likely watching; `LOOMUX_PUBLIC_URL` (e.g.
 `https://loomux.example`) makes each notification open its conversation.
 At most 5 go out at once, then one a minute.
+
+**Web client updates (LOOM-118, optional):** the web UI can switch to
+the web client `loomux/server` **main** pins, without rebuilding or
+redeploying the image. A web-ref bump PR here (`deploy/web-ref` +
+`deploy/web-sha256`, reviewed) is what the Update button picks up.
+`GET /api/v1/web/version` reports the bundle served and the pinned one,
+`POST /api/v1/web/update` installs the pinned one, and
+`POST /api/v1/web/rollback` returns to the bundle it replaced. All three
+need a session. It needs `LOOMUX_WEB_RELEASES_TOKEN`: a fine-grained,
+read-only token with Contents: read on **both** `loomux/server` (to read
+the pin) and `loomux/web` (to download the release); keep it in the
+Secret. Without it, the version is still reported and nothing can be
+installed. Installed bundles live in `LOOMUX_WEB_BUNDLES_DIR`, by default
+`web-bundles` next to the database, so they survive restarts on the data
+volume. `LOOMUX_WEB_PIN_REPO` and `LOOMUX_WEB_RELEASES_REPO` default to
+`loomux/server` and `loomux/web`.
+
+What's trusted is the pin, as for the image build (#179). The tarball
+must hash to the pinned `deploy/web-sha256`, and the release's
+`web-release.json` must name the pinned commit and digest. Nothing about
+a release itself (who or which workflow created it, its tag, its
+`built_at`) can make anything else install: anyone who can push to
+`loomux/web` can publish a release that looks genuine. An update unpacks
+regular files and directories only, into a fresh directory, and switches
+to it only once it's whole and has an `index.html`. Deploying another
+image always starts from that image's bundle (with its `web-release.json`,
+copied in by the image build). If the bundle manager can't start, loomuxd
+logs why and serves the image's bundle without updates.
 
 ## Metrics (LOOM-103)
 

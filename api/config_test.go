@@ -138,3 +138,25 @@ func TestLoadConfig_MetricsAddrEmptyDisables(t *testing.T) {
 		t.Errorf("MetricsAddr = %q, want empty string (disabled)", cfg.MetricsAddr)
 	}
 }
+
+// LOOM-118: web updates install beside the database (the data volume)
+// unless told otherwise; the token is optional.
+func TestLoadConfig_WebUpdates(t *testing.T) {
+	t.Setenv("LOOMUX_AUTH_PASSWORD_HASH", validPasswordHashEnv(t))
+	t.Setenv("LOOMUX_DB_PATH", "/data/loomux.db")
+
+	cfg, err := api.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.WebBundlesDir != "/data/web-bundles" || cfg.WebReleasesRepo != "loomux/web" || cfg.WebPinRepo != "loomux/server" ||
+		cfg.WebReleasesToken != "" {
+		t.Errorf("web config = %+v", cfg)
+	}
+
+	t.Setenv("LOOMUX_WEB_BUNDLES_DIR", "/elsewhere")
+	t.Setenv("LOOMUX_WEB_RELEASES_TOKEN", "tok")
+	if cfg, _ := api.LoadConfig(); cfg.WebBundlesDir != "/elsewhere" || cfg.WebReleasesToken != "tok" {
+		t.Errorf("overridden web config = %q, %q", cfg.WebBundlesDir, cfg.WebReleasesToken)
+	}
+}

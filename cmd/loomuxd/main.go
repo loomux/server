@@ -25,6 +25,7 @@ import (
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/app"
 	"github.com/Loomux/server/version"
+	"github.com/Loomux/server/webbundle"
 )
 
 func main() {
@@ -120,7 +121,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithHealthChecker(loomux.HealthChecker()),
 	}
 	if apiCfg.StaticDir != "" {
-		opts = append(opts, api.WithStaticDir(apiCfg.StaticDir))
+		opts = append(opts, webOption(apiCfg))
 	}
 
 	server := api.NewServer(loomux.Dispatches(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), loomux.Store(), apiCfg.PasswordHash, opts...)
@@ -158,4 +159,27 @@ func runServer(ctx context.Context, loomux *app.App) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// webOption serves the web client from apiCfg.StaticDir, updatable in
+// place (LOOM-118) when a bundles directory is configured. A bundle
+// manager that can't start (an unreadable bundle, an unwritable
+// directory) is no reason to stay down: the image's bundle is served
+// without updates.
+func webOption(apiCfg api.Config) api.Option {
+	if apiCfg.WebBundlesDir == "" {
+		return api.WithStaticDir(apiCfg.StaticDir)
+	}
+	var source webbundle.Source
+	if apiCfg.WebReleasesToken != "" {
+		source = webbundle.NewGitHub(apiCfg.WebPinRepo, apiCfg.WebReleasesRepo, apiCfg.WebReleasesToken)
+	}
+	web, err := webbundle.New(apiCfg.StaticDir, apiCfg.WebBundlesDir, source)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loomuxd: web updates off, serving the image's web client: %v\n", err)
+		return api.WithStaticDir(apiCfg.StaticDir)
+	}
+	fmt.Fprintf(os.Stderr, "loomuxd: serving web client %s from %s (updates enabled: %v)\n",
+		web.Current(), web.Root(), web.Enabled())
+	return api.WithWebBundles(web)
 }
