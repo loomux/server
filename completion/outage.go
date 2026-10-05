@@ -15,10 +15,14 @@ var unreachableGrace = time.Minute
 
 // outage tracks how long a watcher's polls have been failing because the
 // target was unreachable.
-type outage struct{ since time.Time }
+type outage struct {
+	since time.Time
+	// grace overrides unreachableGrace when set (WithUnreachableGrace).
+	grace time.Duration
+}
 
 // tolerate reports whether err may be ridden out: the target is
-// unreachable, and hasn't been for longer than unreachableGrace.
+// unreachable, and hasn't been for longer than the grace.
 func (o *outage) tolerate(err error) bool {
 	if !errors.Is(err, targets.ErrUnreachable) {
 		return false
@@ -26,7 +30,11 @@ func (o *outage) tolerate(err error) bool {
 	if o.since.IsZero() {
 		o.since = time.Now()
 	}
-	return time.Since(o.since) < unreachableGrace
+	grace := o.grace
+	if grace <= 0 {
+		grace = unreachableGrace
+	}
+	return time.Since(o.since) < grace
 }
 
 // clear records a poll that reached the target.

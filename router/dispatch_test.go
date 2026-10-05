@@ -84,7 +84,10 @@ func newRouter(t *testing.T, store registry.Store, opts ...router.Option) (*fake
 	exec := newFakeExecutor()
 	agentTypes := shortIdleAgentTypes("claude")
 	markerDir := t.TempDir()
-	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir)
+	// An unreachable fake target fails a wait in 100ms, not after the
+	// production minute's grace (LOOM-135).
+	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir,
+		completion.WithUnreachableGrace(100*time.Millisecond), completion.WithPollInterval(20*time.Millisecond))
 	orch := orchestrator.New(store, exec.factory(), detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{}

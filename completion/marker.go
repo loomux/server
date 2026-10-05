@@ -93,6 +93,7 @@ type MarkerWatcher struct {
 	newExecutor  orchestrator.ExecutorFactory
 	dir          string
 	pollInterval time.Duration
+	grace        time.Duration // unreachable grace; 0 is the default
 }
 
 // NewMarkerWatcher constructs a MarkerWatcher. dir is the configured
@@ -127,7 +128,7 @@ func (w *MarkerWatcher) Wait(ctx context.Context, task *registry.Task, target *r
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
-	var down outage
+	down := outage{grace: w.grace}
 	for {
 		exists, err := exec.FileExists(ctx, path)
 		switch {
