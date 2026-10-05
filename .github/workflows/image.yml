@@ -2,11 +2,14 @@
 #
 # Two things here are less boilerplate than they look:
 #
-#   1. The web client's static bundle lives in a *separate, private* repo
-#      (loomux/web). This workflow's GITHUB_TOKEN is scoped to loomux/server
-#      and cannot read it, so a dedicated token is required — see the
-#      "guard" step, which fails loudly rather than letting the image ship
-#      with the placeholder UI.
+#   1. The web client's static bundle comes from a *separate, private* repo
+#      (loomux/web), which publishes each tested main commit as a
+#      pre-release `web-<short sha>` (LOOM-58; loomux/web docs/release.md).
+#      This workflow downloads the release deploy/web-ref pins and checks
+#      its sha256. Its GITHUB_TOKEN is scoped to loomux/server and cannot
+#      read loomux/web, so a dedicated token is required — see the "guard"
+#      step, which fails loudly rather than letting the image ship with the
+#      placeholder UI.
 #   2. The image is verified by *running it* before it is pushed. loomuxd
 #      execs ssh/tmux/sh at runtime, so a green `go build` says nothing
 #      about whether the image can actually dispatch. See
@@ -20,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       web_ref:
-        description: "loomux/web ref to build the UI from (default: deploy/web-ref)"
+        description: "loomux/web commit sha whose web-<sha> release to use (default: deploy/web-ref)"
         required: false
         type: string
 
@@ -50,49 +53,57 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve the loomux/web ref
+      - name: Resolve the loomux/web commit
         id: webref
         env:
           OVERRIDE: ${{ inputs.web_ref }}
         run: |
           ref="${OVERRIDE:-$(tr -d '[:space:]' < deploy/web-ref)}"
-          if [ -z "${ref}" ]; then
-            echo "::error::No loomux/web ref: deploy/web-ref is empty and no override was given."
+          if ! [[ "${ref}" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "::error::loomux/web ref '${ref}' is not a commit sha. deploy/web-ref (or the" \
+                 "override) must name a commit on loomux/web main: its web-<sha> release is used."
             exit 1
           fi
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-          echo "Building the UI from loomux/web@${ref}"
+          echo "short=${ref:0:7}" >> "$GITHUB_OUTPUT"
+          echo "Using the UI from loomux/web release web-${ref:0:7}"
 
-      - name: Check out loomux/web
-        uses: actions/checkout@v4
-        with:
-          repository: loomux/web
-          ref: ${{ steps.webref.outputs.ref }}
-          token: ${{ secrets.WEB_REPO_TOKEN }}
-          path: web-src
-          persist-credentials: false
-
-      # Node 22 matches what loomux/web's own CI builds and tests against.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web-src/package-lock.json
-
-      - name: Build the web bundle
-        working-directory: web-src
+      # The release holds the bundle loomux/web's own CI built and tested,
+      # and web-release.json naming its commit and sha256 (LOOM-58).
+      - name: Download the loomux/web release
+        env:
+          GH_TOKEN: ${{ secrets.WEB_REPO_TOKEN }}
+          REF: ${{ steps.webref.outputs.ref }}
+          TAG: web-${{ steps.webref.outputs.short }}
         run: |
-          npm ci
-          npm run build
+          set -euo pipefail
+          if ! gh release download "${TAG}" -R loomux/web -D web-release \
+               -p web-release.json -p 'loomux-web-*.tar.gz'; then
+            echo "::error::No loomux/web release ${TAG}. Only commits pushed to loomux/web main" \
+                 "after LOOM-58 have one; check its CI run for that commit."
+            exit 1
+          fi
+          commit="$(jq -r .commit web-release/web-release.json)"
+          tarball="$(jq -r .tarball web-release/web-release.json)"
+          if [[ "${commit}" != "${REF}"* ]]; then
+            echo "::error::${TAG} is for commit ${commit}, not ${REF}."
+            exit 1
+          fi
+          if [[ "${tarball}" != loomux-web-*.tar.gz || "${tarball}" == */* ]]; then
+            echo "::error::unexpected tarball name in web-release.json: ${tarball}"
+            exit 1
+          fi
+          echo "$(jq -r .sha256 web-release/web-release.json)  web-release/${tarball}" | sha256sum -c -
+          mkdir .web-dist
+          tar -xzf "web-release/${tarball}" -C .web-dist --no-same-owner
 
       - name: Guard — the bundle actually exists
         run: |
-          if [ ! -f web-src/dist/index.html ]; then
-            echo "::error::loomux/web built without producing dist/index.html. Refusing to" \
-                 "continue: the Dockerfile would silently fall back to the placeholder UI."
+          if [ ! -f .web-dist/index.html ]; then
+            echo "::error::The loomux/web release has no index.html. Refusing to continue:" \
+                 "the Dockerfile would silently fall back to the placeholder UI."
             exit 1
           fi
-          mv web-src/dist .web-dist
           echo "Bundle:"; ls -la .web-dist
 
       - name: Compute tags
@@ -100,7 +111,7 @@ jobs:
         run: |
           short="$(git rev-parse --short HEAD)"
           echo "sha=${short}" >> "$GITHUB_OUTPUT"
-          echo "version=${short} (web ${{ steps.webref.outputs.ref }})" >> "$GITHUB_OUTPUT"
+          echo "version=${short} (web ${{ steps.webref.outputs.short }})" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -171,5 +182,5 @@ jobs:
           {
             echo "### Pushed \`${IMAGE}:${{ steps.meta.outputs.sha }}\`"
             echo ""
-            echo "UI built from \`loomux/web@${{ steps.webref.outputs.ref }}\`"
+            echo "UI from loomux/web release \`web-${{ steps.webref.outputs.short }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
