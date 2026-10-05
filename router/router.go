@@ -208,6 +208,11 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				m.action = "policy_refused"
 				return r.finishTurn(ctx, log, conversationID, message, "", refusal, "policy_refused", start)
 			}
+			if p.kind == pendingCloneRemote || p.kind == pendingPolicyConfirm {
+				tl := turnLogFrom(ctx)
+				tl.carriesOut = true
+				ctx = withTurnLog(ctx, tl)
+			}
 			switch p.kind {
 			case pendingCloneRemote:
 				log.Info("clone confirmed", "target_id", p.targetID)
@@ -1035,6 +1040,10 @@ type turnLog struct {
 	// receives — not the one stored — telling a substitute agent why it
 	// got the work.
 	agentNote string
+	// carriesOut is set when the turn carries out a request made earlier
+	// and confirmed now (a clone or a policy confirmation): that request,
+	// and the offer about it, aren't earlier conversation for the agent.
+	carriesOut bool
 }
 
 type turnLogKey struct{}

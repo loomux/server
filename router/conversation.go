@@ -144,8 +144,9 @@ func ApplyAffinity(d Decision, open *OpenTaskSnapshot) (out Decision, overridden
 // earlierConversation is the note a freshly started agent gets in front
 // of message: the conversation so far, bounded as for the routing model
 // (boundHistory), or "" when there is none. The turn's own messages aren't
-// "earlier"; nor, for a confirmed request carried out now, is the request
-// itself or the offer and answer about it that followed.
+// "earlier"; nor, for a confirmed request carried out now (carriesOut),
+// is the request itself or the offer and answer about it that followed.
+// A message merely repeating an earlier one ("continue") cuts nothing.
 func (r *Router) earlierConversation(ctx context.Context, conversationID, message string) (string, error) {
 	msgs, err := r.store.ListMessagesByConversation(ctx, conversationID)
 	if err != nil {
@@ -159,7 +160,7 @@ func (r *Router) earlierConversation(ctx context.Context, conversationID, messag
 		}
 		kept = append(kept, m)
 	}
-	for i := len(kept) - 1; i >= 0; i-- {
+	for i := len(kept) - 1; turnLogFrom(ctx).carriesOut && i >= 0; i-- {
 		if kept[i].Role == registry.MessageRoleUser && kept[i].Content == message {
 			kept = kept[:i]
 			break
