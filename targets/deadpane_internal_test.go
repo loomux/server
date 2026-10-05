@@ -66,9 +66,9 @@ func TestPaneExitedWaitsForExitStatus(t *testing.T) {
 // A tmux that never fills in the status (a signal death on a tmux without
 // pane_dead_signal) still ends the wait, as killed by a signal.
 func TestPaneExitedGivesUpOnPendingStatus(t *testing.T) {
-	old := deadPaneRecaptureDelay
-	deadPaneRecaptureDelay = time.Millisecond
-	t.Cleanup(func() { deadPaneRecaptureDelay = old })
+	oldDelay, oldWait := deadPaneRecaptureDelay, statusPendingWait
+	deadPaneRecaptureDelay, statusPendingWait = time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { deadPaneRecaptureDelay, statusPendingWait = oldDelay, oldWait })
 
 	run := func(ctx context.Context, args ...string) (string, error) {
 		if strings.Contains(strings.Join(args, " "), "pane_dead") {
@@ -80,7 +80,26 @@ func TestPaneExitedGivesUpOnPendingStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exit == nil || exit.Status != -1 {
-		t.Fatalf("exit = %+v, want status -1", exit)
+	if exit == nil || exit.Status != -1 || exit.Signal != "" {
+		t.Fatalf("exit = %+v, want status -1 and no signal", exit)
+	}
+}
+
+// A process killed by a signal is reported with the signal, at once.
+func TestPaneExitedReportsSignal(t *testing.T) {
+	queries := 0
+	run := func(ctx context.Context, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "pane_dead") {
+			queries++
+			return "1  15\n", nil
+		}
+		return "x\n", nil
+	}
+	exit, err := paneExited(context.Background(), run, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit == nil || exit.Status != -1 || exit.Signal != "15" || queries != 1 {
+		t.Fatalf("exit = %+v after %d queries, want signal 15 at once", exit, queries)
 	}
 }
