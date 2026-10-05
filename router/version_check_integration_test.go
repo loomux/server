@@ -2,6 +2,8 @@ package router_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +31,7 @@ import (
 // claude interactively work" (a different, already-covered concern).
 func realVersionCheckFixture(t *testing.T, vc router.VersionCheck) (*router.Router, *registry.Workspace, registry.Store) {
 	t.Helper()
+	stubClaudeOnPath(t)
 	store := newTestStore(t)
 	ctx := context.Background()
 
@@ -103,4 +106,17 @@ func TestIntegration_RealVersionCheck_UnsatisfiedBound_FailsLoudBeforeLaunch(t *
 	if len(tasks) != 0 {
 		t.Fatalf("ListTasksByWorkspace = %+v, want 0 — real launch must fail loud before any task record is created", tasks)
 	}
+}
+
+// stubClaudeOnPath puts a "claude" that prints a version first on PATH,
+// so the real RunOnce path is exercised without a real install (CI
+// runners have none).
+func stubClaudeOnPath(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho '2.1.289 (Claude Code)'\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
