@@ -34,6 +34,10 @@ import (
 // precedent), out of this repo's scope; what this test proves is that
 // Loomux's own half of the contract (the env vars a hook would read) is
 // real and correct.
+// integrationDispatchTimeout bounds a real dispatch here: only a hang
+// should reach it.
+const integrationDispatchTimeout = 30 * time.Second
+
 func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 	for _, agentType := range []string{"claude-code", "codex"} {
 		t.Run(agentType, func(t *testing.T) {
@@ -85,8 +89,10 @@ func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 			// A hard deadline: if the env vars were ever wrong (e.g. the
 			// hook can't find the marker path it was told), MarkerWatcher
 			// polls forever with no idle fallback — this bounds the test
-			// instead of hanging the suite.
-			dispatchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			// instead of hanging the suite. Generous, since it only matters
+			// on failure: under the full -race suite a real tmux launch
+			// took over 10s (LOOM-131).
+			dispatchCtx, cancel := context.WithTimeout(ctx, integrationDispatchTimeout)
 			defer cancel()
 
 			reply, err := r.Dispatch(dispatchCtx, "conv-real", "do the real thing")
@@ -182,7 +188,7 @@ func TestIntegration_RealDispatch_RelaysSavedLastMessage(t *testing.T) {
 		},
 	}
 	r := router.New(store, orch, targets.NewExecutor, credentials.NewResolver(store), agentTypes, model, markerDir)
-	dispatchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	dispatchCtx, cancel := context.WithTimeout(ctx, integrationDispatchTimeout)
 	defer cancel()
 	if _, err := r.Dispatch(dispatchCtx, "conv-real", "go"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
