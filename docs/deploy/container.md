@@ -302,6 +302,8 @@ or message content. Key series:
 | `loomux_router_call_seconds` | `op` | LLM call latency |
 | `loomux_router_tokens_total` | `tier`, `kind` | Token consumption |
 | `loomux_router_escalations_total` | `op` | Primary->escalation fallbacks |
+| `loomux_router_retries_total` | `op`, `tier` | Corrective retries after an invalid tool call (LOOM-107) |
+| `loomux_router_primary_breaker_open` | — | 1 while the primary tier is skipped after 3 consecutive failures (for 2 minutes; LOOM-107) |
 | `loomux_tasks` | `status` | Task count by status |
 | `loomux_target_up` | `target`, `kind` | Target reachability |
 | `loomux_target_op_seconds` | `kind`, `op` | Target operation latency |

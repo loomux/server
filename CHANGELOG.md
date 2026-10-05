@@ -15,6 +15,14 @@ milestones.
 - The image's web client is web 0.1.3 (`web-fc1c9ab`): the chat scrolls
   to the newest message, clearer cancelled-turn and update wording
   (LOOM-130), bundles carry build-provenance attestations (LOOM-118).
+- Router resilience (LOOM-107): a routing answer that names an unknown
+  workspace, target or agent (or isn't a usable tool call) gets one
+  retry on the same model, told what was wrong, before escalating. When
+  the primary model fails 3 times in a row (unreachable, HTTP error,
+  timeout) it's skipped for 2 minutes and messages go straight to the
+  escalation model, so an outage doesn't cost every message the
+  primary's 15 s timeout. New metrics `loomux_router_retries_total` and
+  `loomux_router_primary_breaker_open`.
 
 ## [0.1.0] - 2026-10-05
 
