@@ -304,6 +304,18 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 	decideOpts := append(append([]DispatchOption(nil), opts...), withConversation(history, openTask, lastWS, lastWSName))
+	var hinted DispatchOptions
+	for _, opt := range opts {
+		opt(&hinted)
+	}
+	openWS := ""
+	if openTask != nil {
+		openWS = openTask.WorkspaceID
+	}
+	if n := len(offered); n > MaxOfferedWorkspaces {
+		offered = capOffered(offered, MaxOfferedWorkspaces, message, hinted.WorkspaceHint, lastWS, openWS)
+		log.Debug("workspaces offered to routing capped", "workspaces", n, "offered", len(offered))
+	}
 
 	routeStart := time.Now()
 	decision, err := r.model.Decide(ctx, message, offered, targetSnapshots, decideOpts...)
