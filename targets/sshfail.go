@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // SSHFailure is why ssh couldn't reach a target (LOOM-85): a stable,
@@ -61,7 +62,7 @@ func (e *UnreachableError) Hint() string {
 	case SSHDNSFailed:
 		return "the host name " + h + " doesn't resolve: check the target's host and the ssh config"
 	case SSHProxyUnreachable:
-		return "the SOCKS proxy to " + h + " isn't answering: is the Tailscale sidecar running?"
+		return "the connection to " + h + " closed before SSH started: either the SOCKS proxy (is the Tailscale sidecar running?) or the target's sshd refusing it (throttling, fail2ban)"
 	case SSHConnectionRefused:
 		return h + " refused the connection: is sshd running and listening on that port?"
 	case SSHHostUnreachable:
@@ -91,7 +92,9 @@ var sshBanner = regexp.MustCompile(`^(\*\* |Warning: Permanently added |@+$|@ +W
 // anything else, so they can't stand in for a command's error or be
 // mixed into its output (LOOM-85: sc1's post-quantum warning). Only
 // leading lines go: a command's own output that happens to look like
-// one is kept.
+// one is kept. It runs on every command's stderr, so a command whose own
+// stderr starts with a "** " or "@@@" line loses those lines; nothing
+// Loomux runs does.
 func stripSSHBanner(stderr string) string {
 	for stderr != "" {
 		line, rest, _ := strings.Cut(stderr, "\n")
@@ -148,7 +151,11 @@ func classifySSHFailure(stderr string) (SSHFailure, string) {
 	}
 	detail := strings.Join(kept, "; ")
 	if len(detail) > maxDetailBytes {
-		detail = detail[:maxDetailBytes] + "…"
+		cut := maxDetailBytes
+		for cut > 0 && !utf8.RuneStart(detail[cut]) {
+			cut--
+		}
+		detail = detail[:cut] + "…"
 	}
 	for _, p := range sshFailurePatterns {
 		if p.re.MatchString(all) {

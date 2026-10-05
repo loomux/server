@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const pqBanner = `** WARNING: connection is not using a post-quantum key exchange algorithm.
@@ -59,6 +60,13 @@ Host key verification failed.
 				t.Errorf("detail = %q, want %q", detail, tc.wantDetail)
 			}
 		})
+	}
+}
+
+func TestClassifySSHFailure_DetailCutOnRuneBoundary(t *testing.T) {
+	_, detail := classifySSHFailure(strings.Repeat("é", maxDetailBytes))
+	if !utf8.ValidString(detail) {
+		t.Errorf("detail isn't valid UTF-8: %q", detail)
 	}
 }
 
