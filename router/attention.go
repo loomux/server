@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -410,6 +411,13 @@ func (r *Router) CancelTask(ctx context.Context, taskID string) error {
 	return nil
 }
 
+// cliFinalLimitMessage is what Claude Code reports as the turn's last
+// message when its account hits the limit: the old "Claude AI usage limit
+// reached|<epoch>" or "Claude usage limit reached. …". Nothing looser: a
+// one-line answer that merely starts with "5-hour limit reached …" is an
+// answer (#222 review).
+var cliFinalLimitMessage = regexp.MustCompile(`^(?:Claude AI usage limit reached\|\d{10}|Claude usage limit reached\.[^\n]*)$`)
+
 // usageLimitAtEnd is the usage-limit error a finished turn ended on, if
 // any (LOOM-109). With no reply from the agent, that's read off the final
 // screen. A reply is checked only when it's one line and nothing else,
@@ -420,7 +428,7 @@ func (r *Router) CancelTask(ctx context.Context, taskID string) error {
 // reply could contain.
 func usageLimitAtEnd(detect func(string) *registry.Attention, screen, agentMessage string) *registry.Attention {
 	if msg := strings.TrimSpace(agentMessage); msg != "" {
-		if strings.Contains(msg, "\n") {
+		if !cliFinalLimitMessage.MatchString(msg) {
 			return nil
 		}
 		screen = "⎿ " + msg

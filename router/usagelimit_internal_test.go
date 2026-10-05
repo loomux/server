@@ -12,7 +12,7 @@ import (
 // line alone. The detector here stands in for agents.DetectPrompt, which
 // requires the CLI's ⎿ mark.
 func TestUsageLimitAtEnd(t *testing.T) {
-	marked := regexp.MustCompile(`(?m)^\s*⎿\s*5-hour limit reached`)
+	marked := regexp.MustCompile(`(?m)^\s*⎿\s*(?:5-hour limit reached|Claude (?:AI )?usage limit reached)`)
 	detect := func(screen string) *registry.Attention {
 		if marked.MatchString(screen) {
 			return &registry.Attention{Kind: registry.AttentionUsageLimit}
@@ -26,7 +26,9 @@ func TestUsageLimitAtEnd(t *testing.T) {
 	}{
 		{"no reply, limit on screen", limitScreen, "", true},
 		{"no reply, no limit", "❯ hi\n\n● done\n", "", false},
-		{"the reply is the limit line", "", "5-hour limit reached ∙ resets 5pm", true},
+		{"the reply is the CLI's limit message", "", "Claude usage limit reached. Your limit will reset at 5pm (Europe/Istanbul).", true},
+		{"the reply is the old epoch form", "", "Claude AI usage limit reached|1760000000", true},
+		{"a one-line answer that starts with a limit phrase", "", "5-hour limit reached ∙ resets 5pm", false},
 		{"a reply quoting it among other text", "", "The provider said:\n5-hour limit reached ∙ resets 5pm\nso wait.", false},
 		{"a reply, whatever the screen shows", limitScreen, "Fixed the test.", false},
 	}
