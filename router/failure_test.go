@@ -142,11 +142,11 @@ func TestDispatch_ProvisioningFailure_RecordsReasons(t *testing.T) {
 		t.Errorf("workspace status while provisioning ran = %q, want provisioning", statusDuringProvisioning)
 	}
 	list, _ := store.ListWorkspaces(context.Background())
-	if len(list) != 1 || list[0].Status != registry.WorkspaceStatusFailed || !strings.Contains(list[0].StatusReason, "status 128") {
+	if len(list) != 1 || list[0].Status != registry.WorkspaceStatusFailed || !strings.Contains(list[0].StatusReason, "exit 128") {
 		t.Fatalf("workspace = %+v, want failed with a status_reason naming the exit status", list)
 	}
 	task := onlyTask(t, store, list[0].ID)
-	assertFailed(t, task, registry.ErrorClassProvisionFailed, "status 128")
+	assertFailed(t, task, registry.ErrorClassProvisionFailed, "exit 128")
 	if !strings.Contains(task.OutputTail, "does not exist") {
 		t.Errorf("output tail = %q, want the script's output", task.OutputTail)
 	}

@@ -271,8 +271,8 @@ func (r *Router) runInstall(ctx context.Context, conversationID string, p pendin
 	}
 	output := quoteOutput(r.redactAllSecrets(ctx, result.output))
 	if result.exitCode != 0 {
-		return fmt.Sprintf("Installing %s on %s failed (exit %d). Last output:\n\n%s",
-			p.agentType, target.Name, result.exitCode, output), result.taskID, nil
+		return fmt.Sprintf("Installing %s on %s failed (%s). Last output:\n\n%s",
+			p.agentType, target.Name, result.ended, output), result.taskID, nil
 	}
 
 	entry, _ := r.agentTypes.Get(p.agentType)
@@ -302,7 +302,10 @@ type commandResult struct {
 	taskID   string
 	session  string
 	exitCode int
-	output   string
+	// ended says how the command ended: "exit 3", "killed by signal 9"
+	// (targets.PaneExit.Describe).
+	ended  string
+	output string
 }
 
 // stillRunningError is runCommandTask giving up waiting on a command that
@@ -357,7 +360,7 @@ func (r *Router) runCommandTask(ctx context.Context, workspaceID, conversationID
 	if exit == nil {
 		return res, fmt.Errorf("read exit status: process in tmux session %s has not exited", task.TmuxSession)
 	}
-	res.exitCode, res.output = exit.Status, exit.Output
+	res.exitCode, res.ended, res.output = exit.Status, exit.Describe(), exit.Output
 	if err := r.orch.FinishCommand(ctx, task.ID, exit.Status); err != nil {
 		return res, err
 	}

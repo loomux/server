@@ -37,7 +37,7 @@ func TestIntegration_ProcessExit(t *testing.T) {
 			wantWSStatus: registry.WorkspaceStatusIdle, wantProvTasks: registry.TaskStatusCompleted},
 		// existing_dir of a directory that isn't there: the recipe exits 1.
 		{name: "provision exits non-zero", provision: router.ProvisionExistingDir,
-			wantErr: []string{"status 1", "no directory"}, wantWSStatus: registry.WorkspaceStatusFailed,
+			wantErr: []string{"exit 1", "no directory"}, wantWSStatus: registry.WorkspaceStatusFailed,
 			wantProvTasks: registry.TaskStatusFailed},
 		{name: "agent not installed", provision: router.ProvisionEmpty, agentLaunch: "loomux-no-such-agent-cli",
 			wantErr:      []string{"status 127", "loomux-no-such-agent-cli"},
