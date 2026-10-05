@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Loomux/server/registry"
 )
@@ -138,4 +139,45 @@ func ApplyAffinity(d Decision, open *OpenTaskSnapshot) (out Decision, overridden
 		d.AgentType = open.AgentType
 	}
 	return d, overriddenFrom
+}
+
+// earlierConversation is the note a freshly started agent gets in front
+// of message: the conversation so far, bounded as for the routing model
+// (boundHistory), or "" when there is none. The turn's own messages aren't
+// "earlier"; nor, for a confirmed request carried out now, is the request
+// itself or the offer and answer about it that followed.
+func (r *Router) earlierConversation(ctx context.Context, conversationID, message string) (string, error) {
+	msgs, err := r.store.ListMessagesByConversation(ctx, conversationID)
+	if err != nil {
+		return "", fmt.Errorf("conversation history: %w", err)
+	}
+	current := turnLogFrom(ctx).dispatchID
+	kept := msgs[:0:0]
+	for _, m := range msgs {
+		if current != "" && m.DispatchID == current {
+			continue
+		}
+		kept = append(kept, m)
+	}
+	for i := len(kept) - 1; i >= 0; i-- {
+		if kept[i].Role == registry.MessageRoleUser && kept[i].Content == message {
+			kept = kept[:i]
+			break
+		}
+	}
+	turns := boundHistory(kept)
+	if len(turns) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	b.WriteString("[Loomux note: you are joining a conversation already under way. What was said so far, oldest first:\n")
+	for _, t := range turns {
+		who := "User"
+		if t.Role == string(registry.MessageRoleAssistant) {
+			who = "Loomux"
+		}
+		fmt.Fprintf(&b, "%s: %s\n", who, t.Content)
+	}
+	b.WriteString("The user's latest message, the one for you, follows.]")
+	return b.String(), nil
 }

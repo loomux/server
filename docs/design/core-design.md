@@ -267,7 +267,12 @@ Lifecycle for an `agent` task:
 2. If no task is currently running for that workspace + conversation, the
    orchestrator opens a tmux pane on that workspace's target and launches
    the configured agent CLI there, interactively. If one's already running,
-   the message is sent into it as the next turn.
+   the message is sent into it as the next turn. A freshly launched agent
+   hasn't seen the conversation, so its first turn is the message behind a
+   note with what was said before it (bounded like the routing model's
+   history): an answer such as "use e2e-loom56 then" still carries the
+   request it answers. A confirmed request carried out is sent as itself,
+   without the offer about it. Stored history keeps the user's own words.
 3. The orchestrator watches for a completion signal (§5). On completion, the
    router relays/summarizes the captured output back to chat, the
    workspace's rolling summary is updated (replaced, not appended), and —

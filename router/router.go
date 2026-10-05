@@ -764,6 +764,16 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		agentMessage = note + "\n\n" + message
 	}
 	if task == nil {
+		// A fresh agent hasn't seen the conversation: what was said before
+		// (a clarifying question and its answer, an earlier task) goes in
+		// front, so a short answer still carries the request it answers.
+		earlier, err := r.earlierConversation(ctx, conversationID, message)
+		if err != nil {
+			return "", fmt.Errorf("router: dispatch: %w", err)
+		}
+		if earlier != "" {
+			agentMessage = earlier + "\n\n" + agentMessage
+		}
 		task, promptSent, err = r.launchAgent(ctx, workspaceID, conversationID, agentType, agentMessage)
 		if err != nil {
 			return "", err
