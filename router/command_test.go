@@ -301,3 +301,19 @@ func TestDispatch_RunCommand_TargetNameIsCaseSensitive(t *testing.T) {
 		t.Errorf("exact-case target name didn't run at once: %v", cmds)
 	}
 }
+
+// LOOM-133: a command's output is shown in chat and goes to the routing
+// model as history: secrets the vault doesn't hold are recognised there
+// too.
+func TestDispatch_RunCommand_OutputPatternRedacted(t *testing.T) {
+	h := newCommandHarness(t)
+	h.decideCommand("cat ~/.config/gh/hosts.yml")
+	h.outputs["cat ~/.config/gh/hosts.yml"] = "github.com:\n  oauth_token: ghp_1234567890abcdefghijABCDEFGHIJ123456\n"
+	reply, err := h.r.Dispatch(context.Background(), "conv-1", "run `cat ~/.config/gh/hosts.yml` on jet01")
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if strings.Contains(reply, "ghp_1234567890") {
+		t.Errorf("reply carries the token:\n%s", reply)
+	}
+}

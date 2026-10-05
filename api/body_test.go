@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -58,5 +59,29 @@ func TestRequestBodySlow(t *testing.T) {
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Errorf("slow body held the request for %v", time.Since(start))
+	}
+}
+
+// LOOM-133: bytes trailing a valid JSON body arrive under the deadline
+// too, instead of being drained without one after the handler.
+func TestRequestBodySlowTrailer(t *testing.T) {
+	defer api.SetBodyReadTimeout(300 * time.Millisecond)()
+	srv, _, _ := newTestServer(t)
+	u, _ := url.Parse(srv.URL)
+	conn, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	body := `{"password":"wrong"}`
+	conn.Write([]byte("POST /api/v1/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: " +
+		strconv.Itoa(len(body)+50) + "\r\n\r\n" + body))
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	start := time.Now()
+	if resp, err := http.ReadResponse(bufio.NewReader(conn), nil); err == nil {
+		resp.Body.Close()
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("a stalled trailer held the request for %v", time.Since(start))
 	}
 }

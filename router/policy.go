@@ -192,6 +192,7 @@ func (r *Router) confirmPolicy(ctx context.Context, log *slog.Logger, conversati
 	log.Info("policy confirmation given", "target_id", p.targetID, "decided_action", string(decision.Action))
 	m.action = string(decision.Action)
 	if target, err := r.policyTarget(ctx, decision); err != nil {
+		r.resolveOffer(ctx, log, p, registry.ConfirmationDenied)
 		return "", fmt.Errorf("router: dispatch: policy: %w", err)
 	} else if target != nil {
 		if refusal := policyRefusal(target, decision); refusal != "" {

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 )
@@ -22,7 +23,14 @@ var bodyReadTimeout = 30 * time.Second
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
-	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(v)
+	body := http.MaxBytesReader(w, r.Body, maxRequestBody)
+	err := json.NewDecoder(body).Decode(v)
+	if err == nil {
+		// Whatever follows the JSON value is read under the deadline too:
+		// net/http drains it after the handler, and that drain has none
+		// of its own (LOOM-133).
+		_, err = io.Copy(io.Discard, body)
+	}
 	if err == nil {
 		_ = rc.SetReadDeadline(time.Time{})
 		return true
