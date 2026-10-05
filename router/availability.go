@@ -316,6 +316,14 @@ func (r *Router) redactSecrets(ctx context.Context, workspaceID, agentType, text
 	return redactValues(text, secrets)
 }
 
+// scrubForRelay is what of an agent's output may leave for the relay
+// model, a third-party vendor (LOOM-108): every vault value removed, and
+// anything shaped like a secret. If the vault can't be read, nothing of
+// it is sent.
+func (r *Router) scrubForRelay(ctx context.Context, captured string) string {
+	return credentials.RedactPatterns(r.redactAllSecrets(ctx, captured))
+}
+
 // redactAllSecrets replaces every credential value in the vault — any
 // scope, any agent type — with a placeholder: for output from something
 // that ran with no credentials injected (a provisioning recipe, an

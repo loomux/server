@@ -411,6 +411,18 @@ vendor. Its responsibilities:
   router prefers an agent that is actually installed (LOOM-71).
 - **Relay**: condense/summarize captured agent output into a chat-appropriate
   reply, and update the workspace's rolling summary.
+  **What the relay vendor sees (LOOM-108).** The relay model is a
+  third-party API (the configured router endpoints, e.g. Groq or
+  OpenRouter). It is sent the agent's captured output for the turn
+  (the final message, or the pane's recent screen), with every vault
+  value and anything shaped like a secret (GitHub, OpenAI/Anthropic/Groq,
+  AWS and Slack tokens, JWTs, PEM private keys, and the value of a
+  `NAME=value` whose name says secret, token, password or key) replaced
+  by `[redacted]`; if the vault can't be read, the output is withheld.
+  Everything else in that output goes to the vendor as is: code, file
+  names, work data. A per-target setting to send less (or nothing) for
+  a work machine is a follow-up. The stored transcript is redacted the
+  same way.
 
 - **Direct shell commands** (`run_command`, LOOM-72): a request like
   "run `hostname && uptime` on jet01" needs no AI agent. The router names

@@ -112,7 +112,7 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 	if err != nil {
 		return false, fmt.Errorf("capture pane: %w", err)
 	}
-	result, err := r.model.Relay(ctx, captured)
+	result, err := r.model.Relay(ctx, r.scrubForRelay(ctx, captured))
 	if err != nil {
 		return false, fmt.Errorf("relay: %w", err)
 	}
