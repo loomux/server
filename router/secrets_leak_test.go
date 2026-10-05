@@ -3,6 +3,9 @@ package router_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +110,25 @@ func TestSecretsNeverLeakIntoCapturedOutputOrSummary(t *testing.T) {
 	}
 	if strings.Contains(updatedWS.RollingSummary, secretValue) {
 		t.Fatalf("secret value leaked into the workspace rolling summary: %q", updatedWS.RollingSummary)
+	}
+
+	// LOOM-113: the secret never sits on a command line. tmux keeps the
+	// pane's start command (and ps shows it while it runs), so it must
+	// not be there, and the file it came from is gone once read.
+	tasks, err := store.ListTasks(ctx)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("ListTasks = %v, %v", tasks, err)
+	}
+	startCmd, err := exec.Command("tmux", "-L", targets.TmuxSocket, "display-message", "-p", "-t",
+		tasks[0].TmuxSession, "#{pane_start_command}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("tmux display-message: %v: %s", err, startCmd)
+	}
+	if strings.Contains(string(startCmd), secretValue) {
+		t.Fatalf("secret value is on the pane's command line: %s", startCmd)
+	}
+	if left, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), ".loomux", "env", "*")); len(left) != 0 {
+		t.Errorf("env files left behind: %v", left)
 	}
 
 	// Positive control: the agent really did receive the secret via

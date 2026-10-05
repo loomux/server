@@ -195,8 +195,18 @@ func TestDispatch_UseWorkspace(t *testing.T) {
 	if !sess.alive {
 		t.Fatalf("session torn down by Complete, want it kept for the grace period")
 	}
-	if !strings.Contains(sess.command, "MY_TOKEN=") {
-		t.Fatalf("session command = %q, want it to contain the credential env assignment", sess.command)
+	// The credential reaches the agent through an env file written over
+	// RunOnce (stdin) and sourced by the session, never on its command
+	// line (LOOM-113).
+	if strings.Contains(sess.command, "secret-value") || !strings.Contains(sess.command, ".loomux/env/") {
+		t.Fatalf("session command = %q, want it to source the env file and not carry the value", sess.command)
+	}
+	var wrote bool
+	for _, c := range exec.runOnceCommands {
+		wrote = wrote || (strings.Contains(c, ".loomux/env/") && strings.Contains(c, "MY_TOKEN='secret-value'"))
+	}
+	if !wrote {
+		t.Fatalf("RunOnce scripts = %q, want the env file written with MY_TOKEN", exec.runOnceCommands)
 	}
 	if !strings.Contains(sess.command, "claude") {
 		t.Fatalf("session command = %q, want it to contain the resolved launch template", sess.command)
