@@ -18,6 +18,10 @@ import (
 	"github.com/Loomux/server/targets"
 )
 
+// integrationDispatchTimeout bounds a real dispatch here: only a hang
+// should reach it.
+const integrationDispatchTimeout = 30 * time.Second
+
 // TestIntegration_RealDispatch_TierMarker proves LOOM-32's fix actually
 // works end-to-end, for both real registered agent-type names — not
 // just that the env vars appear in a session's command string
@@ -34,10 +38,6 @@ import (
 // precedent), out of this repo's scope; what this test proves is that
 // Loomux's own half of the contract (the env vars a hook would read) is
 // real and correct.
-// integrationDispatchTimeout bounds a real dispatch here: only a hang
-// should reach it.
-const integrationDispatchTimeout = 30 * time.Second
-
 func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 	for _, agentType := range []string{"claude-code", "codex"} {
 		t.Run(agentType, func(t *testing.T) {
@@ -61,9 +61,12 @@ func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 
 			// Stands in for a real Stop hook / notify script: echoes the
 			// task ID it was told (so the test can assert it matches the
-			// task Dispatch actually created), then touches the marker
-			// path it was told, exactly as a real hook would.
-			const stubHookScript = `sh -c 'echo "task-id-seen=$LOOMUX_TASK_ID"; touch "$LOOMUX_MARKER_PATH"; sleep 30'`
+			// task Dispatch actually created), waits for its message as a
+			// real agent does (the turn's files are cleared after launch,
+			// before the message is typed: touching the marker at once
+			// raced that and hung the test, LOOM-131), then touches the
+			// marker path it was told, exactly as a real hook would.
+			const stubHookScript = `sh -c 'echo "task-id-seen=$LOOMUX_TASK_ID"; read _; touch "$LOOMUX_MARKER_PATH"; sleep 30'`
 
 			agentTypes := router.AgentTypeRegistry{
 				agentType: router.AgentType{
@@ -165,7 +168,8 @@ func TestIntegration_RealDispatch_RelaysSavedLastMessage(t *testing.T) {
 	if err := store.CreateWorkspace(ctx, ws); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	const hook = `sh -c 'echo on-screen-only; ` +
+	// Waits for its message before writing, as the stub above does.
+	const hook = `sh -c 'echo on-screen-only; read _; ` +
 		`printf "%s" "{\"last_assistant_message\":\"the whole answer\"}" > "$LOOMUX_MARKER_PATH.reply"; ` +
 		`touch "$LOOMUX_MARKER_PATH"; sleep 30'`
 	agentTypes := router.AgentTypeRegistry{
