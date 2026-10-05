@@ -26,12 +26,13 @@ const maxReplyPayload = 1 << 20
 // agent-type names one and the payload has it; otherwise the pane's
 // screen, as captured. agentMessage is that message unbounded, "" when
 // there was none.
-// keepPayload leaves the payload in place for the caller to clear once
-// the turn is relayed, as a late reply (LOOM-121) does.
-func (r *Router) turnOutput(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, keepPayload bool) (relay, agentMessage string, err error) {
+// claimed, when set, is a marker a late reply (LOOM-121) has claimed:
+// its payload is read and left for the caller to clear once relayed.
+// Otherwise the task's own payload is read and removed.
+func (r *Router) turnOutput(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, claimed string) (relay, agentMessage string, err error) {
 	if entry, err := r.agentTypes.Get(task.AgentType); err == nil &&
 		entry.Tier == completion.TierMarker && entry.LastMessageKey != "" {
-		if msg := r.readLastMessage(ctx, exec, task, entry.LastMessageKey, keepPayload); msg != "" {
+		if msg := r.readLastMessage(ctx, exec, task, entry.LastMessageKey, claimed); msg != "" {
 			return boundRelayInput(msg), msg, nil
 		}
 	}
@@ -71,15 +72,19 @@ func (r *Router) recordTurn(ctx context.Context, exec targets.TargetExecutor, ta
 	}
 }
 
-// readLastMessage reads, and unless keep removes, the payload task's
-// completion hook saved, returning the message under key — or "" if there is no payload
+// readLastMessage reads, and removes, the payload task's completion hook
+// saved — or reads, and leaves, the payload beside a claimed marker —
+// returning the message under key — or "" if there is no payload
 // or no message in it, logged, so the caller falls back to the pane.
-func (r *Router) readLastMessage(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, key string, keep bool) string {
+func (r *Router) readLastMessage(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, key, claimed string) string {
 	log := r.logger.With("task_id", task.ID)
-	marker, err := r.markerPathOn(ctx, exec, task.ID)
-	if err != nil {
-		log.Warn("agent's last message not read", "error", err)
-		return ""
+	marker, keep := claimed, claimed != ""
+	if !keep {
+		var err error
+		if marker, err = r.markerPathOn(ctx, exec, task.ID); err != nil {
+			log.Warn("agent's last message not read", "error", err)
+			return ""
+		}
 	}
 	script := `f=` + shellQuote(completion.ReplyPath(marker)) + `
 [ -f "$f" ] || exit 0
@@ -111,14 +116,16 @@ head -c ` + fmt.Sprint(maxReplyPayload) + ` -- "$f"
 	return strings.TrimSpace(msg)
 }
 
-// clearTurnFiles removes a marker and payload left from an earlier turn
+// clearTurnFiles removes a marker and payload (claimed or not) left from an earlier turn
 // of task (LOOM-91) before the next is sent: one that finished after the
 // turn was given up on would otherwise end — and answer — the next turn
 // at once. Best-effort: logged, never fatal.
 func (r *Router) clearTurnFiles(ctx context.Context, exec targets.TargetExecutor, task *registry.Task) {
 	marker, err := r.markerPathOn(ctx, exec, task.ID)
 	if err == nil {
-		_, err = exec.RunOnce(ctx, "rm -f -- "+shellQuote(marker)+" "+shellQuote(completion.ReplyPath(marker)))
+		claimed := claimedMarker(marker)
+		_, err = exec.RunOnce(ctx, "rm -f -- "+shellQuote(marker)+" "+shellQuote(completion.ReplyPath(marker))+
+			" "+shellQuote(claimed)+" "+shellQuote(completion.ReplyPath(claimed)))
 	}
 	if err != nil {
 		r.logger.Warn("stale turn marker not cleared", "task_id", task.ID, "error", err)

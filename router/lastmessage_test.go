@@ -53,6 +53,14 @@ func newLastMessageHarness(t *testing.T) *lastMessageHarness {
 			}
 			return p, nil
 		}
+		if strings.Contains(command, ".relaying") && strings.Contains(command, "mv -f") {
+			h.exec.mu.Lock()
+			defer h.exec.mu.Unlock()
+			if h.exec.fileExists {
+				return "claimed\n", nil
+			}
+			return "", nil
+		}
 		if strings.Contains(command, "capture-pane") {
 			return "PANE HISTORY with sk-live-secret-123456 in it\n", nil
 		}

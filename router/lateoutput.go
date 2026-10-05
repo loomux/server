@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -83,17 +84,31 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 	if err != nil {
 		return false, err
 	}
+	claimed := claimedMarker(marker)
 	exists, err := exec.FileExists(ctx, marker)
+	if err == nil && !exists {
+		// One claimed by a pass whose relay failed.
+		exists, err = exec.FileExists(ctx, claimed)
+	}
 	if err != nil || !exists {
 		return false, err
+	}
+	// Claimed before relaying: a marker the agent writes meanwhile lands
+	// beside it, untouched, for the next pass. A claim already there is
+	// relayed first. Nothing is removed until the reply is logged: a
+	// relay that fails leaves the claim for the next pass.
+	out, err := exec.RunOnce(ctx, "sh -c "+shellQuote(claimScript(marker, claimed)))
+	if err != nil {
+		return false, fmt.Errorf("claim marker: %w", err)
+	}
+	if strings.TrimSpace(out) != "claimed" {
+		return false, nil
 	}
 	start := time.Now()
 	log := r.logger.With("task_id", task.ID, "conversation_id", task.ConversationID)
 	log.Info("agent wrote output after its turn ended; relaying it")
 
-	// Nothing is consumed until the reply is logged: a relay that fails
-	// leaves the marker and the agent's message for the next pass.
-	captured, agentMessage, err := r.turnOutput(ctx, exec, task, true)
+	captured, agentMessage, err := r.turnOutput(ctx, exec, task, claimed)
 	if err != nil {
 		return false, fmt.Errorf("capture pane: %w", err)
 	}
@@ -111,7 +126,9 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 		return false, fmt.Errorf("log reply: %w", err)
 	}
 	// Logged: from here a failure must not relay it again.
-	r.clearTurnFiles(ctx, exec, task)
+	if _, err := exec.RunOnce(ctx, "rm -f -- "+shellQuote(claimed)+" "+shellQuote(completion.ReplyPath(claimed))); err != nil {
+		log.Warn("relayed late reply's files not removed", "error", err)
+	}
 	r.recordTurn(ctx, exec, task, "", agentMessage)
 	if result.Done && AsksUser(result.Reply) {
 		result.Done = false
@@ -129,4 +146,23 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 	log.Info("late agent output relayed", "task_done", result.Done,
 		"duration_ms", time.Since(start).Milliseconds())
 	return true, nil
+}
+
+// claimedMarker is where a late reply's pass moves marker while it
+// relays it.
+func claimedMarker(marker string) string { return marker + ".relaying" }
+
+// claimScript moves marker and its payload to claimed, unless a claim is
+// already there, and prints "claimed" when one is. A marker without a
+// payload clears any stale claimed payload, so the pane is relayed.
+func claimScript(marker, claimed string) string {
+	m, c := shellQuote(marker), shellQuote(claimed)
+	mr, cr := shellQuote(completion.ReplyPath(marker)), shellQuote(completion.ReplyPath(claimed))
+	return `if [ ! -e ` + c + ` ] && [ -e ` + m + ` ]; then
+  mv -f -- ` + m + ` ` + c + `
+  if [ -e ` + mr + ` ]; then mv -f -- ` + mr + ` ` + cr + `; else rm -f -- ` + cr + `; fi
+fi
+[ -e ` + c + ` ] && echo claimed
+true
+`
 }
