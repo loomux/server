@@ -80,7 +80,7 @@ func TestPaneExitedGivesUpOnPendingStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exit == nil || exit.Status != -1 || exit.Signal != 0 {
+	if exit == nil || exit.Status != -1 || exit.Signal != "" {
 		t.Fatalf("exit = %+v, want status -1 and no signal", exit)
 	}
 }
@@ -99,7 +99,7 @@ func TestPaneExitedReportsSignal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exit == nil || exit.Status != -1 || exit.Signal != 15 || queries != 1 {
+	if exit == nil || exit.Status != -1 || exit.Signal != "15" || queries != 1 {
 		t.Fatalf("exit = %+v after %d queries, want signal 15 at once", exit, queries)
 	}
 }

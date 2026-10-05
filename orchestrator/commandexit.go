@@ -38,5 +38,7 @@ func CommandExit(exit *targets.PaneExit) *targets.PaneExit {
 	if err != nil {
 		return exit
 	}
-	return &targets.PaneExit{Status: status, Output: strings.TrimRight(exit.Output[:m[0]], " \t\n")}
+	// The status is the marker's; Signal stays as tmux saw it, so
+	// Describe still reads the same exit.
+	return &targets.PaneExit{Status: status, Signal: exit.Signal, Output: strings.TrimRight(exit.Output[:m[0]], " \t\n")}
 }

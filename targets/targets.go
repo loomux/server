@@ -102,10 +102,12 @@ type TargetExecutor interface {
 // PaneExit describes a pane whose process has exited (LOOM-71).
 type PaneExit struct {
 	// Status is the process's exit status, or -1 if it has none: killed
-	// by Signal, or (Signal 0) tmux never recorded one.
+	// by Signal, or (Signal "") tmux never recorded one.
 	Status int
-	// Signal is the signal that killed the process, 0 if none or unknown.
-	Signal int
+	// Signal is the signal that killed the process as tmux names it: a
+	// number on Linux ("9"), a name on macOS and the BSDs ("kill"); ""
+	// if none or unknown.
+	Signal string
 	// Output is the pane's contents including its scrollback — a command
 	// that exits at once has its output scrolled off the visible screen
 	// when tmux writes its "Pane is dead" line — with that line and
@@ -119,8 +121,8 @@ func (e *PaneExit) Describe() string {
 	switch {
 	case e.Status >= 0:
 		return fmt.Sprintf("exit %d", e.Status)
-	case e.Signal > 0:
-		return fmt.Sprintf("killed by signal %d", e.Signal)
+	case e.Signal != "":
+		return "killed by signal " + e.Signal
 	default:
 		return "an exit status tmux never recorded"
 	}
@@ -196,8 +198,8 @@ const statusPending = -2
 
 // parsePaneDead reads paneDeadArgs' output: whether the pane is dead,
 // its exit status (-1 if killed by a signal, statusPending if not known
-// yet) and the signal (0 if none).
-func parsePaneDead(out string) (exited bool, status, signal int, err error) {
+// yet) and the signal as tmux printed it ("" if none).
+func parsePaneDead(out string) (exited bool, status int, signal string, err error) {
 	fields := strings.Split(strings.TrimRight(out, "\n"), " ")
 	for len(fields) < 3 {
 		fields = append(fields, "")
@@ -205,25 +207,21 @@ func parsePaneDead(out string) (exited bool, status, signal int, err error) {
 	dead, code, sig := strings.TrimSpace(fields[0]), strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])
 	switch dead {
 	case "0":
-		return false, 0, 0, nil
+		return false, 0, "", nil
 	case "1":
 		if code == "" {
 			if sig == "" {
-				return true, statusPending, 0, nil
+				return true, statusPending, "", nil
 			}
-			n, err := strconv.Atoi(sig)
-			if err != nil {
-				return false, 0, 0, fmt.Errorf("targets: pane exit status: unparseable signal %q", sig)
-			}
-			return true, -1, n, nil
+			return true, -1, sig, nil
 		}
 		n, err := strconv.Atoi(code)
 		if err != nil {
-			return false, 0, 0, fmt.Errorf("targets: pane exit status: unparseable status %q", code)
+			return false, 0, "", fmt.Errorf("targets: pane exit status: unparseable status %q", code)
 		}
-		return true, n, 0, nil
+		return true, n, "", nil
 	default:
-		return false, 0, 0, fmt.Errorf("targets: pane exit status: unexpected tmux output %q", out)
+		return false, 0, "", fmt.Errorf("targets: pane exit status: unexpected tmux output %q", out)
 	}
 }
 

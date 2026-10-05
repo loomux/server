@@ -21,7 +21,7 @@ func TestCommandExit(t *testing.T) {
 		{"marker wins over a status tmux didn't record", targets.PaneExit{Status: -1, Output: "done\n\n[loomux:exit=0]"}, 0, "done"},
 		{"non-zero", targets.PaneExit{Status: 3, Output: "boom\n\n[loomux:exit=3]\n"}, 3, "boom"},
 		{"no output", targets.PaneExit{Status: 0, Output: "\n[loomux:exit=0]"}, 0, ""},
-		{"no marker: as tmux saw it", targets.PaneExit{Status: -1, Signal: 9, Output: "partial"}, -1, "partial"},
+		{"no marker: as tmux saw it", targets.PaneExit{Status: -1, Signal: "9", Output: "partial"}, -1, "partial"},
 		{"a marker that isn't last is the command's own text", targets.PaneExit{Status: 2, Output: "[loomux:exit=0]\nmore"}, 2, "[loomux:exit=0]\nmore"},
 	} {
 		got := CommandExit(&tc.in)
