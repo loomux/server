@@ -2,6 +2,7 @@ package router_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -328,5 +329,44 @@ func TestDispatch_ProvisioningFailure_LeavesWorkspaceRowInPlace(t *testing.T) {
 	// provisioning.
 	if list[0].Status != registry.WorkspaceStatusFailed {
 		t.Fatalf("workspace status = %q, want %q", list[0].Status, registry.WorkspaceStatusFailed)
+	}
+}
+
+// LOOM-113 review: RunOnce's errors quote the script they ran, and the
+// env-file script holds the secrets. A failed write must not carry them
+// into the dispatch error, the logs or a task's failure reason.
+func TestDispatch_EnvFileWriteFailureLeaksNoSecret(t *testing.T) {
+	store, exec, r, model := setup(t)
+	ws := createFixtureWorkspace(t, store)
+	if err := store.CreateCredential(context.Background(), &registry.Credential{
+		ID: uuid.NewString(), Name: "MY_TOKEN", Value: "sk-PROBE-secret-value-123",
+	}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	exec.runOnce = func(command string) (string, error) {
+		if strings.Contains(command, ".loomux/env/") && strings.Contains(command, "cat >") {
+			return "mkdir: cannot create directory: Not a directory\n", fmt.Errorf("targets: run once: %s: exit status 1", command)
+		}
+		return "", nil
+	}
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+	}
+
+	_, err := r.Dispatch(context.Background(), "conv-1", "do the thing")
+	if err == nil {
+		t.Fatal("Dispatch succeeded with the env file unwritten")
+	}
+	if strings.Contains(err.Error(), "sk-PROBE") {
+		t.Errorf("dispatch error carries the secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Not a directory") {
+		t.Errorf("dispatch error = %v, want the target's own reason", err)
+	}
+	tasks, _ := store.ListTasks(context.Background())
+	for _, task := range tasks {
+		if strings.Contains(task.FailureReason, "sk-PROBE") {
+			t.Errorf("task failure reason carries the secret: %q", task.FailureReason)
+		}
 	}
 }

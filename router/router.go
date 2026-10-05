@@ -1181,8 +1181,18 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		if err != nil {
 			return nil, false, fmt.Errorf("router: dispatch: %w", err)
 		}
-		if _, err := exec.RunOnce(ctx, envFile.Write); err != nil {
-			return nil, false, fmt.Errorf("router: dispatch: write agent environment: %w", err)
+		if out, err := exec.RunOnce(ctx, envFile.Write); err != nil {
+			// Never wrapped: RunOnce's error quotes the script it ran, and
+			// this one holds the secrets. The target's own first line of
+			// output says what went wrong.
+			msg := "router: dispatch: could not write the agent's environment on the target"
+			if line, _, _ := strings.Cut(strings.TrimSpace(out), "\n"); line != "" {
+				msg += ": " + line
+			}
+			if errors.Is(err, targets.ErrUnreachable) {
+				return nil, false, fmt.Errorf("%s: %w", msg, targets.ErrUnreachable)
+			}
+			return nil, false, errors.New(msg)
 		}
 		defer func() {
 			// Sourced and deleted by the pane on a good launch; otherwise
