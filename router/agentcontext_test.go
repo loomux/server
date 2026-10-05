@@ -82,3 +82,32 @@ func (h *availabilityHarness) sentToAgent(t *testing.T, agentType string) string
 	t.Fatalf("no %s task in %+v", agentType, tasks)
 	return ""
 }
+
+// Repeating an earlier message ("continue", "yes") is a new turn, not a
+// confirmed request: everything before it is still earlier conversation.
+func TestDispatch_RepeatedMessageKeepsEarlierConversation(t *testing.T) {
+	h := newAvailabilityHarness(t)
+	h.probes.install("claude")
+	h.recordAgents(t, map[string]bool{"claude-code": true})
+	ctx := context.Background()
+
+	h.decide(router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "Which repository should I look at?"})
+	if _, err := h.r.Dispatch(ctx, "conv-1", "review the open PRs"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	h.decide(router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "The loomux/server ones, then?"})
+	if _, err := h.r.Dispatch(ctx, "conv-1", "continue"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	h.decide(h.provisionDecision("claude-code"))
+	if _, err := h.r.Dispatch(ctx, "conv-1", "continue"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	sent := h.sentToAgent(t, "claude-code")
+	for _, want := range []string{"review the open PRs", "The loomux/server ones, then?"} {
+		if !strings.Contains(sent, want) {
+			t.Errorf("the agent got %q, want the earlier conversation kept, with %q", sent, want)
+		}
+	}
+}
