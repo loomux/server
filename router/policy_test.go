@@ -166,6 +166,11 @@ func TestPolicy_RequireConfirmation_RecheckedOnYes(t *testing.T) {
 	if ws := h.workspaces(t); len(ws) != 0 {
 		t.Errorf("workspaces = %+v, want none", ws)
 	}
+	// Its card says nothing ran, not "Approved" (LOOM-123 review).
+	confs, err := h.store.ListConfirmationsByConversation(ctx, "conv-1")
+	if err != nil || len(confs) != 1 || confs[0].Status != registry.ConfirmationDenied {
+		t.Errorf("confirmations = %+v, %v; want the refused offer denied", confs, err)
+	}
 }
 
 // Follow-up turns in the conversation's open pane aren't asked about

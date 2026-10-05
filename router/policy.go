@@ -195,8 +195,10 @@ func (r *Router) confirmPolicy(ctx context.Context, log *slog.Logger, conversati
 		return "", fmt.Errorf("router: dispatch: policy: %w", err)
 	} else if target != nil {
 		if refusal := policyRefusal(target, decision); refusal != "" {
+			r.resolveOffer(ctx, log, p, registry.ConfirmationDenied)
 			return r.finishTurn(ctx, log, conversationID, p.message, "", refusal, "policy_refused", start)
 		}
 	}
+	r.resolveOffer(ctx, log, p, registry.ConfirmationApproved)
 	return r.act(ctx, log, conversationID, p.message, decision, false, start, m)
 }
