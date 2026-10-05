@@ -34,6 +34,20 @@ on:
         description: "sha256 of that release's tarball (required with web_ref)"
         required: false
         type: string
+      bump:
+        description: "On main: release the next MINOR version (0.y.0) instead of only building"
+        required: false
+        type: choice
+        options: [none, minor]
+        default: none
+
+# Releases (LOOM-129, docs/release/versioning.md): every merge to main
+# after v0.1.0 is the next patch version. Runs on main, and tag pushes,
+# share one queue, so two merges in quick succession can't compute the
+# same version. Pull requests run on their own.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('image-pr-{0}', github.ref) || 'image-release' }}
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/loomux/server
@@ -44,10 +58,18 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      release: ${{ steps.meta.outputs.release }}
+      new_tag: ${{ steps.meta.outputs.new_tag }}
+      web_version: ${{ steps.meta.outputs.web_version }}
+      web_short: ${{ steps.webref.outputs.short }}
 
     steps:
       - name: Check out loomux/server
         uses: actions/checkout@v4
+        with:
+          # The version tags, to continue the release line.
+          fetch-depth: 0
 
       - name: Guard — cross-repo token for loomux/web
         env:
@@ -143,22 +165,51 @@ jobs:
 
       - name: Compute tags
         id: meta
+        env:
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ secrets.WEB_REPO_TOKEN }}
+          WEB_REF: ${{ steps.webref.outputs.ref }}
         run: |
           set -eu
           short="$(git rev-parse --short HEAD)"
           echo "sha=${short}" >> "$GITHUB_OUTPUT"
-          version="${short}"
+          release=""
+          new_tag=""
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
-            # A release tag must name a SemVer version and a commit on main:
-            # only reviewed code is released.
-            version="$(deploy/release.sh version "${GITHUB_REF_NAME}")"
-            git fetch -q --depth=1000 origin main
-            git merge-base --is-ancestor HEAD FETCH_HEAD || {
+            # A tag pushed by hand (the base v0.1.0, an -rc): it must name a
+            # SemVer version and a commit on main, and have a CHANGELOG
+            # section.
+            release="$(deploy/release.sh version "${GITHUB_REF_NAME}")"
+            git merge-base --is-ancestor HEAD origin/main || {
               echo "::error::${GITHUB_REF_NAME} is not on main"; exit 1; }
-            deploy/release.sh notes "${version}" >/dev/null
-            echo "release=${version}" >> "$GITHUB_OUTPUT"
+            deploy/release.sh notes "${release}" >/dev/null
+          elif [ "${GITHUB_REF}" = refs/heads/main ] &&
+               { [ "${GITHUB_EVENT_NAME}" = push ] || [ "${BUMP:-none}" = minor ]; }; then
+            # A merge, or a MINOR release asked for by hand. A plain manual
+            # rebuild (a web_ref override, say) releases nothing.
+            existing="$(git tag --points-at HEAD --list 'v*' | head -n 1)"
+            latest="$(deploy/release.sh latest)"
+            if [ -n "${existing}" ]; then
+              # A re-run, or a commit already released: same version, no
+              # new tag.
+              release="$(deploy/release.sh version "${existing}")"
+            elif [ -n "${latest}" ]; then
+              kind=patch
+              if [ "${BUMP:-none}" = minor ]; then kind=minor; fi
+              release="$(deploy/release.sh next "${kind}" "${latest}")"
+              new_tag="v${release}"
+            elif [ "${BUMP:-none}" = minor ]; then
+              echo "::error::no release line yet: cut v0.1.0 by hand first"; exit 1
+            fi
           fi
-          echo "version=${version} (web ${{ steps.webref.outputs.short }})" >> "$GITHUB_OUTPUT"
+          # The web client's own version, from its tag on the pinned commit.
+          web_version="$(gh api "repos/loomux/web/tags?per_page=100" \
+            --jq ".[] | select(.commit.sha == \"${WEB_REF}\") | .name" |
+            sed -n 's/^v\([0-9][0-9.]*\)$/\1/p' | head -n 1)"
+          echo "release=${release}" >> "$GITHUB_OUTPUT"
+          echo "new_tag=${new_tag}" >> "$GITHUB_OUTPUT"
+          echo "web_version=${web_version}" >> "$GITHUB_OUTPUT"
+          echo "version=${release:-${short}} (web ${web_version:-${{ steps.webref.outputs.short }}})" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -226,13 +277,14 @@ jobs:
           RELEASE: ${{ steps.meta.outputs.release }}
         run: |
           docker push "${IMAGE}:${{ steps.meta.outputs.sha }}"
-          if [ -n "${RELEASE}" ]; then
-            # A release adds its version tag; :main stays with main.
-            docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:${RELEASE}"
-            docker push "${IMAGE}:${RELEASE}"
-          else
+          # :main follows main; a release adds its version tag.
+          if [ "${GITHUB_REF}" = refs/heads/main ]; then
             docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:main"
             docker push "${IMAGE}:main"
+          fi
+          if [ -n "${RELEASE}" ]; then
+            docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:${RELEASE}"
+            docker push "${IMAGE}:${RELEASE}"
           fi
           {
             echo "### Pushed \`${IMAGE}:${{ steps.meta.outputs.sha }}\`${RELEASE:+ and \`:${RELEASE}\`}"
@@ -240,26 +292,44 @@ jobs:
             echo "UI from loomux/web release \`web-${{ steps.webref.outputs.short }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # A release tag's GitHub release, once its image is pushed (LOOM-129). The
-  # only job here that can write the repository. Notes are the version's
-  # CHANGELOG.md section. 0.y.z and -pre versions are pre-releases, and a
-  # release is never marked "latest" by this job: that's the user's call.
+  # The GitHub release for a version, once its image is pushed (LOOM-129).
+  # The only job here that can write the repository. A merge's release is
+  # tagged on its merge commit here; a hand-pushed tag is used as is. The
+  # notes are the version's CHANGELOG.md section when it has one (a
+  # milestone), otherwise the merged pull request's title, and say which
+  # web version the release pins. 0.y.z and -pre versions are pre-releases,
+  # and nothing here marks a release "latest".
   release:
     needs: image
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name != 'pull_request' && needs.image.outputs.release != '' && (github.ref_type == 'tag' || needs.image.outputs.new_tag != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.image.outputs.release }}
+          NEW_TAG: ${{ needs.image.outputs.new_tag }}
+          WEB_VERSION: ${{ needs.image.outputs.web_version }}
+          WEB_SHORT: ${{ needs.image.outputs.web_short }}
         run: |
           set -eu
-          version="$(deploy/release.sh version "${GITHUB_REF_NAME}")"
-          deploy/release.sh notes "${version}" > notes.md
+          tag="v${VERSION}"
+          if ! deploy/release.sh notes "${VERSION}" > notes.md 2>/dev/null; then
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '.[] | "- \(.title) (#\(.number))"' > notes.md
+            [ -s notes.md ] || git log -1 --format='- %s' > notes.md
+          fi
+          printf '\nWeb client: %s (`web-%s`).\n' "${WEB_VERSION:-unversioned}" "${WEB_SHORT}" >> notes.md
           pre=""
-          if deploy/release.sh prerelease "${version}"; then pre="--prerelease"; fi
-          gh release create "${GITHUB_REF_NAME}" --verify-tag ${pre} --latest=false \
-            --title "Loomux ${version}" --notes-file notes.md
+          if deploy/release.sh prerelease "${VERSION}"; then pre="--prerelease"; fi
+          if [ -n "${NEW_TAG}" ]; then
+            target="--target ${GITHUB_SHA}"
+          else
+            target="--verify-tag"
+          fi
+          gh release create "${tag}" ${target} ${pre} --latest=false \
+            --title "Loomux server ${VERSION}" --notes-file notes.md

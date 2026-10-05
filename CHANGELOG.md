@@ -4,7 +4,9 @@ All notable changes to Loomux (loomux/server, and the loomux/web client it
 pins) are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Loomux uses
 [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html): see
-`docs/release/versioning.md`.
+`docs/release/versioning.md`. Every merge to main is a patch release
+whose notes are on its GitHub release; this file has the curated
+milestones.
 
 ## [Unreleased]
 

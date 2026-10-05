@@ -73,3 +73,68 @@ func TestReleaseNotes(t *testing.T) {
 		t.Error("a prefix of a version matched its section")
 	}
 }
+
+func TestReleaseNext(t *testing.T) {
+	for args, want := range map[[2]string]string{
+		{"patch", "0.1.0"}: "0.1.1", {"patch", "0.1.9"}: "0.1.10", {"minor", "0.1.7"}: "0.2.0", {"minor", "1.9.3"}: "1.10.0",
+	} {
+		if got, ok := release(t, "next", args[0], args[1]); !ok || got != want {
+			t.Errorf("next %v = %q, %v; want %q", args, got, ok, want)
+		}
+	}
+	for _, args := range [][2]string{{"patch", "0.1"}, {"major", "0.1.0"}, {"patch", "1.0.0-rc.1"}} {
+		if got, ok := release(t, "next", args[0], args[1]); ok {
+			t.Errorf("next %v accepted as %q", args, got)
+		}
+	}
+}
+
+// The line continues from the highest plain version reachable from the
+// commit: not a -rc, not a tag on another branch, and compared as
+// numbers (0.1.10 > 0.1.9).
+func TestReleaseLatest(t *testing.T) {
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	latest := func() string {
+		t.Helper()
+		cmd := exec.Command("sh", filepath.Join(must(os.Getwd()), "../deploy/release.sh"), "latest")
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("latest: %v: %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "a")
+	if got := latest(); got != "" {
+		t.Errorf("latest with no tags = %q", got)
+	}
+	git("tag", "v0.1.0")
+	git("commit", "-q", "--allow-empty", "-m", "b")
+	git("tag", "v0.1.9")
+	git("commit", "-q", "--allow-empty", "-m", "c")
+	git("tag", "v0.1.10")
+	git("tag", "v1.0.0-rc.1")
+	git("tag", "not-a-version")
+	git("checkout", "-q", "-b", "side", "HEAD~2")
+	git("commit", "-q", "--allow-empty", "-m", "side")
+	git("tag", "v0.5.0")
+	git("checkout", "-q", "main")
+	if got := latest(); got != "0.1.10" {
+		t.Errorf("latest = %q, want 0.1.10", got)
+	}
+}
+
+func must(s string, err error) string {
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
