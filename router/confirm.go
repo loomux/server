@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 )
 
@@ -360,6 +361,7 @@ func (r *Router) runCommandTask(ctx context.Context, workspaceID, conversationID
 	if exit == nil {
 		return res, fmt.Errorf("read exit status: process in tmux session %s has not exited", task.TmuxSession)
 	}
+	exit = orchestrator.CommandExit(exit)
 	res.exitCode, res.ended, res.output = exit.Status, exit.Describe(), exit.Output
 	if err := r.orch.FinishCommand(ctx, task.ID, exit.Status); err != nil {
 		return res, err
