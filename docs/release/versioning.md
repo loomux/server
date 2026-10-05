@@ -28,7 +28,7 @@ Loomux follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
      - `deploy/release.sh reserve` takes the highest `vX.Y.Z` tag in the repository plus one;
      - it creates that tag on the merge commit through the GitHub API, which refuses a tag that already exists;
      - when two merges race, the loser fetches the tags and takes the next number.
-     Nothing is queued or cancelled: no concurrency group, so every merge's run builds. A re-run of a commit that already has a version keeps it.
+     Nothing is queued or cancelled: no concurrency group, so every merge's run builds. A re-run of a commit that already has a version keeps it. If a newer merge's run has already released, an older merge it contains releases nothing of its own (its changes ship in the newer version), so versions follow main's order.
    - **A hand-pushed tag** (`v0.1.0`, a milestone, an `-rc`) must be `v` + SemVer 2.0.0 with no build metadata, on `main`, with a `CHANGELOG.md` section.
    - **A plain manual rebuild, or a PR,** has no version.
 2. **`image`** builds with that version (`server_version` = `0.1.N (web 0.1.M)`) and pushes `:<sha>`, `:main` for main, and `:0.1.N`. The tag already exists by then.
