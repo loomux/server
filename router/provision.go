@@ -22,8 +22,13 @@ const provisionedPathPrefix = "loomux-workspace-path:"
 // gets its workspaces, relative to the login user's $HOME there.
 const defaultWorkspaceRoot = "loomux-workspaces"
 
+// WorkspaceNamePattern is what a new workspace's name must match: also
+// its directory name. The routing model's schema uses the same pattern
+// (llmrouter), so the two can't drift apart.
+const WorkspaceNamePattern = `^[a-z0-9][a-z0-9_-]{0,62}$`
+
 var (
-	workspaceSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+	workspaceSlug = regexp.MustCompile(WorkspaceNamePattern)
 	// gitRemoteURL accepts https:// and ssh:// URLs and gitRemoteSCP
 	// scp-style user@host:path — never ext::, file:// or anything else git
 	// would treat as a transport that runs commands or reads the target's
