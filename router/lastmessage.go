@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -62,8 +63,9 @@ func (r *Router) recordTurn(ctx context.Context, exec targets.TargetExecutor, ta
 	}
 	// Redacted before bounding, as quoteOutput: a cut through a secret
 	// would leave an unrecognisable piece of it.
-	pane = boundOutput(r.redactSecrets(ctx, task.WorkspaceID, task.AgentType, pane), turnPaneHistoryLines, turnPaneMaxBytes)
-	agentMessage = r.redactSecrets(ctx, task.WorkspaceID, task.AgentType, agentMessage)
+	pane = boundOutput(credentials.RedactPatterns(r.redactSecrets(ctx, task.WorkspaceID, task.AgentType, pane)),
+		turnPaneHistoryLines, turnPaneMaxBytes)
+	agentMessage = credentials.RedactPatterns(r.redactSecrets(ctx, task.WorkspaceID, task.AgentType, agentMessage))
 	agentMessage = keepStart(agentMessage, turnMessageMaxBytes)
 	turn := &registry.TaskTurn{ID: uuid.NewString(), TaskID: task.ID, UserMessage: userMessage,
 		AgentMessage: agentMessage, Pane: pane}

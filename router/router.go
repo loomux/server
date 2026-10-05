@@ -870,7 +870,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 	}
 	r.recordTurn(ctx, exec, task, message, agentMessage)
 
-	result, err := r.model.Relay(ctx, captured)
+	result, err := r.model.Relay(ctx, r.scrubForRelay(ctx, captured))
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: relay: %w", err)
 	}
