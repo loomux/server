@@ -276,7 +276,11 @@ Lifecycle for an `agent` task:
    The note only carries turns that ran on a target of the same `purpose`
    as the agent's (personal or work; decided 2026-10-05), plus the
    router's own answers, which touched no target: work context never
-   reaches a personal machine's agent, nor the reverse.
+   reaches a personal machine's agent, nor the reverse. Where a turn ran
+   is recorded on its messages when they're logged (`messages.origin`:
+   the target's purpose, `none`, or unknown), so it survives a deleted
+   workspace; a user message stored at submit takes its reply's, and a
+   turn of unknown origin is left out.
 3. The orchestrator watches for a completion signal (§5). On completion, the
    router relays/summarizes the captured output back to chat, the
    workspace's rolling summary is updated (replaced, not appended), and —

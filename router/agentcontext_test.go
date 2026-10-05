@@ -66,10 +66,10 @@ func TestDispatch_FirstMessageHasNoContextNote(t *testing.T) {
 	}
 }
 
-// sentToAgent is everything the launched agentType task was given: its
-// launch command (a profile may pass the first turn there) and the keys
-// typed into its pane.
-func (h *availabilityHarness) sentToAgent(t *testing.T, agentType string) string {
+// sentToAgent is everything the launched agentType task (on onTarget, if
+// given) was given: its launch command (a profile may pass the first turn
+// there) and the keys typed into its pane.
+func (h *availabilityHarness) sentToAgent(t *testing.T, agentType string, onTarget ...string) string {
 	t.Helper()
 	tasks, err := h.store.ListTasks(context.Background())
 	if err != nil {
@@ -78,6 +78,12 @@ func (h *availabilityHarness) sentToAgent(t *testing.T, agentType string) string
 	for _, task := range tasks {
 		if !hasAgentTask([]*registry.Task{task}, agentType) {
 			continue
+		}
+		if len(onTarget) > 0 {
+			ws, err := h.store.GetWorkspace(context.Background(), task.WorkspaceID)
+			if err != nil || ws.TargetID != onTarget[0] {
+				continue
+			}
 		}
 		// A task seeded straight into the store never ran here.
 		if s := h.exec.sessionFor(task.TmuxSession); s != nil {
@@ -117,9 +123,9 @@ func TestDispatch_RepeatedMessageKeepsEarlierConversation(t *testing.T) {
 	}
 }
 
-// seedTurnOn records a finished agent turn of conv-1 on a new target of
-// the given purpose: the user's message and the agent's reply.
-func (h *availabilityHarness) seedTurnOn(t *testing.T, name, purpose, user, reply string) {
+// otherTarget registers a second target, of the given purpose, with an
+// idle workspace on it.
+func (h *availabilityHarness) otherTarget(t *testing.T, name, purpose string) (*registry.Target, *registry.Workspace) {
 	t.Helper()
 	ctx := context.Background()
 	target := &registry.Target{ID: uuid.NewString(), Name: name, Kind: registry.TargetKindLocal,
@@ -131,18 +137,32 @@ func (h *availabilityHarness) seedTurnOn(t *testing.T, name, purpose, user, repl
 	if err := h.store.CreateWorkspace(ctx, ws); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	task := &registry.Task{ID: uuid.NewString(), WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
-		TmuxSession: "loomux-" + name, Status: registry.TaskStatusCompleted, ConversationID: "conv-1"}
-	if err := h.store.CreateTask(ctx, task); err != nil {
-		t.Fatalf("CreateTask: %v", err)
+	return target, ws
+}
+
+// jobTurn runs message as conv-1's next turn the way production does: a
+// dispatch job stores the user's message at submit, with no task, and
+// the router writes only the reply.
+func (h *availabilityHarness) jobTurn(t *testing.T, message string, d router.Decision) {
+	t.Helper()
+	id := uuid.NewString()
+	createDispatchRow(t, h.store, id, "conv-1", &registry.Message{
+		ID: uuid.NewString(), ConversationID: "conv-1", Role: registry.MessageRoleUser, Content: message,
+	})
+	h.decide(d)
+	ctx := context.Background()
+	if _, err := h.r.Dispatch(ctx, "conv-1", message,
+		router.WithDispatchID(id), router.WithUserMessageLogged()); err != nil {
+		t.Fatalf("Dispatch %q: %v", message, err)
 	}
-	for _, m := range []*registry.Message{
-		{ID: uuid.NewString(), ConversationID: "conv-1", TaskID: task.ID, Role: registry.MessageRoleUser, Content: user},
-		{ID: uuid.NewString(), ConversationID: "conv-1", TaskID: task.ID, Role: registry.MessageRoleAssistant, Content: reply},
-	} {
-		if err := h.store.CreateMessage(ctx, m); err != nil {
-			t.Fatalf("CreateMessage: %v", err)
-		}
+	// The job is over, so the conversation's next one may start.
+	d2, err := h.store.GetDispatch(ctx, id)
+	if err != nil {
+		t.Fatalf("GetDispatch: %v", err)
+	}
+	d2.Status = registry.DispatchStatusSucceeded
+	if err := h.store.TransitionDispatch(ctx, d2, registry.DispatchStatusQueued); err != nil {
+		t.Fatalf("TransitionDispatch: %v", err)
 	}
 }
 
@@ -154,36 +174,44 @@ func (h *availabilityHarness) setPurpose(t *testing.T, purpose string) {
 	}
 }
 
+// startHere provisions a fresh agent on h.target, leaving any open task.
+func (h *availabilityHarness) startHere(t *testing.T, message string) string {
+	t.Helper()
+	d := h.provisionDecision("claude-code")
+	d.LeaveOpenTask = true
+	h.jobTurn(t, message, d)
+	return h.sentToAgent(t, "claude-code", h.target.ID)
+}
+
 // Command-center decision (2026-10-05, option B): a new agent only hears
 // about earlier turns that ran on targets of its own purpose, so work
-// context (sc1) and personal context never reach each other's agents.
-// Turns that touched no target (the router's own answers) are kept.
+// context (sc1) and personal context never reach each other's agents —
+// the user's requests as well as the replies, and offers made about the
+// other target too. Turns that touched no target (the router's own
+// answers) are kept.
 func TestDispatch_EarlierConversationStaysWithinPurpose(t *testing.T) {
 	for _, tc := range []struct {
 		name, agentPurpose, otherPurpose string
 	}{
-		{"work agent, personal turn", registry.TargetPurposeWork, registry.TargetPurposePersonal},
-		{"personal agent, work turn", "", registry.TargetPurposeWork},
+		{"work agent, personal turns", registry.TargetPurposeWork, registry.TargetPurposePersonal},
+		{"personal agent, work turns", "", registry.TargetPurposeWork},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newAvailabilityHarness(t)
 			h.probes.install("claude")
 			h.recordAgents(t, map[string]bool{"claude-code": true})
 			h.setPurpose(t, tc.agentPurpose)
-			ctx := context.Background()
+			other, ws := h.otherTarget(t, "other", tc.otherPurpose)
 
-			h.seedTurnOn(t, "other", tc.otherPurpose, "check the payroll export", "the export has 42 rows")
-			h.decide(router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "Which project do you mean?"})
-			if _, err := h.r.Dispatch(ctx, "conv-1", "set up a scratch project"); err != nil {
-				t.Fatalf("Dispatch: %v", err)
-			}
-			h.decide(h.provisionDecision("claude-code"))
-			if _, err := h.r.Dispatch(ctx, "conv-1", "a new one, please"); err != nil {
-				t.Fatalf("Dispatch: %v", err)
-			}
+			h.jobTurn(t, "check the payroll export", router.Decision{
+				Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"})
+			h.jobTurn(t, "how much disk is free there", router.Decision{
+				Action: router.ActionRunCommand, TargetID: other.ID, Command: "df -h /srv/payroll"})
+			h.jobTurn(t, "set up a scratch project", router.Decision{
+				Action: router.ActionAnswerDirectly, DirectAnswer: "Which project do you mean?", LeaveOpenTask: true})
+			sent := h.startHere(t, "a new one, please")
 
-			sent := h.sentToAgent(t, "claude-code")
-			for _, other := range []string{"payroll", "42 rows"} {
+			for _, other := range []string{"payroll"} {
 				if strings.Contains(sent, other) {
 					t.Errorf("the agent got %q, want nothing from a target of another purpose", sent)
 				}
@@ -195,17 +223,54 @@ func TestDispatch_EarlierConversationStaysWithinPurpose(t *testing.T) {
 	}
 }
 
-// Same purpose: the earlier agent turn is kept.
+// Where a turn ran is recorded when it's logged, so deleting the
+// workspace (which unlinks its messages from their tasks) doesn't make
+// its turns look like the router's own and cross over.
+func TestDispatch_EarlierConversationDeletedWorkspaceStaysWithinPurpose(t *testing.T) {
+	h := newAvailabilityHarness(t)
+	h.probes.install("claude")
+	h.recordAgents(t, map[string]bool{"claude-code": true})
+	_, ws := h.otherTarget(t, "sc1", registry.TargetPurposeWork)
+	h.jobTurn(t, "check the payroll export", router.Decision{
+		Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"})
+	if err := h.store.DeleteWorkspaceAndTasks(context.Background(), ws.ID); err != nil {
+		t.Fatalf("DeleteWorkspaceAndTasks: %v", err)
+	}
+
+	if sent := h.startHere(t, "something at home now"); strings.Contains(sent, "payroll") {
+		t.Errorf("the agent got %q, want the deleted work workspace's turn left out", sent)
+	}
+}
+
+// Same purpose: the earlier agent turn is kept, the user's request and
+// the reply alike. An empty purpose is personal.
 func TestDispatch_EarlierConversationKeepsSamePurpose(t *testing.T) {
 	h := newAvailabilityHarness(t)
 	h.probes.install("claude")
 	h.recordAgents(t, map[string]bool{"claude-code": true})
-	h.seedTurnOn(t, "other", registry.TargetPurposePersonal, "count the files in notes", "there are 7 files")
-	h.decide(h.provisionDecision("claude-code"))
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "now somewhere new"); err != nil {
-		t.Fatalf("Dispatch: %v", err)
+	_, ws := h.otherTarget(t, "other", registry.TargetPurposePersonal)
+	h.jobTurn(t, "count the files in notes", router.Decision{
+		Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"})
+
+	sent := h.startHere(t, "now somewhere new")
+	if !strings.Contains(sent, "count the files in notes") || !strings.Contains(sent, "relayed") {
+		t.Errorf("the agent got %q, want the same-purpose turn kept", sent)
 	}
-	if sent := h.sentToAgent(t, "claude-code"); !strings.Contains(sent, "there are 7 files") {
-		t.Errorf("the agent got %q, want the same-purpose turn kept (empty purpose is personal)", sent)
+}
+
+// Messages from before origins were recorded can't be placed, so they
+// are left out.
+func TestDispatch_EarlierConversationLeavesOutUnknownOrigin(t *testing.T) {
+	h := newAvailabilityHarness(t)
+	h.probes.install("claude")
+	h.recordAgents(t, map[string]bool{"claude-code": true})
+	if err := h.store.CreateMessage(context.Background(), &registry.Message{
+		ID: uuid.NewString(), ConversationID: "conv-1", Role: registry.MessageRoleUser, Content: "an old request",
+	}); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+
+	if sent := h.startHere(t, "start fresh"); strings.Contains(sent, "an old request") {
+		t.Errorf("the agent got %q, want a message of unknown origin left out", sent)
 	}
 }

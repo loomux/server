@@ -151,41 +151,41 @@ func ApplyAffinity(d Decision, open *OpenTaskSnapshot) (out Decision, overridden
 // Only turns that ran on a target of the same purpose as workspaceID's
 // are kept (command-center decision, 2026-10-05): work context, such as
 // sc1's, never reaches a personal machine's agent, nor the reverse.
-// Turns that touched no target (the router's own answers) are kept; a
-// turn whose target can't be found is left out, and if the agent's own
-// can't be, there is no note at all.
+// Where a turn ran is its messages' Origin, recorded when it was logged,
+// so a deleted workspace's turns keep theirs. Turns that touched no
+// target (the router's own answers) are kept; a turn of unknown origin
+// is left out, and if the agent's own target can't be read, there is no
+// note at all.
 func (r *Router) earlierConversation(ctx context.Context, conversationID, workspaceID, message string) (string, error) {
 	msgs, err := r.store.ListMessagesByConversation(ctx, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("conversation history: %w", err)
 	}
-	purposes := map[string]string{}
-	purpose, ok := r.workspacePurpose(ctx, workspaceID, purposes)
+	purpose, ok := r.workspacePurpose(ctx, workspaceID)
 	if !ok {
 		// Nothing can be shown to be the agent's own side: no note.
 		return "", nil
 	}
-	taskPurposes := map[string]string{}
+	// A user message stored at submit, before routing, has no origin of
+	// its own: its turn's is on the reply logged with it.
+	dispatchOrigin := map[string]string{}
+	for _, m := range msgs {
+		if m.DispatchID != "" && m.Origin != "" {
+			dispatchOrigin[m.DispatchID] = m.Origin
+		}
+	}
 	current := turnLogFrom(ctx).dispatchID
 	kept := msgs[:0:0]
 	for _, m := range msgs {
 		if current != "" && m.DispatchID == current {
 			continue
 		}
-		if m.TaskID != "" {
-			p, seen := taskPurposes[m.TaskID]
-			if !seen {
-				p = "?"
-				if task, err := r.store.GetTask(ctx, m.TaskID); err == nil {
-					if wp, ok := r.workspacePurpose(ctx, task.WorkspaceID, purposes); ok {
-						p = wp
-					}
-				}
-				taskPurposes[m.TaskID] = p
-			}
-			if p != purpose {
-				continue
-			}
+		origin := m.Origin
+		if origin == "" && m.DispatchID != "" {
+			origin = dispatchOrigin[m.DispatchID]
+		}
+		if origin != registry.MessageOriginNone && origin != purpose {
+			continue
 		}
 		kept = append(kept, m)
 	}
@@ -212,23 +212,59 @@ func (r *Router) earlierConversation(ctx context.Context, conversationID, worksp
 	return b.String(), nil
 }
 
-// workspacePurpose is the purpose of workspaceID's target, an empty one
-// read as personal, memoized in purposes. ok is false when the workspace
-// or its target can't be read.
-func (r *Router) workspacePurpose(ctx context.Context, workspaceID string, purposes map[string]string) (purpose string, ok bool) {
-	if p, seen := purposes[workspaceID]; seen {
-		return p, p != ""
-	}
+// workspacePurpose is the purpose of workspaceID's target. ok is false
+// when the workspace or its target can't be read.
+func (r *Router) workspacePurpose(ctx context.Context, workspaceID string) (purpose string, ok bool) {
 	ws, err := r.store.GetWorkspace(ctx, workspaceID)
-	if err == nil {
-		var target *registry.Target
-		if target, err = r.store.GetTarget(ctx, ws.TargetID); err == nil {
-			purpose = target.Policy.Purpose
-			if purpose == "" {
-				purpose = registry.TargetPurposePersonal
-			}
-		}
+	if err != nil {
+		return "", false
 	}
-	purposes[workspaceID] = purpose
-	return purpose, purpose != ""
+	return r.targetPurpose(ctx, ws.TargetID)
+}
+
+// targetPurpose is targetID's purpose, an empty one read as personal. ok
+// is false when the target can't be read.
+func (r *Router) targetPurpose(ctx context.Context, targetID string) (purpose string, ok bool) {
+	target, err := r.store.GetTarget(ctx, targetID)
+	if err != nil {
+		return "", false
+	}
+	if target.Policy.Purpose == "" {
+		return registry.TargetPurposePersonal, true
+	}
+	return target.Policy.Purpose, true
+}
+
+// withTurnOrigin records on ctx's turn log that the turn acts on
+// targetID, for the Origin of the messages it logs.
+func (r *Router) withTurnOrigin(ctx context.Context, targetID string) context.Context {
+	tl := turnLogFrom(ctx)
+	tl.origin = "?" // the target can't be read: unknown, not "none"
+	if purpose, ok := r.targetPurpose(ctx, targetID); ok {
+		tl.origin = purpose
+	}
+	return withTurnLog(ctx, tl)
+}
+
+// turnOrigin is the Origin of a message the turn logs about taskID (empty
+// for none): the purpose of the task's target; failing a task, the target
+// the turn acts on; failing that, MessageOriginNone. A target that can't
+// be read gives "", unknown.
+func (r *Router) turnOrigin(ctx context.Context, taskID string) string {
+	if taskID != "" {
+		task, err := r.store.GetTask(ctx, taskID)
+		if err != nil {
+			return ""
+		}
+		purpose, _ := r.workspacePurpose(ctx, task.WorkspaceID)
+		return purpose
+	}
+	switch origin := turnLogFrom(ctx).origin; origin {
+	case "":
+		return registry.MessageOriginNone
+	case "?":
+		return ""
+	default:
+		return origin
+	}
 }

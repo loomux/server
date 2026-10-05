@@ -196,6 +196,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	// (LOOM-71, LOOM-72, LOOM-90).
 	if p, ok := r.pending.take(conversationID, time.Now()); ok {
 		if isConfirmation(message, p) {
+			ctx = r.withTurnOrigin(ctx, p.targetID)
 			refusal, err := r.offerRefusal(ctx, p)
 			if err != nil {
 				log.Error("dispatch failed", "stage", "recheck policy", "error", err)
@@ -313,6 +314,12 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	}
 	logDecision(log, decision, substitutedFrom, affinityFrom)
 	r.metrics.RecordRoutingDecision(string(decision.Action))
+
+	// Where the turn runs is recorded with its messages, whatever it ends
+	// in.
+	if target, err := r.policyTarget(ctx, decision); err == nil && target != nil {
+		ctx = r.withTurnOrigin(ctx, target.ID)
+	}
 
 	// The target's policy (LOOM-89) has the last word, whatever the
 	// routing model chose.
@@ -1044,6 +1051,10 @@ type turnLog struct {
 	// and confirmed now (a clone or a policy confirmation): that request,
 	// and the offer about it, aren't earlier conversation for the agent.
 	carriesOut bool
+	// origin is the purpose of the target the turn acts on, once routing
+	// (or the offer being confirmed) names one: a turn that ends without
+	// a task, such as an offer to run something there, still ran there.
+	origin string
 }
 
 type turnLogKey struct{}
@@ -1067,12 +1078,14 @@ func turnLogFrom(ctx context.Context) turnLog {
 // and both carry the job's id.
 func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessage, assistantReply string) error {
 	tl := turnLogFrom(ctx)
+	origin := r.turnOrigin(ctx, taskID)
 	if !tl.userMessageLogged {
 		if err := r.store.CreateMessage(ctx, &registry.Message{
 			ID:             uuid.NewString(),
 			ConversationID: conversationID,
 			TaskID:         taskID,
 			DispatchID:     tl.dispatchID,
+			Origin:         origin,
 			Role:           registry.MessageRoleUser,
 			Content:        userMessage,
 		}); err != nil {
@@ -1084,6 +1097,7 @@ func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessag
 		ConversationID: conversationID,
 		TaskID:         taskID,
 		DispatchID:     tl.dispatchID,
+		Origin:         origin,
 		Role:           registry.MessageRoleAssistant,
 		Content:        withReplyNote(tl.replyNote, assistantReply),
 	}); err != nil {

@@ -120,6 +120,7 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 		ID:             uuid.NewString(),
 		ConversationID: task.ConversationID,
 		TaskID:         task.ID,
+		Origin:         r.turnOrigin(ctx, task.ID),
 		Role:           registry.MessageRoleAssistant,
 		Content:        result.Reply,
 	}); err != nil {

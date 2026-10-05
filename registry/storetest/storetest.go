@@ -63,6 +63,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 
 	t.Run("Message", func(t *testing.T) { testMessageCRUD(t, newStore(t)) })
 	t.Run("MessageWithoutTask", func(t *testing.T) { testMessageWithoutTask(t, newStore(t)) })
+	t.Run("MessageOrigin", func(t *testing.T) { testMessageOrigin(t, newStore(t)) })
 	t.Run("MessageListByConversationOrdering", func(t *testing.T) { testMessageListByConversationOrdering(t, newStore(t)) })
 	t.Run("MessageListByConversationUnknownReturnsEmpty", func(t *testing.T) { testMessageListByConversationUnknownReturnsEmpty(t, newStore(t)) })
 	t.Run("MessageRequiresValidTaskWhenSet", func(t *testing.T) { testMessageRequiresValidTaskWhenSet(t, newStore(t)) })
@@ -619,6 +620,26 @@ func testMessageWithoutTask(t *testing.T, s registry.Store) {
 	}
 	if len(list) != 1 || list[0].TaskID != "" {
 		t.Fatalf("ListMessagesByConversation = %+v, want 1 message with empty TaskID", list)
+	}
+}
+
+// Where a turn ran is stored with its messages; unset is unknown.
+func testMessageOrigin(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	for i, origin := range []string{registry.TargetPurposeWork, registry.MessageOriginNone, ""} {
+		if err := s.CreateMessage(ctx, &registry.Message{
+			ID: fmt.Sprintf("msg-origin-%d", i), ConversationID: "conv-origin", Origin: origin,
+			Role: registry.MessageRoleAssistant, Content: "reply",
+		}); err != nil {
+			t.Fatalf("CreateMessage: %v", err)
+		}
+	}
+	list, err := s.ListMessagesByConversation(ctx, "conv-origin")
+	if err != nil {
+		t.Fatalf("ListMessagesByConversation: %v", err)
+	}
+	if len(list) != 3 || list[0].Origin != registry.TargetPurposeWork || list[1].Origin != registry.MessageOriginNone || list[2].Origin != "" {
+		t.Fatalf("origins = %+v, want work, none, unknown", list)
 	}
 }
 

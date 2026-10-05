@@ -114,6 +114,12 @@ it. (No code path deletes tasks in production today — `DeleteTask` exists
 on `Store` but is only exercised by the conformance suite — so this is a
 forward-looking choice, not a fix for an active problem.)
 
+Since workspace delete (#163) does remove tasks, a message also records
+where its turn ran in `origin` (migration 00017): the target's purpose,
+`none` for a turn that touched no target, or `''` when unknown. It is
+written once, with the message, and doesn't depend on the task row
+surviving. A fresh agent's conversation note uses it (core design §3).
+
 ## Where it's written
 
 `Router.Dispatch` and `Router.dispatchToAgent` are the two places
