@@ -10,16 +10,21 @@ Every merge to `main` is a patch release (`0.1.N`); see
 [`../release/versioning.md`](../release/versioning.md). To upgrade:
 
 1. Read the release notes between your version and the new one
-   (<https://github.com/loomux/server/releases>). A release that changes
-   the database schema says so (its migration is in
-   `registry/sqlite/migrations/`).
+   (<https://github.com/loomux/server/releases>). The notes don't flag
+   schema changes; to see whether the upgrade migrates the database,
+   compare `registry/sqlite/migrations/` between the two tags
+   (`git diff --stat v0.1.A v0.1.B -- registry/sqlite/migrations/`).
 2. Change the image tag (`ghcr.io/loomux/server:0.1.N`) and roll the
    Deployment. With `strategy: Recreate` the old pod stops first.
-3. On start, the init container copies the database to
-   `loomux.db.pre-migration-<timestamp>` (the last 5 are kept), then
-   `loomuxd` applies any new migrations. A turn that was running when the
-   old pod stopped is picked up again if its agent is still alive, or
-   marked interrupted (the UI offers a retry).
+3. On start, `loomuxd` applies any new migrations. On the test
+   instance an init container first copies the database to
+   `loomux.db.pre-migration-<timestamp>` on **every** pod start (the
+   last 5 are kept); that comes from its manifests, not from `loomuxd`,
+   so a setup without one has no snapshot unless you take it. A turn
+   that was running when the old pod stopped is picked up again if its
+   agent session is still alive; if the session is gone the turn fails
+   with "send your message again". A routing or provisioning step that
+   was in flight is marked interrupted.
 4. Check: `GET /api/v1/version` shows the new version,
    `GET /api/v1/health` says healthy, and the dashboard loads. The web client is part of the image, so it
    updates too; an open browser tab picks it up on reload.
@@ -34,10 +39,19 @@ the tag in a manifest works the same way.
   and roll. That's all.
 - **The newer version migrated the database:** older code may not
   understand the new schema, and down-migrations aren't a supported
-  path. Stop `loomuxd`, restore the newest
-  `loomux.db.pre-migration-<timestamp>` taken before the upgrade (the
-  procedure is in [`backup-restore.md`](backup-restore.md#restore-a-backup)),
-  then start the older image. Anything done since the upgrade is lost.
+  path. Restore the database as it was before the upgrade:
+  1. Suspend Flux (or whatever reconciles the Deployment) and set the
+     image tag back first, so nothing restarts the new version.
+  2. Pick the `loomux.db.pre-migration-<timestamp>` whose timestamp is
+     **before the first start of the upgraded pod**, not simply the
+     newest: a snapshot is taken on every start, so after one restart
+     of the upgraded pod the newest one is already migrated, and after
+     five the pre-upgrade one is gone. Copy it off the volume before
+     anything else restarts.
+  3. Stop `loomuxd`, restore that copy (the procedure is in
+     [`backup-restore.md`](backup-restore.md#restore-a-backup)), start
+     the older image, resume Flux. Anything done since the upgrade is
+     lost.
 
 ## Rotating secrets
 
@@ -47,7 +61,7 @@ the tag in a manifest works the same way.
 | Router API keys | update the Secret, restart | none |
 | ntfy token | update the Secret, restart | none |
 | SSH key | update the SSH Secret (and the target's `authorized_keys`), restart | none |
-| Vault master key (`LOOMUX_MASTER_KEY`) | **not rotatable in place**: credentials in the vault are encrypted with it. Today nothing writes to the vault (there's no API or UI for credentials yet; agents use their own logins on the targets), so changing it loses nothing; once the vault is in use, credentials would have to be re-entered | — |
+| Vault master key (`LOOMUX_MASTER_KEY`) | **not rotatable in place**: credentials in the vault are encrypted with it. Today nothing writes to the vault (there's no API or UI for credentials yet; agents use their own logins on the targets), so while the vault is empty a new key loses nothing. Once any credential row exists, a different key makes reading the vault fail, and then **every** dispatch fails until those rows are deleted | — |
 
 ## What to watch
 
@@ -66,8 +80,9 @@ the tag in a manifest works the same way.
   running, the pod restarting.
 - **Logs:** one JSON record per line on stderr. Every turn logs
   `dispatch started` / `routing decision` / `dispatch finished` (or
-  `dispatch failed` with `error_class`) with `conversation_id` and
-  `dispatch_id`; `LOOMUX_LOG_LEVEL=debug` adds more.
+  `dispatch failed` with `stage` and `error`) with `conversation_id`
+  and `dispatch_id`; the failure's class is a metric label
+  (`loomux_dispatch_total{error_class=…}`), not a log field; `LOOMUX_LOG_LEVEL=debug` adds more.
 - **Disk:** the database grows with conversations and per-turn
   transcripts; transcripts older than `LOOMUX_TURN_RETENTION` (30 days
   by default) are deleted.

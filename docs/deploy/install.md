@@ -15,7 +15,7 @@ machines agents run on over SSH. It's single-user: one password.
   below), but any container runtime works. It needs a persistent
   volume for the database and outbound HTTPS to your router-model API.
 - **At least one target:** a machine where agents run, reachable from
-  the server over SSH, with `tmux` (3.2+) and the agent CLIs (Claude
+  the server over SSH, with `tmux` and the agent CLIs (Claude
   Code ≥ 2.1.0, Codex ≥ 0.150.0) installed **and logged in** as the
   target user. Prepare it with [`targets.md`](targets.md).
 - **A router model:** any OpenAI-compatible chat endpoint (base URL,
@@ -41,7 +41,7 @@ at rest, e.g. with SOPS). Never put them in a ConfigMap or the image.
 | Variable | What it is | How to make it |
 |---|---|---|
 | `LOOMUX_AUTH_PASSWORD_HASH` | bcrypt hash of the one login password | `echo -n 'your password' \| docker run --rm -i ghcr.io/loomux/server:0.1.N -hash-password` |
-| `LOOMUX_MASTER_KEY` | AES-256 key for the credential vault: 32 random bytes, base64. Set it even though nothing fills the vault yet (agents use their own logins on the targets) | `head -c 32 /dev/urandom \| base64` |
+| `LOOMUX_MASTER_KEY` | AES-256 key for the credential vault: 32 random bytes, base64. **Required**: without it every agent dispatch fails ("resolve credentials"), and run_command output and notification summaries are withheld, even though nothing fills the vault yet (agents use their own logins on the targets) | `head -c 32 /dev/urandom \| base64` |
 | `LOOMUX_ROUTER_PRIMARY_API_KEY` | the router model's API key | from your provider |
 | `LOOMUX_ROUTER_ESCALATION_API_KEY` | (optional) the escalation model's key | from your provider |
 | `LOOMUX_NTFY_TOKEN` | (optional) ntfy publish token | from your ntfy server |
@@ -61,7 +61,7 @@ with defaults, is in [`container.md`](container.md#configuration). The
 ones a fresh install sets:
 
 ```
-LOOMUX_DB_PATH=/data/loomux.db          # on the persistent volume
+LOOMUX_DB_PATH=/data/loomux.db          # on the persistent volume (image default: /var/lib/loomux/loomux.db)
 LOOMUX_ROUTER_PRIMARY_BASE_URL=https://…/v1
 LOOMUX_ROUTER_PRIMARY_MODEL=…
 LOOMUX_PUBLIC_URL=https://loomux.example # links in notifications
@@ -84,7 +84,8 @@ like; it needs these writable paths:
 
 | Path | Why | Volume |
 |---|---|---|
-| directory of `LOOMUX_DB_PATH` (e.g. `/data`) | the database, pre-migration snapshots | **persistent** |
+| directory of `LOOMUX_DB_PATH` (default `/var/lib/loomux`; the test instance mounts `/data`) | the database, and pre-migration snapshots if your setup takes them | **persistent** |
+| `LOOMUX_WEB_BUNDLES_DIR` (default `web-bundles` beside the database) | web client bundles installed in place | **persistent** (the same volume) |
 | `/tmp` | SSH ControlMaster sockets | `emptyDir` |
 | `/home/loomux/.ssh` | the SSH Secret is copied here at start | `emptyDir` |
 
@@ -126,11 +127,21 @@ secrets/                   SOPS-encrypted Secrets (section 3, SSH)
 
 ```
 docker run -d --name loomuxd -p 8080:8080 \
-  -v loomux-data:/data -e LOOMUX_DB_PATH=/data/loomux.db \
+  -v loomux-data:/var/lib/loomux \
   --env-file loomux.env \
   -v "$PWD/ssh:/etc/loomux/ssh:ro" \
   ghcr.io/loomux/server:0.1.N
 ```
+
+Mount the volume at the image's own `/var/lib/loomux` and keep the
+default `LOOMUX_DB_PATH`: that directory belongs to uid 10001, and
+Docker copies its ownership into a fresh named volume. A volume
+mounted at a path the image doesn't have (say `/data`) comes up owned
+by root and `loomuxd` can't create the database. The files under
+`./ssh` must be readable by uid 10001 (the entrypoint copies them).
+Plain Docker takes no pre-migration snapshots (on Kubernetes the
+test instance's init container does): copy the database off the
+volume yourself before an upgrade.
 
 ## 6. Check it
 
