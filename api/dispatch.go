@@ -126,8 +126,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req dispatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed request body")
+	if !readJSON(w, r, &req) {
 		return
 	}
 	if req.Message == "" {
