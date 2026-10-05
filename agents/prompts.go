@@ -119,6 +119,24 @@ func detectLogin(lines []string) *registry.Attention {
 	return nil
 }
 
+// DetectCompaction reports whether Claude Code is compacting its context
+// right now (LOOM-109): its status line reads "Compacting conversation…"
+// while it does, at the bottom of the pane. A finished compaction's
+// "Compacted" note in the scrollback doesn't count, so each compaction
+// shows once, for as long as it runs.
+func DetectCompaction(screen string) bool {
+	for _, l := range bottomLines(screen, compactionRegionLines) {
+		if strings.Contains(l, "Compacting conversation") {
+			return true
+		}
+	}
+	return false
+}
+
+// compactionRegionLines is how much of the pane's bottom holds the status
+// line: below it are only the input box and its hints.
+const compactionRegionLines = 10
+
 func isFooter(line string) bool {
 	lower := strings.ToLower(line)
 	for _, f := range promptFooters {

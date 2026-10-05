@@ -65,7 +65,21 @@ type AgentConfig struct {
 	// on two consecutive progress checks ends the wait with an
 	// *orchestrator.NeedsAttentionError. nil disables it.
 	DetectPrompt func(screen string) *registry.Attention
+	// DetectCompaction, for TierMarker only, reports whether the pane
+	// shows the agent compacting its context right now (LOOM-109).
+	// CompactionLoopLimit compactions starting within CompactionLoopWindow
+	// of one turn end the wait with an *orchestrator.CompactionLoopError:
+	// an agent whose context refills as fast as it compacts never
+	// finishes. nil disables it.
+	DetectCompaction func(screen string) bool
 }
+
+// A compaction loop (LOOM-109): this many compactions in one turn,
+// within this long.
+const (
+	CompactionLoopLimit  = 3
+	CompactionLoopWindow = 30 * time.Minute
+)
 
 // Config maps agent-type name to its AgentConfig. An agent-type with no
 // entry — including every shell-kind task, whose AgentType is always ""
@@ -162,8 +176,8 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 		})
 		defer timer.Stop()
 	}
-	if limit := orDefault(cfg.NoProgressTimeout, defaultNoProgressTimeout); tier == TierMarker && (limit > 0 || cfg.DetectPrompt != nil) {
-		go d.watchProgress(waitCtx, exec, task, limit, cfg.DetectPrompt, cancel)
+	if limit := orDefault(cfg.NoProgressTimeout, defaultNoProgressTimeout); tier == TierMarker && (limit > 0 || cfg.DetectPrompt != nil || cfg.DetectCompaction != nil) {
+		go d.watchProgress(waitCtx, exec, task, limit, cfg.DetectPrompt, cfg.DetectCompaction, cancel)
 	}
 	// A settle bound (orchestrator.WithSettle) ends the turn once the pane
 	// stops changing, whatever the tier's own signal.
@@ -201,11 +215,14 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 		cause := context.Cause(waitCtx)
 		var timeout *orchestrator.TurnTimeoutError
 		var attention *orchestrator.NeedsAttentionError
+		var compaction *orchestrator.CompactionLoopError
 		switch {
 		case errors.As(cause, &timeout):
 			return timeout
 		case errors.As(cause, &attention):
 			return attention
+		case errors.As(cause, &compaction):
+			return compaction
 		case errors.Is(cause, errSettled):
 			return nil
 		}
@@ -232,15 +249,20 @@ func orDefault(d, def time.Duration) time.Duration {
 // watchProgress ends the wait (via cancel) once the pane's contents have
 // been unchanged for limit (zero: never), or once detect finds the same
 // prompt on two consecutive checks (LOOM-97) — twice, so a prompt caught
-// mid-redraw isn't reported. Capture errors are ignored: this is only an
-// extra bound, and the tier's own watcher reports a pane it can't reach.
+// mid-redraw isn't reported — or once compacting has started
+// CompactionLoopLimit times within CompactionLoopWindow (LOOM-109),
+// counted as checks where compacting shows after one where it didn't.
+// Capture errors are ignored: this is only an extra bound, and the tier's
+// own watcher reports a pane it can't reach.
 func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, limit time.Duration,
-	detect func(string) *registry.Attention, cancel context.CancelCauseFunc) {
+	detect func(string) *registry.Attention, compacting func(string) bool, cancel context.CancelCauseFunc) {
 	ticker := time.NewTicker(d.progressPollInterval)
 	defer ticker.Stop()
 	var last string
 	var lastChange time.Time
 	var lastPrompt *registry.Attention
+	var wasCompacting bool
+	var compactions []time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -260,6 +282,20 @@ func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecuto
 			lastPrompt = prompt
 		}
 		now := time.Now()
+		if compacting != nil {
+			is := compacting(out)
+			if is && !wasCompacting {
+				compactions = append(compactions, now)
+				for len(compactions) > 0 && now.Sub(compactions[0]) > CompactionLoopWindow {
+					compactions = compactions[1:]
+				}
+				if len(compactions) >= CompactionLoopLimit {
+					cancel(&orchestrator.CompactionLoopError{Count: len(compactions), Within: now.Sub(compactions[0])})
+					return
+				}
+			}
+			wasCompacting = is
+		}
 		if lastChange.IsZero() || out != last {
 			last, lastChange = out, now
 			continue

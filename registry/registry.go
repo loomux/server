@@ -346,6 +346,10 @@ const (
 	// ErrorClassLoginRequired: the agent CLI asked to be signed in
 	// (LOOM-97). Its pane is left for a human to complete the login.
 	ErrorClassLoginRequired ErrorClass = "login_required"
+	// ErrorClassCompactionLoop: the agent kept compacting its context
+	// within one turn without finishing it (LOOM-109); Loomux
+	// interrupted it.
+	ErrorClassCompactionLoop ErrorClass = "compaction_loop"
 	// ErrorClassTargetUnhealthy: the target failed its health probe for a
 	// reason other than being unreachable — no tmux, its disk nearly full
 	// (LOOM-86).

@@ -864,6 +864,10 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 			*failClass = registry.ErrorClassInternal
 			return r.needsAttention(ctx, log, task, message, attention.Attention)
 		}
+		var compaction *orchestrator.CompactionLoopError
+		if errors.As(err, &compaction) {
+			return "", r.compactionLoop(ctx, task, compaction)
+		}
 		return "", fmt.Errorf("router: dispatch: wait for completion: %w", err)
 	}
 
@@ -937,6 +941,23 @@ func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *o
 	}
 	return fmt.Errorf("router: dispatch: agent %q exited (status %d) before finishing the turn; its last output:\n%s",
 		task.AgentType, exited.Status, output)
+}
+
+// compactionLoop handles an agent that kept compacting its context
+// within one turn (LOOM-109): like a timeout, the task is failed and the
+// agent interrupted, its pane kept, and the error says how to get it
+// going again.
+func (r *Router) compactionLoop(ctx context.Context, task *registry.Task, loop *orchestrator.CompactionLoopError) error {
+	cleanupCtx := context.WithoutCancel(ctx)
+	targetName := r.targetNameFor(cleanupCtx, task)
+	reason := fmt.Sprintf("agent %q on %s %s", task.AgentType, targetName, strings.TrimPrefix(loop.Error(), "the agent "))
+	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{Class: registry.ErrorClassCompactionLoop, Reason: reason}); err != nil {
+		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
+	}
+	r.interruptAgent(cleanupCtx, task)
+	return fmt.Errorf("router: dispatch: %s. Loomux interrupted it and kept the pane (attach on %s with `%s`). "+
+		"Ask for a smaller step, or start the conversation over so the agent begins with a fresh context: %w",
+		reason, targetName, targets.AttachCommand(task.TmuxSession), loop)
 }
 
 // turnTimedOut handles a turn that hit its bound (LOOM-76): the task is
