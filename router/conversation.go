@@ -147,16 +147,45 @@ func ApplyAffinity(d Decision, open *OpenTaskSnapshot) (out Decision, overridden
 // "earlier"; nor, for a confirmed request carried out now (carriesOut),
 // is the request itself or the offer and answer about it that followed.
 // A message merely repeating an earlier one ("continue") cuts nothing.
-func (r *Router) earlierConversation(ctx context.Context, conversationID, message string) (string, error) {
+//
+// Only turns that ran on a target of the same purpose as workspaceID's
+// are kept (command-center decision, 2026-10-05): work context, such as
+// sc1's, never reaches a personal machine's agent, nor the reverse.
+// Turns that touched no target (the router's own answers) are kept; a
+// turn whose target can't be found is left out, and if the agent's own
+// can't be, there is no note at all.
+func (r *Router) earlierConversation(ctx context.Context, conversationID, workspaceID, message string) (string, error) {
 	msgs, err := r.store.ListMessagesByConversation(ctx, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("conversation history: %w", err)
 	}
+	purposes := map[string]string{}
+	purpose, ok := r.workspacePurpose(ctx, workspaceID, purposes)
+	if !ok {
+		// Nothing can be shown to be the agent's own side: no note.
+		return "", nil
+	}
+	taskPurposes := map[string]string{}
 	current := turnLogFrom(ctx).dispatchID
 	kept := msgs[:0:0]
 	for _, m := range msgs {
 		if current != "" && m.DispatchID == current {
 			continue
+		}
+		if m.TaskID != "" {
+			p, seen := taskPurposes[m.TaskID]
+			if !seen {
+				p = "?"
+				if task, err := r.store.GetTask(ctx, m.TaskID); err == nil {
+					if wp, ok := r.workspacePurpose(ctx, task.WorkspaceID, purposes); ok {
+						p = wp
+					}
+				}
+				taskPurposes[m.TaskID] = p
+			}
+			if p != purpose {
+				continue
+			}
 		}
 		kept = append(kept, m)
 	}
@@ -181,4 +210,25 @@ func (r *Router) earlierConversation(ctx context.Context, conversationID, messag
 	}
 	b.WriteString("The user's latest message, the one for you, follows.]")
 	return b.String(), nil
+}
+
+// workspacePurpose is the purpose of workspaceID's target, an empty one
+// read as personal, memoized in purposes. ok is false when the workspace
+// or its target can't be read.
+func (r *Router) workspacePurpose(ctx context.Context, workspaceID string, purposes map[string]string) (purpose string, ok bool) {
+	if p, seen := purposes[workspaceID]; seen {
+		return p, p != ""
+	}
+	ws, err := r.store.GetWorkspace(ctx, workspaceID)
+	if err == nil {
+		var target *registry.Target
+		if target, err = r.store.GetTarget(ctx, ws.TargetID); err == nil {
+			purpose = target.Policy.Purpose
+			if purpose == "" {
+				purpose = registry.TargetPurposePersonal
+			}
+		}
+	}
+	purposes[workspaceID] = purpose
+	return purpose, purpose != ""
 }
