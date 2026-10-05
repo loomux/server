@@ -307,6 +307,7 @@ or message content. Key series:
 | `loomux_tasks` | `status` | Task count by status |
 | `loomux_target_up` | `target`, `kind` | Target reachability |
 | `loomux_target_op_seconds` | `kind`, `op` | Target operation latency |
+| `loomux_target_op_errors_total` | `kind`, `op`, `reason` | Failed target operations; an unreachable target's `reason` is `unreachable_<class>`, e.g. `unreachable_host_key_changed`, `unreachable_auth_failed`, `unreachable_proxy_unreachable` (LOOM-85) |
 | `loomux_reaper_tasks_reaped_total` | — | Idle sessions torn down |
 
 **What the logs contain.** Chat message bodies, direct answers and relayed
