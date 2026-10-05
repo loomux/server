@@ -825,7 +825,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
-	captured, agentMessage, err := r.turnOutput(ctx, exec, task)
+	captured, agentMessage, err := r.turnOutput(ctx, exec, task, false)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: capture pane: %w", err)
 	}

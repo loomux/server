@@ -2,6 +2,7 @@ package router_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/Loomux/server/registry"
@@ -156,5 +157,33 @@ func TestRelayLateOutput_CallsHook(t *testing.T) {
 	h.r.RelayLateOutput(context.Background())
 	if gotTask != task.ID || gotReply != "relayed" {
 		t.Fatalf("hook got (%q, %q), want (%q, relayed)", gotTask, gotReply, task.ID)
+	}
+}
+
+// A relay that fails consumes nothing (LOOM-121 review): the marker and
+// the agent's message stay, and the next pass relays them.
+func TestRelayLateOutput_RetriedAfterRelayFails(t *testing.T) {
+	h, task := lateHarness(t)
+	late := "The build finished."
+	h.payload = hookPayload(t, "last_assistant_message", late)
+	h.exec.setFileExists(true)
+	h.relayErr = errors.New("rate limited")
+
+	if n := h.r.RelayLateOutput(context.Background()); n != 0 {
+		t.Fatalf("RelayLateOutput = %d with a failing relay, want 0", n)
+	}
+	if got := assistantMessages(t, h.store, "conv-1"); len(got) != 1 {
+		t.Fatalf("assistant messages = %d after a failed relay, want 1", len(got))
+	}
+	if turns, _ := h.store.ListTaskTurns(context.Background(), task.ID); len(turns) != 1 {
+		t.Fatalf("turns = %d after a failed relay, want 1", len(turns))
+	}
+
+	h.relayErr = nil
+	if n := h.r.RelayLateOutput(context.Background()); n != 1 {
+		t.Fatalf("RelayLateOutput = %d on retry, want 1", n)
+	}
+	if last := h.relayed[len(h.relayed)-1]; last != late {
+		t.Fatalf("retry relayed %q, want the agent's message", last)
 	}
 }

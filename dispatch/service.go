@@ -287,10 +287,12 @@ func (s *Service) start(d *registry.Dispatch, run RunFunc) {
 func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run RunFunc) {
 	defer s.wg.Done()
 	defer func() {
-		close(j.done)
+		// Gone from jobs before done closes: a Cancel after Wait returns
+		// must not find the job and report it cancelled.
 		s.mu.Lock()
 		delete(s.jobs, d.ID)
 		s.mu.Unlock()
+		close(j.done)
 	}()
 	ctx, cancel := context.WithTimeoutCause(ctx, s.maxDuration, errMaxDuration)
 	defer cancel()
