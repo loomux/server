@@ -304,6 +304,18 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 	decideOpts := append(append([]DispatchOption(nil), opts...), withConversation(history, openTask, lastWS, lastWSName))
+	var hinted DispatchOptions
+	for _, opt := range opts {
+		opt(&hinted)
+	}
+	openWS := ""
+	if openTask != nil {
+		openWS = openTask.WorkspaceID
+	}
+	if n := len(offered); n > MaxOfferedWorkspaces {
+		offered = capOffered(offered, MaxOfferedWorkspaces, message, hinted.WorkspaceHint, lastWS, openWS)
+		log.Debug("workspaces offered to routing capped", "workspaces", n, "offered", len(offered))
+	}
 
 	routeStart := time.Now()
 	decision, err := r.model.Decide(ctx, message, offered, targetSnapshots, decideOpts...)
@@ -709,10 +721,10 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	}
 	if res.exitCode != 0 {
 		tail := quoteOutput(r.redactAllSecrets(ctx, res.output))
-		err := fmt.Errorf("provisioning exited with status %d: %s", res.exitCode, tail)
+		err := fmt.Errorf("provisioning ended with %s: %s", res.ended, tail)
 		fail("run", res.taskID, registry.TaskFailure{
 			Class:      registry.ErrorClassProvisionFailed,
-			Reason:     fmt.Sprintf("provisioning exited with status %d", res.exitCode),
+			Reason:     fmt.Sprintf("provisioning ended with %s", res.ended),
 			OutputTail: tail,
 		}, err)
 		return "", fmt.Errorf("provision workspace: %w", err)
@@ -1213,6 +1225,12 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 			msg := "router: dispatch: could not write the agent's environment on the target"
 			if line, _, _ := strings.Cut(strings.TrimSpace(out), "\n"); line != "" {
 				msg += ": " + line
+			}
+			// Its class and hint are kept (LOOM-85), its Detail isn't: ssh
+			// also exits 255 when the remote command does, and then Detail
+			// is the remote shell's stderr, which could echo the script.
+			if u, ok := targets.AsUnreachable(err); ok {
+				return nil, false, fmt.Errorf("%s: %w", msg, &targets.UnreachableError{Host: u.Host, Failure: u.Failure})
 			}
 			if errors.Is(err, targets.ErrUnreachable) {
 				return nil, false, fmt.Errorf("%s: %w", msg, targets.ErrUnreachable)

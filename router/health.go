@@ -182,6 +182,12 @@ func (r *Router) probeHealth(ctx context.Context, target *registry.Target) (*reg
 
 // probeFailureReason is why a health probe couldn't run, in plain words.
 func probeFailureReason(err error) string {
+	if u, ok := targets.AsUnreachable(err); ok {
+		if u.Failure == targets.SSHOther && u.Detail != "" {
+			return "unreachable: " + u.Hint() + ": " + u.Detail
+		}
+		return "unreachable: " + u.Hint()
+	}
 	if errors.Is(err, targets.ErrUnreachable) {
 		reason := strings.TrimPrefix(err.Error(), targets.ErrUnreachable.Error())
 		reason = strings.TrimSpace(strings.TrimPrefix(reason, ":"))
