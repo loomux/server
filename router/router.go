@@ -721,10 +721,10 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	}
 	if res.exitCode != 0 {
 		tail := quoteOutput(r.redactAllSecrets(ctx, res.output))
-		err := fmt.Errorf("provisioning exited with status %d: %s", res.exitCode, tail)
+		err := fmt.Errorf("provisioning ended with %s: %s", res.ended, tail)
 		fail("run", res.taskID, registry.TaskFailure{
 			Class:      registry.ErrorClassProvisionFailed,
-			Reason:     fmt.Sprintf("provisioning exited with status %d", res.exitCode),
+			Reason:     fmt.Sprintf("provisioning ended with %s", res.ended),
 			OutputTail: tail,
 		}, err)
 		return "", fmt.Errorf("provision workspace: %w", err)

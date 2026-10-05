@@ -436,7 +436,7 @@ func TestDispatch_ProvisioningExitsNonZero_WorkspaceFailed(t *testing.T) {
 	if err == nil {
 		t.Fatal("Dispatch: got nil error for a failing provisioning script")
 	}
-	if !strings.Contains(err.Error(), "Permission denied") || !strings.Contains(err.Error(), "status 1") {
+	if !strings.Contains(err.Error(), "Permission denied") || !strings.Contains(err.Error(), "exit 1") {
 		t.Errorf("error = %v, want the script's exit status and output", err)
 	}
 	ws := h.workspaces(t)
