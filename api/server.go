@@ -422,8 +422,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed request body")
+	if !readJSON(w, r, &req) {
 		return
 	}
 
@@ -620,8 +619,7 @@ func (s *Server) handlePatchWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req patchWorkspaceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed request body")
+	if !readJSON(w, r, &req) {
 		return
 	}
 	status := registry.WorkspaceStatus(req.Status)
@@ -1461,8 +1459,7 @@ type listTargetsResponse struct {
 // continue.
 func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.Target) (*registry.Target, bool) {
 	var req targetRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed request body")
+	if !readJSON(w, r, &req) {
 		return nil, false
 	}
 	target := &registry.Target{
