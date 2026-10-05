@@ -74,8 +74,9 @@ COPY --chown=loomux:loomux ${WEB_DIST}/ /srv/loomux/web/
 ```
 
 Whoever builds the image is responsible for putting a built bundle in the
-build context and pointing `WEB_DIST` at it. CI (LOOM-51) does this by
-checking out `loomux/web` at a pinned ref into `.web-dist/`. The default is
+build context and pointing `WEB_DIST` at it. CI does this by downloading
+the `loomux/web` release that `deploy/web-ref` pins (LOOM-58, below) into
+`.web-dist/`. The default is
 a committed placeholder page, so a plain `docker build .` works for anyone,
 with no credentials and no network access beyond the Go module proxy and
 the Alpine mirrors.
@@ -95,15 +96,22 @@ the Alpine mirrors.
    commit of this repo produces a different image tomorrow. For an image
    theWyseKube pins by SHA, that defeats the point of pinning.
 
-### Rejected: fetch a release artifact from `loomux/web`
+### Where CI gets the bundle: a `loomux/web` release (LOOM-58)
 
-Clean in principle, and it is the right long-term answer — but it does not
-currently exist. As of 2026-09-19 `loomux/web` has **no releases**, its CI
-uploads **no build artifact**, and `dist/` is gitignored and untracked.
-There is nothing to fetch. Adopting this would mean first adding a release
-pipeline to the other repo, which is outside this ticket. Worth doing as a
-follow-up; it would turn the `WEB_DIST` arg into a download step without
-changing anything else about the image.
+Until LOOM-58, CI checked out `loomux/web` at the pinned ref and built it
+itself, because `loomux/web` published nothing. Now its CI publishes
+every tested `main` commit as a GitHub pre-release `web-<short sha>`,
+holding `loomux-web-<short>.tar.gz` (the built `dist/`) and
+`web-release.json` (`commit`, `tarball`, `sha256`, …; format in
+`loomux/web` `docs/release.md`).
+
+`deploy/web-ref` names a `loomux/web` commit. The image workflow downloads
+its release with `WEB_REPO_TOKEN`, refuses one whose `commit` doesn't match
+or whose tarball fails the `sha256` check, and unpacks it into
+`.web-dist/`. So the bundle in the image is the one `loomux/web`'s own CI
+built and tested, byte for byte. The server build needs no Node toolchain,
+and a commit without a release (anything pushed before LOOM-58) fails the
+build loudly. LOOM-118's in-app updater reads the same `web-release.json`.
 
 ### The tradeoff being accepted
 
