@@ -248,16 +248,22 @@ func TestReaper_Sweep_FailsStaleProvisioningWorkspaces(t *testing.T) {
 	store, ws, _, _, o := setup(t)
 	ctx := context.Background()
 
+	// Ages are judged against an injected clock, set between the two
+	// rows' ages: the result can't depend on how fast the test runs.
+	staleAfter := time.Hour
 	stale := newProvisioningWorkspace(t, store, ws.TargetID, "stale")
-	// A second, not milliseconds: on a slow CI runner the "fresh" row
-	// below must not age past the bound before the sweep.
-	staleAfter := time.Second
-	time.Sleep(staleAfter + 100*time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	fresh := newProvisioningWorkspace(t, store, ws.TargetID, "fresh")
+	gap := fresh.CreatedAt.Sub(stale.CreatedAt)
+	if gap <= 0 {
+		t.Fatalf("fresh (%v) isn't newer than stale (%v)", fresh.CreatedAt, stale.CreatedAt)
+	}
+	now := stale.CreatedAt.Add(staleAfter + gap/2)
 
 	reaper := orchestrator.NewReaper(o, time.Hour,
 		orchestrator.WithReaperLogger(func(string, ...any) {}),
-		orchestrator.WithStaleProvisioningAfter(staleAfter))
+		orchestrator.WithStaleProvisioningAfter(staleAfter),
+		orchestrator.WithReaperClock(func() time.Time { return now }))
 	reaper.Sweep(ctx)
 
 	got, err := store.GetWorkspace(ctx, stale.ID)

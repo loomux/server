@@ -18,7 +18,7 @@ func TestPaneExitedWaitsForLastOutput(t *testing.T) {
 	captures := 0
 	run := func(ctx context.Context, args ...string) (string, error) {
 		if strings.Contains(strings.Join(args, " "), "pane_dead") {
-			return "1 1\n", nil
+			return "1 1 \n", nil
 		}
 		captures++
 		if captures < 3 {
@@ -32,5 +32,55 @@ func TestPaneExitedWaitsForLastOutput(t *testing.T) {
 	}
 	if exit == nil || exit.Status != 1 || exit.Output != "ls: no directory" || captures != 3 {
 		t.Fatalf("exit = %+v after %d captures", exit, captures)
+	}
+}
+
+// A pane whose pty closed before tmux reaped its process reads "1  " for
+// a moment (seen on CI: a recipe that exited 0 failed "with status -1"):
+// ask again until the status is there.
+func TestPaneExitedWaitsForExitStatus(t *testing.T) {
+	old := deadPaneRecaptureDelay
+	deadPaneRecaptureDelay = time.Millisecond
+	t.Cleanup(func() { deadPaneRecaptureDelay = old })
+
+	queries := 0
+	run := func(ctx context.Context, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "pane_dead") {
+			queries++
+			if queries < 3 {
+				return "1  \n", nil
+			}
+			return "1 0 \n", nil
+		}
+		return "done\nPane is dead (status 0, Mon Oct  5 12:40:09 2026)\n", nil
+	}
+	exit, err := paneExited(context.Background(), run, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit == nil || exit.Status != 0 || exit.Output != "done" || queries != 3 {
+		t.Fatalf("exit = %+v after %d status queries", exit, queries)
+	}
+}
+
+// A tmux that never fills in the status (a signal death on a tmux without
+// pane_dead_signal) still ends the wait, as killed by a signal.
+func TestPaneExitedGivesUpOnPendingStatus(t *testing.T) {
+	old := deadPaneRecaptureDelay
+	deadPaneRecaptureDelay = time.Millisecond
+	t.Cleanup(func() { deadPaneRecaptureDelay = old })
+
+	run := func(ctx context.Context, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "pane_dead") {
+			return "1 \n", nil
+		}
+		return "x\n", nil
+	}
+	exit, err := paneExited(context.Background(), run, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit == nil || exit.Status != -1 {
+		t.Fatalf("exit = %+v, want status -1", exit)
 	}
 }
