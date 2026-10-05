@@ -46,7 +46,11 @@ type Dispatch struct {
 	// RequestHash fingerprints (conversation, message, hint), so a reused
 	// key can be told apart from a retried request.
 	RequestHash string
-	Status      DispatchStatus
+	// ConfirmationID is set when the message answers an offer from its
+	// card (LOOM-123): it must still be the offer awaiting an answer, or
+	// nothing runs.
+	ConfirmationID string
+	Status         DispatchStatus
 	// Reply is set once the job has succeeded; Error and ErrorClass once
 	// it has failed or been interrupted.
 	Reply      string

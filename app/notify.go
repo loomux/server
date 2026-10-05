@@ -105,10 +105,29 @@ func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.
 			}
 		}
 	}
+	// A turn that ended on an offer waits on the user's Approve or Deny
+	// (LOOM-123), which the link opens.
+	if d.Status == registry.DispatchStatusSucceeded && n.madeOffer(ctx, d) {
+		e.Kind = notify.KindNeedsYou
+	}
 	if d.Status == registry.DispatchStatusFailed {
 		e.Kind, e.Summary = notify.KindFailed, d.Error
 	}
 	return n.finish(ctx, e, d.ConversationID), true
+}
+
+// madeOffer reports whether d's turn left an offer awaiting an answer.
+func (n *turnNotifier) madeOffer(ctx context.Context, d *registry.Dispatch) bool {
+	confs, err := n.store.ListConfirmationsByConversation(ctx, d.ConversationID)
+	if err != nil {
+		return false
+	}
+	for _, c := range confs {
+		if c.DispatchID == d.ID && c.Status == registry.ConfirmationPending {
+			return true
+		}
+	}
+	return false
 }
 
 // finish scrubs e's body and links it to conversationID.

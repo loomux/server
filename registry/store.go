@@ -121,6 +121,20 @@ type Store interface {
 	// dispatch). It stamps d.UpdatedAt.
 	TransitionDispatch(ctx context.Context, d *Dispatch, from DispatchStatus) error
 
+	// CreateConfirmation, ResolveConfirmation,
+	// ListConfirmationsByConversation and ExpirePendingConfirmations
+	// record offers awaiting the user's yes (LOOM-123).
+	CreateConfirmation(ctx context.Context, c *Confirmation) error
+	// ResolveConfirmation moves a pending confirmation to status;
+	// ErrConflict if it isn't pending any more, ErrNotFound if unknown.
+	ResolveConfirmation(ctx context.Context, id string, status ConfirmationStatus) error
+	// ListConfirmationsByConversation returns oldest first.
+	ListConfirmationsByConversation(ctx context.Context, conversationID string) ([]*Confirmation, error)
+	// ExpirePendingConfirmations marks every pending confirmation
+	// expired, returning how many: at startup, since a restart forgets
+	// the offers themselves.
+	ExpirePendingConfirmations(ctx context.Context) (int, error)
+
 	// CreateCredential, GetCredential, ListCredentials, and
 	// DeleteCredential are the vault (design spec §7's second half).
 	// Credential.Value is plaintext at this interface's boundary; a

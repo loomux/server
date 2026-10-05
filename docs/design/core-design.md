@@ -138,6 +138,18 @@ anything runs, whatever the model chose:
 - Follow-up turns in the conversation's open pane there aren't asked
   again.
 
+**Answering an offer (LOOM-123).** Every offer awaiting a "yes" — a
+command not given verbatim, an agent install, a clone of a repository
+the user didn't name, a require-confirmation plan — is recorded
+(`confirmations`: what it would run and where, its deadline, and how it
+was answered) and shown in the web UI as a card with Approve and Deny
+under the offer's reply. A button sends "yes" or "no" naming the offer;
+if that offer isn't the one awaiting an answer any more (answered,
+replaced by a later message, expired), nothing runs and the message
+isn't routed. Typed answers work as before. What a yes runs still lives
+only in memory, so a restart expires every pending offer (fails
+closed). A turn ending on an offer is a "needs you" notification.
+
 A shared work machine such as sc1 is meant to be `purpose: work`,
 `allow_provision: false`, `require_confirmation: true`.
 

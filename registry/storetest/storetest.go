@@ -73,6 +73,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 
 	t.Run("Dispatch", func(t *testing.T) { testDispatchCRUD(t, newStore(t)) })
 	t.Run("DispatchWithUserMessage", func(t *testing.T) { testDispatchWithUserMessage(t, newStore(t)) })
+	t.Run("Confirmations", func(t *testing.T) { testConfirmations(t, newStore(t)) })
+	t.Run("DispatchConfirmationID", func(t *testing.T) { testDispatchConfirmationID(t, newStore(t)) })
 	t.Run("DispatchIdempotencyKeyUnique", func(t *testing.T) { testDispatchIdempotencyKeyUnique(t, newStore(t)) })
 	t.Run("DispatchOneActivePerConversation", func(t *testing.T) { testDispatchOneActivePerConversation(t, newStore(t)) })
 	t.Run("DispatchTransitionCompareAndSet", func(t *testing.T) { testDispatchTransitionCompareAndSet(t, newStore(t)) })
@@ -1754,5 +1756,56 @@ func testTargetPolicy(t *testing.T, s registry.Store) {
 	}
 	if len(list) != 1 || !reflect.DeepEqual(list[0].Policy, want) {
 		t.Fatalf("stored policy = %+v, want %+v", list[0].Policy, want)
+	}
+}
+
+// LOOM-123: an offer's record, answered once; a restart expires what's
+// still pending.
+func testConfirmations(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	exp := time.Now().Add(15 * time.Minute).UTC()
+	for _, c := range []*registry.Confirmation{
+		{ID: "c1", ConversationID: "conv", DispatchID: "", Kind: registry.ConfirmationRunCommand,
+			TargetID: "t1", TargetName: "jet01", Command: "df -h", ExpiresAt: exp},
+		{ID: "c2", ConversationID: "conv", Kind: registry.ConfirmationCloneRemote, AgentType: "claude-code",
+			Workspace: "server", GitRemote: "https://example.com/r.git", ExpiresAt: exp},
+		{ID: "c3", ConversationID: "other", Kind: registry.ConfirmationPolicy, ExpiresAt: exp},
+	} {
+		if err := s.CreateConfirmation(ctx, c); err != nil {
+			t.Fatalf("CreateConfirmation %s: %v", c.ID, err)
+		}
+	}
+	if err := s.ResolveConfirmation(ctx, "c1", registry.ConfirmationApproved); err != nil {
+		t.Fatalf("ResolveConfirmation: %v", err)
+	}
+	if err := s.ResolveConfirmation(ctx, "c1", registry.ConfirmationDenied); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("resolving twice = %v, want ErrConflict", err)
+	}
+	if err := s.ResolveConfirmation(ctx, "nope", registry.ConfirmationDenied); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("resolving an unknown one = %v, want ErrNotFound", err)
+	}
+	if n, err := s.ExpirePendingConfirmations(ctx); err != nil || n != 2 {
+		t.Errorf("ExpirePendingConfirmations = %d, %v; want 2", n, err)
+	}
+	list, err := s.ListConfirmationsByConversation(ctx, "conv")
+	if err != nil {
+		t.Fatalf("ListConfirmationsByConversation: %v", err)
+	}
+	if len(list) != 2 || list[0].ID != "c1" || list[0].Status != registry.ConfirmationApproved || list[0].ResolvedAt == nil ||
+		list[0].Command != "df -h" || list[0].TargetName != "jet01" ||
+		list[1].Status != registry.ConfirmationExpired || list[1].GitRemote != "https://example.com/r.git" || list[1].Workspace != "server" {
+		t.Errorf("confirmations = %+v %+v", list[0], list[1])
+	}
+}
+
+func testDispatchConfirmationID(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	d := &registry.Dispatch{ID: "d-conf", ConversationID: "conv-conf", Message: "yes", RequestHash: "h", ConfirmationID: "c9"}
+	if err := s.CreateDispatch(ctx, d, nil); err != nil {
+		t.Fatalf("CreateDispatch: %v", err)
+	}
+	got, err := s.GetDispatch(ctx, "d-conf")
+	if err != nil || got.ConfirmationID != "c9" {
+		t.Errorf("GetDispatch = %+v, %v; want confirmation c9", got, err)
 	}
 }

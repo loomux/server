@@ -108,6 +108,34 @@ func TestTurnNotifierEventNoTask(t *testing.T) {
 	}
 }
 
+// LOOM-123: a turn that ended on an offer still awaiting Approve or Deny
+// needs the user, and links to the conversation the card is in. Once
+// answered, the same turn is plain news.
+func TestTurnNotifierEventOffer(t *testing.T) {
+	ctx := context.Background()
+	store := openNotifyStore(t)
+	start := time.Now().UTC().Add(-time.Hour)
+	end := start.Add(time.Minute)
+	if err := store.CreateConfirmation(ctx, &registry.Confirmation{ID: "conf-1", ConversationID: "c", DispatchID: "d-1",
+		Kind: registry.ConfirmationRunCommand, ExpiresAt: end.Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateConfirmation: %v", err)
+	}
+	n := &turnNotifier{store: store, minDuration: 30 * time.Second, publicURL: "https://loomux.example"}
+	d := &registry.Dispatch{ID: "d-1", ConversationID: "c", Status: registry.DispatchStatusSucceeded,
+		Reply: "I'd run this on jet01", CreatedAt: start, FinishedAt: &end}
+	e, ok := n.event(ctx, d)
+	if !ok || e.Kind != notify.KindNeedsYou || e.Link != "https://loomux.example/conversations/c" {
+		t.Fatalf("event = %+v, %v; want needs_you linking to the conversation", e, ok)
+	}
+
+	if err := store.ResolveConfirmation(ctx, "conf-1", registry.ConfirmationApproved); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := n.event(ctx, d); e.Kind != notify.KindDone {
+		t.Errorf("answered offer: kind %s, want done", e.Kind)
+	}
+}
+
 // LOOM-102 review: nothing a notification carries leaves Loomux with a
 // credential value in it; with the vault unreadable, the body says only
 // to open Loomux.

@@ -36,6 +36,10 @@ type dispatchRequest struct {
 	// chat UI already focused on that workspace's conversation). It's
 	// advisory only — see router.WithWorkspaceHint.
 	WorkspaceHint string `json:"workspace_hint,omitempty"`
+	// ConfirmationID (LOOM-123) is set by an offer's Approve or Deny: the
+	// message answers that offer, and runs nothing if it's no longer the
+	// one awaiting an answer.
+	ConfirmationID string `json:"confirmation_id,omitempty"`
 }
 
 // dispatchResponse is a dispatch job as clients see it: the body of
@@ -135,6 +139,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		ConversationID: req.ConversationID,
 		Message:        req.Message,
 		WorkspaceHint:  req.WorkspaceHint,
+		ConfirmationID: req.ConfirmationID,
 		IdempotencyKey: key,
 	})
 	var busy *dispatch.BusyError

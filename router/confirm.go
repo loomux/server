@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/Loomux/server/registry"
 )
@@ -45,6 +48,8 @@ const (
 // fixed here when the offer is made — what will run and where — so the
 // confirming message itself contributes nothing but "yes".
 type pendingInstall struct {
+	// id is the offer's registry.Confirmation (LOOM-123).
+	id        string
 	kind      pendingKind
 	agentType string
 	targetID  string
@@ -83,19 +88,68 @@ func (p *pendingActions) put(conversationID string, a pendingInstall) {
 	p.byID[conversationID] = a
 }
 
-// take removes and returns conversationID's offer, if it has a live one.
+// take removes and returns conversationID's offer; live is false when
+// there was none or it had expired (a.id then names an expired one).
 // Any next message consumes the offer, confirming or not, so a "yes" can
 // only ever answer the offer immediately before it.
-func (p *pendingActions) take(conversationID string, now time.Time) (pendingInstall, bool) {
+func (p *pendingActions) take(conversationID string, now time.Time) (a pendingInstall, live bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	a, ok := p.byID[conversationID]
 	delete(p.byID, conversationID)
-	if !ok || now.After(a.expires) {
-		return pendingInstall{}, false
-	}
-	return a, true
+	return a, ok && !now.After(a.expires)
 }
+
+// peek is conversationID's live offer, left in place.
+func (p *pendingActions) peek(conversationID string, now time.Time) (pendingInstall, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a, ok := p.byID[conversationID]
+	return a, ok && !now.After(a.expires)
+}
+
+// offer registers a as conversationID's offer awaiting a yes, with c
+// (Kind, target, what it would run) recorded for the web UI's card
+// (LOOM-123). It replaces any earlier offer, as the turn making it is the
+// conversation's next message.
+func (r *Router) offer(ctx context.Context, conversationID string, a pendingInstall, c registry.Confirmation) error {
+	a.id = uuid.NewString()
+	a.expires = time.Now().Add(pendingTTL)
+	c.ID, c.ConversationID, c.DispatchID = a.id, conversationID, turnLogFrom(ctx).dispatchID
+	c.Status, c.ExpiresAt = registry.ConfirmationPending, a.expires.UTC()
+	if c.TargetID == "" {
+		c.TargetID = a.targetID
+	}
+	if c.TargetName == "" {
+		if t, err := r.store.GetTarget(ctx, c.TargetID); err == nil {
+			c.TargetName = t.Name
+		}
+	}
+	if c.AgentType == "" {
+		c.AgentType = a.agentType
+	}
+	if err := r.store.CreateConfirmation(ctx, &c); err != nil {
+		return fmt.Errorf("record offer: %w", err)
+	}
+	r.pending.put(conversationID, a)
+	return nil
+}
+
+// resolveOffer records how offer a was answered. Best effort: the record
+// is for display, and the offer itself is already settled in memory.
+func (r *Router) resolveOffer(ctx context.Context, log *slog.Logger, a pendingInstall, status registry.ConfirmationStatus) {
+	if a.id == "" {
+		return
+	}
+	if err := r.store.ResolveConfirmation(ctx, a.id, status); err != nil {
+		log.Warn("confirmation not recorded", "confirmation_id", a.id, "status", string(status), "error", err)
+	}
+}
+
+// staleConfirmationReply answers a card's Approve or Deny for an offer
+// that's no longer awaiting one.
+const staleConfirmationReply = "That request is no longer waiting for an answer: it was already answered, " +
+	"cancelled by a later message, or it expired. Nothing was run. Send it again if you still want it."
 
 // isConfirmation reports whether message is an unambiguous yes to offer p.
 // Deliberately a short fixed list matched against the whole message, not
@@ -153,14 +207,20 @@ func (r *Router) installOffer(ctx context.Context, conversationID string, unavai
 		}
 		recipe = provisioningRecipe(target, *provision)
 	}
-	r.pending.put(conversationID, pendingInstall{
+	conf := registry.Confirmation{Kind: registry.ConfirmationInstallAgent, TargetName: unavailable.TargetName,
+		Command: entry.Install.Command}
+	if provision != nil {
+		conf.Workspace = provision.Name
+	}
+	if err := r.offer(ctx, conversationID, pendingInstall{
 		agentType:   unavailable.AgentType,
 		targetID:    unavailable.TargetID,
 		command:     entry.Install.Command,
 		workspaceID: workspaceID,
 		provision:   provision,
-		expires:     time.Now().Add(pendingTTL),
-	})
+	}, conf); err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s isn't installed on %s, so I can't start it there.\n\n", unavailable.AgentType, unavailable.TargetName)
 	if recipe != "" {

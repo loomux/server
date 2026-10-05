@@ -108,12 +108,14 @@ func (r *Router) runCommand(ctx context.Context, log *slog.Logger, conversationI
 	}
 
 	if !orderedVerbatim(message, command, target) {
-		r.pending.put(conversationID, pendingInstall{
+		if err := r.offer(ctx, conversationID, pendingInstall{
 			kind:     pendingRunCommand,
 			targetID: target.ID,
 			command:  command,
-			expires:  time.Now().Add(pendingTTL),
-		})
+		}, registry.Confirmation{Kind: registry.ConfirmationRunCommand, TargetName: target.Name, Command: command}); err != nil {
+			log.Error("dispatch failed", "stage", "record offer", "error", err)
+			return "", fmt.Errorf("router: dispatch: %w", err)
+		}
 		reply := fmt.Sprintf("I'd run this on %s:\n\n    %s\n\nReply \"yes\" to run it. Any other reply cancels.",
 			target.Name, command)
 		return r.finishTurn(ctx, log, conversationID, message, "", reply, "command_confirmation_requested", start)

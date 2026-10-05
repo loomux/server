@@ -471,8 +471,22 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		if d.WorkspaceHint != "" {
 			opts = append(opts, router.WithWorkspaceHint(d.WorkspaceHint))
 		}
+		if d.ConfirmationID != "" {
+			opts = append(opts, router.WithConfirmationID(d.ConfirmationID))
+		}
 		return rtr.Dispatch(ctx, d.ConversationID, d.Message, opts...)
 	}, dispatchOpts...)
+	// A restart forgot every offer awaiting a yes (fails closed): their
+	// cards show them expired (LOOM-123).
+	if n, err := store.ExpirePendingConfirmations(context.Background()); err != nil {
+		stopReaper()
+		<-reaperDone
+		<-proberDone
+		_ = store.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	} else if n > 0 && cfg.Logger != nil {
+		cfg.Logger.Info("offers left by a previous run expired", "count", n)
+	}
 	// Before anything can submit, startup reconciliation (LOOM-82): every
 	// job a previous process left behind is run, resumed or marked
 	// interrupted, then the tasks no resumed job is waiting on are

@@ -194,8 +194,21 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	// previous turn is answered here, before routing: the routing model
 	// plays no part in deciding that these run, nor in what they run
 	// (LOOM-71, LOOM-72, LOOM-90).
-	if p, ok := r.pending.take(conversationID, time.Now()); ok {
+	// A card's Approve or Deny (LOOM-123) answers one offer: if that
+	// offer isn't the one awaiting an answer any more, nothing runs and
+	// the message isn't routed — a stale "yes" must not become a request.
+	if id := o.ConfirmationID; id != "" {
+		if p, live := r.pending.peek(conversationID, time.Now()); !live || p.id != id {
+			log.Info("stale confirmation", "confirmation_id", id)
+			m.action = "confirmation_stale"
+			return r.finishTurn(ctx, log, conversationID, message, "", staleConfirmationReply, "confirmation_stale", start)
+		}
+	}
+	if p, live := r.pending.take(conversationID, time.Now()); !live {
+		r.resolveOffer(ctx, log, p, registry.ConfirmationExpired)
+	} else {
 		if isConfirmation(message, p) {
+			r.resolveOffer(ctx, log, p, registry.ConfirmationApproved)
 			ctx = r.withTurnOrigin(ctx, p.targetID)
 			refusal, err := r.offerRefusal(ctx, p)
 			if err != nil {
@@ -246,6 +259,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				return reply, err
 			}
 		}
+		r.resolveOffer(ctx, log, p, registry.ConfirmationDenied)
 		log.Info("offer declined", "agent_type", p.agentType, "target_id", p.targetID)
 	}
 
@@ -491,14 +505,17 @@ func (r *Router) askToClone(ctx context.Context, log *slog.Logger, conversationI
 		log.Error("dispatch failed", "stage", "resolve target", "target_id", spec.TargetID, "error", err)
 		return "", fmt.Errorf("router: dispatch: provision workspace: resolve target %q: %w", spec.TargetID, err)
 	}
-	r.pending.put(conversationID, pendingInstall{
+	if err := r.offer(ctx, conversationID, pendingInstall{
 		kind:      pendingCloneRemote,
 		agentType: decision.AgentType,
 		targetID:  target.ID,
 		provision: &spec,
 		message:   message,
-		expires:   time.Now().Add(pendingTTL),
-	})
+	}, registry.Confirmation{Kind: registry.ConfirmationCloneRemote, TargetName: target.Name,
+		Workspace: spec.Name, GitRemote: spec.GitRemote}); err != nil {
+		log.Error("dispatch failed", "stage", "record offer", "error", err)
+		return "", fmt.Errorf("router: dispatch: provision workspace: %w", err)
+	}
 	reply := fmt.Sprintf("To do this I'd clone a repository you didn't name:\n\n    %s\n\ninto %s on %s, "+
 		"and start %s there. Reply \"yes\" to go ahead. Any other reply cancels.",
 		spec.GitRemote, workspaceDisplayPath(target, spec.Name), target.Name, decision.AgentType)
