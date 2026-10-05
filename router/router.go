@@ -208,7 +208,6 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		r.resolveOffer(ctx, log, p, registry.ConfirmationExpired)
 	} else {
 		if isConfirmation(message, p) {
-			r.resolveOffer(ctx, log, p, registry.ConfirmationApproved)
 			ctx = r.withTurnOrigin(ctx, p.targetID)
 			refusal, err := r.offerRefusal(ctx, p)
 			if err != nil {
@@ -218,9 +217,16 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				return "", fmt.Errorf("router: dispatch: policy: %w", err)
 			}
 			if refusal != "" {
+				// Nothing runs, so its card mustn't read "Approved".
+				r.resolveOffer(ctx, log, p, registry.ConfirmationDenied)
 				log.Info("confirmed offer refused by target policy", "target_id", p.targetID, "agent_type", p.agentType)
 				m.action = "policy_refused"
 				return r.finishTurn(ctx, log, conversationID, message, "", refusal, "policy_refused", start)
+			}
+			// A policy confirmation is checked again by confirmPolicy, which
+			// settles its record itself.
+			if p.kind != pendingPolicyConfirm {
+				r.resolveOffer(ctx, log, p, registry.ConfirmationApproved)
 			}
 			if p.kind == pendingCloneRemote || p.kind == pendingPolicyConfirm {
 				tl := turnLogFrom(ctx)
