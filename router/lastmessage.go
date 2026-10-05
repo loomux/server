@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/completion"
-	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -34,7 +33,8 @@ func (r *Router) turnOutput(ctx context.Context, exec targets.TargetExecutor, ta
 	if entry, err := r.agentTypes.Get(task.AgentType); err == nil &&
 		entry.Tier == completion.TierMarker && entry.LastMessageKey != "" {
 		if msg := r.readLastMessage(ctx, exec, task, entry.LastMessageKey, claimed); msg != "" {
-			return boundRelayInput(msg), msg, nil
+			// Bounded by the caller, after scrubbing (scrubForRelay).
+			return msg, msg, nil
 		}
 	}
 	captured, err := exec.CapturePane(ctx, task.TmuxSession)
@@ -63,9 +63,8 @@ func (r *Router) recordTurn(ctx context.Context, exec targets.TargetExecutor, ta
 	}
 	// Redacted before bounding, as quoteOutput: a cut through a secret
 	// would leave an unrecognisable piece of it.
-	pane = boundOutput(credentials.RedactPatterns(r.redactSecrets(ctx, task.WorkspaceID, task.AgentType, pane)),
-		turnPaneHistoryLines, turnPaneMaxBytes)
-	agentMessage = credentials.RedactPatterns(r.redactSecrets(ctx, task.WorkspaceID, task.AgentType, agentMessage))
+	pane = boundOutput(r.redactSecrets(ctx, task.WorkspaceID, task.AgentType, pane), turnPaneHistoryLines, turnPaneMaxBytes)
+	agentMessage = r.redactSecrets(ctx, task.WorkspaceID, task.AgentType, agentMessage)
 	agentMessage = keepStart(agentMessage, turnMessageMaxBytes)
 	turn := &registry.TaskTurn{ID: uuid.NewString(), TaskID: task.ID, UserMessage: userMessage,
 		AgentMessage: agentMessage, Pane: pane}

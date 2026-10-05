@@ -211,6 +211,8 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 			ctx = r.withTurnOrigin(ctx, p.targetID)
 			refusal, err := r.offerRefusal(ctx, p)
 			if err != nil {
+				// Nothing runs: its card mustn't stay pending (LOOM-133).
+				r.resolveOffer(ctx, log, p, registry.ConfirmationDenied)
 				log.Error("dispatch failed", "stage", "recheck policy", "error", err)
 				m.outcome = metrics.OutcomeFailure
 				m.errClass = classifyDispatchError(err)

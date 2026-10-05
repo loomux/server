@@ -303,7 +303,8 @@ func boundOutput(output string, maxLines, maxBytes int) string {
 }
 
 // redactSecrets replaces every credential value the vault would inject
-// for workspaceID + agentType with a placeholder, so a process that
+// for workspaceID + agentType, and anything shaped like a secret
+// (credentials.RedactPatterns), with a placeholder, so a process that
 // echoes its own key (an auth error quoting it, say) can't put it into
 // chat or the logs. Values too short to be a meaningful secret are left
 // alone rather than mangling ordinary text.
@@ -313,7 +314,7 @@ func (r *Router) redactSecrets(ctx context.Context, workspaceID, agentType, text
 		// Can't tell what to scrub: say so rather than risk a leak.
 		return "[output withheld: credentials could not be resolved to redact it]"
 	}
-	return redactValues(text, secrets)
+	return credentials.RedactPatterns(redactValues(text, secrets))
 }
 
 // scrubForRelay is what of an agent's output may leave for the relay
@@ -321,11 +322,19 @@ func (r *Router) redactSecrets(ctx context.Context, workspaceID, agentType, text
 // anything shaped like a secret. If the vault can't be read, nothing of
 // it is sent.
 func (r *Router) scrubForRelay(ctx context.Context, captured string) string {
-	return credentials.RedactPatterns(r.redactAllSecrets(ctx, captured))
+	return relayText(captured, func(s string) string { return r.redactAllSecrets(ctx, s) })
+}
+
+// relayText scrubs captured, then bounds it for the relay model. In that
+// order: a secret cut by the bound would no longer match a pattern
+// (LOOM-133).
+func relayText(captured string, scrub func(string) string) string {
+	return boundRelayInput(scrub(captured))
 }
 
 // redactAllSecrets replaces every credential value in the vault — any
-// scope, any agent type — with a placeholder: for output from something
+// scope, any agent type — and anything shaped like a secret with a
+// placeholder: for output from something
 // that ran with no credentials injected (a provisioning recipe, an
 // install) but could still print one. If the vault can't be read, the
 // output is withheld rather than shown unscrubbed.
@@ -334,7 +343,7 @@ func (r *Router) redactAllSecrets(ctx context.Context, text string) string {
 	if err != nil {
 		return "[output withheld: credentials could not be read to redact it]"
 	}
-	return out
+	return credentials.RedactPatterns(out)
 }
 
 func redactValues(text string, secrets map[string]string) string {
