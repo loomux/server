@@ -54,6 +54,7 @@ type Reaper struct {
 	orch      *Orchestrator
 	threshold time.Duration
 	logf      func(format string, args ...any)
+	now       func() time.Time
 	metrics   *metrics.Metrics
 	// staleProvisioningAfter is how long a workspace may stay
 	// provisioning before the sweep fails it; zero disables that check.
@@ -70,6 +71,13 @@ type ReaperOption func(*Reaper)
 // gap noted in api's login-throttle work, LOOM-15).
 func WithReaperLogger(logf func(format string, args ...any)) ReaperOption {
 	return func(r *Reaper) { r.logf = logf }
+}
+
+// WithReaperClock overrides the time a sweep judges ages against
+// (time.Now): a test then decides exactly what is stale, however slowly
+// it runs.
+func WithReaperClock(now func() time.Time) ReaperOption {
+	return func(r *Reaper) { r.now = now }
 }
 
 // WithMetrics sets the Prometheus metrics bundle the reaper should record
@@ -96,7 +104,7 @@ func WithTurnRetention(d time.Duration) ReaperOption {
 // NewReaper constructs a Reaper. threshold is how long a reapable task
 // can go without a state change before Sweep tears its session down.
 func NewReaper(orch *Orchestrator, threshold time.Duration, opts ...ReaperOption) *Reaper {
-	r := &Reaper{orch: orch, threshold: threshold, logf: log.Printf}
+	r := &Reaper{orch: orch, threshold: threshold, logf: log.Printf, now: time.Now}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -108,7 +116,7 @@ func NewReaper(orch *Orchestrator, threshold time.Duration, opts ...ReaperOption
 // left behind are resolved at startup rather than an interval later.
 func (r *Reaper) Run(ctx context.Context, interval time.Duration) {
 	if workspaces, err := r.orch.store.ListWorkspaces(ctx); err == nil {
-		r.failStaleProvisioning(ctx, workspaces, time.Now().UTC())
+		r.failStaleProvisioning(ctx, workspaces, r.now().UTC())
 	} else {
 		r.logf("orchestrator: reaper: startup: list workspaces: %v", err)
 	}
@@ -135,7 +143,7 @@ func (r *Reaper) Sweep(ctx context.Context) {
 		return
 	}
 
-	now := time.Now().UTC()
+	now := r.now().UTC()
 	r.failStaleProvisioning(ctx, workspaces, now)
 	if r.turnRetention > 0 {
 		if n, err := r.orch.store.DeleteTaskTurnsBefore(ctx, now.Add(-r.turnRetention)); err != nil {

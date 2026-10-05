@@ -81,7 +81,7 @@ These steps assume you have access to a consistent backup file (either from
    rm -f /data/loomux.db-journal /data/loomux.db-wal /data/loomux.db-shm
    # The debug pod runs as root: restore the ownership/mode loomuxd (uid 10001, fsGroup 10001) needs,
    # or it starts but can't write ("attempt to write a readonly database").
-   chown 1000:10001 /data/loomux.db && chmod 664 /data/loomux.db
+   chown 10001:10001 /data/loomux.db && chmod 664 /data/loomux.db
    ls -la /data/
    ```
    `keinos/sqlite3` is a BusyBox-based image and this pod runs as root, so it has no
@@ -115,3 +115,73 @@ These steps assume you have access to a consistent backup file (either from
 If the in-cluster backup PVC is also lost, restore the `loomuxd-backup`
 archive from Proxmox Backup Server to a new PVC or a host path, then follow
 the steps above using the restored `/backup` directory.
+
+## Restore drill (LOOM-127)
+
+A backup is only proven by restoring it. This drill does that without
+touching the running instance: it never suspends Flux and never writes to
+the live database.
+
+1. **Read the newest backup through a short-lived, read-only pod** (the
+   backup job's own image and security context; the backup PVC mounted
+   read-only):
+
+   ```bash
+   kubectl -n loomux apply -f - <<'YAML'
+   apiVersion: v1
+   kind: Pod
+   metadata: { name: loomux-restore-drill, namespace: loomux }
+   spec:
+     restartPolicy: Never
+     securityContext: { fsGroup: 10001, runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+     containers:
+       - name: drill
+         image: docker.io/keinos/sqlite3:3.46.1
+         command: ["/bin/sh", "-c", "sleep 600"]
+         securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] }, runAsUser: 10001, runAsGroup: 10001 }
+         volumeMounts: [ { name: backup, mountPath: /backup, readOnly: true } ]
+     volumes:
+       - name: backup
+         persistentVolumeClaim: { claimName: loomuxd-backup, readOnly: true }
+   YAML
+   kubectl -n loomux wait --for=condition=Ready pod/loomux-restore-drill
+   f=$(kubectl -n loomux exec loomux-restore-drill -- sh -c 'ls -t /backup/loomux-*.db | head -1')
+   kubectl -n loomux exec loomux-restore-drill -- sqlite3 "$f" 'PRAGMA integrity_check;'   # ok
+   kubectl -n loomux exec loomux-restore-drill -- cat "$f" > drill/loomux.db
+   kubectl -n loomux delete pod loomux-restore-drill
+   ```
+
+2. **Run the deployed image on the copy, locally**, with throwaway
+   credentials (a drill password, a random vault key, a router endpoint
+   that's never called):
+
+   ```bash
+   chmod 777 drill && chmod 666 drill/loomux.db
+   IMG=ghcr.io/loomux/server:<deployed sha>
+   HASH=$(echo -n drill-password | docker run --rm -i "$IMG" -hash-password | tail -1)
+   docker run -d --name loomux-drill -p 127.0.0.1:18080:8080 -v "$PWD/drill:/data" \
+     -e LOOMUX_DB_PATH=/data/loomux.db -e "LOOMUX_AUTH_PASSWORD_HASH=$HASH" \
+     -e "LOOMUX_MASTER_KEY=$(head -c 32 /dev/urandom | base64)" \
+     -e LOOMUX_ROUTER_PRIMARY_BASE_URL=http://127.0.0.1:9/v1 \
+     -e LOOMUX_ROUTER_PRIMARY_API_KEY=drill -e LOOMUX_ROUTER_PRIMARY_MODEL=drill "$IMG"
+   ```
+
+3. **Check** `/api/v1/health` is healthy, the schema migrated
+   (`select max(version_id) from schema_migrations`), log in with the
+   drill password, and the workspaces, targets and conversations are
+   there with their messages. Then `docker rm -f loomux-drill` and delete
+   the copy.
+
+A random vault key can't read vault credentials. Use the real
+`LOOMUX_MASTER_KEY` (from the secret store, never written to disk) only
+when the drill must prove the vault too; today nothing writes to it.
+
+### Drill record
+
+| Date | Backup | Image | Result |
+|---|---|---|---|
+| 2026-10-05 | `loomux-20261005-020017.db` (nightly, 204 KB, schema 13) | `0.1.3` (`b07d5eb`) | `integrity_check` ok; migrated 13 → 18 on start; health healthy; login ok; 5 workspaces, 2 targets, 15 conversations with messages and dispatches served |
+
+A full in-place restore of the live instance (the procedure above,
+suspending Flux) hasn't been rehearsed: it suspends the cluster-wide
+`services` kustomization, so it needs the owner's go.

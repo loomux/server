@@ -243,33 +243,44 @@ quick enough that you were likely watching; `LOOMUX_PUBLIC_URL` (e.g.
 `https://loomux.example`) makes each notification open its conversation.
 At most 5 go out at once, then one a minute.
 
-**Web client updates (LOOM-118, optional):** the web UI can switch to
-the web client `loomux/server` **main** pins, without rebuilding or
-redeploying the image. A web-ref bump PR here (`deploy/web-ref` +
-`deploy/web-sha256`, reviewed) is what the Update button picks up.
-`GET /api/v1/web/version` reports the bundle served and the pinned one,
-`POST /api/v1/web/update` installs the pinned one, and
-`POST /api/v1/web/rollback` returns to the bundle it replaced. All three
-need a session. It needs `LOOMUX_WEB_RELEASES_TOKEN`: a fine-grained,
-read-only token with Contents: read on **both** `loomux/server` (to read
-the pin) and `loomux/web` (to download the release); keep it in the
-Secret. Without it, the version is still reported and nothing can be
-installed. Installed bundles live in `LOOMUX_WEB_BUNDLES_DIR`, by default
-`web-bundles` next to the database, so they survive restarts on the data
-volume. `LOOMUX_WEB_PIN_REPO` and `LOOMUX_WEB_RELEASES_REPO` default to
-`loomux/server` and `loomux/web`.
+**Web client updates (LOOM-118, optional):** the web UI can switch the
+web client it serves without rebuilding or redeploying the image.
+`LOOMUX_WEB_UPDATES` chooses how:
 
-What's trusted is the pin, as for the image build (#179). The tarball
-must hash to the pinned `deploy/web-sha256`, and the release's
-`web-release.json` must name the pinned commit and digest. Nothing about
-a release itself (who or which workflow created it, its tag, its
-`built_at`) can make anything else install: anyone who can push to
-`loomux/web` can publish a release that looks genuine. An update unpacks
-regular files and directories only, into a fresh directory, and switches
-to it only once it's whole and has an `index.html`. Deploying another
-image always starts from that image's bundle (with its `web-release.json`,
-copied in by the image build). If the bundle manager can't start, loomuxd
-logs why and serves the image's bundle without updates.
+- `attested` (the user's choice for the test instance): the newest
+  `loomux/web` release that its CI built on `main`. A release is
+  installed only if its GitHub build-provenance attestation verifies
+  against Sigstore's public-good trust root (fetched over TUF, cached
+  under `LOOMUX_WEB_BUNDLES_DIR/sigstore-tuf`), and only if:
+  - the signing certificate was issued by GitHub Actions to
+    `https://github.com/loomux/web/.github/workflows/ci.yml@refs/heads/main`,
+    so no other branch, pull request or workflow qualifies;
+  - the attestation's subject is the tarball's sha256, and the download
+    must match it;
+  - its SLSA provenance names the release's commit;
+  - that commit is ahead, on `main`, of the one served, so updates never
+    step back.
+- `pinned`: what `loomux/server` main pins (`deploy/web-ref` +
+  `deploy/web-sha256`), checked against that pin, so every UI change is a
+  reviewed server PR.
+- `off`: nothing is installed; the version served is still reported.
+
+Unset means `attested` when `LOOMUX_WEB_RELEASES_TOKEN` is set (how the
+feature was turned on before), otherwise `off`. **Production runs with
+updates off** (user decision 2026-10-05): the UI changes only with the
+image. Both repositories are public, so the token is optional; it only
+raises GitHub's API rate limit (60 requests an hour without it, and a
+check costs a few). `GET /api/v1/web/version` reports the bundle served
+and what's on offer, `POST /api/v1/web/update` installs it, and
+`POST /api/v1/web/rollback` returns to the bundle it replaced. All three
+need a session. Installed bundles live in `LOOMUX_WEB_BUNDLES_DIR`
+(default: `web-bundles` beside the database, on the data volume).
+
+Whatever the mode, an update unpacks regular files and directories only,
+into a fresh directory, and switches to it only once it's whole and has
+an `index.html`. Deploying another image always starts from that image's
+bundle. If the bundle manager can't start, loomuxd logs why and serves
+the image's bundle without updates.
 
 ## Metrics (LOOM-103)
 

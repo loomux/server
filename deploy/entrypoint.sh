@@ -58,4 +58,11 @@ else
 	warn "no ${SSH_SRC} — starting without SSH material (local targets only)."
 fi
 
+# `docker run <image> -hash-password` passes loomuxd's own flags; accept
+# `docker run <image> loomuxd -hash-password` too, rather than running
+# `loomuxd loomuxd …`, whose flag parsing would stop at the stray word and
+# start the server instead.
+if [ "${1:-}" = loomuxd ]; then
+	shift
+fi
 exec /usr/local/bin/loomuxd "$@"

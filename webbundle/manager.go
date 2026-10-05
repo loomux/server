@@ -28,6 +28,16 @@ type Source interface {
 	Tarball(ctx context.Context, rel *Release) (io.ReadCloser, error)
 }
 
+// Orderer is implemented by a Source whose release isn't named by a
+// reviewed pin but chosen from what CI published (Attested): an update is
+// then only a release whose commit is ahead of the served one on main,
+// never a step back or sideways.
+type Orderer interface {
+	// Newer reports whether candidate is ahead of base (base "" is the
+	// unversioned image bundle: anything is).
+	Newer(ctx context.Context, base, candidate string) (bool, error)
+}
+
 var (
 	// ErrDisabled: no Source is configured, so nothing can be installed.
 	ErrDisabled = errors.New("webbundle: updates are not configured")
@@ -77,10 +87,11 @@ type Manager struct {
 	current atomic.Pointer[served]
 	prev    atomic.Pointer[served]
 
-	latestMu  sync.Mutex
-	latest    *Release
-	latestAt  time.Time
-	latestTTL time.Duration
+	latestMu    sync.Mutex
+	latest      *Release
+	latestAhead bool // latest is an update to what's served
+	latestAt    time.Time
+	latestTTL   time.Duration
 }
 
 // New opens the bundles in dir (created if missing) next to the image's
@@ -135,7 +146,8 @@ func (m *Manager) Previous() *Release {
 // Enabled reports whether a Source is configured.
 func (m *Manager) Enabled() bool { return m.source != nil }
 
-// Latest is the release loomux/server main pins, cached for a minute.
+// Latest is the release the Source offers (pinned, or the newest
+// attested one), cached for a minute along with whether it's an update.
 func (m *Manager) Latest(ctx context.Context) (*Release, error) {
 	if m.source == nil {
 		return nil, ErrDisabled
@@ -149,15 +161,44 @@ func (m *Manager) Latest(ctx context.Context) (*Release, error) {
 	if err != nil {
 		return nil, err
 	}
-	m.latest, m.latestAt = rel, time.Now()
+	ahead, err := m.isUpdate(ctx, rel)
+	if err != nil {
+		return nil, err
+	}
+	m.latest, m.latestAhead, m.latestAt = rel, ahead, time.Now()
 	return rel, nil
+}
+
+// isUpdate reports whether rel should replace the bundle served: for an
+// Orderer, only if it's ahead on main; for a pin, if it's another commit
+// (the pin, not history, says what to serve).
+func (m *Manager) isUpdate(ctx context.Context, rel *Release) (bool, error) {
+	if o, ok := m.source.(Orderer); ok {
+		return o.Newer(ctx, m.Current().commit(), rel.Commit)
+	}
+	return rel.Commit != m.Current().commit(), nil
+}
+
+// forgetLatest drops the cached Latest once the bundle served changes.
+func (m *Manager) forgetLatest() {
+	m.latestMu.Lock()
+	m.latest = nil
+	m.latestMu.Unlock()
 }
 
 // UpdateAvailable reports whether latest (the pinned release) isn't the
 // bundle served. Pinning an older commit is a change too: the pin, not a
 // timestamp, says what to serve.
 func (m *Manager) UpdateAvailable(latest *Release) bool {
-	return latest != nil && latest.Commit != m.Current().commit()
+	if latest == nil {
+		return false
+	}
+	if _, ok := m.source.(Orderer); ok {
+		m.latestMu.Lock()
+		defer m.latestMu.Unlock()
+		return m.latest != nil && latest.Commit == m.latest.Commit && m.latestAhead
+	}
+	return latest.Commit != m.Current().commit()
 }
 
 // Install fetches the pinned release and, unless it's already served,
@@ -170,11 +211,15 @@ func (m *Manager) Install(ctx context.Context) (*Release, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rel, err := m.source.Latest(ctx)
+	// What Latest offered (cached for a minute): the release the user saw,
+	// and no second round of API requests.
+	rel, err := m.Latest(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !m.UpdateAvailable(rel) {
+	if ok, err := m.isUpdate(ctx, rel); err != nil {
+		return nil, err
+	} else if !ok {
 		return nil, ErrUpToDate
 	}
 	bundle := filepath.Join(m.dir, "bundles", rel.Short)
@@ -188,6 +233,7 @@ func (m *Manager) Install(ctx context.Context) (*Release, error) {
 	}
 	m.prev.Store(cur)
 	m.current.Store(next)
+	m.forgetLatest()
 	m.prune()
 	return rel, nil
 }
@@ -207,6 +253,7 @@ func (m *Manager) Rollback() (*Release, error) {
 	}
 	m.current.Store(prev)
 	m.prev.Store(cur)
+	m.forgetLatest()
 	return prev.rel, nil
 }
 

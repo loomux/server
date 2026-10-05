@@ -171,7 +171,10 @@ func webOption(apiCfg api.Config) api.Option {
 		return api.WithStaticDir(apiCfg.StaticDir)
 	}
 	var source webbundle.Source
-	if apiCfg.WebReleasesToken != "" {
+	switch apiCfg.WebUpdates {
+	case "attested":
+		source = webbundle.NewAttested(apiCfg.WebReleasesRepo, apiCfg.WebReleasesToken, apiCfg.WebBundlesDir)
+	case "pinned":
 		source = webbundle.NewGitHub(apiCfg.WebPinRepo, apiCfg.WebReleasesRepo, apiCfg.WebReleasesToken)
 	}
 	web, err := webbundle.New(apiCfg.StaticDir, apiCfg.WebBundlesDir, source)
@@ -179,7 +182,7 @@ func webOption(apiCfg api.Config) api.Option {
 		fmt.Fprintf(os.Stderr, "loomuxd: web updates off, serving the image's web client: %v\n", err)
 		return api.WithStaticDir(apiCfg.StaticDir)
 	}
-	fmt.Fprintf(os.Stderr, "loomuxd: serving web client %s from %s (updates enabled: %v)\n",
-		web.Current(), web.Root(), web.Enabled())
+	fmt.Fprintf(os.Stderr, "loomuxd: serving web client %s from %s (updates: %s)\n",
+		web.Current(), web.Root(), apiCfg.WebUpdates)
 	return api.WithWebBundles(web)
 }
