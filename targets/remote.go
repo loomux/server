@@ -266,8 +266,7 @@ func (e *RemoteExecutor) RemoveFile(ctx context.Context, path string) error {
 }
 
 func (e *RemoteExecutor) NewSession(ctx context.Context, session, dir, command string) error {
-	_, err := e.run(ctx, newSessionArgs(session, dir, command)...)
-	return err
+	return newSession(ctx, e.run, session, dir, command)
 }
 
 func (e *RemoteExecutor) PaneExited(ctx context.Context, target string) (*PaneExit, error) {
