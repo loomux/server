@@ -1,9 +1,11 @@
 // Package webbundle keeps the web client loomuxd serves current without
-// rebuilding its image (LOOM-118). loomux/web's CI publishes every tested
-// main commit as a pre-release web-<short sha> (LOOM-58); a Manager lists
-// them, installs a newer one — downloaded, checked against its sha256,
-// unpacked, then swapped in atomically — and can roll back to the bundle
-// it replaced. The image's own bundle is the floor it never deletes.
+// rebuilding or redeploying its image (LOOM-118). What to serve is what
+// loomux/server's main branch pins (deploy/web-ref and deploy/web-sha256,
+// LOOM-58 and #179): a reviewed PR there is the only way to change it. A
+// Manager reads the pin, installs that release — downloaded, checked
+// against the pinned sha256, unpacked, then swapped in atomically — and
+// can roll back to the bundle it replaced. The image's own bundle is the
+// floor it never deletes, and a newly deployed image replaces any install.
 package webbundle
 
 import (
@@ -17,7 +19,9 @@ import (
 )
 
 // Release is a published web bundle: the web-release.json loomux/web's
-// CI writes next to the tarball (loomux/web docs/release.md).
+// CI writes next to the tarball (loomux/web docs/release.md). Only Commit
+// and SHA256 are ever trusted, and only once they match a reviewed pin;
+// BuiltAt and Subject are for display.
 type Release struct {
 	Schema  int       `json:"schema"`
 	Repo    string    `json:"repo"`
@@ -59,8 +63,6 @@ func (r *Release) Validate() error {
 		return fmt.Errorf("webbundle: release tarball %q, want loomux-web-%s.tar.gz", r.Tarball, r.Short)
 	case !sha256RE.MatchString(r.SHA256):
 		return fmt.Errorf("webbundle: release sha256 %q is not 64 hex characters", r.SHA256)
-	case r.BuiltAt.IsZero():
-		return fmt.Errorf("webbundle: release %s has no built_at", r.Tag)
 	}
 	return nil
 }
@@ -85,9 +87,12 @@ func readRelease(dir string) (*Release, error) {
 	return &r, nil
 }
 
-// newer reports whether r was built later than than (nil: anything is).
-func (r *Release) newer(than *Release) bool {
-	return than == nil || r.BuiltAt.After(than.BuiltAt)
+// commit is r's commit, "" for nil: an image bundle that doesn't say.
+func (r *Release) commit() string {
+	if r == nil {
+		return ""
+	}
+	return r.Commit
 }
 
 // String is the release's tag, for logs and errors.

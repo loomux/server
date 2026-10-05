@@ -22,7 +22,7 @@ import (
 
 // Source lists published web bundles and fetches their tarballs.
 type Source interface {
-	// Latest is the newest genuine release, already validated.
+	// Latest is the release to serve, already validated against its pin.
 	Latest(ctx context.Context) (*Release, error)
 	// Tarball opens rel's tarball (as returned by Latest).
 	Tarball(ctx context.Context, rel *Release) (io.ReadCloser, error)
@@ -31,7 +31,7 @@ type Source interface {
 var (
 	// ErrDisabled: no Source is configured, so nothing can be installed.
 	ErrDisabled = errors.New("webbundle: updates are not configured")
-	// ErrUpToDate: the newest release is already served, or older.
+	// ErrUpToDate: the pinned release is already served.
 	ErrUpToDate = errors.New("webbundle: already up to date")
 	// ErrNoPrevious: there is nothing to roll back to.
 	ErrNoPrevious = errors.New("webbundle: no previous bundle to roll back to")
@@ -48,10 +48,13 @@ const (
 const baked = "baked"
 
 // state is what dir/state.json records: the bundle served and the one it
-// replaced, each a release's short sha, baked, or "" for none.
+// replaced, each a release's short sha, baked, or "" for none; and Image,
+// the commit of the image's own bundle when they were chosen, so a newly
+// deployed image is noticed.
 type state struct {
 	Current  string `json:"current"`
 	Previous string `json:"previous"`
+	Image    string `json:"image"`
 }
 
 // served is the bundle being served.
@@ -82,8 +85,9 @@ type Manager struct {
 
 // New opens the bundles in dir (created if missing) next to the image's
 // bundle in bakedDir. source may be nil: the Manager then serves what it
-// has but can't install. An installed bundle is served only when it is
-// newer than the image's: a newer image supersedes an older install.
+// has but can't install. An installed bundle is served only while the
+// image is the one it was installed over: deploying another image means
+// starting from its bundle.
 func New(bakedDir, dir string, source Source) (*Manager, error) {
 	bakedRel, err := readRelease(bakedDir)
 	if err != nil {
@@ -99,7 +103,7 @@ func New(bakedDir, dir string, source Source) (*Manager, error) {
 	}
 	image := &served{root: bakedDir, rel: bakedRel, name: baked}
 	cur := image
-	if s := m.open(st.Current); s != nil && s.name != baked && s.rel.newer(bakedRel) {
+	if s := m.open(st.Current); s != nil && s.name != baked && st.Image == bakedRel.commit() {
 		cur = s
 		if p := m.open(st.Previous); p != nil {
 			m.prev.Store(p)
@@ -131,7 +135,7 @@ func (m *Manager) Previous() *Release {
 // Enabled reports whether a Source is configured.
 func (m *Manager) Enabled() bool { return m.source != nil }
 
-// Latest is the newest published release, cached for a minute.
+// Latest is the release loomux/server main pins, cached for a minute.
 func (m *Manager) Latest(ctx context.Context) (*Release, error) {
 	if m.source == nil {
 		return nil, ErrDisabled
@@ -149,15 +153,17 @@ func (m *Manager) Latest(ctx context.Context) (*Release, error) {
 	return rel, nil
 }
 
-// UpdateAvailable reports whether latest is newer than what's served.
+// UpdateAvailable reports whether latest (the pinned release) isn't the
+// bundle served. Pinning an older commit is a change too: the pin, not a
+// timestamp, says what to serve.
 func (m *Manager) UpdateAvailable(latest *Release) bool {
-	return latest != nil && latest.newer(m.Current())
+	return latest != nil && latest.Commit != m.Current().commit()
 }
 
-// Install fetches the newest release and, if it's newer than the bundle
-// served, verifies and unpacks it and switches to it; the bundle it
-// replaces becomes the one Rollback returns to. Anything that fails
-// leaves the bundle served as it was.
+// Install fetches the pinned release and, unless it's already served,
+// verifies and unpacks it and switches to it; the bundle it replaces
+// becomes the one Rollback returns to. Anything that fails leaves the
+// bundle served as it was.
 func (m *Manager) Install(ctx context.Context) (*Release, error) {
 	if m.source == nil {
 		return nil, ErrDisabled
@@ -177,7 +183,7 @@ func (m *Manager) Install(ctx context.Context) (*Release, error) {
 	}
 	cur := m.current.Load()
 	next := &served{root: bundle, rel: rel, name: rel.Short}
-	if err := m.writeState(state{Current: next.name, Previous: cur.name}); err != nil {
+	if err := m.writeState(state{Current: next.name, Previous: cur.name, Image: m.bakedRel.commit()}); err != nil {
 		return nil, err
 	}
 	m.prev.Store(cur)
@@ -196,7 +202,7 @@ func (m *Manager) Rollback() (*Release, error) {
 		return nil, ErrNoPrevious
 	}
 	cur := m.current.Load()
-	if err := m.writeState(state{Current: prev.name, Previous: cur.name}); err != nil {
+	if err := m.writeState(state{Current: prev.name, Previous: cur.name, Image: m.bakedRel.commit()}); err != nil {
 		return nil, err
 	}
 	m.current.Store(prev)
@@ -290,7 +296,7 @@ func (m *Manager) download(ctx context.Context, rel *Release, dst string) error 
 		return fmt.Errorf("webbundle: %s is larger than %d bytes", rel.Tarball, maxTarballBytes)
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != rel.SHA256 {
-		return fmt.Errorf("webbundle: %s has sha256 %s, its release says %s", rel.Tarball, got, rel.SHA256)
+		return fmt.Errorf("webbundle: %s has sha256 %s, the pin says %s", rel.Tarball, got, rel.SHA256)
 	}
 	return f.Close()
 }

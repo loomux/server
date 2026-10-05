@@ -47,10 +47,13 @@ type Config struct {
 	// across restarts, so it defaults to web-bundles next to the database
 	// (LOOMUX_DB_PATH), which lives on the data volume.
 	WebBundlesDir string
-	// WebReleasesToken is a read-only GitHub token for WebReleasesRepo's
-	// releases. Empty: the bundle served is reported, but nothing can be
-	// installed.
+	// WebReleasesToken is a read-only GitHub token (Contents: read) for
+	// WebPinRepo and WebReleasesRepo. Empty: the bundle served is
+	// reported, but nothing can be installed.
 	WebReleasesToken string
+	// WebPinRepo is the repository whose main pins the bundle to serve
+	// (deploy/web-ref, deploy/web-sha256): loomux/server.
+	WebPinRepo string
 	// WebReleasesRepo is the repository web bundles are published in.
 	WebReleasesRepo string
 }
@@ -64,6 +67,7 @@ const (
 	envWebBundles   = "LOOMUX_WEB_BUNDLES_DIR"
 	envWebToken     = "LOOMUX_WEB_RELEASES_TOKEN"
 	envWebRepo      = "LOOMUX_WEB_RELEASES_REPO"
+	envWebPinRepo   = "LOOMUX_WEB_PIN_REPO"
 	// envDBPath is app's (app.Config); read here only to place
 	// WebBundlesDir beside the database.
 	envDBPath = "LOOMUX_DB_PATH"
@@ -71,6 +75,7 @@ const (
 	defaultAddr        = ":8080"
 	defaultMetricsAddr = "127.0.0.1:9090"
 	defaultWebRepo     = "loomux/web"
+	defaultWebPinRepo  = "loomux/server"
 )
 
 // LoadConfig reads Config from the environment, failing fast on a
@@ -114,9 +119,13 @@ func LoadConfig() (Config, error) {
 	if webRepo == "" {
 		webRepo = defaultWebRepo
 	}
+	webPinRepo := os.Getenv(envWebPinRepo)
+	if webPinRepo == "" {
+		webPinRepo = defaultWebPinRepo
+	}
 
 	return Config{
 		PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl, StaticDir: os.Getenv(envStaticDir), MetricsAddr: metricsAddr,
-		WebBundlesDir: webBundles, WebReleasesToken: os.Getenv(envWebToken), WebReleasesRepo: webRepo,
+		WebBundlesDir: webBundles, WebReleasesToken: os.Getenv(envWebToken), WebPinRepo: webPinRepo, WebReleasesRepo: webRepo,
 	}, nil
 }

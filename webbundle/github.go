@@ -12,29 +12,32 @@ import (
 	"time"
 )
 
-// GitHub lists a repository's web-<sha> pre-releases through the GitHub
-// API with a read-only token.
+// GitHub is the Source that serves what loomux/server's main branch pins.
 //
-// What makes a release genuine: loomux/server pins the bundle its image
-// is built with by sha256 in its own repo (deploy/web-sha256), but an
-// in-place update has no such reviewed pin to check against, so it trusts
-// what loomux/web's CI publishes and nothing else — a release created by
-// github-actions[bot] (not a person's upload), whose tag, commit and
-// tarball agree, and whose commit is on the repo's main branch. The
-// tarball is then checked against the release's sha256 by the Manager.
+// The trust anchor is the pin, not the release: deploy/web-ref (a
+// loomux/web commit) and deploy/web-sha256 (its tarball's digest) change
+// only through a reviewed PR to loomux/server, the same pin the image
+// build checks (#179). The release web-<short> named by the pin supplies
+// the bytes, and they must hash to the pinned digest. Nothing about the
+// release itself — who created it, its tag, its JSON, its date — can make
+// anything else install, since anyone able to push to loomux/web can
+// publish a release that looks genuine.
+//
+// The token needs Contents: read on both repositories (the pin's and the
+// releases'). It never leaves the API host.
 type GitHub struct {
-	api    string
-	repo   string
-	token  string
-	client *http.Client
+	api     string
+	pinRepo string
+	pinRef  string
+	webRepo string
+	token   string
+	client  *http.Client
 }
 
-// ciAuthor is the login of releases created by GitHub Actions.
-const ciAuthor = "github-actions[bot]"
-
-// NewGitHub is a Source for repo ("owner/name") authenticating with token.
-func NewGitHub(repo, token string) *GitHub {
-	return &GitHub{api: "https://api.github.com", repo: repo, token: token,
+// NewGitHub is a Source serving what pinRepo's main pins, from webRepo's
+// releases, authenticating with token.
+func NewGitHub(pinRepo, webRepo, token string) *GitHub {
+	return &GitHub{api: "https://api.github.com", pinRepo: pinRepo, pinRef: "main", webRepo: webRepo, token: token,
 		client: &http.Client{Timeout: 60 * time.Second, CheckRedirect: dropAuthOffHost}}
 }
 
@@ -51,47 +54,33 @@ func dropAuthOffHost(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-type ghRelease struct {
-	TagName    string `json:"tag_name"`
-	Draft      bool   `json:"draft"`
-	Prerelease bool   `json:"prerelease"`
-	Author     struct {
-		Login string `json:"login"`
-	} `json:"author"`
-	Assets []struct {
-		Name string `json:"name"`
-		URL  string `json:"url"`
-	} `json:"assets"`
-}
-
-// Latest is the newest genuine web-<sha> release. Releases come newest
-// first; one that doesn't check out is skipped, not trusted.
+// Latest is the release the pin names, with the pinned digest as its
+// SHA256.
 func (g *GitHub) Latest(ctx context.Context) (*Release, error) {
-	var list []ghRelease
-	if err := g.getJSON(ctx, g.api+"/repos/"+g.repo+"/releases?per_page=20", &list); err != nil {
+	ref, err := g.pinFile(ctx, "deploy/web-ref")
+	if err != nil {
 		return nil, err
 	}
-	var skipped []string
-	for _, gr := range list {
-		if gr.Draft || !strings.HasPrefix(gr.TagName, "web-") {
-			continue
-		}
-		rel, err := g.check(ctx, gr)
-		if err != nil {
-			skipped = append(skipped, err.Error())
-			continue
-		}
-		return rel, nil
+	digest, err := g.pinFile(ctx, "deploy/web-sha256")
+	if err != nil {
+		return nil, err
 	}
-	if len(skipped) > 0 {
-		return nil, fmt.Errorf("webbundle: no genuine web release in %s: %s", g.repo, strings.Join(skipped, "; "))
+	if !commitRE.MatchString(ref) {
+		return nil, fmt.Errorf("webbundle: %s pins web-ref %q, not a full commit sha", g.pinRepo, ref)
 	}
-	return nil, fmt.Errorf("webbundle: %s has no web releases", g.repo)
-}
+	if !sha256RE.MatchString(digest) {
+		return nil, fmt.Errorf("webbundle: %s pins web-sha256 %q, not a sha256", g.pinRepo, digest)
+	}
+	tag := "web-" + ref[:7]
 
-func (g *GitHub) check(ctx context.Context, gr ghRelease) (*Release, error) {
-	if gr.Author.Login != ciAuthor {
-		return nil, fmt.Errorf("%s was published by %q, not CI", gr.TagName, gr.Author.Login)
+	var gr struct {
+		Assets []struct {
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		} `json:"assets"`
+	}
+	if err := g.getJSON(ctx, g.api+"/repos/"+g.webRepo+"/releases/tags/"+url.PathEscape(tag), &gr); err != nil {
+		return nil, err
 	}
 	assets := map[string]string{}
 	for _, a := range gr.Assets {
@@ -99,32 +88,39 @@ func (g *GitHub) check(ctx context.Context, gr ghRelease) (*Release, error) {
 	}
 	jsonURL, ok := assets[releaseFile]
 	if !ok {
-		return nil, fmt.Errorf("%s has no %s", gr.TagName, releaseFile)
+		return nil, fmt.Errorf("webbundle: %s has no %s", tag, releaseFile)
 	}
 	var rel Release
 	if err := g.getAsset(ctx, jsonURL, 1<<16, func(r io.Reader) error { return json.NewDecoder(r).Decode(&rel) }); err != nil {
-		return nil, fmt.Errorf("%s: %w", gr.TagName, err)
+		return nil, fmt.Errorf("webbundle: %s: %w", tag, err)
 	}
 	if err := rel.Validate(); err != nil {
-		return nil, fmt.Errorf("%s: %w", gr.TagName, err)
+		return nil, err
 	}
-	if rel.Tag != gr.TagName || rel.Repo != g.repo {
-		return nil, fmt.Errorf("%s: its %s names %s in %s", gr.TagName, releaseFile, rel.Tag, rel.Repo)
+	// The release must describe exactly what was pinned: a mismatch means
+	// it was replaced after the pin was reviewed.
+	if rel.Commit != ref || rel.SHA256 != digest || rel.Repo != g.webRepo {
+		return nil, fmt.Errorf("webbundle: %s doesn't match the pin in %s (commit %s, sha256 %s)",
+			tag, g.pinRepo, rel.Short, rel.SHA256)
 	}
-	rel.tarballURL, ok = assets[rel.Tarball]
-	if !ok {
-		return nil, fmt.Errorf("%s has no %s", gr.TagName, rel.Tarball)
-	}
-	var cmp struct {
-		Status string `json:"status"`
-	}
-	if err := g.getJSON(ctx, g.api+"/repos/"+g.repo+"/compare/"+rel.Commit+"...main", &cmp); err != nil {
-		return nil, fmt.Errorf("%s: %w", gr.TagName, err)
-	}
-	if cmp.Status != "ahead" && cmp.Status != "identical" {
-		return nil, fmt.Errorf("%s: commit %s is not on main", gr.TagName, rel.Short)
+	rel.SHA256 = digest
+	if rel.tarballURL, ok = assets[rel.Tarball]; !ok {
+		return nil, fmt.Errorf("webbundle: %s has no %s", tag, rel.Tarball)
 	}
 	return &rel, nil
+}
+
+// pinFile reads one line of pinRepo's file at pinRef.
+func (g *GitHub) pinFile(ctx context.Context, path string) (string, error) {
+	u := g.api + "/repos/" + g.pinRepo + "/contents/" + path + "?ref=" + url.QueryEscape(g.pinRef)
+	var b strings.Builder
+	if err := g.getAsset(ctx, u, 1<<10, func(r io.Reader) error {
+		_, err := io.Copy(&b, r)
+		return err
+	}, "application/vnd.github.raw"); err != nil {
+		return "", fmt.Errorf("webbundle: read the pin %s/%s: %w", g.pinRepo, path, err)
+	}
+	return strings.TrimSpace(b.String()), nil
 }
 
 // Tarball opens rel's tarball asset.
@@ -148,8 +144,14 @@ func (g *GitHub) getJSON(ctx context.Context, u string, v any) error {
 	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(v)
 }
 
-func (g *GitHub) getAsset(ctx context.Context, u string, limit int64, read func(io.Reader) error) error {
-	resp, err := g.do(ctx, u, "application/octet-stream")
+// getAsset reads at most limit bytes of u (as accept, default an asset's
+// raw bytes) through read.
+func (g *GitHub) getAsset(ctx context.Context, u string, limit int64, read func(io.Reader) error, accept ...string) error {
+	a := "application/octet-stream"
+	if len(accept) > 0 {
+		a = accept[0]
+	}
+	resp, err := g.do(ctx, u, a)
 	if err != nil {
 		return err
 	}

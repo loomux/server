@@ -242,29 +242,33 @@ quick enough that you were likely watching; `LOOMUX_PUBLIC_URL` (e.g.
 `https://loomux.example`) makes each notification open its conversation.
 At most 5 go out at once, then one a minute.
 
-**Web client updates (LOOM-118, optional):** with
-`LOOMUX_WEB_RELEASES_TOKEN` set (a fine-grained, read-only token for
-`loomux/web`, Contents: read; keep it in the Secret), the web UI shows the
-version it runs against the newest `loomux/web` release and can install
-that release without rebuilding the image. `POST /api/v1/web/update`
-installs it and `POST /api/v1/web/rollback` returns to the bundle it
-replaced; `GET /api/v1/web/version` reports both. All three need a
-session. Installed bundles live in `LOOMUX_WEB_BUNDLES_DIR`, by default
+**Web client updates (LOOM-118, optional):** the web UI can switch to
+the web client `loomux/server` **main** pins, without rebuilding or
+redeploying the image. A web-ref bump PR here (`deploy/web-ref` +
+`deploy/web-sha256`, reviewed) is what the Update button picks up.
+`GET /api/v1/web/version` reports the bundle served and the pinned one,
+`POST /api/v1/web/update` installs the pinned one, and
+`POST /api/v1/web/rollback` returns to the bundle it replaced. All three
+need a session. It needs `LOOMUX_WEB_RELEASES_TOKEN`: a fine-grained,
+read-only token with Contents: read on **both** `loomux/server` (to read
+the pin) and `loomux/web` (to download the release); keep it in the
+Secret. Without it, the version is still reported and nothing can be
+installed. Installed bundles live in `LOOMUX_WEB_BUNDLES_DIR`, by default
 `web-bundles` next to the database, so they survive restarts on the data
-volume. `LOOMUX_WEB_RELEASES_REPO` defaults to `loomux/web`. Without the
-token, the version is still reported and nothing can be installed.
+volume. `LOOMUX_WEB_PIN_REPO` and `LOOMUX_WEB_RELEASES_REPO` default to
+`loomux/server` and `loomux/web`.
 
-What's trusted: unlike the image build, which checks the bundle against
-the sha256 pinned in this repo (`deploy/web-sha256`), an in-place update
-has no reviewed pin. It installs only a release created by
-`github-actions[bot]` (loomux/web's CI, not a person's upload) whose tag,
-commit and tarball name agree, whose commit is on `loomux/web` `main`, and
-whose tarball matches the sha256 in its `web-release.json`. It unpacks
+What's trusted is the pin, as for the image build (#179). The tarball
+must hash to the pinned `deploy/web-sha256`, and the release's
+`web-release.json` must name the pinned commit and digest. Nothing about
+a release itself (who or which workflow created it, its tag, its
+`built_at`) can make anything else install: anyone who can push to
+`loomux/web` can publish a release that looks genuine. An update unpacks
 regular files and directories only, into a fresh directory, and switches
-to it only once it's whole and has an `index.html`. A newer image always
-wins over an older installed bundle: the image's own bundle (with its
-`web-release.json`, copied in by the image build) is served whenever it
-is newer.
+to it only once it's whole and has an `index.html`. Deploying another
+image always starts from that image's bundle (with its `web-release.json`,
+copied in by the image build). If the bundle manager can't start, loomuxd
+logs why and serves the image's bundle without updates.
 
 ## Metrics (LOOM-103)
 

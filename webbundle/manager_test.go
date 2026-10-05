@@ -194,24 +194,36 @@ func TestInstallRefusesAndKeepsServing(t *testing.T) {
 	}
 }
 
-func TestInstallIgnoresAnOlderRelease(t *testing.T) {
-	tgz := tarball(t, entry{name: "index.html", body: "old"})
-	src := &fakeSource{rel: release("bbbbbbb", t0.Add(-time.Hour), tgz), tgz: tgz}
-	m, err := New(bakedDir(t, release("aaaaaaa", t0, nil)), t.TempDir(), src)
+// The pin names the bundle already served: nothing to download. An
+// older commit pinned is still a change — the pin, not a date, decides.
+func TestInstallFollowsThePinNotDates(t *testing.T) {
+	tgz := tarball(t, entry{name: "index.html", body: "pinned"})
+	served := release("aaaaaaa", t0, nil)
+	src := &fakeSource{rel: release("aaaaaaa", t0.Add(time.Hour), tgz), tgz: tgz}
+	m, err := New(bakedDir(t, served), t.TempDir(), src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.Install(context.Background()); !errors.Is(err, ErrUpToDate) || src.gets != 0 {
 		t.Errorf("Install = %v (downloads %d), want ErrUpToDate without downloading", err, src.gets)
 	}
+
+	src.rel = release("bbbbbbb", t0.Add(-time.Hour), tgz)
+	if latest, _ := src.Latest(context.Background()); !m.UpdateAvailable(latest) {
+		t.Error("an older pinned commit isn't offered")
+	}
+	if _, err := m.Install(context.Background()); err != nil || index(t, m) != "pinned" {
+		t.Errorf("Install = %v, index %q", err, index(t, m))
+	}
 }
 
-// A newer image supersedes an older installed bundle.
-func TestNewerImageWinsOverAnOlderInstall(t *testing.T) {
+// Deploying another image starts from its bundle, whatever an install
+// claims about dates: a forged far-future built_at can't outlive it.
+func TestAnotherImageReplacesAnInstall(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	tgz := tarball(t, entry{name: "index.html", body: "installed"})
-	src := &fakeSource{rel: release("bbbbbbb", t0.Add(time.Hour), tgz), tgz: tgz}
+	src := &fakeSource{rel: release("bbbbbbb", t0.Add(100*365*24*time.Hour), tgz), tgz: tgz}
 	m, err := New(bakedDir(t, release("aaaaaaa", t0, nil)), dir, src)
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +232,7 @@ func TestNewerImageWinsOverAnOlderInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m2, err := New(bakedDir(t, release("ccccccc", t0.Add(2*time.Hour), nil)), dir, src)
+	m2, err := New(bakedDir(t, release("ccccccc", t0.Add(-time.Hour), nil)), dir, src)
 	if err != nil {
 		t.Fatal(err)
 	}

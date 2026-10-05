@@ -149,8 +149,9 @@ func TestLoadConfig_WebUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.WebBundlesDir != "/data/web-bundles" || cfg.WebReleasesRepo != "loomux/web" || cfg.WebReleasesToken != "" {
-		t.Errorf("web config = %q, %q, %q", cfg.WebBundlesDir, cfg.WebReleasesRepo, cfg.WebReleasesToken)
+	if cfg.WebBundlesDir != "/data/web-bundles" || cfg.WebReleasesRepo != "loomux/web" || cfg.WebPinRepo != "loomux/server" ||
+		cfg.WebReleasesToken != "" {
+		t.Errorf("web config = %+v", cfg)
 	}
 
 	t.Setenv("LOOMUX_WEB_BUNDLES_DIR", "/elsewhere")
