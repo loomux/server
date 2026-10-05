@@ -17,9 +17,15 @@ func capOffered(offered []WorkspaceSnapshot, max int, message string, mustKeep .
 	if len(offered) <= max {
 		return offered
 	}
+	offeredIDs := make(map[string]bool, len(offered))
+	for _, ws := range offered {
+		offeredIDs[ws.ID] = true
+	}
 	keep := make(map[string]bool, max)
+	// Only IDs that are offered: a hint naming an archived or deleted
+	// workspace mustn't take a slot (#221 review).
 	for _, id := range mustKeep {
-		if id != "" {
+		if offeredIDs[id] {
 			keep[id] = true
 		}
 	}

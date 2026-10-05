@@ -86,6 +86,7 @@ func New(cfg Config, agentTypes []string, opts ...Option) (*Model, error) {
 	for _, opt := range opts {
 		opt(m)
 	}
+	m.metrics.ObserveRouterBreaker(m.primaryBreaker.open)
 	return m, nil
 }
 

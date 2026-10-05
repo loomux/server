@@ -24,18 +24,37 @@ type breaker struct {
 	mu        sync.Mutex
 	failures  int
 	openUntil time.Time
-	now       func() time.Time
+	// probing is set while the one call let through after a cooldown is
+	// in flight: until it reports, everything else still skips the
+	// primary (half-open).
+	probing bool
+	now     func() time.Time
 }
 
 func newBreaker() *breaker { return &breaker{now: time.Now} }
 
-// allow reports whether the primary should be tried now. Once the
-// cooldown has passed it lets calls through again; the next failure
-// reopens it at once, since failures is still past the threshold.
+// allow reports whether the primary should be tried now. Closed: yes.
+// Open: no, until the cooldown has passed; then exactly one call is let
+// through to try it, and its outcome closes or reopens the breaker.
 func (b *breaker) allow() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return !b.now().Before(b.openUntil)
+	if b.failures < breakerThreshold {
+		return true
+	}
+	if b.now().Before(b.openUntil) || b.probing {
+		return false
+	}
+	b.probing = true
+	return true
+}
+
+// open reports whether the primary is being skipped right now, for the
+// gauge, which reads it at each scrape.
+func (b *breaker) open() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.failures >= breakerThreshold && (b.now().Before(b.openUntil) || b.probing)
 }
 
 // record notes a primary call's outcome and reports whether that call
@@ -43,6 +62,7 @@ func (b *breaker) allow() bool {
 func (b *breaker) record(unavailable bool) (opened bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.probing = false
 	if !unavailable {
 		b.failures = 0
 		b.openUntil = time.Time{}
@@ -54,6 +74,15 @@ func (b *breaker) record(unavailable bool) (opened bool) {
 		return true
 	}
 	return false
+}
+
+// abandon releases a call that ended without telling anything about the
+// provider (the caller cancelled it), so a half-open breaker lets the
+// next call try instead.
+func (b *breaker) abandon() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.probing = false
 }
 
 // unavailableError marks a tier call that never got a usable answer
@@ -83,12 +112,10 @@ func (m *Model) skipPrimary() bool {
 // caller cancelled says nothing about the provider.
 func (m *Model) recordPrimary(ctx context.Context, err error) {
 	if ctx.Err() != nil {
+		m.primaryBreaker.abandon()
 		return
 	}
 	if m.primaryBreaker.record(err != nil && isUnavailable(err)) {
 		slog.Warn("router primary tier failing; skipping it", "consecutive_failures", breakerThreshold, "for", breakerCooldown.String(), "error", err)
-		m.metrics.SetRouterBreakerOpen(true)
-	} else if err == nil || !isUnavailable(err) {
-		m.metrics.SetRouterBreakerOpen(false)
 	}
 }
