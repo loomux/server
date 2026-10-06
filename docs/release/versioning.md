@@ -47,10 +47,19 @@ loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, releas
 
 - A patch release's notes are generated: the merged pull request's
   title and number, plus (for the server) the web version it pins.
-- `CHANGELOG.md` (Keep a Changelog) is curated. Its `[Unreleased]`
-  section collects what's coming, and a milestone (each MINOR, the base
-  0.1.0, rc and 1.0.0) gets a written section, which then becomes that
-  release's notes.
+- `CHANGELOG.md` (Keep a Changelog) is curated. A pull request with a
+  user-visible change doesn't edit it: it adds a fragment,
+  `changes/<slug>.md`, holding its entry under Keep a Changelog headings
+  (format in `changes/README.md`; CI checks it with
+  `deploy/changelog.sh check`). Every PR editing the same `[Unreleased]`
+  lines made each merge conflict with the next under the up-to-date
+  branch rule.
+- A milestone (each MINOR, an rc, 1.0.0) folds the fragments in:
+  `deploy/changelog.sh release 0.2.0 2026-10-20` writes them as a
+  `## [0.2.0] - 2026-10-20` section, updates the compare links and
+  deletes them. Edit the section into prose, then merge that PR and tag
+  its merge commit; the section becomes the release's notes.
+  `deploy/changelog.sh assemble` previews it.
 - Nothing commits back to `main`: loomux/web's `main` is protected
   (pull requests only, admins included), and loomux/server is meant to
   get the same protection once v0.1.0 exists. Releases only create tags,

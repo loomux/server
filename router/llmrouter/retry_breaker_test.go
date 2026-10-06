@@ -174,3 +174,47 @@ func TestDecide_NoEscalation_NeverSkipsPrimary(t *testing.T) {
 		t.Errorf("primary called %d times, want every time (%d)", got, breakerThreshold+2)
 	}
 }
+
+// After the cooldown exactly one call tries the primary; the rest keep
+// skipping it until that call reports (#220 review: half-open let every
+// call through). A cancelled probe frees the slot.
+func TestBreaker_HalfOpenLetsOneCallThrough(t *testing.T) {
+	b := newBreaker()
+	now := time.Now()
+	b.now = func() time.Time { return now }
+	for i := 0; i < breakerThreshold; i++ {
+		b.record(true)
+	}
+	if b.allow() || !b.open() {
+		t.Fatal("open breaker let a call through")
+	}
+	now = now.Add(breakerCooldown)
+	if !b.allow() {
+		t.Fatal("no probe after the cooldown")
+	}
+	if b.allow() {
+		t.Error("a second call got through while the probe is in flight")
+	}
+	if !b.open() {
+		t.Error("gauge says closed while probing")
+	}
+	b.abandon()
+	if !b.allow() {
+		t.Error("a cancelled probe kept the slot")
+	}
+	b.record(true) // the probe failed: open again
+	if b.allow() || !b.open() {
+		t.Error("a failed probe didn't reopen the breaker")
+	}
+	now = now.Add(breakerCooldown)
+	if b.open() {
+		t.Error("gauge still open after the cooldown with no traffic")
+	}
+	if !b.allow() {
+		t.Fatal("no probe after the second cooldown")
+	}
+	b.record(false)
+	if !b.allow() || !b.allow() || b.open() {
+		t.Error("a good probe didn't close the breaker")
+	}
+}

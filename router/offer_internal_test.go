@@ -41,6 +41,13 @@ func TestCapOffered(t *testing.T) {
 		t.Errorf("under the cap: %d workspaces, want all 10", len(got))
 	}
 
+	// A pinned ID that isn't offered (an archived workspace's hint) takes
+	// no slot.
+	got = ids(capOffered(offered, 3, "x", "ws-gone"))
+	if want := []string{"ws-00", "ws-01", "ws-02"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("capOffered with an unknown pin = %v, want %v", got, want)
+	}
+
 	// More pinned than the cap: all pinned stay, nothing else is added.
 	got = ids(capOffered(offered, 2, "x", "ws-05", "ws-06", "ws-07"))
 	if want := []string{"ws-05", "ws-06", "ws-07"}; !reflect.DeepEqual(got, want) {
