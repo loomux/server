@@ -907,6 +907,44 @@ func (s *Store) DeleteCredential(ctx context.Context, id string) error {
 	return requireRowAffected(res, "credential", id)
 }
 
+func (s *Store) ListCredentialInfo(ctx context.Context) ([]*registry.Credential, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, workspace_id, agent_type, created_at, updated_at FROM credentials ORDER BY name, id`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list credential info: %w", err)
+	}
+	defer rows.Close()
+	out := []*registry.Credential{}
+	for rows.Next() {
+		var c registry.Credential
+		var workspaceID sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &workspaceID, &c.AgentType, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: list credential info: %w", err)
+		}
+		c.WorkspaceID = workspaceID.String
+		out = append(out, &c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list credential info: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) SetCredentialValue(ctx context.Context, id, value string) error {
+	if s.masterKey == nil {
+		return fmt.Errorf("sqlite: no master key configured (see WithMasterKey); cannot set credential")
+	}
+	ciphertext, err := encrypt(s.masterKey, value)
+	if err != nil {
+		return fmt.Errorf("sqlite: encrypt credential: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE credentials SET ciphertext = ?, updated_at = ? WHERE id = ?`,
+		ciphertext, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: set credential value: %w", err)
+	}
+	return requireRowAffected(res, "credential", id)
+}
+
 func scanCredential(row rowScanner, key []byte) (*registry.Credential, error) {
 	var c registry.Credential
 	var workspaceID sql.NullString

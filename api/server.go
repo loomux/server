@@ -220,6 +220,7 @@ type Server struct {
 	taskTurns          TaskTurnStore
 	workspaceManager   WorkspaceManager
 	taskCanceller      TaskCanceller
+	credentials        CredentialStore
 	agentTypes         []string
 	health             HealthChecker
 	passwordHash       []byte
@@ -360,6 +361,10 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/agents/refresh", s.requireAuth(s.handleRefreshTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/probe", s.requireAuth(s.handleProbeTarget))
+	mux.HandleFunc("GET /api/v1/credentials", s.requireAuth(s.handleListCredentials))
+	mux.HandleFunc("POST /api/v1/credentials", s.requireAuth(s.handleCreateCredential))
+	mux.HandleFunc("PUT /api/v1/credentials/{id}/value", s.requireAuth(s.handleSetCredentialValue))
+	mux.HandleFunc("DELETE /api/v1/credentials/{id}", s.requireAuth(s.handleDeleteCredential))
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/health/deep", s.requireAuth(s.handleHealthDeep))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)

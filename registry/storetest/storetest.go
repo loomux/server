@@ -766,6 +766,22 @@ func testCredentialCRUD(t *testing.T, s registry.Store) {
 		t.Fatalf("GetCredential returned zero timestamps: %+v", got)
 	}
 
+	// LOOM-134: the value can be replaced, keeping name and scope; the
+	// info listing never carries it.
+	if err := s.SetCredentialValue(ctx, cred.ID, "rotated-value"); err != nil {
+		t.Fatalf("SetCredentialValue: %v", err)
+	}
+	if got, err := s.GetCredential(ctx, cred.ID); err != nil || got.Value != "rotated-value" || got.Name != cred.Name || got.UpdatedAt.Before(got.CreatedAt) {
+		t.Fatalf("after SetCredentialValue: %+v, %v", got, err)
+	}
+	info, err := s.ListCredentialInfo(ctx)
+	if err != nil || len(info) != 1 || info[0].ID != cred.ID || info[0].Name != cred.Name || info[0].Value != "" {
+		t.Fatalf("ListCredentialInfo = %+v, %v, want the one credential without its value", info, err)
+	}
+	if err := s.SetCredentialValue(ctx, "does-not-exist", "x"); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("SetCredentialValue(missing): err = %v, want ErrNotFound", err)
+	}
+
 	if err := s.DeleteCredential(ctx, cred.ID); err != nil {
 		t.Fatalf("DeleteCredential: %v", err)
 	}
