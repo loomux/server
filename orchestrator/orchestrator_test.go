@@ -107,8 +107,9 @@ func TestLaunch(t *testing.T) {
 	if sess.dir != ws.Path {
 		t.Fatalf("session dir = %q, want workspace path %q", sess.dir, ws.Path)
 	}
-	if sess.command != "claude" {
-		t.Fatalf("session command = %q, want %q", sess.command, "claude")
+	// Wrapped to report its own exit status (LOOM-136).
+	if want := targets.WrapExitStatus("claude"); sess.command != want {
+		t.Fatalf("session command = %q, want %q", sess.command, want)
 	}
 
 	stored, err := store.GetTask(ctx, task.ID)
@@ -160,8 +161,9 @@ func TestLaunchWithID_UsesSuppliedTaskID(t *testing.T) {
 	if sess == nil {
 		t.Fatalf("no session created on executor for %q", task.TmuxSession)
 	}
-	if sess.command != "claude" {
-		t.Fatalf("session command = %q, want %q", sess.command, "claude")
+	// Wrapped to report its own exit status (LOOM-136).
+	if want := targets.WrapExitStatus("claude"); sess.command != want {
+		t.Fatalf("session command = %q, want %q", sess.command, want)
 	}
 }
 

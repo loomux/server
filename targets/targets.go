@@ -266,6 +266,10 @@ func trimDeadPaneOutput(captured string) string {
 }
 
 // paneExited is PaneExited for either executor, given its tmux runner.
+// A pane started with WrapExitStatus ends with that marker line, which is
+// where its status comes from (LOOM-136): at once, and right however late
+// tmux reaps the process. tmux's own status is the fallback, for a shell
+// that was itself killed.
 func paneExited(ctx context.Context, run func(context.Context, ...string) (string, error), target string) (*PaneExit, error) {
 	out, err := run(ctx, paneDeadArgs(target)...)
 	if err != nil {
@@ -275,10 +279,18 @@ func paneExited(ctx context.Context, run func(context.Context, ...string) (strin
 	if err != nil || !exited {
 		return nil, err
 	}
-	// Dead but not yet reaped: ask again until tmux has the status. Read
-	// as "killed by a signal" it would fail a recipe that exited 0. tmux
-	// reaps on its own event loop, which a busy server (many sessions,
-	// a loaded host) can run late: allow it statusPendingWait.
+	output, err := deadPaneOutput(ctx, run, target)
+	if err != nil {
+		return nil, err
+	}
+	if s, rest, ok := exitMarker(output); ok {
+		return &PaneExit{Status: s, Signal: signal, Output: rest}, nil
+	}
+	// No marker, dead but not yet reaped: ask again until tmux has the
+	// status, or the marker shows up in a later capture. Read as "killed
+	// by a signal" it would fail a recipe that exited 0. tmux reaps on its
+	// own event loop, which a busy server (many sessions, a loaded host)
+	// can run late: allow it statusPendingWait.
 	for waited := time.Duration(0); status == statusPending; waited += deadPaneRecaptureDelay {
 		if waited >= statusPendingWait {
 			status = -1
@@ -295,28 +307,64 @@ func paneExited(ctx context.Context, run func(context.Context, ...string) (strin
 		if _, status, signal, err = parsePaneDead(out); err != nil {
 			return nil, err
 		}
-	}
-	// tmux can mark a pane dead before it has read the process's last
-	// output from the pty: a capture taken right then has nothing but the
-	// "Pane is dead" line, and the failure would be reported without its
-	// reason. Capture again, briefly, until the output shows up.
-	var output string
-	for i := 0; ; i++ {
 		captured, err := run(ctx, paneHistoryArgs(target)...)
 		if err != nil {
 			return nil, err
 		}
-		output = trimDeadPaneOutput(captured)
-		if output != "" || i >= deadPaneRecaptures {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(deadPaneRecaptureDelay):
+		if s, rest, ok := exitMarker(trimDeadPaneOutput(captured)); ok {
+			return &PaneExit{Status: s, Signal: signal, Output: rest}, nil
 		}
 	}
 	return &PaneExit{Status: status, Signal: signal, Output: output}, nil
+}
+
+// deadPaneOutput captures a dead pane's output. tmux can mark a pane
+// dead before it has read the process's last output from the pty: a
+// capture taken right then has nothing but the "Pane is dead" line, and
+// the failure would be reported without its reason. So it captures again,
+// briefly, until the output shows up.
+func deadPaneOutput(ctx context.Context, run func(context.Context, ...string) (string, error), target string) (string, error) {
+	for i := 0; ; i++ {
+		captured, err := run(ctx, paneHistoryArgs(target)...)
+		if err != nil {
+			return "", err
+		}
+		output := trimDeadPaneOutput(captured)
+		if output != "" || i >= deadPaneRecaptures {
+			return output, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(deadPaneRecaptureDelay):
+		}
+	}
+}
+
+// exitStatusMarker is the line WrapExitStatus prints last: "[loomux:exit=N]".
+var exitStatusMarker = regexp.MustCompile(`(?m)\n?^\[loomux:exit=(\d+)\]\s*\z`)
+
+// WrapExitStatus is the pane command for command (LOOM-136): command runs
+// in a subshell, so its own `exit` ends only that, and the pane then
+// prints its status as a marker line and exits with it. PaneExited reads
+// the status from that line.
+func WrapExitStatus(command string) string {
+	return "(\n" + command + "\n)\n__loomux_s=$?\nprintf '\\n[loomux:exit=%d]\\n' \"$__loomux_s\"\nexit \"$__loomux_s\""
+}
+
+// exitMarker finds WrapExitStatus's marker as output's last line: the
+// status, and output without it. A marker anywhere else is the command's
+// own text.
+func exitMarker(output string) (status int, rest string, ok bool) {
+	m := exitStatusMarker.FindStringSubmatchIndex(output)
+	if m == nil {
+		return 0, output, false
+	}
+	n, err := strconv.Atoi(output[m[2]:m[3]])
+	if err != nil {
+		return 0, output, false
+	}
+	return n, strings.TrimRight(output[:m[0]], " \t\n"), true
 }
 
 // How long paneExited waits for a dead pane's last output: up to
