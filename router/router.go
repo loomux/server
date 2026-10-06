@@ -304,6 +304,18 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 	decideOpts := append(append([]DispatchOption(nil), opts...), withConversation(history, openTask, lastWS, lastWSName))
+	var hinted DispatchOptions
+	for _, opt := range opts {
+		opt(&hinted)
+	}
+	openWS := ""
+	if openTask != nil {
+		openWS = openTask.WorkspaceID
+	}
+	if n := len(offered); n > MaxOfferedWorkspaces {
+		offered = capOffered(offered, MaxOfferedWorkspaces, message, hinted.WorkspaceHint, lastWS, openWS)
+		log.Debug("workspaces offered to routing capped", "workspaces", n, "offered", len(offered))
+	}
 
 	routeStart := time.Now()
 	decision, err := r.model.Decide(ctx, message, offered, targetSnapshots, decideOpts...)
@@ -709,10 +721,10 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	}
 	if res.exitCode != 0 {
 		tail := quoteOutput(r.redactAllSecrets(ctx, res.output))
-		err := fmt.Errorf("provisioning exited with status %d: %s", res.exitCode, tail)
+		err := fmt.Errorf("provisioning ended with %s: %s", res.ended, tail)
 		fail("run", res.taskID, registry.TaskFailure{
 			Class:      registry.ErrorClassProvisionFailed,
-			Reason:     fmt.Sprintf("provisioning exited with status %d", res.exitCode),
+			Reason:     fmt.Sprintf("provisioning ended with %s", res.ended),
 			OutputTail: tail,
 		}, err)
 		return "", fmt.Errorf("provision workspace: %w", err)
@@ -864,6 +876,10 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 			*failClass = registry.ErrorClassInternal
 			return r.needsAttention(ctx, log, task, message, attention.Attention)
 		}
+		var compaction *orchestrator.CompactionLoopError
+		if errors.As(err, &compaction) {
+			return "", r.compactionLoop(ctx, task, compaction)
+		}
 		return "", fmt.Errorf("router: dispatch: wait for completion: %w", err)
 	}
 
@@ -937,6 +953,23 @@ func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *o
 	}
 	return fmt.Errorf("router: dispatch: agent %q exited (status %d) before finishing the turn; its last output:\n%s",
 		task.AgentType, exited.Status, output)
+}
+
+// compactionLoop handles an agent that kept compacting its context
+// within one turn (LOOM-109): like a timeout, the task is failed and the
+// agent interrupted, its pane kept, and the error says how to get it
+// going again.
+func (r *Router) compactionLoop(ctx context.Context, task *registry.Task, loop *orchestrator.CompactionLoopError) error {
+	cleanupCtx := context.WithoutCancel(ctx)
+	targetName := r.targetNameFor(cleanupCtx, task)
+	reason := fmt.Sprintf("agent %q on %s %s", task.AgentType, targetName, strings.TrimPrefix(loop.Error(), "the agent "))
+	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{Class: registry.ErrorClassCompactionLoop, Reason: reason}); err != nil {
+		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
+	}
+	r.interruptAgent(cleanupCtx, task)
+	return fmt.Errorf("router: dispatch: %s. Loomux interrupted it and kept the pane (attach on %s with `%s`). "+
+		"Ask for a smaller step, or start the conversation over so the agent begins with a fresh context: %w",
+		reason, targetName, targets.AttachCommand(task.TmuxSession), loop)
 }
 
 // turnTimedOut handles a turn that hit its bound (LOOM-76): the task is
@@ -1213,6 +1246,12 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 			msg := "router: dispatch: could not write the agent's environment on the target"
 			if line, _, _ := strings.Cut(strings.TrimSpace(out), "\n"); line != "" {
 				msg += ": " + line
+			}
+			// Its class and hint are kept (LOOM-85), its Detail isn't: ssh
+			// also exits 255 when the remote command does, and then Detail
+			// is the remote shell's stderr, which could echo the script.
+			if u, ok := targets.AsUnreachable(err); ok {
+				return nil, false, fmt.Errorf("%s: %w", msg, &targets.UnreachableError{Host: u.Host, Failure: u.Failure})
 			}
 			if errors.Is(err, targets.ErrUnreachable) {
 				return nil, false, fmt.Errorf("%s: %w", msg, targets.ErrUnreachable)

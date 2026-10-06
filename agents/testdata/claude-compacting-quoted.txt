@@ -1,0 +1,11 @@
+● Update(agents/prompts.go)
+  ⎿  Updated agents/prompts.go with 3 additions
+      126 +// right now (LOOM-109): its status line reads "Compacting conversation…"
+      127 +		if strings.Contains(l, "Compacting conversation") {
+
+✻ Moseying… (12s · esc to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

@@ -95,8 +95,19 @@ func (e *fakeExecutor) NewSession(ctx context.Context, session, dir, command str
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.sessions[session] = &fakeSession{dir: dir, command: command, alive: true}
+	e.sessions[session] = &fakeSession{dir: dir, command: unwrapCommand(command), alive: true}
 	return nil
+}
+
+// unwrapCommand is the command a command task's pane wraps to report its
+// own exit status (orchestrator.wrapCommand, LOOM-136), so tests see and
+// match what was asked for.
+func unwrapCommand(command string) string {
+	const head, tail = "(\n", "\n)\n__loomux_s=$?"
+	if i := strings.LastIndex(command, tail); strings.HasPrefix(command, head) && i > 0 {
+		return command[len(head):i]
+	}
+	return command
 }
 
 func (e *fakeExecutor) HasSession(ctx context.Context, session string) (bool, error) {

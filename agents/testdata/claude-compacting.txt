@@ -1,0 +1,11 @@
+❯ refactor the store layer to use one transaction per request
+
+● Update(registry/sqlite/sqlite.go)
+  ⎿  Updated registry/sqlite/sqlite.go with 214 additions and 187 removals
+
+✻ Compacting conversation… (34s · ↓ 1.2k tokens · esc to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

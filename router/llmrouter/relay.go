@@ -25,9 +25,16 @@ type relayArguments struct {
 // fails (transport/rate-limit) or returns an unusable (unparseable/
 // invalid tool call, or an empty reply).
 func (m *Model) Relay(ctx context.Context, capturedOutput string) (router.RelayResult, error) {
-	result, err := m.relayWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, capturedOutput)
-	if err == nil {
-		return result, nil
+	var err error
+	if m.skipPrimary() {
+		err = errPrimarySkipped
+	} else {
+		var result router.RelayResult
+		result, err = m.relayWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, capturedOutput)
+		m.recordPrimary(ctx, err)
+		if err == nil {
+			return result, nil
+		}
 	}
 	if m.cfg.Escalation == nil {
 		m.metrics.RecordRouterCall(metrics.RouterOpRelay, "primary", metrics.OutcomeFailure, m.primaryTimeout)
@@ -64,11 +71,11 @@ func (m *Model) relayWith(ctx context.Context, tierName string, tier Tier, timeo
 	duration := time.Since(start)
 	if err != nil {
 		m.metrics.RecordRouterCall(metrics.RouterOpRelay, tierName, metrics.OutcomeFailure, duration)
-		return router.RelayResult{}, fmt.Errorf("call failed: %w", err)
+		return router.RelayResult{}, &unavailableError{fmt.Errorf("call failed: %w", err)}
 	}
 	if len(resp.Choices) == 0 {
 		m.metrics.RecordRouterCall(metrics.RouterOpRelay, tierName, metrics.OutcomeFailure, duration)
-		return router.RelayResult{}, fmt.Errorf("no choices returned")
+		return router.RelayResult{}, &unavailableError{fmt.Errorf("no choices returned")}
 	}
 
 	toolCalls := resp.Choices[0].Message.ToolCalls
