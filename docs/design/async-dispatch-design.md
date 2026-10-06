@@ -142,7 +142,7 @@ response waits for it:
 
 ### `GET /api/v1/dispatches/{id}`
 
-`{dispatch_id, conversation_id, status, reply?, error?, error_class?, created_at, started_at?, finished_at?}`; `404` unknown.
+`{dispatch_id, conversation_id, status, reply?, error?, error_class?, confirmation_id?, created_at, started_at?, finished_at?}`; `404` unknown.
 
 ### Cancelling a turn (LOOM-99)
 

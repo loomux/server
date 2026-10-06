@@ -24,7 +24,11 @@ func TestConversation_Confirmations(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("dispatch = %d", resp.StatusCode)
 	}
-	pollDispatch(t, srv.URL, token, out.DispatchID)
+	// The dispatch says which offer it answered, so a client can retry a
+	// failed answer with the same id.
+	if got := pollDispatch(t, srv.URL, token, out.DispatchID); got.ConfirmationID != "conf-live" {
+		t.Fatalf("GET dispatch confirmation_id = %q, want conf-live", got.ConfirmationID)
+	}
 	if d, err := store.GetDispatch(ctx, out.DispatchID); err != nil || d.ConfirmationID != "conf-live" {
 		t.Fatalf("stored dispatch = %+v, %v; want confirmation conf-live", d, err)
 	}

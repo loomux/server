@@ -46,12 +46,17 @@ type dispatchRequest struct {
 // GET /dispatches/{id}, of POST /dispatch (async, or blocking once
 // finished), and an entry of a conversation's dispatches.
 type dispatchResponse struct {
-	DispatchID     string     `json:"dispatch_id"`
-	ConversationID string     `json:"conversation_id"`
-	Status         string     `json:"status"`
-	Reply          string     `json:"reply,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	ErrorClass     string     `json:"error_class,omitempty"`
+	DispatchID     string `json:"dispatch_id"`
+	ConversationID string `json:"conversation_id"`
+	Status         string `json:"status"`
+	Reply          string `json:"reply,omitempty"`
+	Error          string `json:"error,omitempty"`
+	ErrorClass     string `json:"error_class,omitempty"`
+	// ConfirmationID is the offer this message answered (LOOM-123), so a
+	// client retrying a failed answer can send it again with the same id
+	// and the server refuses it if that offer is no longer open, instead
+	// of a bare "yes" answering whichever offer is pending by then.
+	ConfirmationID string     `json:"confirmation_id,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
@@ -65,6 +70,7 @@ func newDispatchResponse(d *registry.Dispatch) dispatchResponse {
 		Reply:          d.Reply,
 		Error:          d.Error,
 		ErrorClass:     string(d.ErrorClass),
+		ConfirmationID: d.ConfirmationID,
 		CreatedAt:      d.CreatedAt,
 		StartedAt:      d.StartedAt,
 		FinishedAt:     d.FinishedAt,
