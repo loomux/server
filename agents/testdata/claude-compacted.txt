@@ -1,0 +1,12 @@
+════════════════════════ Conversation compacted · ctrl+o for history ═══════════════════════
+  ⎿  Read registry/sqlite/sqlite.go (1210 lines)
+  ⎿  Referenced file registry/sqlite/tx.go
+
+● Continuing with the transaction refactor: next is api/server.go.
+
+✻ Moseying… (12s · ↑ 340 tokens · esc to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

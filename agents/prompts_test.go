@@ -112,3 +112,24 @@ func TestSplitHeaderTipContinuationBounded(t *testing.T) {
 		})
 	}
 }
+
+// LOOM-109: Claude Code's status line while it compacts, and not the
+// note a finished compaction leaves. Reconstructed fixtures.
+func TestDetectCompaction(t *testing.T) {
+	for fixture, want := range map[string]bool{
+		"claude-compacting.txt": true,
+		"claude-compacted.txt":  false,
+		// #223 review: the agent editing this very code shows the words
+		// in a diff above its status line.
+		"claude-compacting-quoted.txt": false,
+		"claude-idle.txt":              false,
+	} {
+		screen, err := os.ReadFile("testdata/" + fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := DetectCompaction(string(screen)); got != want {
+			t.Errorf("%s: DetectCompaction = %v, want %v", fixture, got, want)
+		}
+	}
+}

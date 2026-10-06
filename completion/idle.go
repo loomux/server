@@ -47,6 +47,7 @@ type IdleWatcher struct {
 	newExecutor  orchestrator.ExecutorFactory
 	pollInterval time.Duration
 	clock        Clock
+	grace        time.Duration // unreachable grace; 0 is the default
 }
 
 // IdleWatcherOption configures an IdleWatcher.
@@ -82,7 +83,7 @@ func (w *IdleWatcher) Wait(ctx context.Context, task *registry.Task, target *reg
 	ticker := w.clock.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
-	var down outage
+	down := outage{grace: w.grace}
 	for {
 		output, err := exec.CapturePane(ctx, task.TmuxSession)
 		if err != nil {

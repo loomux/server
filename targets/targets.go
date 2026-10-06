@@ -101,14 +101,31 @@ type TargetExecutor interface {
 
 // PaneExit describes a pane whose process has exited (LOOM-71).
 type PaneExit struct {
-	// Status is the process's exit status, or -1 if it was killed by a
-	// signal and so has none.
+	// Status is the process's exit status, or -1 if it has none: killed
+	// by Signal, or (Signal "") tmux never recorded one.
 	Status int
+	// Signal is the signal that killed the process as tmux names it: a
+	// number on Linux ("9"), a name on macOS and the BSDs ("kill"); ""
+	// if none or unknown.
+	Signal string
 	// Output is the pane's contents including its scrollback — a command
 	// that exits at once has its output scrolled off the visible screen
 	// when tmux writes its "Pane is dead" line — with that line and
 	// trailing blank lines removed. Bounded by the pane's history-limit.
 	Output string
+}
+
+// Describe says how the process ended: "exit 3", "killed by signal 9",
+// or that tmux never recorded a status.
+func (e *PaneExit) Describe() string {
+	switch {
+	case e.Status >= 0:
+		return fmt.Sprintf("exit %d", e.Status)
+	case e.Signal != "":
+		return "killed by signal " + e.Signal
+	default:
+		return "an exit status tmux never recorded"
+	}
 }
 
 // NewExecutor constructs the TargetExecutor appropriate for t.Kind.
@@ -179,29 +196,32 @@ func paneDeadArgs(target string) []string {
 // status tmux hasn't recorded yet.
 const statusPending = -2
 
-func parsePaneDead(out string) (exited bool, status int, err error) {
+// parsePaneDead reads paneDeadArgs' output: whether the pane is dead,
+// its exit status (-1 if killed by a signal, statusPending if not known
+// yet) and the signal as tmux printed it ("" if none).
+func parsePaneDead(out string) (exited bool, status int, signal string, err error) {
 	fields := strings.Split(strings.TrimRight(out, "\n"), " ")
 	for len(fields) < 3 {
 		fields = append(fields, "")
 	}
-	dead, code, signal := strings.TrimSpace(fields[0]), strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])
+	dead, code, sig := strings.TrimSpace(fields[0]), strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])
 	switch dead {
 	case "0":
-		return false, 0, nil
+		return false, 0, "", nil
 	case "1":
 		if code == "" {
-			if signal == "" {
-				return true, statusPending, nil
+			if sig == "" {
+				return true, statusPending, "", nil
 			}
-			return true, -1, nil
+			return true, -1, sig, nil
 		}
 		n, err := strconv.Atoi(code)
 		if err != nil {
-			return false, 0, fmt.Errorf("targets: pane exit status: unparseable status %q", code)
+			return false, 0, "", fmt.Errorf("targets: pane exit status: unparseable status %q", code)
 		}
-		return true, n, nil
+		return true, n, "", nil
 	default:
-		return false, 0, fmt.Errorf("targets: pane exit status: unexpected tmux output %q", out)
+		return false, 0, "", fmt.Errorf("targets: pane exit status: unexpected tmux output %q", out)
 	}
 }
 
@@ -227,14 +247,16 @@ func paneExited(ctx context.Context, run func(context.Context, ...string) (strin
 	if err != nil {
 		return nil, err
 	}
-	exited, status, err := parsePaneDead(out)
+	exited, status, signal, err := parsePaneDead(out)
 	if err != nil || !exited {
 		return nil, err
 	}
 	// Dead but not yet reaped: ask again until tmux has the status. Read
-	// as "killed by a signal" it would fail a recipe that exited 0.
-	for i := 0; status == statusPending; i++ {
-		if i >= deadPaneRecaptures {
+	// as "killed by a signal" it would fail a recipe that exited 0. tmux
+	// reaps on its own event loop, which a busy server (many sessions,
+	// a loaded host) can run late: allow it statusPendingWait.
+	for waited := time.Duration(0); status == statusPending; waited += deadPaneRecaptureDelay {
+		if waited >= statusPendingWait {
 			status = -1
 			break
 		}
@@ -246,7 +268,7 @@ func paneExited(ctx context.Context, run func(context.Context, ...string) (strin
 		if out, err = run(ctx, paneDeadArgs(target)...); err != nil {
 			return nil, err
 		}
-		if _, status, err = parsePaneDead(out); err != nil {
+		if _, status, signal, err = parsePaneDead(out); err != nil {
 			return nil, err
 		}
 	}
@@ -270,15 +292,17 @@ func paneExited(ctx context.Context, run func(context.Context, ...string) (strin
 		case <-time.After(deadPaneRecaptureDelay):
 		}
 	}
-	return &PaneExit{Status: status, Output: output}, nil
+	return &PaneExit{Status: status, Signal: signal, Output: output}, nil
 }
 
 // How long paneExited waits for a dead pane's last output: up to
 // deadPaneRecaptures more captures, deadPaneRecaptureDelay apart. A
-// process that printed nothing costs that once.
+// process that printed nothing costs that once. statusPendingWait bounds
+// the wait for tmux to record the exit status.
 var (
 	deadPaneRecaptures     = 10
 	deadPaneRecaptureDelay = 100 * time.Millisecond
+	statusPendingWait      = 5 * time.Second
 )
 
 // newSession is NewSession for either executor, given its tmux runner.

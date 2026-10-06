@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -154,6 +155,7 @@ func (r *Router) reconcileTask(ctx context.Context, t *registry.Task) error {
 	if err != nil || exit == nil {
 		return nil
 	}
+	exit = orchestrator.CommandExit(exit)
 	if err := r.orch.FinishCommand(ctx, t.ID, exit.Status); err != nil {
 		log.Error("task not reconciled", "error", err)
 		return nil

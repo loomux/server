@@ -95,6 +95,19 @@ func (e *NeedsAttentionError) Error() string {
 	return fmt.Sprintf("the agent is waiting on a %s prompt", e.Attention.Kind)
 }
 
+// CompactionLoopError is what a CompletionDetector returns when the agent
+// keeps compacting its context within one turn (LOOM-109): its context
+// refills as fast as it compacts, so the turn would run until its time
+// bound without finishing.
+type CompactionLoopError struct {
+	Count  int
+	Within time.Duration
+}
+
+func (e *CompactionLoopError) Error() string {
+	return fmt.Sprintf("the agent compacted its context %d times in %s without finishing the turn", e.Count, e.Within.Round(time.Second))
+}
+
 type settleKey struct{}
 
 // WithSettle asks the CompletionDetector to also treat the agent's pane
