@@ -50,7 +50,6 @@ type Metrics struct {
 	RouterTokensTotal  *prometheus.CounterVec
 	RouterEscalations  *prometheus.CounterVec
 	RouterRetries      *prometheus.CounterVec
-	RouterBreakerOpen  prometheus.Gauge
 	TaskTransitions    *prometheus.CounterVec
 	TasksByStatus      *prometheus.GaugeVec
 	TargetUp           *prometheus.GaugeVec
@@ -100,10 +99,6 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "loomux_router_retries_total",
 			Help: "Total corrective retries after an invalid tool call, by op and tier.",
 		}, []string{"op", "tier"}),
-		RouterBreakerOpen: factory.NewGauge(prometheus.GaugeOpts{
-			Name: "loomux_router_primary_breaker_open",
-			Help: "1 while the primary router tier is skipped after repeated failures, else 0.",
-		}),
 		TaskTransitions: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "loomux_task_transitions_total",
 			Help: "Total task status transitions by from/to status and task kind.",
@@ -245,17 +240,23 @@ func (m *Metrics) RecordRouterRetry(op, tier string) {
 	m.RouterRetries.WithLabelValues(op, tier).Inc()
 }
 
-// SetRouterBreakerOpen records whether the primary tier's circuit
-// breaker is open (LOOM-107).
-func (m *Metrics) SetRouterBreakerOpen(open bool) {
-	if m == nil {
+// ObserveRouterBreaker exports open as loomux_router_primary_breaker_open,
+// read at each scrape (LOOM-107): 1 while the primary router tier is
+// being skipped, so the gauge drops back when the cooldown ends with no
+// traffic, not only at the next call. The first registration wins.
+func (m *Metrics) ObserveRouterBreaker(open func() bool) {
+	if m == nil || m.reg == nil {
 		return
 	}
-	v := 0.0
-	if open {
-		v = 1
-	}
-	m.RouterBreakerOpen.Set(v)
+	_ = m.reg.Register(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "loomux_router_primary_breaker_open",
+		Help: "1 while the primary router tier is skipped after repeated failures, else 0.",
+	}, func() float64 {
+		if open() {
+			return 1
+		}
+		return 0
+	}))
 }
 
 // RecordTaskTransition records a task status change and updates the
