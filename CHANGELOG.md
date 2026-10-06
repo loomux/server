@@ -13,6 +13,31 @@ milestones.
 What's coming waits in [`changes/`](changes/), one file per pull
 request, until the next milestone folds it in here.
 
+## [0.3.0] - 2026-10-06
+
+Ships loomux/web 0.3.0, the test-and-contract milestone: an end-to-end
+suite against this server's image, a typed API client, the UI inventory
+for the redesign, and the fixes those turned up. Server changes are small.
+
+### Added
+
+- A dispatch's JSON (`GET /dispatches/{id}`, a conversation's dispatches)
+  carries `confirmation_id`, the offer the message answered. A client that
+  retries a failed Approve or Deny sends it again, so the server refuses
+  the retry if that offer has closed instead of answering a newer one.
+
+### Changed
+
+- The image serves loomux/web 0.3.0 (pinned in `deploy/web-ref`).
+
+### Fixed
+
+- An agent CLI that exits (127 when it isn't installed) is reported at once:
+  agent panes print their own exit status like command tasks do, and a
+  pane that carries it no longer waits for tmux to record the status.
+- The image build pages through every loomux/web tag to name the web
+  version, so a pinned release's `v*` tag can't fall off the first page.
+
 ## [0.2.0] - 2026-10-06
 
 The first MINOR after the base: everything merged since 0.1.0 (the 0.1.x
@@ -130,6 +155,7 @@ own notes.
 - The relay model still sees non-secret agent output from every target,
   work machines included; a per-target setting is planned.
 
-[Unreleased]: https://github.com/loomux/server/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/loomux/server/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/loomux/server/releases/tag/v0.3.0
 [0.2.0]: https://github.com/loomux/server/releases/tag/v0.2.0
 [0.1.0]: https://github.com/loomux/server/releases/tag/v0.1.0
