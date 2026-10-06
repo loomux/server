@@ -851,6 +851,10 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 			}
 		}
 		if err := r.orch.SendMessage(ctx, task.ID, agentMessage); err != nil {
+			var exited *orchestrator.ProcessExitedError
+			if errors.As(err, &exited) {
+				return "", r.agentExited(ctx, task, exited)
+			}
 			return "", fmt.Errorf("router: dispatch: send message: %w", err)
 		}
 	}

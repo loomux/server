@@ -277,6 +277,23 @@ func TestSendMessage_TooLargeLeavesTask(t *testing.T) {
 	}
 }
 
+// LOOM-111 review: a paste into a pane whose agent already exited (not
+// installed: 127) reports that exit, not the refused paste.
+func TestSendMessage_DeadPaneReportsExit(t *testing.T) {
+	_, ws, exec, _, o := setup(t)
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindShell, "", "")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	exec.paneExit = &targets.PaneExit{Status: 127, Output: "sh: claude: not found"}
+	err = o.SendMessage(ctx, task.ID, "hello")
+	var exited *orchestrator.ProcessExitedError
+	if !errors.As(err, &exited) || exited.Status != 127 || !strings.Contains(exited.Output, "not found") {
+		t.Fatalf("SendMessage = %v, want the pane's exit (127)", err)
+	}
+}
+
 func TestSendMessage_RefusesDuringTakeover(t *testing.T) {
 	_, ws, exec, _, o := setup(t)
 	ctx := context.Background()

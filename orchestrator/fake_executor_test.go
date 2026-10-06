@@ -34,6 +34,9 @@ type fakeExecutor struct {
 	runOnceOut string
 	// lastRunOnce is the last command RunOnce was given.
 	lastRunOnce string
+	// paneExit, if set, is every pane's exit: a paste is refused, as tmux
+	// refuses one into a dead pane.
+	paneExit *targets.PaneExit
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -85,6 +88,9 @@ func (e *fakeExecutor) SendKey(ctx context.Context, target, key string) error { 
 func (e *fakeExecutor) PasteText(ctx context.Context, target, text string, enter bool) error {
 	if len(text) > targets.MaxPasteBytes {
 		return fmt.Errorf("fakeExecutor: %w", targets.ErrTextTooLarge)
+	}
+	if e.paneExit != nil {
+		return fmt.Errorf("fakeExecutor: target pane has exited")
 	}
 	return e.SendKeys(ctx, target, text, enter)
 }
@@ -154,5 +160,5 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 // PaneExited always reports the pane still running: this package's tests
 // never exercise an exiting pane (completion.Detector does, LOOM-71).
 func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.PaneExit, error) {
-	return nil, nil
+	return e.paneExit, nil
 }

@@ -135,6 +135,12 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 			// Nothing reached the pane: the task is as it was.
 			return fmt.Errorf("orchestrator: send message: %w", err)
 		}
+		// tmux refuses a paste into a pane whose process has exited (an
+		// agent CLI that isn't installed dies at once): that exit is the
+		// news, as when the wait finds it, not the refused paste.
+		if exit, perr := exec.PaneExited(ctx, task.TmuxSession); perr == nil && exit != nil {
+			return fmt.Errorf("orchestrator: send message: %w", &ProcessExitedError{Status: exit.Status, Output: exit.Output})
+		}
 		_ = o.failTask(ctx, task, failureFor(registry.ErrorClassSendFailed, "send message", err))
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
