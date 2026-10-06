@@ -61,7 +61,7 @@ the tag in a manifest works the same way.
 | Router API keys | update the Secret, restart | none |
 | ntfy token | update the Secret, restart | none |
 | SSH key | update the SSH Secret (and the target's `authorized_keys`), restart | none |
-| Vault master key (`LOOMUX_MASTER_KEY`) | **not rotatable in place**: credentials in the vault are encrypted with it. Today nothing writes to the vault (there's no API or UI for credentials yet; agents use their own logins on the targets), so while the vault is empty a new key loses nothing. Once any credential row exists, a different key makes reading the vault fail, and then **every** dispatch fails until those rows are deleted | — |
+| Vault master key (`LOOMUX_MASTER_KEY`) | **not rotatable in place**: credentials in the vault are encrypted with it. While the vault is empty (agents mostly use their own logins on the targets) a new key loses nothing. Once any credential row exists, a different key makes reading the vault fail, and then **every** dispatch fails until those rows are deleted: list them with `GET /api/v1/credentials` (it reads no ciphertext, so it works with any key), delete each with `DELETE /api/v1/credentials/{id}`, then add them again under the new key | — |
 
 ## What to watch
 

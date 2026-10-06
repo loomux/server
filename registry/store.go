@@ -144,6 +144,14 @@ type Store interface {
 	GetCredential(ctx context.Context, id string) (*Credential, error)
 	ListCredentials(ctx context.Context) ([]*Credential, error)
 	DeleteCredential(ctx context.Context, id string) error
+	// ListCredentialInfo lists every credential without its value, and
+	// without decrypting anything (LOOM-134): it works with no or a wrong
+	// master key, so rows that no longer decrypt can still be found and
+	// deleted.
+	ListCredentialInfo(ctx context.Context) ([]*Credential, error)
+	// SetCredentialValue replaces a credential's value (LOOM-134), keeping
+	// its name and scope.
+	SetCredentialValue(ctx context.Context, id, value string) error
 
 	// CreateSession, GetSessionByTokenHash, ListSessions, TouchSession,
 	// and DeleteSession back client auth (design spec §9). TouchSession
