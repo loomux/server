@@ -348,8 +348,15 @@ var exitStatusMarker = regexp.MustCompile(`(?m)\n?^\[loomux:exit=(\d+)\]\s*\z`)
 // in a subshell, so its own `exit` ends only that, and the pane then
 // prints its status as a marker line and exits with it. PaneExited reads
 // the status from that line.
+//
+// The wrapping shells share the process group with command (a
+// non-interactive shell has no job control), so a C-c typed into the
+// pane reaches them too; dash and busybox ash would then die and take the
+// marker, or the pane, with them. `trap :` makes them carry on. It's a
+// handler, not an ignore: the subshell and anything it execs reset it to
+// the default, so command's own SIGINT and SIGQUIT behaviour is unchanged.
 func WrapExitStatus(command string) string {
-	return "(\n" + command + "\n)\n__loomux_s=$?\nprintf '\\n[loomux:exit=%d]\\n' \"$__loomux_s\"\nexit \"$__loomux_s\""
+	return "trap : INT QUIT\n(\n" + command + "\n)\n__loomux_s=$?\nprintf '\\n[loomux:exit=%d]\\n' \"$__loomux_s\"\nexit \"$__loomux_s\""
 }
 
 // exitMarker finds WrapExitStatus's marker as output's last line: the

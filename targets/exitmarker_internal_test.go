@@ -121,3 +121,55 @@ func TestWrapExitStatusInTmux(t *testing.T) {
 		}
 	}
 }
+
+// A C-c typed into a wrapped pane (a human who attached) reaches the
+// wrapping shells too; they must carry on, so a command that catches
+// SIGINT and finishes still reports its own status (#240 review: dash and
+// busybox ash died on it). Run under the system sh and, when present,
+// busybox ash, the loomux image's own shell.
+func TestWrapExitStatusSurvivesCtrlC(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	// Catches SIGINT, says so, and exits 0 about a second later.
+	child := `trap 'echo caught' INT; i=0; while [ $i -lt 10 ]; do sleep 0.1; i=$((i+1)); done; echo finished; exit 0`
+	shells := map[string]string{"sh": ""}
+	if _, err := exec.LookPath("busybox"); err == nil {
+		shells["busybox ash"] = "busybox sh -c "
+	}
+	ex := NewLocalExecutor()
+	ctx := context.Background()
+	for name, prefix := range shells {
+		t.Run(name, func(t *testing.T) {
+			cmd := WrapExitStatus(child)
+			if prefix != "" {
+				cmd = prefix + "'" + strings.ReplaceAll(cmd, "'", `'\''`) + "'"
+			}
+			session := SessionPrefix + "ctrlc-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+			if err := ex.NewSession(ctx, session, "", cmd); err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(func() { _ = ex.KillSession(context.Background(), session) })
+			time.Sleep(300 * time.Millisecond)
+			if err := ex.SendKey(ctx, session, "C-c"); err != nil {
+				t.Fatalf("SendKey C-c: %v", err)
+			}
+			var exit *PaneExit
+			for start := time.Now(); exit == nil && time.Since(start) < 10*time.Second; {
+				var err error
+				if exit, err = ex.PaneExited(ctx, session); err != nil {
+					t.Fatalf("PaneExited: %v", err)
+				}
+				if exit == nil {
+					time.Sleep(50 * time.Millisecond)
+				}
+			}
+			if exit == nil {
+				t.Fatal("never exited")
+			}
+			if exit.Status != 0 || !strings.Contains(exit.Output, "caught") || !strings.Contains(exit.Output, "finished") {
+				t.Errorf("after C-c: %+v, want the command's own exit 0 with its output", exit)
+			}
+		})
+	}
+}
