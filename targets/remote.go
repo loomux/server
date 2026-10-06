@@ -324,8 +324,12 @@ func (e *RemoteExecutor) PasteText(ctx context.Context, target, text string, ent
 	tmux := func(args ...string) string {
 		return shellQuoteJoin(append([]string{"tmux", "-L", TmuxSocket}, args...))
 	}
+	// -d deletes the buffer only on a paste that worked; a failed one
+	// (an exited pane) mustn't leave the message readable on the tmux
+	// server (show-buffer).
 	script := shellQuoteJoin([]string{"printf", "%s", text}) + " | " +
-		tmux("load-buffer", "-b", buf, "-") + " && " + tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", target)
+		tmux("load-buffer", "-b", buf, "-") + " && " + tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", target) +
+		" || { " + tmux("delete-buffer", "-b", buf) + " 2>/dev/null; false; }"
 	_, stderr, exitCode, err := e.sshExec(ctx, script)
 	if err != nil {
 		return err
