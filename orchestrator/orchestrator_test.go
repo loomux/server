@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -250,6 +251,46 @@ func TestSendMessage(t *testing.T) {
 	}
 	if stored.Status != registry.TaskStatusRunning {
 		t.Fatalf("Status = %q, want %q", stored.Status, registry.TaskStatusRunning)
+	}
+}
+
+// LOOM-111: text too large to paste reaches nothing, so the task isn't
+// failed for it.
+func TestSendMessage_TooLargeLeavesTask(t *testing.T) {
+	store, ws, exec, _, o := setup(t)
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindShell, "", "")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	before := task.Status
+
+	err = o.SendMessage(ctx, task.ID, strings.Repeat("x", targets.MaxPasteBytes+1))
+	if !errors.Is(err, targets.ErrTextTooLarge) {
+		t.Fatalf("SendMessage = %v, want ErrTextTooLarge", err)
+	}
+	if keys := exec.sessionFor(task.TmuxSession).keys; len(keys) != 0 {
+		t.Fatalf("session.keys = %v, want nothing sent", keys)
+	}
+	if stored, err := store.GetTask(ctx, task.ID); err != nil || stored.Status != before {
+		t.Fatalf("task = %+v, %v; want status %q kept", stored, err, before)
+	}
+}
+
+// LOOM-111 review: a paste into a pane whose agent already exited (not
+// installed: 127) reports that exit, not the refused paste.
+func TestSendMessage_DeadPaneReportsExit(t *testing.T) {
+	_, ws, exec, _, o := setup(t)
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindShell, "", "")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	exec.paneExit = &targets.PaneExit{Status: 127, Output: "sh: claude: not found"}
+	err = o.SendMessage(ctx, task.ID, "hello")
+	var exited *orchestrator.ProcessExitedError
+	if !errors.As(err, &exited) || exited.Status != 127 || !strings.Contains(exited.Output, "not found") {
+		t.Fatalf("SendMessage = %v, want the pane's exit (127)", err)
 	}
 }
 

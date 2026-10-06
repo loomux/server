@@ -48,6 +48,9 @@ func classifyDispatchError(err error) string {
 	if errors.As(err, &classed) {
 		return string(classed.class)
 	}
+	if errors.Is(err, targets.ErrTextTooLarge) {
+		return string(registry.ErrorClassMessageTooLarge)
+	}
 	if errors.Is(err, targets.ErrUnreachable) {
 		return string(registry.ErrorClassTargetUnreachable)
 	}

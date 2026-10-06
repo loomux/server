@@ -124,6 +124,12 @@ func (e *fakeExecutor) HasSession(ctx context.Context, session string) (bool, er
 	return ok && s.alive, nil
 }
 
+// PasteText records the text with the typed keys: to the tests both are
+// what reached the pane.
+func (e *fakeExecutor) PasteText(ctx context.Context, target, text string, enter bool) error {
+	return e.SendKeys(ctx, target, text, enter)
+}
+
 func (e *fakeExecutor) SendKeys(ctx context.Context, target, keys string, enter bool) error {
 	if e.unreachable {
 		return targets.ErrUnreachable
