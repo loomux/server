@@ -104,8 +104,27 @@ func testPasteText(t *testing.T, exec targets.TargetExecutor) {
 	if err != nil {
 		t.Fatalf("list-buffers: %v", err)
 	}
-	if strings.Contains(buffers, "loomux-paste-") {
+	if strings.Contains(buffers, "loomux-paste-"+session) {
 		t.Errorf("buffers after the paste = %q, want the paste buffer deleted", buffers)
+	}
+
+	// A paste that fails (its pane gone) leaves no buffer behind either:
+	// tmux's -d deletes only on success.
+	gone := uniqueSessionName(t)
+	if err := exec.NewSession(ctx, gone, "", "true"); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.KillSession(context.Background(), gone) })
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if exit, _ := exec.PaneExited(ctx, gone); exit != nil {
+			break
+		}
+	}
+	if err := exec.PasteText(ctx, gone, "secret-ish message", true); err == nil {
+		t.Fatalf("PasteText into an exited pane succeeded")
+	}
+	if buffers, _ = exec.RunOnce(ctx, "tmux -L "+targets.TmuxSocket+" list-buffers -F '#{buffer_name}'"); strings.Contains(buffers, "loomux-paste-"+gone) {
+		t.Errorf("buffers after a failed paste = %q, want it deleted", buffers)
 	}
 
 	err = exec.PasteText(ctx, session, strings.Repeat("x", targets.MaxPasteBytes+1), true)
