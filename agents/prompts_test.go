@@ -133,3 +133,47 @@ func TestDetectCompaction(t *testing.T) {
 		}
 	}
 }
+
+// LOOM-109: an agent's usage-limit error, with when it resets. These
+// fixtures are reconstructed from the CLIs' documented messages, not
+// captured: no account here was at its limit.
+func TestDetectPrompt_UsageLimit(t *testing.T) {
+	cases := []struct {
+		fixture, detail, resets string
+	}{
+		{"claude-usage-limit.txt", "5-hour limit reached ∙ resets 5pm (Europe/Istanbul)", "5pm (Europe/Istanbul)"},
+		{"claude-usage-limit-old.txt", "Claude usage limit reached. Your limit will reset at 5pm (Europe/Istanbul).", "5pm (Europe/Istanbul)"},
+		{"codex-usage-limit.txt", "You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 2 days 3 hours 4 minutes.", "in 2 days 3 hours 4 minutes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fixture, func(t *testing.T) {
+			screen, err := os.ReadFile("testdata/" + tc.fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := DetectPrompt(string(screen))
+			if got == nil || got.Kind != registry.AttentionUsageLimit {
+				t.Fatalf("DetectPrompt = %+v, want a usage limit", got)
+			}
+			if got.Detail != tc.detail || got.ResetsAt != tc.resets {
+				t.Errorf("detail %q resets %q, want %q and %q", got.Detail, got.ResetsAt, tc.detail, tc.resets)
+			}
+		})
+	}
+	// A warning that the limit is near, and a reply that quotes the
+	// words, are not a limit reached.
+	for _, fixture := range []string{"claude-usage-warning.txt", "claude-usage-quoted.txt", "codex-usage-quoted.txt", "claude-usage-quoted-reset.txt"} {
+		screen, err := os.ReadFile("testdata/" + fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := DetectPrompt(string(screen)); got != nil {
+			t.Errorf("%s: DetectPrompt = %+v, want nil", fixture, got)
+		}
+	}
+	// The older form carries the reset as a Unix time.
+	got := DetectPrompt("❯ hi\n\nClaude AI usage limit reached|1760000000\n")
+	if got == nil || got.Kind != registry.AttentionUsageLimit || got.ResetsAt != "Oct 9 08:53 UTC" || got.Detail != "Claude AI usage limit reached" {
+		t.Errorf("epoch form: %+v", got)
+	}
+}

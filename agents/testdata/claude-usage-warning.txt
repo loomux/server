@@ -1,0 +1,9 @@
+❯ fix the failing test in api/body_test.go
+
+● Fixed: the 1 MiB limit now applies before the read deadline.
+
+  Approaching usage limit · resets at 5pm
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────

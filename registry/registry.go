@@ -289,6 +289,10 @@ const (
 	// AttentionLogin: the agent CLI isn't signed in. Loomux never answers
 	// this one: the task fails with ErrorClassLoginRequired.
 	AttentionLogin AttentionKind = "login"
+	// AttentionUsageLimit: the agent's account hit its usage limit
+	// (LOOM-109). Nothing to answer: the task fails with
+	// ErrorClassAgentRateLimited, saying when the limit resets.
+	AttentionUsageLimit AttentionKind = "usage_limit"
 )
 
 // Attention is a prompt read off an agent's pane (LOOM-97): what a chat
@@ -305,6 +309,9 @@ type Attention struct {
 	Options []AttentionOption `json:"options,omitempty"`
 	// Selected is the index of the option the prompt's cursor is on.
 	Selected int `json:"selected"`
+	// ResetsAt is, for AttentionUsageLimit, when the limit resets as the
+	// agent put it ("5pm (Europe/Berlin)", "in 2 hours"); may be empty.
+	ResetsAt string `json:"resets_at,omitempty"`
 }
 
 // AttentionOption is one choice an Attention offers.
@@ -346,6 +353,9 @@ const (
 	// ErrorClassLoginRequired: the agent CLI asked to be signed in
 	// (LOOM-97). Its pane is left for a human to complete the login.
 	ErrorClassLoginRequired ErrorClass = "login_required"
+	// ErrorClassAgentRateLimited: the agent's account hit its usage
+	// limit (LOOM-109); its reason says when it resets.
+	ErrorClassAgentRateLimited ErrorClass = "agent_rate_limited"
 	// ErrorClassCompactionLoop: the agent kept compacting its context
 	// within one turn without finishing it (LOOM-109); Loomux
 	// interrupted it.

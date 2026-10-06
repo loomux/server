@@ -1,0 +1,6 @@
+› why did last night's batch stop?
+
+• Weekly limit reached on the provider account; it resets Monday, so the
+  batch will resume then.
+
+› Ask Codex to do anything

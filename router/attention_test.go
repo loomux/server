@@ -34,6 +34,9 @@ func attentionHarness(t *testing.T) (registry.Store, *fakeExecutor, *router.Rout
 				Options:  []registry.AttentionOption{{Label: "Yes"}, {Label: "Yes, and don't ask again"}, {Label: "No"}}}
 		case "LOGIN":
 			return &registry.Attention{Kind: registry.AttentionLogin, Title: "Sign-in required", Detail: "Select login method:"}
+		case "LIMIT":
+			return &registry.Attention{Kind: registry.AttentionUsageLimit, Title: "Usage limit reached",
+				Detail: "5-hour limit reached ∙ resets 5pm (Europe/Istanbul)", ResetsAt: "5pm (Europe/Istanbul)"}
 		}
 		return nil
 	}
@@ -201,7 +204,36 @@ func TestDispatch_LoginRequired(t *testing.T) {
 		t.Error("the login error shouldn't wrap the detector's error")
 	}
 	assertFailed(t, task, registry.ErrorClassLoginRequired, "isn't signed in")
+	if got := router.ClassifyError(err); got != registry.ErrorClassLoginRequired {
+		t.Errorf("ClassifyError = %q, want login_required for the dispatch job", got)
+	}
 	if alive, _ := exec.HasSession(context.Background(), task.TmuxSession); !alive {
 		t.Error("the pane was torn down; keep it for the login")
 	}
+}
+
+// LOOM-109: an agent at its usage limit fails the turn with
+// agent_rate_limited and says when the limit resets, instead of the
+// error being relayed as an answer. The marker fires at once here, so
+// the final-screen check is what catches it if the watcher hasn't yet.
+func TestDispatch_UsageLimit(t *testing.T) {
+	store, exec, r, ws := attentionHarness(t)
+	exec.set(func() {
+		exec.capture = "LIMIT"
+		exec.fileExists = true
+	})
+	_, err := r.Dispatch(context.Background(), "conv-1", "hello")
+	if err == nil {
+		t.Fatal("Dispatch: nil error for an agent at its usage limit")
+	}
+	for _, want := range []string{"hit its usage limit", "resets 5pm (Europe/Istanbul)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	if got := router.ClassifyError(err); got != registry.ErrorClassAgentRateLimited {
+		t.Errorf("ClassifyError = %q, want agent_rate_limited for the dispatch job", got)
+	}
+	task := onlyTask(t, store, ws.ID)
+	assertFailed(t, task, registry.ErrorClassAgentRateLimited, "resets 5pm (Europe/Istanbul)")
 }

@@ -2,7 +2,9 @@ package agents
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -56,6 +58,9 @@ func DetectPrompt(screen string) *registry.Attention {
 	lines := bottomLines(screen, promptRegionLines)
 	if login := detectLogin(lines); login != nil {
 		return login
+	}
+	if limit := detectUsageLimit(lines); limit != nil {
+		return limit
 	}
 	footer := -1
 	for i := len(lines) - 1; i >= 0 && i >= len(lines)-3; i-- {
@@ -153,6 +158,69 @@ func statusLine(lines []string) (string, bool) {
 // compactionRegionLines is how much of the pane's bottom holds the status
 // line and the input box under it.
 const compactionRegionLines = 12
+
+var (
+	// usageLimitLine is an agent's own usage-limit error (LOOM-109):
+	// Claude Code's "Claude usage limit reached", "5-hour limit
+	// reached", "Weekly limit reached", "You've hit your limit", and
+	// Codex's "You've hit your usage limit". It must carry the mark each
+	// CLI puts on its own errors, Claude Code's ⎿ and Codex's ■: an
+	// agent's reply ("● …", "• …", or a wrapped line) that quotes the
+	// words, or a warning that a limit is near, doesn't count.
+	usageLimitLine = regexp.MustCompile(`(?i)^\s*[⎿■]\s*(?:claude (?:ai )?usage limit reached|(?:5-hour|session|daily|weekly|opus weekly|sonnet weekly|usage) limit reached|you've hit your (?:session |weekly |usage )?limit)\b(.*)$`)
+	// usageLimitEpoch is the older Claude Code form, a line of its own:
+	// "Claude AI usage limit reached|1760000000", the reset as a Unix time.
+	usageLimitEpoch = regexp.MustCompile(`^\s*(?:[⎿■]\s*)?(Claude AI usage limit reached)\|(\d{10})\s*$`)
+	// resetsAt finds when a limit resets in the rest of the line(s).
+	resetsAt = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bresets?(?: at)?\s+([^·∙|]+?)\s*(?:[·∙|]|$)`),
+		regexp.MustCompile(`(?i)\bwill reset at\s+(.+?)\.?\s*$`),
+		regexp.MustCompile(`(?i)\btry again (in .+?|at .+?)\.?\s*$`),
+	}
+)
+
+// detectUsageLimit finds an agent's usage-limit error near the bottom of
+// its pane, with when the limit resets if the agent said.
+func detectUsageLimit(lines []string) *registry.Attention {
+	region := lines
+	if len(region) > usageLimitRegionLines {
+		region = region[len(region)-usageLimitRegionLines:]
+	}
+	for i := len(region) - 1; i >= 0; i-- {
+		if m := usageLimitEpoch.FindStringSubmatch(region[i]); m != nil {
+			sec, _ := strconv.ParseInt(m[2], 10, 64)
+			return &registry.Attention{Kind: registry.AttentionUsageLimit, Title: "Usage limit reached", Detail: m[1],
+				ResetsAt: time.Unix(sec, 0).UTC().Format("Jan 2 15:04 UTC")}
+		}
+		m := usageLimitLine.FindStringSubmatch(region[i])
+		if m == nil {
+			continue
+		}
+		a := &registry.Attention{Kind: registry.AttentionUsageLimit, Title: "Usage limit reached",
+			Detail: strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(region[i]), "⎿■"))}
+		// The reset is on the line itself, or else the next one.
+		a.ResetsAt = findReset(m[1])
+		if a.ResetsAt == "" && i+1 < len(region) {
+			a.ResetsAt = findReset(region[i+1])
+		}
+		return a
+	}
+	return nil
+}
+
+// usageLimitRegionLines is how much of the pane's bottom a usage-limit
+// error is looked for in: the CLIs stop right after printing one, so it
+// sits just above the input box.
+const usageLimitRegionLines = 12
+
+func findReset(text string) string {
+	for _, re := range resetsAt {
+		if r := re.FindStringSubmatch(text); r != nil {
+			return strings.TrimRight(strings.TrimSpace(r[1]), ".")
+		}
+	}
+	return ""
+}
 
 func isFooter(line string) bool {
 	lower := strings.ToLower(line)
