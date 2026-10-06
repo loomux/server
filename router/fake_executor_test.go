@@ -103,7 +103,7 @@ func (e *fakeExecutor) NewSession(ctx context.Context, session, dir, command str
 // own exit status (orchestrator.wrapCommand, LOOM-136), so tests see and
 // match what was asked for.
 func unwrapCommand(command string) string {
-	const head, tail = "(\n", "\n)\n__loomux_s=$?"
+	const head, tail = "trap : INT QUIT\n(\n", "\n)\n__loomux_s=$?"
 	if i := strings.LastIndex(command, tail); strings.HasPrefix(command, head) && i > 0 {
 		return command[len(head):i]
 	}

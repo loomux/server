@@ -80,9 +80,12 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 	}
 	o.recordTaskTransition("", string(task.Status), kind)
 
+	// Every pane with a command reports its own exit status (LOOM-136):
+	// a command task's recipe, and an agent CLI that exits (127 when it
+	// isn't installed) without waiting on tmux to reap it.
 	paneCommand := command
-	if kind == registry.TaskKindCommand {
-		paneCommand = wrapCommand(command)
+	if command != "" {
+		paneCommand = targets.WrapExitStatus(command)
 	}
 	if err := exec.NewSession(ctx, task.TmuxSession, ws.Path, paneCommand); err != nil {
 		// best-effort; original err is what matters to the caller
