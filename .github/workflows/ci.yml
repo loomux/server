@@ -35,6 +35,13 @@ jobs:
       # slowest package nears on a loaded runner.
       - run: go test -race -shuffle=on -timeout 20m ./...
 
+  # Changelog fragments (changes/*.md) are well-formed.
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh deploy/changelog.sh check
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:
