@@ -11,13 +11,14 @@ Loomux follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 - **Every merge to `main` is a patch pre-release**: 0.1.0, 0.1.1, 0.1.2…
   One merged pull request is one release, however many commits it had.
   A web-ref pin bump is just another server merge, so it's a patch too.
-- **MINOR (0.2.0, 0.3.0…) is manual,** for a milestone or a breaking
-  change: run the `image` workflow on `main` with **bump = minor**
-  (Actions → image → Run workflow). It releases that commit as the next
-  minor version. Give it a curated `CHANGELOG.md` section first.
-- **0.y.z while the API and schema still change.** Then
-  **v1.0.0-rc.N** and **v1.0.0**, both pushed as tags by hand and only on
-  the user's go.
+- **MINOR (0.2.0, 0.3.0…) is manual,** one per milestone (user
+  decision 2026-10-06; e.g. a later UI overhaul is 0.3.0). Cut it as in
+  "Cutting a MINOR" below: a pull request folds `changes/` into the
+  version's `CHANGELOG.md` section, and its merge commit is tagged by
+  hand.
+- **0.x until API v1 is declared stable; that release is 1.0.0** (see
+  `docs/release/v0.2.0.md`, "What 1.0.0 will mean"). It needs the user's
+  go.
 - Every 0.y.z and `-pre` version is a GitHub **pre-release**, never
   marked "latest".
 
@@ -29,7 +30,7 @@ Loomux follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
      - it creates that tag on the merge commit through the GitHub API, which refuses a tag that already exists;
      - when two merges race, the loser fetches the tags and takes the next number.
      Nothing is queued or cancelled: no concurrency group, so every merge's run builds. A re-run of a commit that already has a version keeps it. If a newer merge's run has already released, an older merge it contains releases nothing of its own (its changes ship in the newer version), so versions follow main's order.
-   - **A hand-pushed tag** (`v0.1.0`, a milestone, an `-rc`) must be `v` + SemVer 2.0.0 with no build metadata, on `main`, with a `CHANGELOG.md` section.
+   - **A hand-pushed tag** (`v0.1.0`, a MINOR milestone, 1.0.0) must be `v` + SemVer 2.0.0 with no build metadata, on `main`, with a `CHANGELOG.md` section.
    - **A plain manual rebuild, or a PR,** has no version.
 2. **`image`** builds with that version (`server_version` = `0.1.N (web 0.1.M)`) and pushes `:<sha>`, `:main` for main, and `:0.1.N`. The tag already exists by then.
 3. **A failed build burns its number.** v* tags are immutable (a
@@ -38,7 +39,9 @@ Loomux follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
    the same version; otherwise the next merge takes the next number, and
    the line has a gap. SemVer allows gaps, and no version is ever reused.
 4. **`release`** creates the GitHub pre-release for the tag (never "latest"). The notes are the merged PR's title, or the version's CHANGELOG section for a milestone, plus the web version pinned.
-5. **MINOR:** run the workflow on `main` with **bump = minor**.
+5. **MINOR:** a hand-pushed tag, as below. (The workflow's
+   **bump = minor** input doesn't work on a merge commit: that commit
+   already has its patch tag, and a re-run keeps a commit's version.)
 6. **Deploy** as before: `loomux-deploy-test-instance <sha> "v0.1.N"`.
 
 loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, release.
@@ -54,7 +57,7 @@ loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, releas
   `deploy/changelog.sh check`). Every PR editing the same `[Unreleased]`
   lines made each merge conflict with the next under the up-to-date
   branch rule.
-- A milestone (each MINOR, an rc, 1.0.0) folds the fragments in:
+- A milestone (each MINOR, later 1.0.0) folds the fragments in:
   `deploy/changelog.sh release 0.2.0 2026-10-20` writes them as a
   `## [0.2.0] - 2026-10-20` section, updates the compare links and
   deletes them. Edit the section into prose, then merge that PR and tag
@@ -74,3 +77,16 @@ loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, releas
    (`deploy/web-ref` + `deploy/web-sha256`, digest hashed from the
    downloaded tarball). Merge, tag the merge commit `v0.1.0` and push.
 3. Deploy. From then on, every merge releases itself.
+
+## Cutting a MINOR (as for 0.2.0)
+
+1. loomux/web: a pull request runs `scripts/changelog.sh release 0.Y.0
+   <date>`, edits the section into prose, and merges. Tag its merge
+   commit `v0.Y.0` and push the tag: CI's `version-release` job makes the
+   GitHub release from the section. The merge also got its own patch
+   number first; the next merge continues from 0.Y.0 (0.Y.1).
+2. loomux/server: the same with `deploy/changelog.sh`, after pinning the
+   web release (`deploy/web-ref` + `deploy/web-sha256`). The tag push
+   builds the image as `0.Y.0` and releases it with the section as notes.
+3. Deploy that commit's image (`loomux-deploy-test-instance <sha>`); it
+   reports `0.Y.0 (web 0.Y.0)`.
