@@ -16,7 +16,7 @@ request, until the next milestone folds it in here.
 ## [0.2.0] - 2026-10-06
 
 The first MINOR after the base: everything merged since 0.1.0 (the 0.1.x
-patch releases), with web client 0.1.10. Loomux stays on 0.x
+patch releases), with web client 0.2.0. Loomux stays on 0.x
 until API v1 is declared stable, which will be 1.0.0.
 
 ### Added
@@ -38,6 +38,9 @@ until API v1 is declared stable, which will be 1.0.0.
   (Claude Code and Codex); one that keeps compacting its context (3
   times in 30 minutes of one turn) fails as `compaction_loop` and is
   interrupted, its pane kept.
+- `LOOMUX_TMUX_SOCKET` names the tmux socket an instance runs its sessions
+  on (default `loomux`), so a test and a production instance can drive the
+  same targets without seeing, or sweeping, each other's sessions.
 - Install guide and operations page (LOOM-128), a non-destructive
   restore drill with its first record (LOOM-127), and a test that a
   v0.1.0 database upgrades and still reads back (LOOM-126).
@@ -60,7 +63,7 @@ until API v1 is declared stable, which will be 1.0.0.
   `loomux_target_op_errors_total{reason="unreachable_<class>"}`; ssh's
   banner lines no longer replace the real error.
 - Workspace names may contain underscores (LOOM-130).
-- The image's web client is web 0.1.10 (`web-fcd9d86`): the Credentials
+- The image's web client is web 0.2.0 (`web-7da25cc`): the Credentials
   page, usage-limit wording, the chat scrolling to the newest message,
   clearer cancel and update wording, names instead of ids for new
   workspaces and targets; its bundles carry build-provenance attestations.
