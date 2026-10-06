@@ -31,6 +31,8 @@ type Model struct {
 	// agentDescriptions is a one-line description per agent type for the
 	// system prompt (LOOM-88), so the model can tell them apart.
 	agentDescriptions map[string]string
+	// primaryBreaker skips the primary tier during an outage (LOOM-107).
+	primaryBreaker *breaker
 }
 
 // Option configures a Model constructed via New.
@@ -79,6 +81,7 @@ func New(cfg Config, agentTypes []string, opts ...Option) (*Model, error) {
 		agentTypes:        agentTypes,
 		primaryTimeout:    defaultPrimaryTimeout,
 		escalationTimeout: defaultEscalationTimeout,
+		primaryBreaker:    newBreaker(),
 	}
 	for _, opt := range opts {
 		opt(m)

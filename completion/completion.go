@@ -113,10 +113,34 @@ type Detector struct {
 	pollInterval time.Duration
 	// progressPollInterval paces the no-progress check (LOOM-76).
 	progressPollInterval time.Duration
+	// unreachableGrace overrides how long waits ride out an unreachable
+	// target (WithUnreachableGrace); 0 is the default.
+	unreachableGrace time.Duration
 }
 
 // DetectorOption configures a Detector.
 type DetectorOption func(*Detector)
+
+// WithPollInterval overrides how often marker, idle and exit checks poll
+// (default a second, sized for SSH round trips). For tests against fake
+// targets.
+func WithPollInterval(d time.Duration) DetectorOption {
+	return func(det *Detector) {
+		det.pollInterval = d
+		det.idle.pollInterval = d
+		det.markers.pollInterval = d
+	}
+}
+
+// WithUnreachableGrace overrides how long a wait rides out a target it
+// can't reach before failing the turn (default a minute). For tests.
+func WithUnreachableGrace(d time.Duration) DetectorOption {
+	return func(det *Detector) {
+		det.unreachableGrace = d
+		det.idle.grace = d
+		det.markers.grace = d
+	}
+}
 
 // WithProgressPollInterval overrides how often the no-progress check
 // (LOOM-76) captures the pane. Mainly for tests.
@@ -312,7 +336,7 @@ func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecuto
 func (d *Detector) waitExit(ctx context.Context, exec targets.TargetExecutor, task *registry.Task) error {
 	ticker := time.NewTicker(d.pollInterval)
 	defer ticker.Stop()
-	var down outage
+	down := outage{grace: d.unreachableGrace}
 	for {
 		exit, err := exec.PaneExited(ctx, task.TmuxSession)
 		switch {

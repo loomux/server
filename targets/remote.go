@@ -158,7 +158,8 @@ func (e *RemoteExecutor) baseArgs() []string {
 // SSH with this executor's standard flags (BatchMode/ConnectTimeout/
 // ControlMaster/etc). err is non-nil only for a genuine SSH-level
 // failure — exit 255 (ssh's own signal for a connection-level failure)
-// maps to ErrUnreachable, or ssh itself failing to start. Otherwise
+// maps to an UnreachableError classed from ssh's stderr (LOOM-85), or ssh
+// itself failing to start. Otherwise
 // callers interpret exitCode themselves: run() treats non-zero as a
 // tmux-command failure, FileExists treats test's own 0/1 convention as
 // true/false, RemoveFile treats non-zero as an unexpected rm -f
@@ -205,17 +206,21 @@ func (e *RemoteExecutor) sshExecWithin(ctx context.Context, timeout time.Duratio
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	runErr := cmd.Run()
-	stdout, stderr = outBuf.String(), errBuf.String()
+	stdout, stderr = outBuf.String(), stripSSHBanner(errBuf.String())
 
 	if runErr == nil {
 		return stdout, stderr, 0, nil
 	}
 	if ctx.Err() == nil && errors.Is(opCtx.Err(), context.DeadlineExceeded) {
-		return stdout, stderr, -1, fmt.Errorf("%w: no answer within %s", ErrUnreachable, timeout)
+		return stdout, stderr, -1, &UnreachableError{Host: e.host, Failure: SSHTimeout, Detail: fmt.Sprintf("no answer within %s", timeout)}
 	}
 	if exitErr, ok := runErr.(*exec.ExitError); ok {
 		if exitErr.ExitCode() == 255 {
-			return stdout, stderr, 255, fmt.Errorf("%w: %s", ErrUnreachable, firstNonEmpty(stderr, runErr.Error()))
+			failure, detail := classifySSHFailure(stderr)
+			if detail == "" {
+				detail = runErr.Error()
+			}
+			return stdout, stderr, 255, &UnreachableError{Host: e.host, Failure: failure, Detail: detail}
 		}
 		return stdout, stderr, exitErr.ExitCode(), nil
 	}

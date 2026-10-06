@@ -17,6 +17,7 @@ import (
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
+	"github.com/Loomux/server/targets"
 )
 
 func newTestStore(t *testing.T) registry.Store {
@@ -84,7 +85,10 @@ func newRouter(t *testing.T, store registry.Store, opts ...router.Option) (*fake
 	exec := newFakeExecutor()
 	agentTypes := shortIdleAgentTypes("claude")
 	markerDir := t.TempDir()
-	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir)
+	// An unreachable fake target fails a wait in 100ms, not after the
+	// production minute's grace (LOOM-135).
+	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir,
+		completion.WithUnreachableGrace(100*time.Millisecond), completion.WithPollInterval(20*time.Millisecond))
 	orch := orchestrator.New(store, exec.factory(), detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{}
@@ -362,6 +366,45 @@ func TestDispatch_EnvFileWriteFailureLeaksNoSecret(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Not a directory") {
 		t.Errorf("dispatch error = %v, want the target's own reason", err)
+	}
+	tasks, _ := store.ListTasks(context.Background())
+	for _, task := range tasks {
+		if strings.Contains(task.FailureReason, "sk-PROBE") {
+			t.Errorf("task failure reason carries the secret: %q", task.FailureReason)
+		}
+	}
+}
+
+// LOOM-85 review: an unreachable error from the env-file write keeps its
+// class but not its Detail, which is the remote shell's stderr when the
+// script itself exited 255 and so could echo the secrets.
+func TestDispatch_EnvFileWriteUnreachableLeaksNoSecret(t *testing.T) {
+	store, exec, r, model := setup(t)
+	ws := createFixtureWorkspace(t, store)
+	if err := store.CreateCredential(context.Background(), &registry.Credential{
+		ID: uuid.NewString(), Name: "MY_TOKEN", Value: "sk-PROBE-secret-value-123",
+	}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	exec.runOnce = func(command string) (string, error) {
+		if strings.Contains(command, ".loomux/env/") && strings.Contains(command, "cat >") {
+			return "", &targets.UnreachableError{Host: "jet01", Failure: targets.SSHOther, Detail: "fish: unknown command: MY_TOKEN='sk-PROBE-secret-value-123'"}
+		}
+		return "", nil
+	}
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+	}
+
+	_, err := r.Dispatch(context.Background(), "conv-1", "do the thing")
+	if err == nil {
+		t.Fatal("Dispatch succeeded with the env file unwritten")
+	}
+	if strings.Contains(err.Error(), "sk-PROBE") {
+		t.Errorf("dispatch error carries the secret: %v", err)
+	}
+	if u, ok := targets.AsUnreachable(err); !ok || u.Failure != targets.SSHOther {
+		t.Errorf("dispatch error = %v, want the unreachable class kept", err)
 	}
 	tasks, _ := store.ListTasks(context.Background())
 	for _, task := range tasks {
