@@ -194,8 +194,9 @@ jobs:
           echo "sha=${short}" >> "$GITHUB_OUTPUT"
           echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
           # The web client's own version, from its tag on the pinned commit:
-          # the highest, since a MINOR's commit also has its patch tag.
-          web_version="$(gh api "repos/loomux/web/tags?per_page=100" \
+          # the highest, since a MINOR's commit also has its patch tag. Every
+          # page: web-* release tags sort before v* and outgrow one page.
+          web_version="$(gh api --paginate "repos/loomux/web/tags?per_page=100" \
             --jq ".[] | select(.commit.sha == \"${WEB_REF}\") | .name" |
             sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' |
             sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)"
