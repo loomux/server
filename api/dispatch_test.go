@@ -24,6 +24,7 @@ type dispatchReply struct {
 	Reply          string `json:"reply"`
 	Error          string `json:"error"`
 	ErrorClass     string `json:"error_class"`
+	ConfirmationID string `json:"confirmation_id"`
 }
 
 func postDispatch(t *testing.T, ctx context.Context, url, token string, body map[string]string, headers map[string]string) (*http.Response, dispatchReply, error) {
