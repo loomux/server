@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/registry"
@@ -71,13 +72,27 @@ var ErrTextTooLarge = errors.New("targets: text too large to paste")
 // deletes it once pasted.
 func pasteBuffer(target string) string { return "loomux-paste-" + target }
 
-// checkPaste vets text for PasteText: within MaxPasteBytes, and without
-// NUL bytes, which no command line or tmux buffer carries.
+// checkPaste vets text for PasteText: within MaxPasteBytes, and with
+// every control character but newline and tab dropped. tmux before 3.5
+// pastes an ESC verbatim, so an ESC[201~ in the text would end the
+// bracketed paste early and the rest would reach the agent as typed keys
+// (a CR submitting, an ESC answering a prompt): a message carries earlier
+// agent output, which a repository's content can steer. C1 controls go
+// too (0x9b is a one-byte CSI on some terminals), as do DEL, NUL and
+// bytes that aren't UTF-8.
 func checkPaste(text string) (string, error) {
 	if len(text) > MaxPasteBytes {
 		return "", fmt.Errorf("%w: %d bytes, the limit is %d", ErrTextTooLarge, len(text), MaxPasteBytes)
 	}
-	return strings.ReplaceAll(text, "\x00", ""), nil
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f, r == utf8.RuneError:
+			return -1
+		}
+		return r
+	}, text), nil
 }
 
 // AttachCommand is the command a human runs on a target to attach to a
