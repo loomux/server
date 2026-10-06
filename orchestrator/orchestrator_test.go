@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -250,6 +251,29 @@ func TestSendMessage(t *testing.T) {
 	}
 	if stored.Status != registry.TaskStatusRunning {
 		t.Fatalf("Status = %q, want %q", stored.Status, registry.TaskStatusRunning)
+	}
+}
+
+// LOOM-111: text too large to paste reaches nothing, so the task isn't
+// failed for it.
+func TestSendMessage_TooLargeLeavesTask(t *testing.T) {
+	store, ws, exec, _, o := setup(t)
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindShell, "", "")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	before := task.Status
+
+	err = o.SendMessage(ctx, task.ID, strings.Repeat("x", targets.MaxPasteBytes+1))
+	if !errors.Is(err, targets.ErrTextTooLarge) {
+		t.Fatalf("SendMessage = %v, want ErrTextTooLarge", err)
+	}
+	if keys := exec.sessionFor(task.TmuxSession).keys; len(keys) != 0 {
+		t.Fatalf("session.keys = %v, want nothing sent", keys)
+	}
+	if stored, err := store.GetTask(ctx, task.ID); err != nil || stored.Status != before {
+		t.Fatalf("task = %+v, %v; want status %q kept", stored, err, before)
 	}
 }
 

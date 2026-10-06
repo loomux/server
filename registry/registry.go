@@ -364,6 +364,11 @@ const (
 	// reason other than being unreachable — no tmux, its disk nearly full
 	// (LOOM-86).
 	ErrorClassTargetUnhealthy ErrorClass = "target_unhealthy"
+	// ErrorClassMessageTooLarge: the message, with the context in front
+	// of it, is over what Loomux pastes into an agent's pane
+	// (targets.MaxPasteBytes, LOOM-111). Nothing was sent; the agent's
+	// task is left as it was.
+	ErrorClassMessageTooLarge ErrorClass = "message_too_large"
 	// ErrorClassCancelled: the user cancelled the turn (LOOM-99).
 	ErrorClassCancelled ErrorClass = "cancelled"
 	// ErrorClassInternal: anything else.

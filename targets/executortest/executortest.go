@@ -6,6 +6,7 @@ package executortest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -27,6 +28,50 @@ func Run(t *testing.T, newExecutor func(t *testing.T) targets.TargetExecutor) {
 	t.Run("PaneSurvivesCommandExit", func(t *testing.T) { testPaneSurvivesCommandExit(t, newExecutor(t)) })
 	t.Run("NoReparseByOtherShells", func(t *testing.T) { testNoReparseByOtherShells(t, newExecutor(t)) })
 	t.Run("SessionIsSized", func(t *testing.T) { testSessionIsSized(t, newExecutor(t)) })
+	t.Run("PasteText", func(t *testing.T) { testPasteText(t, newExecutor(t)) })
+}
+
+// testPasteText checks a message pasted into a pane (LOOM-111) arrives
+// exactly, newlines and shell metacharacters included, that the tmux
+// buffer it went through is gone afterwards, and that text over
+// MaxPasteBytes is refused.
+func testPasteText(t *testing.T, exec targets.TargetExecutor) {
+	ctx := context.Background()
+	session := uniqueSessionName(t)
+	out := filepath.Join(t.TempDir(), "pasted")
+	if err := exec.NewSession(ctx, session, "", "cat > "+posixQuote(out)); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
+
+	text := "line one\n'quoted' $HOME `x` \\; \"double\"\nlast"
+	if err := exec.PasteText(ctx, session, text, true); err != nil {
+		t.Fatalf("PasteText: %v", err)
+	}
+	want := text + "\n"
+	var got string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		got, _ = exec.RunOnce(ctx, "cat "+posixQuote(out))
+		if got == want {
+			break
+		}
+	}
+	if got != want {
+		t.Errorf("pane received %q, want %q", got, want)
+	}
+
+	buffers, err := exec.RunOnce(ctx, "tmux -L "+targets.TmuxSocket+" list-buffers -F '#{buffer_name}'")
+	if err != nil {
+		t.Fatalf("list-buffers: %v", err)
+	}
+	if strings.Contains(buffers, "loomux-paste-") {
+		t.Errorf("buffers after the paste = %q, want the paste buffer deleted", buffers)
+	}
+
+	err = exec.PasteText(ctx, session, strings.Repeat("x", targets.MaxPasteBytes+1), true)
+	if !errors.Is(err, targets.ErrTextTooLarge) {
+		t.Errorf("PasteText(%d bytes) = %v, want ErrTextTooLarge", targets.MaxPasteBytes+1, err)
+	}
 }
 
 // testSessionIsSized checks a new session is created wide and tall
@@ -124,6 +169,29 @@ func testNoReparseByOtherShells(t *testing.T, exec targets.TargetExecutor) {
 		assertNotInjected(t, "send-keys")
 		if !strings.Contains(captured, payload) {
 			t.Errorf("pane = %q, want the keys typed literally", captured)
+		}
+	})
+
+	t.Run("paste-text", func(t *testing.T) {
+		fresh(t)
+		session := uniqueSessionName(t)
+		if err := exec.NewSession(ctx, session, "", "cat"); err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
+		if err := exec.PasteText(ctx, session, payload, false); err != nil {
+			t.Fatalf("PasteText: %v", err)
+		}
+		var captured string
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			captured, _ = exec.CapturePane(ctx, session)
+			if strings.Contains(strings.ReplaceAll(captured, "\n", ""), payload) {
+				break
+			}
+		}
+		assertNotInjected(t, "paste-text")
+		if !strings.Contains(strings.ReplaceAll(captured, "\n", ""), payload) {
+			t.Errorf("pane = %q, want the text pasted literally", captured)
 		}
 	})
 }

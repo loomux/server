@@ -26,6 +26,9 @@ func (e *fakeExecutor) HasSession(ctx context.Context, session string) (bool, er
 }
 func (e *fakeExecutor) SendKey(ctx context.Context, target, key string) error { return nil }
 
+func (e *fakeExecutor) PasteText(ctx context.Context, target, text string, enter bool) error {
+	return nil
+}
 func (e *fakeExecutor) SendKeys(ctx context.Context, target, keys string, enter bool) error {
 	return nil
 }

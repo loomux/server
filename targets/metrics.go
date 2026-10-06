@@ -73,6 +73,13 @@ func (e *metricsExecutor) SendKeys(ctx context.Context, target, keys string, ent
 	return err
 }
 
+func (e *metricsExecutor) PasteText(ctx context.Context, target, text string, enter bool) error {
+	start := time.Now()
+	err := e.inner.PasteText(ctx, target, text, enter)
+	e.metrics.RecordTargetOp(e.kind, "paste_text", time.Since(start), opErrorReason(err), err)
+	return err
+}
+
 func (e *metricsExecutor) SendKey(ctx context.Context, target, key string) error {
 	start := time.Now()
 	err := e.inner.SendKey(ctx, target, key)

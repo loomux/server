@@ -128,7 +128,13 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
 
-	if err := exec.SendKeys(ctx, task.TmuxSession, message, true); err != nil {
+	// Pasted, not typed (LOOM-111): a newline in the message mustn't press
+	// Enter in the agent's input before the rest has arrived.
+	if err := exec.PasteText(ctx, task.TmuxSession, message, true); err != nil {
+		if errors.Is(err, targets.ErrTextTooLarge) {
+			// Nothing reached the pane: the task is as it was.
+			return fmt.Errorf("orchestrator: send message: %w", err)
+		}
 		_ = o.failTask(ctx, task, failureFor(registry.ErrorClassSendFailed, "send message", err))
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
