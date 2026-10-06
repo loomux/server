@@ -85,6 +85,9 @@ func (e *LocalExecutor) PasteText(ctx context.Context, target, text string, ente
 		return &exec.Error{Name: "tmux load-buffer", Err: errors.New(firstNonEmpty(stderr.String(), err.Error()))}
 	}
 	if _, err := e.run(ctx, "paste-buffer", "-p", "-d", "-b", buf, "-t", target); err != nil {
+		// -d deletes only on a paste that worked: don't leave the message
+		// readable on the tmux server (show-buffer).
+		_, _ = e.run(context.WithoutCancel(ctx), "delete-buffer", "-b", buf)
 		return err
 	}
 	if enter {

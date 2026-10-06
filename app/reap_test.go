@@ -97,7 +97,12 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 		Router: llmrouter.Config{
 			Primary: llmrouter.Tier{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"},
 		},
-		ReapIdleThreshold: 100 * time.Millisecond,
+		// The threshold runs from the turn's end, so it must outlast the
+		// gap between Dispatch returning and the check below that the
+		// session is still there; at 100ms a loaded CI runner lost that
+		// race. Tearing the session down then takes about 2s more, which
+		// the poll after the check allows for generously.
+		ReapIdleThreshold: 500 * time.Millisecond,
 		ReapInterval:      30 * time.Millisecond,
 	}
 	agentTypes := router.AgentTypeRegistry{
@@ -165,7 +170,7 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	// No further Dispatch calls from here — only the real background
 	// reaper goroutine (started inside build/Build) should tear this
 	// down, entirely on its own.
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(15 * time.Second)
 	for {
 		exists, err := realExec.HasSession(ctx, task.TmuxSession)
 		if err != nil {
