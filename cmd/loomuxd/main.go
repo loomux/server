@@ -24,6 +24,7 @@ import (
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/app"
+	"github.com/Loomux/server/targets"
 	"github.com/Loomux/server/version"
 	"github.com/Loomux/server/webbundle"
 )
@@ -119,6 +120,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithAgentTypes(loomux.AgentTypeNames()),
 		api.WithTaskTurns(loomux.Store()),
 		api.WithEvents(loomux.Store()),
+		api.WithHostKeyPinning(targets.ScanHostKey, loomux.Store()),
 		api.WithHealthChecker(loomux.HealthChecker()),
 		api.WithCredentials(loomux.Store()),
 	}

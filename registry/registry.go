@@ -40,7 +40,16 @@ type Target struct {
 	PermissionMode string
 	// Policy is what Loomux may do on this target (LOOM-89). The zero
 	// value allows everything, as before policies existed.
-	Policy    TargetPolicy
+	Policy TargetPolicy
+	// SSHPort, when non-zero, overrides the port the SSH config gives
+	// for this target (LOOM-114: per-target options override the
+	// mounted config, never replace it).
+	SSHPort int
+	// HostKeys are the known_hosts lines pinned for this target through
+	// the API (LOOM-114), or empty. A pinned target is checked against
+	// these alone; others against the mounted known_hosts. Written only
+	// through SetTargetHostKeys, never by UpdateTarget.
+	HostKeys  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -119,6 +128,12 @@ func (t *Target) Validate() error {
 		}
 	default:
 		return fmt.Errorf("kind must be %q or %q", TargetKindLocal, TargetKindRemote)
+	}
+	if t.SSHPort < 0 || t.SSHPort > 65535 {
+		return errors.New("ssh_port must be 0 (the SSH config's) or a port number")
+	}
+	if t.Kind == TargetKindLocal && t.SSHPort != 0 {
+		return errors.New("ssh_port must be 0 for a local target")
 	}
 	switch t.PermissionMode {
 	case "", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual:

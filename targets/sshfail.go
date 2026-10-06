@@ -54,9 +54,12 @@ func (e *UnreachableError) Hint() string {
 	h := e.Host
 	switch e.Failure {
 	case SSHHostKeyChanged:
-		return "the host key of " + h + " has changed: if that's expected (the machine was reinstalled), replace its known_hosts entry in the SSH secret; if not, find out why first"
+		return "the host key of " + h + " has changed: if that's expected (the machine was reinstalled), scan and pin its new key " +
+			"(Targets, or POST /api/v1/targets/{id}/scan-host-key then /pin) or replace its known_hosts entry in the SSH secret; " +
+			"if not, find out why first"
 	case SSHHostKeyUnknown:
-		return h + "'s host key isn't in known_hosts: add it to the SSH secret"
+		return h + "'s host key isn't known: scan and pin it (Targets, or POST /api/v1/targets/{id}/scan-host-key then /pin), " +
+			"or add it to the SSH secret's known_hosts"
 	case SSHAuthFailed:
 		return h + " refused Loomux's SSH key: add the public key to the target user's authorized_keys"
 	case SSHDNSFailed:

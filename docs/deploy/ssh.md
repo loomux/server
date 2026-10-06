@@ -200,12 +200,44 @@ authentication:
 nc -X 5 -x 127.0.0.1:1055 -z target.example.internal 22; echo "exit: $?"
 ```
 
+## Onboarding a target through the API (LOOM-114)
+
+The mounted secret stays the default for every target. On top of it, a
+target can be onboarded without touching the secret:
+
+1. Register it (`POST /api/v1/targets`, `kind: remote`, `host`, `user`,
+   and `ssh_port` if it isn't the SSH config's).
+2. `POST /api/v1/targets/{id}/scan-host-key` connects the way Loomux
+   does (the secret's `config`, its proxy, the target's port) and returns
+   the host key's type and SHA256 fingerprint. It authenticates nothing
+   and trusts nothing. Compare the fingerprint with the machine's own,
+   run there: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
+3. `POST /api/v1/targets/{id}/pin {"fingerprint": "SHA256:…"}` pins that
+   key, if it is one the latest scan (up to 10 minutes old) returned.
+   From then on the target is checked against its pin **alone**
+   (`StrictHostKeyChecking=yes`), ahead of the secret's `known_hosts`; the
+   pin is kept in the database and written to
+   `known_hosts.d/<target id>` beside it, on the data volume.
+4. `POST /api/v1/targets/{id}/test` checks it: reachable over SSH, and
+   tmux runs there.
+
+When a host key changes (the machine was reinstalled), dispatches fail
+with `host_key_changed`, whose hint says to scan and pin again; `test`
+flags it as `host_key_problem`. `DELETE /api/v1/targets/{id}/pin`
+returns the target to the secret's `known_hosts`.
+
+The key Loomux authenticates with, and the proxy, still come from the
+secret. Loomux has one user today; if it ever has several, scanning and
+pinning must become admin-only, since whoever pins decides which machine
+every later command reaches.
+
 ## Follow-up: env-driven SSH options
 
 Plumbing `WithIdentityFile` / `WithExtraSSHArgs` through
 `targets.NewExecutor` so the identity path is env-driven is a reasonable
 follow-up, but it does **not** remove the need for a real `$HOME/.ssh`: the
-`ProxyCommand` and `known_hosts` have no equivalent as executor options,
+`ProxyCommand` has no equivalent as an executor option (per-target
+`known_hosts` pins and ports now do, above),
 and they are the two things most likely to be wrong. It would decouple the
 key path from the mount layout, nothing more.
 

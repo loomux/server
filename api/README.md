@@ -276,6 +276,21 @@ not engineering taste):
     dead session is discovered the same way a human always would, by
     trying to attach. Wraps `AttachInfoStore` (`GetTask` → `GetWorkspace`
     → `GetTarget`), a narrow seam mirroring the others here.
+  - `POST /api/v1/targets/{id}/scan-host-key`,
+    `POST /api/v1/targets/{id}/pin` `{fingerprint}`,
+    `DELETE /api/v1/targets/{id}/pin`, `POST /api/v1/targets/{id}/test` —
+    auth-gated target onboarding (LOOM-114, `WithHostKeyPinning`; 501
+    without it). A scan returns `{target_id, host_keys: [{type,
+    fingerprint}], expires_at, pinned_host_keys}` and trusts nothing; `502`
+    with the SSH hint when the host can't be read. A pin must name a
+    fingerprint from the target's latest scan, at most 10 minutes old
+    (`409` otherwise), and returns the target, whose `pinned_host_keys`
+    then lists it. A pinned target is checked against its pin alone. Only
+    remote targets (`400` for local). `test` returns `{target_id, reachable,
+    tmux_version?, latency_ms, error?, host_key_problem}`. Targets also
+    take and show `ssh_port` (0: the SSH config's). Single user today;
+    scanning and pinning must become admin-only if Loomux ever has
+    several (see `docs/deploy/ssh.md`).
   - `POST /api/v1/targets`, `GET /api/v1/targets`,
     `PUT /api/v1/targets/{id}`, `DELETE /api/v1/targets/{id}` —
     auth-gated target registration (LOOM-59). `registry.Store`'s target

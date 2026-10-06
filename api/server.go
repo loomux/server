@@ -219,6 +219,9 @@ type Server struct {
 	targetProber       TargetProber
 	taskTurns          TaskTurnStore
 	events             EventStore
+	scanHostKey        HostKeyScanner
+	hostKeys           HostKeyStore
+	scans              *scanResults
 	workspaceManager   WorkspaceManager
 	taskCanceller      TaskCanceller
 	credentials        CredentialStore
@@ -363,6 +366,10 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/agents/refresh", s.requireAuth(s.handleRefreshTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/probe", s.requireAuth(s.handleProbeTarget))
+	mux.HandleFunc("POST /api/v1/targets/{id}/test", s.requireAuth(s.handleTestTarget))
+	mux.HandleFunc("POST /api/v1/targets/{id}/scan-host-key", s.requireAuth(s.handleScanHostKey))
+	mux.HandleFunc("POST /api/v1/targets/{id}/pin", s.requireAuth(s.handlePinHostKey))
+	mux.HandleFunc("DELETE /api/v1/targets/{id}/pin", s.requireAuth(s.handleUnpinHostKey))
 	mux.HandleFunc("GET /api/v1/credentials", s.requireAuth(s.handleListCredentials))
 	mux.HandleFunc("POST /api/v1/credentials", s.requireAuth(s.handleCreateCredential))
 	mux.HandleFunc("PUT /api/v1/credentials/{id}/value", s.requireAuth(s.handleSetCredentialValue))
@@ -1371,13 +1378,19 @@ type targetResponse struct {
 	// The target's policy (LOOM-89): purpose (personal, work or empty),
 	// the only agent types allowed there (empty: all), and whether new
 	// workspaces, shell commands and unconfirmed new work are allowed.
-	Purpose             string    `json:"purpose"`
-	AllowedAgentTypes   []string  `json:"allowed_agent_types"`
-	AllowProvision      bool      `json:"allow_provision"`
-	AllowShell          bool      `json:"allow_shell"`
-	RequireConfirmation bool      `json:"require_confirmation"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	Purpose             string   `json:"purpose"`
+	AllowedAgentTypes   []string `json:"allowed_agent_types"`
+	AllowProvision      bool     `json:"allow_provision"`
+	AllowShell          bool     `json:"allow_shell"`
+	RequireConfirmation bool     `json:"require_confirmation"`
+	// SSHPort overrides the SSH config's port when non-zero (LOOM-114).
+	SSHPort int `json:"ssh_port"`
+	// PinnedHostKeys are the host keys pinned through the API (LOOM-114),
+	// by type and fingerprint; empty when the target relies on the
+	// mounted known_hosts.
+	PinnedHostKeys []hostKeyResponse `json:"pinned_host_keys"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
 	// Health is the target's last health probe (LOOM-86); null when it
 	// has never been probed, and in create/update responses.
 	Health *targetHealthResponse `json:"health"`
@@ -1427,6 +1440,8 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		AllowProvision:      !t.Policy.NoProvision,
 		AllowShell:          !t.Policy.NoShell,
 		RequireConfirmation: t.Policy.RequireConfirmation,
+		SSHPort:             t.SSHPort,
+		PinnedHostKeys:      pinnedHostKeys(t),
 		CreatedAt:           t.CreatedAt,
 		UpdatedAt:           t.UpdatedAt,
 	}
@@ -1453,6 +1468,9 @@ type targetRequest struct {
 	AllowProvision      *bool     `json:"allow_provision"`
 	AllowShell          *bool     `json:"allow_shell"`
 	RequireConfirmation *bool     `json:"require_confirmation"`
+	// SSHPort is optional the same way (LOOM-114); 0 means the SSH
+	// config's port.
+	SSHPort *int `json:"ssh_port"`
 }
 
 type listTargetsResponse struct {
@@ -1480,6 +1498,10 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	if base != nil {
 		target.SSHKeyRef, target.WorkspaceRoot, target.PermissionMode = base.SSHKeyRef, base.WorkspaceRoot, base.PermissionMode
 		target.Policy = base.Policy
+		target.SSHPort = base.SSHPort
+	}
+	if req.SSHPort != nil {
+		target.SSHPort = *req.SSHPort
 	}
 	if req.Purpose != nil {
 		target.Policy.Purpose = *req.Purpose

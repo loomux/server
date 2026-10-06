@@ -25,6 +25,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TargetNotFound", func(t *testing.T) { testTargetNotFound(t, newStore(t)) })
 	t.Run("TargetDuplicateName", func(t *testing.T) { testTargetDuplicateName(t, newStore(t)) })
 	t.Run("TargetPolicy", func(t *testing.T) { testTargetPolicy(t, newStore(t)) })
+	t.Run("TargetSSH", func(t *testing.T) { testTargetSSH(t, newStore(t)) })
 
 	t.Run("TargetAgentUpsertAndList", func(t *testing.T) { testTargetAgentUpsertAndList(t, newStore(t)) })
 	t.Run("TargetAgentPathAndVersion", func(t *testing.T) { testTargetAgentPathAndVersion(t, newStore(t)) })
@@ -1875,5 +1876,39 @@ func testDispatchEvents(t *testing.T, s registry.Store) {
 	}
 	if left, _ := s.ListDispatchEventsByConversation(ctx, "other"); len(left) != 1 {
 		t.Errorf("events after retention = %v, want e4 kept", left)
+	}
+}
+
+// LOOM-114: a target's SSH port is an ordinary field; its host keys are
+// written only by SetTargetHostKeys, which UpdateTarget leaves alone.
+func testTargetSSH(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	tgt := &registry.Target{ID: "t1", Name: "box", Kind: registry.TargetKindRemote, Host: "box", User: "u", SSHPort: 2222}
+	if err := s.CreateTarget(ctx, tgt); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	line := "box ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+	if err := s.SetTargetHostKeys(ctx, "t1", line); err != nil {
+		t.Fatalf("SetTargetHostKeys: %v", err)
+	}
+	got, err := s.GetTarget(ctx, "t1")
+	if err != nil || got.SSHPort != 2222 || got.HostKeys != line {
+		t.Fatalf("GetTarget = %+v, %v; want port 2222 and the pinned key", got, err)
+	}
+	got.SSHPort, got.HostKeys = 22, "something else"
+	if err := s.UpdateTarget(ctx, got); err != nil {
+		t.Fatalf("UpdateTarget: %v", err)
+	}
+	if got, _ = s.GetTarget(ctx, "t1"); got.SSHPort != 22 || got.HostKeys != line {
+		t.Fatalf("after UpdateTarget = %+v; want port 22 and the pin untouched", got)
+	}
+	if err := s.SetTargetHostKeys(ctx, "t1", ""); err != nil {
+		t.Fatalf("unpin: %v", err)
+	}
+	if got, _ = s.GetTarget(ctx, "t1"); got.HostKeys != "" {
+		t.Fatalf("after unpin HostKeys = %q", got.HostKeys)
+	}
+	if err := s.SetTargetHostKeys(ctx, "missing", line); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("SetTargetHostKeys on an unknown target = %v, want ErrNotFound", err)
 	}
 }

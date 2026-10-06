@@ -211,7 +211,11 @@ func NewExecutorWithMetrics(t *registry.Target, met *metrics.Metrics) (TargetExe
 	case registry.TargetKindLocal:
 		return newMetricsExecutor(NewLocalExecutor(), met, string(t.Kind), t.Name), nil
 	case registry.TargetKindRemote:
-		return newMetricsExecutor(NewRemoteExecutor(t.Host, t.User), met, string(t.Kind), t.Name), nil
+		opts, err := remoteOptions(t)
+		if err != nil {
+			return nil, err
+		}
+		return newMetricsExecutor(NewRemoteExecutor(t.Host, t.User, opts...), met, string(t.Kind), t.Name), nil
 	default:
 		return nil, fmt.Errorf("targets: unknown target kind %q", t.Kind)
 	}
