@@ -220,7 +220,10 @@ defaults for three of them.
 **Optional:** `LOOMUX_SESSION_TTL`, `LOOMUX_MARKER_DIR`,
 `LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
 `LOOMUX_TARGET_PROBE_INTERVAL` (5m), `LOOMUX_TURN_RETENTION` (720h; `0` keeps
-per-turn transcripts forever),
+per-turn transcripts forever), `LOOMUX_TMUX_SOCKET` (`loomux`: the tmux
+socket every session runs on; two instances driving the same targets,
+such as test and production, each need their own, or each one's orphan
+sweep reaps the other's sessions),
 `LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
 provisioning and dispatch — see below), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a

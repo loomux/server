@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,8 +29,31 @@ var ErrUnreachable = errors.New("targets: target unreachable")
 // `tmux -L loomux`, never the user's default one, so the user's tmux
 // config and plugins don't apply to agents, Loomux sessions don't show
 // in their `tmux ls`, and the orphan sweep can only ever see Loomux's
-// own sessions.
-const TmuxSocket = "loomux"
+// own sessions. Two Loomux instances driving the same target (test and
+// production) each need their own, or each one's orphan sweep would reap
+// the other's sessions: set it with SetTmuxSocket (LOOMUX_TMUX_SOCKET)
+// before anything runs.
+var TmuxSocket = DefaultTmuxSocket
+
+// DefaultTmuxSocket is TmuxSocket unless configured otherwise.
+const DefaultTmuxSocket = "loomux"
+
+// tmuxSocketName is what a socket name may be: it goes into shell
+// commands run on targets.
+var tmuxSocketName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+// ValidTmuxSocket reports whether name can be a socket name.
+func ValidTmuxSocket(name string) bool { return tmuxSocketName.MatchString(name) }
+
+// SetTmuxSocket sets TmuxSocket. Call it once at startup, before any
+// session is created or swept.
+func SetTmuxSocket(name string) error {
+	if !ValidTmuxSocket(name) {
+		return fmt.Errorf("targets: tmux socket name %q: letters, digits, '-' and '_' only", name)
+	}
+	TmuxSocket = name
+	return nil
+}
 
 // SessionPrefix starts the name of every session Loomux creates.
 const SessionPrefix = "loomux-"

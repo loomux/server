@@ -22,6 +22,7 @@ import (
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
+	"github.com/Loomux/server/targets"
 )
 
 // Config is the process configuration, loaded from environment
@@ -35,6 +36,10 @@ type Config struct {
 	// MarkerDir is completion.NewDetector's marker file directory.
 	// Empty uses completion's own package default.
 	MarkerDir string
+	// TmuxSocket is the tmux socket name every session runs on
+	// (LOOMUX_TMUX_SOCKET); empty means targets.DefaultTmuxSocket. Give
+	// two instances driving the same targets different ones.
+	TmuxSocket string
 	// MasterKey is the credential vault's AES-256 key, or nil if
 	// LOOMUX_MASTER_KEY is unset. Optional at this layer: registry/sqlite
 	// already fails fast on any credential operation that actually needs
@@ -100,6 +105,7 @@ type NotifyConfig struct {
 const (
 	envDBPath              = "LOOMUX_DB_PATH"
 	envMarkerDir           = "LOOMUX_MARKER_DIR"
+	envTmuxSocket          = "LOOMUX_TMUX_SOCKET"
 	envMasterKey           = "LOOMUX_MASTER_KEY"
 	envReapIdleThreshold   = "LOOMUX_REAP_IDLE_THRESHOLD"
 	envReapInterval        = "LOOMUX_REAP_INTERVAL"
@@ -231,11 +237,17 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	tmuxSocket := os.Getenv(envTmuxSocket)
+	if tmuxSocket != "" && !targets.ValidTmuxSocket(tmuxSocket) {
+		return Config{}, fmt.Errorf("app: %s %q: letters, digits, '-' and '_' only", envTmuxSocket, tmuxSocket)
+	}
+
 	return Config{
 		Notify:              notifyCfg,
 		AgentProfiles:       agentProfiles,
 		DBPath:              dbPath,
 		MarkerDir:           os.Getenv(envMarkerDir),
+		TmuxSocket:          tmuxSocket,
 		MasterKey:           masterKey,
 		Router:              routerCfg,
 		ReapIdleThreshold:   reapIdleThreshold,
