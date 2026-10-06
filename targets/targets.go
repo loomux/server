@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/registry"
@@ -58,6 +59,42 @@ func SetTmuxSocket(name string) error {
 // SessionPrefix starts the name of every session Loomux creates.
 const SessionPrefix = "loomux-"
 
+// MaxPasteBytes is the most text PasteText delivers in one go (LOOM-111):
+// a message to an agent, with the context in front of it, is far below
+// it; anything bigger belongs in a file the agent reads.
+const MaxPasteBytes = 32 << 10
+
+// ErrTextTooLarge is PasteText refusing text over MaxPasteBytes.
+var ErrTextTooLarge = errors.New("targets: text too large to paste")
+
+// pasteBuffer is the tmux buffer a paste into target goes through, named
+// for it so concurrent pastes to different panes don't share one; -d
+// deletes it once pasted.
+func pasteBuffer(target string) string { return "loomux-paste-" + target }
+
+// checkPaste vets text for PasteText: within MaxPasteBytes, and with
+// every control character but newline and tab dropped. tmux before 3.5
+// pastes an ESC verbatim, so an ESC[201~ in the text would end the
+// bracketed paste early and the rest would reach the agent as typed keys
+// (a CR submitting, an ESC answering a prompt): a message carries earlier
+// agent output, which a repository's content can steer. C1 controls go
+// too (0x9b is a one-byte CSI on some terminals), as do DEL, NUL and
+// bytes that aren't UTF-8.
+func checkPaste(text string) (string, error) {
+	if len(text) > MaxPasteBytes {
+		return "", fmt.Errorf("%w: %d bytes, the limit is %d", ErrTextTooLarge, len(text), MaxPasteBytes)
+	}
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f, r == utf8.RuneError:
+			return -1
+		}
+		return r
+	}, text), nil
+}
+
 // AttachCommand is the command a human runs on a target to attach to a
 // Loomux session.
 func AttachCommand(session string) string {
@@ -88,6 +125,14 @@ type TargetExecutor interface {
 	// SendKeys sends keys literally to target, optionally followed by
 	// Enter.
 	SendKeys(ctx context.Context, target, keys string, enter bool) error
+
+	// PasteText delivers text to target as one bracketed paste (tmux
+	// load-buffer + paste-buffer -p), optionally followed by Enter
+	// (LOOM-111). A multi-line message so arrives whole, as if pasted by
+	// a human, instead of each newline pressing Enter in the agent's
+	// input; an app that didn't ask for bracketed paste gets the plain
+	// text. Text over MaxPasteBytes is refused with ErrTextTooLarge.
+	PasteText(ctx context.Context, target, text string, enter bool) error
 
 	// SendKey sends one key by its tmux name (e.g. "Escape", "C-c") to
 	// target — not typed text (LOOM-117: interrupting an agent).

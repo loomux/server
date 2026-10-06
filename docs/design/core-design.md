@@ -341,6 +341,14 @@ shelling out locally or over SSH depending on the task's target. This is
 deliberately the simplest viable mechanism — tmux already solves multi-client
 attach, so a human watching a session is not a special case at all.
 
+A message to an agent is pasted, not typed (LOOM-111): `tmux load-buffer`
+into a per-pane buffer, `paste-buffer -p -d` (a bracketed paste when the
+agent's input asked for one, so a newline in the message doesn't press
+Enter before the rest has arrived), then Enter. Over SSH the text rides in
+the one script as `printf`'s quoted argument. A message over 32 KiB with
+its context (`targets.MaxPasteBytes`) is refused before anything is sent,
+as `message_too_large`, and the task is left as it was.
+
 **Takeover / release.** Passive attach-to-watch never blocks or pauses
 anything — tmux fans output out to every attached client for free. If a
 human wants to actively type into a pane the orchestrator is also driving,

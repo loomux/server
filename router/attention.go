@@ -222,6 +222,10 @@ func (r *Router) failTurnOnError(ctx context.Context, log *slog.Logger, taskID s
 	if taskID == "" || errors.Is(err, orchestrator.ErrHumanTakeover) {
 		return
 	}
+	if ClassifyError(err) == registry.ErrorClassMessageTooLarge {
+		// Refused before anything reached the pane (LOOM-111).
+		return
+	}
 	if errors.Is(context.Cause(ctx), orchestrator.ErrInterrupted) {
 		return
 	}

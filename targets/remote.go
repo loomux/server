@@ -311,6 +311,36 @@ func (e *RemoteExecutor) SendKeys(ctx context.Context, target, keys string, ente
 	return nil
 }
 
+// PasteText loads and pastes the buffer in one ssh round trip: the text
+// travels inside the script as printf's quoted argument (printf is a
+// shell builtin, so no argument-length limit applies), since the
+// script itself is ssh's stdin.
+func (e *RemoteExecutor) PasteText(ctx context.Context, target, text string, enter bool) error {
+	text, err := checkPaste(text)
+	if err != nil {
+		return err
+	}
+	buf := pasteBuffer(target)
+	tmux := func(args ...string) string {
+		return shellQuoteJoin(append([]string{"tmux", "-L", TmuxSocket}, args...))
+	}
+	script := shellQuoteJoin([]string{"printf", "%s", text}) + " | " +
+		tmux("load-buffer", "-b", buf, "-") + " && " + tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", target)
+	_, stderr, exitCode, err := e.sshExec(ctx, script)
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("targets: remote tmux paste-buffer: %s", firstNonEmpty(stderr, fmt.Sprintf("exit status %d", exitCode)))
+	}
+	if enter {
+		if _, err := e.run(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *RemoteExecutor) CapturePane(ctx context.Context, target string) (string, error) {
 	return e.run(ctx, "capture-pane", "-t", target, "-p")
 }

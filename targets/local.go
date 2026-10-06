@@ -71,6 +71,30 @@ func (e *LocalExecutor) SendKeys(ctx context.Context, target, keys string, enter
 	return nil
 }
 
+func (e *LocalExecutor) PasteText(ctx context.Context, target, text string, enter bool) error {
+	text, err := checkPaste(text)
+	if err != nil {
+		return err
+	}
+	buf := pasteBuffer(target)
+	load := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "load-buffer", "-b", buf, "-")
+	load.Stdin = strings.NewReader(text)
+	var stderr bytes.Buffer
+	load.Stderr = &stderr
+	if err := load.Run(); err != nil {
+		return &exec.Error{Name: "tmux load-buffer", Err: errors.New(firstNonEmpty(stderr.String(), err.Error()))}
+	}
+	if _, err := e.run(ctx, "paste-buffer", "-p", "-d", "-b", buf, "-t", target); err != nil {
+		return err
+	}
+	if enter {
+		if _, err := e.run(ctx, "send-keys", "-t", target, "Enter"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (e *LocalExecutor) CapturePane(ctx context.Context, target string) (string, error) {
 	return e.run(ctx, "capture-pane", "-t", target, "-p")
 }

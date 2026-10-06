@@ -812,6 +812,9 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	if note := turnLogFrom(ctx).agentNote; note != "" {
 		agentMessage = note + "\n\n" + message
 	}
+	if err := checkMessageSize(agentMessage); err != nil {
+		return "", err
+	}
 	if task == nil {
 		// A fresh agent hasn't seen the conversation: what was said before
 		// (a clarifying question and its answer, an earlier task) goes in
@@ -822,6 +825,9 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		}
 		if earlier != "" {
 			agentMessage = earlier + "\n\n" + agentMessage
+		}
+		if err := checkMessageSize(agentMessage); err != nil {
+			return "", err
 		}
 		task, promptSent, err = r.launchAgent(ctx, workspaceID, conversationID, agentType, agentMessage)
 		if err != nil {
@@ -845,6 +851,10 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 			}
 		}
 		if err := r.orch.SendMessage(ctx, task.ID, agentMessage); err != nil {
+			var exited *orchestrator.ProcessExitedError
+			if errors.As(err, &exited) {
+				return "", r.agentExited(ctx, task, exited)
+			}
 			return "", fmt.Errorf("router: dispatch: send message: %w", err)
 		}
 	}
@@ -1571,4 +1581,17 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// checkMessageSize refuses a message to an agent over what is pasted into
+// its pane (LOOM-111), before anything is launched or sent: the task, if
+// any, is left as it was.
+func checkMessageSize(agentMessage string) error {
+	if len(agentMessage) <= targets.MaxPasteBytes {
+		return nil
+	}
+	return &classedError{class: registry.ErrorClassMessageTooLarge, msg: fmt.Sprintf(
+		"router: dispatch: the message is %d KiB with its context, over the %d KiB Loomux sends to an agent. "+
+			"Put the long part in a file in the workspace and ask the agent to read it",
+		(len(agentMessage)+1023)/1024, targets.MaxPasteBytes>>10)}
 }
