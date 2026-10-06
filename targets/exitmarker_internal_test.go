@@ -131,8 +131,10 @@ func TestWrapExitStatusSurvivesCtrlC(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
-	// Catches SIGINT, says so, and exits 0 about a second later.
-	child := `trap 'echo caught' INT; i=0; while [ $i -lt 10 ]; do sleep 0.1; i=$((i+1)); done; echo finished; exit 0`
+	// Catches SIGINT, says so, and exits 0 about a second later. It says
+	// when its trap is set, so C-c isn't sent before (a loaded CI runner
+	// can take longer than any fixed wait).
+	child := `trap 'echo caught' INT; echo trap-set; i=0; while [ $i -lt 10 ]; do sleep 0.1; i=$((i+1)); done; echo finished; exit 0`
 	shells := map[string]string{"sh": ""}
 	if _, err := exec.LookPath("busybox"); err == nil {
 		shells["busybox ash"] = "busybox sh -c "
@@ -150,7 +152,15 @@ func TestWrapExitStatusSurvivesCtrlC(t *testing.T) {
 				t.Fatalf("NewSession: %v", err)
 			}
 			t.Cleanup(func() { _ = ex.KillSession(context.Background(), session) })
-			time.Sleep(300 * time.Millisecond)
+			for start := time.Now(); ; time.Sleep(50 * time.Millisecond) {
+				pane, _ := ex.CapturePane(ctx, session)
+				if strings.Contains(pane, "trap-set") {
+					break
+				}
+				if time.Since(start) > 10*time.Second {
+					t.Fatalf("the child never set its trap; pane:\n%s", pane)
+				}
+			}
 			if err := ex.SendKey(ctx, session, "C-c"); err != nil {
 				t.Fatalf("SendKey C-c: %v", err)
 			}
