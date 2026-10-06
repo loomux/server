@@ -45,7 +45,7 @@ These steps assume you have access to a consistent backup file (either from
 2. Start a debug pod that mounts both the data and backup PVCs:
    ```bash
    kubectl -n loomux run loomux-restore --rm -it --restart=Never \
-     --image=docker.io/keinos/sqlite3:3.46.1 \
+     --image=docker.io/keinos/sqlite3:3.46.1@sha256:055d4be20d868f4077598cbbc33ce4ff39dbefbbe0b87e39ca7b70f9f51caf51 \
      --overrides='{
        "spec": {
          "volumes": [
@@ -55,7 +55,7 @@ These steps assume you have access to a consistent backup file (either from
          "containers": [
            {
              "name":"restore",
-             "image":"docker.io/keinos/sqlite3:3.46.1",
+             "image":"docker.io/keinos/sqlite3:3.46.1@sha256:055d4be20d868f4077598cbbc33ce4ff39dbefbbe0b87e39ca7b70f9f51caf51",
              "command":["sh"],
              "stdin":true,
              "tty":true,
@@ -136,7 +136,7 @@ the live database.
      securityContext: { fsGroup: 10001, runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
      containers:
        - name: drill
-         image: docker.io/keinos/sqlite3:3.46.1
+         image: docker.io/keinos/sqlite3:3.46.1@sha256:055d4be20d868f4077598cbbc33ce4ff39dbefbbe0b87e39ca7b70f9f51caf51
          command: ["/bin/sh", "-c", "sleep 600"]
          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] }, runAsUser: 10001, runAsGroup: 10001 }
          volumeMounts: [ { name: backup, mountPath: /backup, readOnly: true } ]
@@ -145,6 +145,7 @@ the live database.
          persistentVolumeClaim: { claimName: loomuxd-backup, readOnly: true }
    YAML
    kubectl -n loomux wait --for=condition=Ready pod/loomux-restore-drill
+   mkdir -p drill && chmod 700 drill   # the copy holds conversations: keep it yours
    f=$(kubectl -n loomux exec loomux-restore-drill -- sh -c 'ls -t /backup/loomux-*.db | head -1')
    kubectl -n loomux exec loomux-restore-drill -- sqlite3 "$f" 'PRAGMA integrity_check;'   # ok
    kubectl -n loomux exec loomux-restore-drill -- cat "$f" > drill/loomux.db
@@ -156,10 +157,11 @@ the live database.
    that's never called):
 
    ```bash
-   chmod 777 drill && chmod 666 drill/loomux.db
    IMG=ghcr.io/loomux/server:<deployed sha>
    HASH=$(echo -n drill-password | docker run --rm -i "$IMG" -hash-password | tail -1)
-   docker run -d --name loomux-drill -p 127.0.0.1:18080:8080 -v "$PWD/drill:/data" \
+   # As your own uid, so it can write the copy without opening it up.
+   docker run -d --name loomux-drill --user "$(id -u):$(id -g)" -e HOME=/tmp \
+     -p 127.0.0.1:18080:8080 -v "$PWD/drill:/data" \
      -e LOOMUX_DB_PATH=/data/loomux.db -e "LOOMUX_AUTH_PASSWORD_HASH=$HASH" \
      -e "LOOMUX_MASTER_KEY=$(head -c 32 /dev/urandom | base64)" \
      -e LOOMUX_ROUTER_PRIMARY_BASE_URL=http://127.0.0.1:9/v1 \
@@ -174,7 +176,8 @@ the live database.
 
 A random vault key can't read vault credentials. Use the real
 `LOOMUX_MASTER_KEY` (from the secret store, never written to disk) only
-when the drill must prove the vault too; today nothing writes to it.
+when the drill must prove the vault too, i.e. once it holds credentials
+(`GET /api/v1/credentials` lists them).
 
 ### Drill record
 

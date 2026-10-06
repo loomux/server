@@ -178,7 +178,7 @@ func (r *Router) executeCommand(ctx context.Context, conversationID string, targ
 	if output == "" {
 		output = "(no output)"
 	}
-	return fmt.Sprintf("Ran `%s` on %s — exit %d:\n\n```\n%s\n```", command, target.Name, res.exitCode, output),
+	return fmt.Sprintf("Ran `%s` on %s — %s:\n\n```\n%s\n```", command, target.Name, res.ended, output),
 		res.taskID, nil
 }
 

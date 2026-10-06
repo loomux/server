@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -30,6 +31,10 @@ type Server struct {
 	// IdentityFile is the path to a PEM-encoded private key authorized to
 	// log in — pass to `ssh -i`.
 	IdentityFile string
+
+	// HostKey is the server's public host key in authorized_keys form
+	// ("ssh-ed25519 AAAA…"), for a known_hosts line.
+	HostKey string
 
 	listener net.Listener
 	// loginShell runs each exec request's command as `<loginShell> -c
@@ -89,6 +94,7 @@ func StartWithLoginShell(t *testing.T, loginShell string) *Server {
 		Host:         "127.0.0.1",
 		Port:         ln.Addr().(*net.TCPAddr).Port,
 		IdentityFile: writeIdentityFile(t, clientPriv),
+		HostKey:      strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostSigner.PublicKey()))),
 		listener:     ln,
 		loginShell:   loginShell,
 	}
