@@ -1,0 +1,11 @@
+❯ what does the CI error mean?
+
+● The cache service printed this:
+
+  Usage limit reached · resets 5pm
+
+  It's the provider's quota, not your code.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,9 @@
+❯ fix the failing test in api/body_test.go
+
+  ⎿  5-hour limit reached ∙ resets 5pm (Europe/Istanbul)
+     /upgrade to increase your usage limit.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

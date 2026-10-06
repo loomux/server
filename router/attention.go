@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +24,8 @@ const answerSettle = 3 * time.Second
 // needsAttention handles an agent stopped at a prompt (LOOM-97). A
 // sign-in screen fails the task fast with login_required — Loomux never
 // signs an agent in — keeping the pane so a human can attach and finish
-// the login. Anything else leaves the task needs-attention with the
+// the login. A usage-limit error (LOOM-109) fails it with
+// agent_rate_limited, saying when the limit resets. Anything else leaves the task needs-attention with the
 // prompt recorded, and the reply shows the prompt and how to answer it;
 // the conversation's next message is the answer (answerAttention).
 func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *registry.Task, message string,
@@ -38,9 +40,25 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 			log.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 		}
 		log.Warn("agent needs a login", "task_id", task.ID)
-		return "", fmt.Errorf("router: dispatch: %s (it shows %q). Loomux doesn't sign agents in: attach on %s with "+
-			"`%s` and finish the login there, or store an API key credential for %s, then send your message again",
-			reason, a.Detail, targetName, targets.AttachCommand(task.TmuxSession), task.AgentType)
+		return "", &classedError{class: registry.ErrorClassLoginRequired, msg: fmt.Sprintf(
+			"router: dispatch: %s (it shows %q). Loomux doesn't sign agents in: attach on %s with "+
+				"`%s` and finish the login there, or store an API key credential for %s, then send your message again",
+			reason, a.Detail, targetName, targets.AttachCommand(task.TmuxSession), task.AgentType)}
+	}
+	if a.Kind == registry.AttentionUsageLimit {
+		reason := fmt.Sprintf("agent %q on %s hit its usage limit", task.AgentType, targetName)
+		if a.ResetsAt != "" {
+			reason += ", resets " + a.ResetsAt
+		}
+		if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
+			Class: registry.ErrorClassAgentRateLimited, Reason: reason, OutputTail: a.Detail,
+		}); err != nil {
+			log.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
+		}
+		log.Warn("agent hit its usage limit", "task_id", task.ID, "resets_at", a.ResetsAt)
+		return "", &classedError{class: registry.ErrorClassAgentRateLimited, msg: fmt.Sprintf(
+			"router: dispatch: %s (it shows %q). Send your message again after the reset, or "+
+				"ask for a different agent", reason, a.Detail)}
 	}
 	if err := r.orch.NeedAttention(ctx, task.ID, a); err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
@@ -390,5 +408,33 @@ func (r *Router) CancelTask(ctx context.Context, taskID string) error {
 	}
 	r.interruptAgent(ctx, task)
 	r.logger.Info("task cancelled", "task_id", task.ID)
+	return nil
+}
+
+// cliFinalLimitMessage is what Claude Code reports as the turn's last
+// message when its account hits the limit: the old "Claude AI usage limit
+// reached|<epoch>" or "Claude usage limit reached. …". Nothing looser: a
+// one-line answer that merely starts with "5-hour limit reached …" is an
+// answer (#222 review).
+var cliFinalLimitMessage = regexp.MustCompile(`^(?:Claude AI usage limit reached\|\d{10}|Claude usage limit reached\.[^\n]*)$`)
+
+// usageLimitAtEnd is the usage-limit error a finished turn ended on, if
+// any (LOOM-109). With no reply from the agent, that's read off the final
+// screen. A reply is checked only when it's one line and nothing else,
+// the shape of the CLI reporting the error itself as its last message
+// (marked here as the CLI's own error line, which the pattern requires),
+// so an answer that quotes a limit message among other text is never
+// failed for it. Only this kind: the login markers are plain words a
+// reply could contain.
+func usageLimitAtEnd(detect func(string) *registry.Attention, screen, agentMessage string) *registry.Attention {
+	if msg := strings.TrimSpace(agentMessage); msg != "" {
+		if !cliFinalLimitMessage.MatchString(msg) {
+			return nil
+		}
+		screen = "⎿ " + msg
+	}
+	if a := detect(screen); a != nil && a.Kind == registry.AttentionUsageLimit {
+		return a
+	}
 	return nil
 }

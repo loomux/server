@@ -894,6 +894,17 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 	}
 	r.recordTurn(ctx, exec, task, message, agentMessage)
 
+	// An agent that hit its usage limit prints an error and ends the turn,
+	// so its completion signal can come before the progress watcher has
+	// seen the screen twice (LOOM-109): check the turn's end too, rather
+	// than relay the error as an answer.
+	if entry, err := r.agentTypes.Get(task.AgentType); err == nil && entry.DetectPrompt != nil {
+		if a := usageLimitAtEnd(entry.DetectPrompt, captured, agentMessage); a != nil {
+			*failClass = registry.ErrorClassInternal
+			return r.needsAttention(ctx, log, task, message, a)
+		}
+	}
+
 	result, err := r.model.Relay(ctx, r.scrubForRelay(ctx, captured))
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: relay: %w", err)

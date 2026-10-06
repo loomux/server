@@ -1,0 +1,7 @@
+› fix the failing test in api/body_test.go
+
+■ You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 2 days 3 hours 4 minutes.
+
+› Ask Codex to do anything
+
+  ⏎ send   ⇧⏎ newline   ⌃T transcript   ⌃C quit

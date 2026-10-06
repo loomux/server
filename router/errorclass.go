@@ -14,6 +14,10 @@ import (
 // (timeout, agent exited) where the error carries them, otherwise the
 // same classes the dispatch metrics use.
 func ClassifyError(err error) registry.ErrorClass {
+	var classed *classedError
+	if errors.As(err, &classed) {
+		return classed.class
+	}
 	var timeout *orchestrator.TurnTimeoutError
 	if errors.As(err, &timeout) {
 		return registry.ErrorClassTimeout
@@ -40,6 +44,10 @@ func classifyDispatchError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var classed *classedError
+	if errors.As(err, &classed) {
+		return string(classed.class)
+	}
 	if errors.Is(err, targets.ErrUnreachable) {
 		return string(registry.ErrorClassTargetUnreachable)
 	}
@@ -55,3 +63,14 @@ func classifyDispatchError(err error) string {
 	}
 	return string(registry.ErrorClassInternal)
 }
+
+// classedError is a dispatch error that carries the class its task
+// failed with, for the job and the metrics: an agent that isn't signed
+// in, or is at its usage limit (LOOM-109), which a client words
+// differently from an internal error.
+type classedError struct {
+	class registry.ErrorClass
+	msg   string
+}
+
+func (e *classedError) Error() string { return e.msg }
