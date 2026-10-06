@@ -209,3 +209,23 @@ func TestLoadConfig_TurnRetention(t *testing.T) {
 		t.Fatalf("a negative retention was accepted")
 	}
 }
+
+// Two instances on one target each need their own tmux socket, or each
+// one's orphan sweep reaps the other's sessions.
+func TestLoadConfig_TmuxSocket(t *testing.T) {
+	setRouterEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.TmuxSocket != "" {
+		t.Fatalf("default: TmuxSocket = %q, %v; want empty (targets' default)", cfg.TmuxSocket, err)
+	}
+	t.Setenv(envTmuxSocket, "loomux-prod")
+	if cfg, err = LoadConfig(); err != nil || cfg.TmuxSocket != "loomux-prod" {
+		t.Fatalf("TmuxSocket = %q, %v; want loomux-prod", cfg.TmuxSocket, err)
+	}
+	for _, bad := range []string{"loomux prod", "a;rm -rf x", "-L", "x/y"} {
+		t.Setenv(envTmuxSocket, bad)
+		if _, err := LoadConfig(); err == nil {
+			t.Errorf("%s=%q: got nil error", envTmuxSocket, bad)
+		}
+	}
+}

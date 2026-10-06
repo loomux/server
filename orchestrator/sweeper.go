@@ -14,7 +14,9 @@ import (
 // listLoomuxSessions lists the sessions on Loomux's own tmux server, one
 // "name created-unix-time" per line. No server running is no sessions,
 // not an error.
-var listLoomuxSessions = "tmux -L " + targets.TmuxSocket + " list-sessions -F '#{session_name} #{session_created}' 2>/dev/null; true"
+func listLoomuxSessions() string {
+	return "tmux -L " + targets.TmuxSocket + " list-sessions -F '#{session_name} #{session_created}' 2>/dev/null; true"
+}
 
 // OrphanSweeper finds, per target, tmux sessions on Loomux's socket that
 // no live task owns — left by failed launches, restarts, a task row
@@ -84,7 +86,7 @@ func (s *OrphanSweeper) Sweep(ctx context.Context) int {
 			log.Warn("orphan sweep skipped a target", "error", err)
 			continue
 		}
-		out, err := exec.RunOnce(ctx, listLoomuxSessions)
+		out, err := exec.RunOnce(ctx, listLoomuxSessions())
 		if err != nil {
 			log.Warn("orphan sweep skipped a target", "error", err)
 			continue
