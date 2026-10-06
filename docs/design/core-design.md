@@ -418,11 +418,20 @@ vendor. Its responsibilities:
   CLIs were found there, which weren't, or "not checked yet"), so the
   router prefers an agent that is actually installed (LOOM-71).
 - **Relay**: condense/summarize captured agent output into a chat-appropriate
-  reply, and update the workspace's rolling summary.
+  reply, and update the workspace's rolling summary. Since LOOM-112 the
+  relay model is also told what the turn was for: the user's message that
+  started it (up to 2000 characters), the workspace's summary from before
+  it (up to 1500), and the agent type, with the output last. So a terse
+  answer ("8080.") is relayed as the answer to its question, the reply
+  says when the output doesn't show the asked-for work, and the new
+  summary can carry on from the old one. Output an agent writes after its
+  turn ended is relayed with no message.
   **What the relay vendor sees (LOOM-108).** The relay model is a
   third-party API (the configured router endpoints, e.g. Groq or
   OpenRouter). It is sent the agent's captured output for the turn
-  (the final message, or the pane's recent screen), with every vault
+  (the final message, or the pane's recent screen), and the turn's
+  message and previous summary (which the routing model already sees),
+  all scrubbed the same way: every vault
   value and anything shaped like a secret (GitHub, OpenAI/Anthropic/Groq,
   AWS and Slack tokens, JWTs, PEM private keys, and the value of a
   `NAME=value` whose name says secret, token, password or key) replaced

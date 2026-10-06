@@ -325,6 +325,22 @@ func (r *Router) scrubForRelay(ctx context.Context, captured string) string {
 	return relayText(captured, func(s string) string { return r.redactAllSecrets(ctx, s) })
 }
 
+// relayInput is what the relay model gets for task's turn (LOOM-112):
+// the scrubbed output, with the message that started the turn ("" for
+// late output) and the workspace's summary from before it, each scrubbed
+// and bounded — the scrub first, as for the output.
+func (r *Router) relayInput(ctx context.Context, task *registry.Task, message, captured string) RelayInput {
+	scrub := func(s string) string { return r.redactAllSecrets(ctx, s) }
+	in := RelayInput{AgentType: task.AgentType, Captured: r.scrubForRelay(ctx, captured)}
+	if message != "" {
+		in.UserMessage = truncateRunes(scrub(message), RelayUserMessageRunes)
+	}
+	if ws, err := r.store.GetWorkspace(ctx, task.WorkspaceID); err == nil && ws.RollingSummary != "" {
+		in.PreviousSummary = truncateRunes(scrub(ws.RollingSummary), RelaySummaryRunes)
+	}
+	return in
+}
+
 // relayText scrubs captured, then bounds it for the relay model. In that
 // order: a secret cut by the bound would no longer match a pattern
 // (LOOM-133).

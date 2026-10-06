@@ -104,7 +104,12 @@ const relaySystemPrompt = `You are Loomux's relay model. You are given the raw c
 	`next message is typed into it directly rather than starting a fresh one. If the agent's last ` +
 	`message asks the user anything or says it is waiting for them, done is false. If it says work is ` +
 	`still running (a command left in the background, a build or job it will report on later), done ` +
-	`is false: its report comes into the same session.`
+	`is false: its report comes into the same session. ` +
+	`With the output you are given the user's message that started the turn and the workspace's ` +
+	`summary from before it. The reply answers that message from what the output shows, never from ` +
+	`the message alone: if the output doesn't show the asked-for work done, say what it does show. ` +
+	`Don't repeat the message back. Your reply replaces the summary, so if the previous summary holds ` +
+	`something the next turn still needs that this output doesn't restate, keep it in one short clause.`
 
 // buildDecideTool builds the forced tool/function-call schema for Decide.
 // Flat rather than a conditional schema keyed on action — conditional

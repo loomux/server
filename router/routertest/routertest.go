@@ -18,6 +18,9 @@ import (
 type StubRoutingModel struct {
 	DecideFunc func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error)
 	RelayFunc  func(ctx context.Context, capturedOutput string) (router.RelayResult, error)
+	// RelayInputFunc, if set, gets the whole RelayInput (LOOM-112) in
+	// place of RelayFunc, for tests about what the relay model is told.
+	RelayInputFunc func(ctx context.Context, in router.RelayInput) (router.RelayResult, error)
 
 	// LastDecideOptions captures the resolved DispatchOptions from the
 	// most recent Decide call (LOOM-46's WithWorkspaceHint, etc.), so
@@ -40,8 +43,11 @@ func (m *StubRoutingModel) Decide(ctx context.Context, message string, workspace
 	return m.DecideFunc(ctx, message, workspaces)
 }
 
-func (m *StubRoutingModel) Relay(ctx context.Context, capturedOutput string) (router.RelayResult, error) {
-	return m.RelayFunc(ctx, capturedOutput)
+func (m *StubRoutingModel) Relay(ctx context.Context, in router.RelayInput) (router.RelayResult, error) {
+	if m.RelayInputFunc != nil {
+		return m.RelayInputFunc(ctx, in)
+	}
+	return m.RelayFunc(ctx, in.Captured)
 }
 
 var _ router.RoutingModel = (*StubRoutingModel)(nil)
