@@ -10,31 +10,8 @@ milestones.
 
 ## [Unreleased]
 
-### Changed
-
-- The image's web client is web 0.1.3 (`web-fc1c9ab`): the chat scrolls
-  to the newest message, clearer cancelled-turn and update wording
-  (LOOM-130), bundles carry build-provenance attestations (LOOM-118).
-- Router resilience (LOOM-107): a routing answer that names an unknown
-  workspace, target or agent (or isn't a usable tool call) gets one
-  retry on the same model, told what was wrong, before escalating. When
-  the primary model fails 3 times in a row (unreachable, HTTP error,
-  timeout) it's skipped for 2 minutes and messages go straight to the
-  escalation model, so an outage doesn't cost every message the
-  primary's 15 s timeout. New metrics `loomux_router_retries_total` and
-  `loomux_router_primary_breaker_open`.
-- A target that can't be reached over SSH now says why (LOOM-85): host
-  key changed or unknown, key refused, DNS, SOCKS proxy down, connection
-  refused, host unreachable, shared-connection session refused, or
-  timeout, each with a hint ("the host key of jet01 has changed: …").
-  The class is in the error text and in
-  `loomux_target_op_errors_total{reason="unreachable_<class>"}`, and
-  ssh's banner lines (the post-quantum warning) no longer replace the
-  real error or leak into command output.
-- The routing model sees at most 25 workspaces per message (LOOM-107):
-  the most recently used, plus, however old, the one the client hinted,
-  the conversation's last and open-task workspaces, and any the message
-  names. Failed, archived and shell workspaces were already left out.
+What's coming waits in [`changes/`](changes/), one file per pull
+request, until the next milestone folds it in here.
 
 ## [0.1.0] - 2026-10-05
 
