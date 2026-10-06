@@ -222,6 +222,15 @@ not engineering taste):
     "every task in this conversation" since a conversation isn't pinned to
     one workspace) and `MessageLister` (`ListMessagesByConversation`),
     both satisfied structurally by `*app.App.Store()`.
+  - `GET /api/v1/conversations/{id}/events` — auth-gated (LOOM-110), the
+    conversation's dispatch audit trail, oldest first: `{conversation_id,
+    events: [{id, dispatch_id?, created_at, kind, model?, tier?,
+    target_id?, workspace_id?, task_id?, command?, outcome?, error_class?,
+    duration_ms, detail?}, ...]}`. `kind` is `decision`, `command`,
+    `provision`, `offer`, `offer_answered`, `agent_turn`, `relay` (late
+    output) or `outcome`; commands are redacted like transcripts. An
+    unknown conversation, or one past `LOOMUX_EVENT_RETENTION`, has an
+    empty list. Backed by `EventStore` (`WithEvents`); `501` without it.
   - `GET /api/v1/conversations/{id}/stream` — auth-gated (LOOM-21),
     Server-Sent Events reporting task status transitions for one
     conversation, so a client can watch a dispatch progress instead of

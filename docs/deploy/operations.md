@@ -85,7 +85,14 @@ the tag in a manifest works the same way.
   (`loomux_dispatch_total{error_class=…}`), not a log field; `LOOMUX_LOG_LEVEL=debug` adds more.
 - **Disk:** the database grows with conversations and per-turn
   transcripts; transcripts older than `LOOMUX_TURN_RETENTION` (30 days
-  by default) are deleted.
+  by default) are deleted, and dispatch audit events older than
+  `LOOMUX_EVENT_RETENTION` (90 days).
+- **After the fact:** `GET /api/v1/conversations/{id}/events` is the
+  conversation's audit trail (LOOM-110): each routing decision with the
+  router model and tier that made it, every command and provisioning run
+  (redacted) with its target and exit, offers and how they were answered,
+  agent turns, and each dispatch's outcome and error class. It outlives
+  pod logs.
 
 ## Backups
 

@@ -382,3 +382,30 @@ func TestReaper_TurnRetention(t *testing.T) {
 		t.Fatalf("turns past retention = %d, want 0", len(turns))
 	}
 }
+
+// LOOM-110: with an event retention set, each sweep deletes dispatch
+// events recorded before it; without one, they are kept.
+func TestReaper_EventRetention(t *testing.T) {
+	store, _, _, _, o := setup(t)
+	ctx := context.Background()
+	if err := store.CreateDispatchEvent(ctx, &registry.DispatchEvent{ID: "e1", ConversationID: "c", Kind: registry.EventDecision}); err != nil {
+		t.Fatalf("CreateDispatchEvent: %v", err)
+	}
+	count := func() int {
+		events, _ := store.ListDispatchEventsByConversation(ctx, "c")
+		return len(events)
+	}
+
+	orchestrator.NewReaper(o, time.Hour).Sweep(ctx)
+	if n := count(); n != 1 {
+		t.Fatalf("events after a sweep without retention = %d, want 1", n)
+	}
+	orchestrator.NewReaper(o, time.Hour, orchestrator.WithEventRetention(time.Hour)).Sweep(ctx)
+	if n := count(); n != 1 {
+		t.Fatalf("a fresh event was deleted by a 1h retention")
+	}
+	orchestrator.NewReaper(o, time.Hour, orchestrator.WithEventRetention(time.Nanosecond)).Sweep(ctx)
+	if n := count(); n != 0 {
+		t.Fatalf("events past retention = %d, want 0", n)
+	}
+}

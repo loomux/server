@@ -84,6 +84,10 @@ type Config struct {
 	// (LOOM-122); zero keeps them. LoadConfig defaults it to
 	// defaultTurnRetention.
 	TurnRetention time.Duration
+	// EventRetention is how long the dispatch audit trail is kept
+	// (LOOM-110); zero keeps it. LoadConfig defaults it to
+	// defaultEventRetention.
+	EventRetention time.Duration
 }
 
 // NotifyConfig configures turn notifications (LOOM-102).
@@ -121,6 +125,7 @@ const (
 	envNotifyMinDuration   = "LOOMUX_NOTIFY_MIN_DURATION"
 	envPublicURL           = "LOOMUX_PUBLIC_URL"
 	envTurnRetention       = "LOOMUX_TURN_RETENTION"
+	envEventRetention      = "LOOMUX_EVENT_RETENTION"
 
 	defaultDBPath = "loomux.db"
 
@@ -139,6 +144,9 @@ const (
 	// defaultTurnRetention keeps a month of per-turn transcripts: each
 	// can carry a 256 KiB pane.
 	defaultTurnRetention = 30 * 24 * time.Hour
+	// defaultEventRetention keeps 90 days of the dispatch audit trail:
+	// small rows, read after the fact.
+	defaultEventRetention = 90 * 24 * time.Hour
 )
 
 // LoadConfig reads Config from the environment, failing fast on
@@ -216,6 +224,15 @@ func LoadConfig() (Config, error) {
 		turnRetention = d
 	}
 
+	eventRetention := defaultEventRetention
+	if raw := os.Getenv(envEventRetention); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration (0 keeps events): %q", envEventRetention, raw)
+		}
+		eventRetention = d
+	}
+
 	var logLevel slog.Level
 	if raw := os.Getenv(envLogLevel); raw != "" {
 		if err := logLevel.UnmarshalText([]byte(raw)); err != nil {
@@ -256,6 +273,7 @@ func LoadConfig() (Config, error) {
 		DispatchMaxDuration: dispatchMaxDuration,
 		DispatchDrain:       dispatchDrain,
 		TurnRetention:       turnRetention,
+		EventRetention:      eventRetention,
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil

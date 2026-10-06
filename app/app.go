@@ -420,7 +420,8 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 
 	reaper := orchestrator.NewReaper(orch, threshold, orchestrator.WithReaperMetrics(met),
-		orchestrator.WithStaleProvisioningAfter(staleProvisioningAfter), orchestrator.WithTurnRetention(cfg.TurnRetention))
+		orchestrator.WithStaleProvisioningAfter(staleProvisioningAfter), orchestrator.WithTurnRetention(cfg.TurnRetention),
+		orchestrator.WithEventRetention(cfg.EventRetention))
 	reaperCtx, stopReaper := context.WithCancel(context.Background())
 	reaperDone := make(chan struct{})
 	go func() {

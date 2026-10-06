@@ -132,7 +132,7 @@ func ApplyAffinity(d Decision, open *OpenTaskSnapshot) (out Decision, overridden
 	leaves := d.LeaveOpenTask || d.Action == ActionRunCommand || d.Action == ActionProvisionWorkspace
 	if !continues && !leaves {
 		overriddenFrom = string(d.Action)
-		d = Decision{Action: ActionUseWorkspace, WorkspaceID: open.WorkspaceID}
+		d = Decision{Action: ActionUseWorkspace, WorkspaceID: open.WorkspaceID, Model: d.Model, Tier: d.Tier}
 		continues = true
 	}
 	if continues {

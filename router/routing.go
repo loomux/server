@@ -140,6 +140,12 @@ type Decision struct {
 	// conversation's open task (LOOM-87). Without it, a decision that
 	// doesn't continue the open task is overridden to do so.
 	LeaveOpenTask bool
+
+	// Model and Tier name the router model that made the decision and
+	// its tier ("primary", "escalation"), for the audit trail (LOOM-110);
+	// empty when no model did.
+	Model string
+	Tier  string
 }
 
 // RelayResult is what RoutingModel.Relay returns.
@@ -187,6 +193,10 @@ type RelayResult struct {
 	// running, the message is sent into it as the next turn") rather
 	// than launching a fresh one.
 	Done bool
+
+	// Model and Tier: as for Decision (LOOM-110).
+	Model string
+	Tier  string
 }
 
 // DispatchOptions holds the optional, per-call knobs Dispatch/Decide
