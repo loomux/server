@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/Loomux/server/router"
 )
 
 func TestRelay_HappyPath_Done(t *testing.T) {
@@ -17,7 +19,7 @@ func TestRelay_HappyPath_Done(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	result, err := m.Relay(context.Background(), "raw captured pane output")
+	result, err := m.Relay(context.Background(), router.RelayInput{Captured: "raw captured pane output"})
 	if err != nil {
 		t.Fatalf("Relay: %v", err)
 	}
@@ -37,7 +39,7 @@ func TestRelay_HappyPath_NotDone(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	result, err := m.Relay(context.Background(), "raw captured pane output")
+	result, err := m.Relay(context.Background(), router.RelayInput{Captured: "raw captured pane output"})
 	if err != nil {
 		t.Fatalf("Relay: %v", err)
 	}
@@ -59,7 +61,7 @@ func TestRelay_MalformedPrimary_EscalatesToHealthyEscalation(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	result, err := m.Relay(context.Background(), "raw output")
+	result, err := m.Relay(context.Background(), router.RelayInput{Captured: "raw output"})
 	if err != nil {
 		t.Fatalf("Relay: %v", err)
 	}
@@ -79,7 +81,7 @@ func TestRelay_NoToolCall_TreatedAsFailure(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	_, err = m.Relay(context.Background(), "raw output")
+	_, err = m.Relay(context.Background(), router.RelayInput{Captured: "raw output"})
 	if err == nil {
 		t.Fatal("Relay: want error, got nil")
 	}
@@ -98,7 +100,7 @@ func TestRelay_PrimaryTransportError_EscalatesToHealthyEscalation(t *testing.T) 
 		t.Fatalf("New: %v", err)
 	}
 
-	result, err := m.Relay(context.Background(), "raw output")
+	result, err := m.Relay(context.Background(), router.RelayInput{Captured: "raw output"})
 	if err != nil {
 		t.Fatalf("Relay: %v", err)
 	}
@@ -123,7 +125,7 @@ func TestRelay_PrimaryEmptyReply_EscalatesToHealthyEscalation(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	result, err := m.Relay(context.Background(), "raw output")
+	result, err := m.Relay(context.Background(), router.RelayInput{Captured: "raw output"})
 	if err != nil {
 		t.Fatalf("Relay: %v", err)
 	}
@@ -140,7 +142,7 @@ func TestRelay_PrimaryFails_NoEscalationConfigured_SurfacesDirectly(t *testing.T
 		t.Fatalf("New: %v", err)
 	}
 
-	_, err = m.Relay(context.Background(), "raw output")
+	_, err = m.Relay(context.Background(), router.RelayInput{Captured: "raw output"})
 	if err == nil {
 		t.Fatal("Relay: want error, got nil")
 	}
@@ -159,11 +161,33 @@ func TestRelay_BothTiersFail_ReturnsCombinedError(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	_, err = m.Relay(context.Background(), "raw output")
+	_, err = m.Relay(context.Background(), router.RelayInput{Captured: "raw output"})
 	if err == nil {
 		t.Fatal("Relay: want error, got nil")
 	}
 	if !strings.Contains(err.Error(), "primary model failed") || !strings.Contains(err.Error(), "escalation model also failed") {
 		t.Errorf("Relay err = %q, want it to mention both primary and escalation failures", err.Error())
+	}
+}
+
+// LOOM-112: the relay model is told what the turn was for, with the
+// captured output last.
+func TestRelayUserPrompt(t *testing.T) {
+	got := relayUserPrompt(router.RelayInput{
+		UserMessage: "add a health endpoint", PreviousSummary: "Set up the HTTP server.",
+		AgentType: "claude-code", Captured: "wrote health.go\ntests pass",
+	})
+	for _, want := range []string{"Agent: claude-code", "add a health endpoint", "Set up the HTTP server."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, "Captured output:\nwrote health.go\ntests pass") {
+		t.Errorf("prompt doesn't end with the captured output:\n%s", got)
+	}
+
+	late := relayUserPrompt(router.RelayInput{Captured: "build finished"})
+	if !strings.Contains(late, "after its turn had ended") || strings.Contains(late, "summary before") {
+		t.Errorf("late-output prompt = %q, want it to say no message started it, and no summary section", late)
 	}
 }

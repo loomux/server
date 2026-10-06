@@ -143,6 +143,31 @@ type Decision struct {
 }
 
 // RelayResult is what RoutingModel.Relay returns.
+// RelayInput is what the relay model condenses (LOOM-112): the agent's
+// captured output, with what it needs to read it — the user's message
+// that started the turn (so the reply answers that), the workspace's
+// summary from before it (so the new summary carries on from it), and
+// which agent produced the output.
+type RelayInput struct {
+	// UserMessage is the message the turn delivered; empty for output
+	// the agent wrote after its turn ended (late output).
+	UserMessage string
+	// PreviousSummary is the workspace's rolling summary before this
+	// turn; empty for a first turn.
+	PreviousSummary string
+	// AgentType is the agent CLI that ran the turn ("claude-code").
+	AgentType string
+	// Captured is the agent's output, scrubbed of credential values.
+	Captured string
+}
+
+// Bounds on the context a relay call carries besides the output: enough
+// to know what was asked and what came before, never the bulk of it.
+const (
+	RelayUserMessageRunes = 2000
+	RelaySummaryRunes     = 1500
+)
+
 type RelayResult struct {
 	// Reply is the condensed text — used as both the chat-appropriate
 	// reply and the workspace's new rolling summary, regardless of
@@ -282,7 +307,8 @@ type RoutingModel interface {
 	// doesn't understand.
 	Decide(ctx context.Context, message string, workspaces []WorkspaceSnapshot, targets []TargetSnapshot, opts ...DispatchOption) (Decision, error)
 
-	// Relay condenses captured agent output into a RelayResult — see
-	// its doc comment for the Done distinction (design spec §3).
-	Relay(ctx context.Context, capturedOutput string) (RelayResult, error)
+	// Relay condenses a turn's captured agent output into a RelayResult —
+	// see its doc comment for the Done distinction (design spec §3). in
+	// says what the turn was for (LOOM-112), so the reply answers it.
+	Relay(ctx context.Context, in RelayInput) (RelayResult, error)
 }

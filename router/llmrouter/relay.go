@@ -24,13 +24,13 @@ type relayArguments struct {
 // escalating to the configured escalation tier (if any) when the primary
 // fails (transport/rate-limit) or returns an unusable (unparseable/
 // invalid tool call, or an empty reply).
-func (m *Model) Relay(ctx context.Context, capturedOutput string) (router.RelayResult, error) {
+func (m *Model) Relay(ctx context.Context, in router.RelayInput) (router.RelayResult, error) {
 	var err error
 	if m.skipPrimary() {
 		err = errPrimarySkipped
 	} else {
 		var result router.RelayResult
-		result, err = m.relayWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, capturedOutput)
+		result, err = m.relayWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, in)
 		m.recordPrimary(ctx, err)
 		if err == nil {
 			return result, nil
@@ -42,7 +42,7 @@ func (m *Model) Relay(ctx context.Context, capturedOutput string) (router.RelayR
 	}
 
 	m.metrics.RecordRouterEscalation(metrics.RouterOpRelay)
-	result, err2 := m.relayWith(ctx, "escalation", *m.cfg.Escalation, m.escalationTimeout, capturedOutput)
+	result, err2 := m.relayWith(ctx, "escalation", *m.cfg.Escalation, m.escalationTimeout, in)
 	if err2 != nil {
 		m.metrics.RecordRouterCall(metrics.RouterOpRelay, "escalation", metrics.OutcomeFailure, m.escalationTimeout)
 		return router.RelayResult{}, fmt.Errorf(
@@ -51,7 +51,7 @@ func (m *Model) Relay(ctx context.Context, capturedOutput string) (router.RelayR
 	return result, nil
 }
 
-func (m *Model) relayWith(ctx context.Context, tierName string, tier Tier, timeout time.Duration, capturedOutput string) (router.RelayResult, error) {
+func (m *Model) relayWith(ctx context.Context, tierName string, tier Tier, timeout time.Duration, in router.RelayInput) (router.RelayResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -61,7 +61,7 @@ func (m *Model) relayWith(ctx context.Context, tierName string, tier Tier, timeo
 		Model: tier.Model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(relaySystemPrompt),
-			openai.UserMessage(capturedOutput),
+			openai.UserMessage(relayUserPrompt(in)),
 		},
 		Tools: []openai.ChatCompletionToolUnionParam{buildRelayTool()},
 		ToolChoice: openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
@@ -100,4 +100,23 @@ func (m *Model) relayWith(ctx context.Context, tierName string, tier Tier, timeo
 		m.metrics.RecordRouterTokens(tierName, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
 	}
 	return router.RelayResult{Reply: reply, Done: args.Done}, nil
+}
+
+// relayUserPrompt lays out a relay call's input (LOOM-112): the turn's
+// context first, the captured output last, each under a plain heading.
+func relayUserPrompt(in router.RelayInput) string {
+	var b strings.Builder
+	if in.AgentType != "" {
+		fmt.Fprintf(&b, "Agent: %s\n\n", in.AgentType)
+	}
+	if in.UserMessage != "" {
+		fmt.Fprintf(&b, "The user's message that started this turn:\n%s\n\n", in.UserMessage)
+	} else {
+		b.WriteString("No new message started this: the agent wrote this output after its turn had ended.\n\n")
+	}
+	if in.PreviousSummary != "" {
+		fmt.Fprintf(&b, "The workspace's summary before this turn:\n%s\n\n", in.PreviousSummary)
+	}
+	fmt.Fprintf(&b, "Captured output:\n%s", in.Captured)
+	return b.String()
 }

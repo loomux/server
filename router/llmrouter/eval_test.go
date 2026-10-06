@@ -353,10 +353,23 @@ func TestEvalRelay(t *testing.T) {
 		name     string
 		captured string
 		wantDone bool
+		// LOOM-112: the turn's message and the summary before it, and
+		// words of which the reply must contain at least one (lowercase).
+		message, summary string
+		replyHasAny      []string
+		anyDone          bool // done isn't scored: either reading is fair
 	}{
-		{"asks-a-question", "> ask me whether to create hello.txt, then wait\n\n● Should I create hello.txt?\n\n> ", false},
-		{"offers-options", "> the search endpoint is slow\n\n● I found three options: (1) add an index on title, (2) rewrite the query, (3) cache results. Which do you want?\n\n> ", false},
-		{"finished", "> create hello.txt containing hi\n\n● Write(hello.txt)\n  ⎿  Wrote 1 line to hello.txt\n\n● Created hello.txt containing \"hi\".\n\n> ", true},
+		{"asks-a-question", "> ask me whether to create hello.txt, then wait\n\n● Should I create hello.txt?\n\n> ", false, "", "", nil, false},
+		{"offers-options", "> the search endpoint is slow\n\n● I found three options: (1) add an index on title, (2) rewrite the query, (3) cache results. Which do you want?\n\n> ", false, "", "", nil, false},
+		{"finished", "> create hello.txt containing hi\n\n● Write(hello.txt)\n  ⎿  Wrote 1 line to hello.txt\n\n● Created hello.txt containing \"hi\".\n\n> ", true, "", "", nil, false},
+		// The output alone says nothing was done; with the message, the
+		// reply must say the asked-for deploy didn't happen.
+		{"work-not-shown", "> deploy\n\n● Bash(ssh deploy@prod ./deploy.sh)\n  ⎿  ssh: connect to host prod port 22: Connection timed out\n\n● I couldn't reach the prod host.\n\n> ", false,
+			"deploy the api to prod", "Added a rate limiter to the HTTP middleware; all tests pass.",
+			[]string{"couldn't", "could not", "can't", "cannot", "unable", "timed out", "not deployed", "failed"}, true},
+		// A terse answer only makes sense with the question.
+		{"answers-the-message", "> which port\n\n● 8080.\n\n> ", true,
+			"which port does the api server listen on?", "", []string{"8080"}, false},
 	}
 	failed := 0
 	for _, c := range cases {
@@ -364,14 +377,19 @@ func TestEvalRelay(t *testing.T) {
 		var got []string
 		for range evalRuns {
 			time.Sleep(pace)
-			res, err := m.Relay(context.Background(), c.captured)
+			res, err := m.Relay(context.Background(), router.RelayInput{
+				Captured: c.captured, UserMessage: c.message, PreviousSummary: c.summary, AgentType: "claude-code"})
 			if err != nil {
 				got = append(got, "error: "+errClass(err))
 				continue
 			}
 			effective := res.Done && !router.AsksUser(res.Reply)
-			got = append(got, fmt.Sprintf("done=%v effective=%v", res.Done, effective))
-			if effective == c.wantDone {
+			got = append(got, fmt.Sprintf("done=%v effective=%v reply=%q", res.Done, effective, res.Reply))
+			replyOK := len(c.replyHasAny) == 0
+			for _, w := range c.replyHasAny {
+				replyOK = replyOK || strings.Contains(strings.ToLower(res.Reply), w)
+			}
+			if (c.anyDone || effective == c.wantDone) && replyOK {
 				passed++
 			}
 		}
