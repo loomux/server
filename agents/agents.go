@@ -62,7 +62,7 @@ const (
 // TierMarker signal.
 func ClaudeCode() router.AgentType {
 	return router.AgentType{
-		AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker, DetectPrompt: DetectPrompt},
+		AgentConfig:    completion.AgentConfig{Tier: completion.TierMarker, DetectPrompt: DetectPrompt, DetectCompaction: DetectCompaction},
 		LaunchTemplate: "claude",
 		Binary:         "claude",
 		// `claude auth status` prints JSON with "loggedIn" (LOOM-86).

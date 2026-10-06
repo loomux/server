@@ -22,6 +22,10 @@ func ClassifyError(err error) registry.ErrorClass {
 	if errors.As(err, &exited) {
 		return registry.ErrorClassAgentExited
 	}
+	var compaction *orchestrator.CompactionLoopError
+	if errors.As(err, &compaction) {
+		return registry.ErrorClassCompactionLoop
+	}
 	if c := classifyDispatchError(err); c != "" {
 		return registry.ErrorClass(c)
 	}

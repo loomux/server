@@ -119,6 +119,41 @@ func detectLogin(lines []string) *registry.Attention {
 	return nil
 }
 
+// DetectCompaction reports whether Claude Code is compacting its context
+// right now (LOOM-109): its status line, the last line above the input
+// box, reads "✻ Compacting conversation…" — a spinner glyph, the words, an
+// ellipsis. Only that line, in that shape, counts: tool output and diffs
+// above it may quote the words (an agent working on this very file), and
+// a finished compaction's "Conversation compacted" note doesn't count.
+func DetectCompaction(screen string) bool {
+	line, ok := statusLine(bottomLines(screen, compactionRegionLines))
+	return ok && compactingStatus.MatchString(line)
+}
+
+// compactingStatus is Claude Code's status line while it compacts.
+var compactingStatus = regexp.MustCompile(`^\s*[✻✽✶✳✢·*]\s*Compacting conversation…`)
+
+// statusLine is the last non-blank line above Claude Code's input box (a
+// rule, then the "❯" prompt line); false when there's no input box.
+func statusLine(lines []string) (string, bool) {
+	for i := len(lines) - 2; i >= 0; i-- {
+		if !isRule(lines[i]) || !strings.HasPrefix(strings.TrimSpace(lines[i+1]), "❯") {
+			continue
+		}
+		for j := i - 1; j >= 0; j-- {
+			if strings.TrimSpace(lines[j]) != "" {
+				return lines[j], true
+			}
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// compactionRegionLines is how much of the pane's bottom holds the status
+// line and the input box under it.
+const compactionRegionLines = 12
+
 func isFooter(line string) bool {
 	lower := strings.ToLower(line)
 	for _, f := range promptFooters {
