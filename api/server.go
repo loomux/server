@@ -540,7 +540,6 @@ type workspaceSummary struct {
 	Status         string     `json:"status"`
 	Tags           []string   `json:"tags"`
 	Description    string     `json:"description"`
-	Capabilities   []string   `json:"capabilities"`
 	RollingSummary string     `json:"rolling_summary"`
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	// StatusReason says why the workspace is in its status, e.g. what
@@ -553,7 +552,7 @@ type listWorkspacesResponse struct {
 }
 
 // handleListWorkspaces returns a summary of every registered workspace
-// (id/name/target/status plus tags/description/capabilities/rolling_summary/
+// (id/name/target/status plus tags/description/rolling_summary/
 // last_used_at), sorted by name (registry.Store's own
 // ListWorkspaces order). Wraps WorkspaceLister.ListWorkspaces.
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -571,7 +570,6 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			Status:         string(ws.Status),
 			Tags:           orEmpty(ws.Tags),
 			Description:    ws.Description,
-			Capabilities:   orEmpty(ws.Capabilities),
 			RollingSummary: ws.RollingSummary,
 			LastUsedAt:     ws.LastUsedAt,
 			StatusReason:   ws.StatusReason,
@@ -1281,13 +1279,13 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 type unsupportedVersionResponse struct {
-	Error             string   `json:"error"`
+	errorResponse
 	SupportedVersions []string `json:"supported_versions"`
 }
 
 func (s *Server) handleUnsupportedAPIPath(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotFound, unsupportedVersionResponse{
-		Error:             "unsupported or unknown API path",
+		errorResponse:     errorResponse{Error: "unsupported or unknown API path", Code: codeUnsupportedAPIVersion},
 		SupportedVersions: []string{APIVersion},
 	})
 }
@@ -1872,8 +1870,58 @@ func (s *Server) handleTaskTranscript(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// errorResponse is every /api/v1 error body: Error is the human text,
+// Code a stable machine-readable name a client can branch on without
+// parsing the text (the default for the status, from errorCodeFor, or a
+// specific one written with writeErrorCode). See api/README.md, "Errors".
 type errorResponse struct {
 	Error string `json:"error"`
+	Code  string `json:"code"`
+}
+
+// Specific error codes: cases a handler tells apart that a client can act
+// on, beyond what the status alone says.
+const (
+	// codeConversationBusy: POST /api/v1/dispatch's 409 when the
+	// conversation already has a dispatch running (the body's dispatch_id
+	// names it).
+	codeConversationBusy = "conversation_busy"
+	// codeIdempotencyConflict: POST /api/v1/dispatch's 422 when the
+	// Idempotency-Key was already used for a different request.
+	codeIdempotencyConflict = "idempotency_conflict"
+	// codeUnsupportedAPIVersion: the 404 for an /api path outside /api/v1.
+	codeUnsupportedAPIVersion = "unsupported_api_version"
+)
+
+// errorCodeFor is the default code for an error status.
+func errorCodeFor(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "invalid_request"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusRequestEntityTooLarge:
+		return "too_large"
+	case http.StatusUnprocessableEntity:
+		return "unprocessable"
+	case http.StatusTooManyRequests:
+		return "rate_limited"
+	case http.StatusInternalServerError:
+		return "internal"
+	case http.StatusNotImplemented:
+		return "not_implemented"
+	case http.StatusBadGateway:
+		return "bad_gateway"
+	case http.StatusServiceUnavailable:
+		return "unavailable"
+	}
+	return "error"
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -1882,8 +1930,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeError writes an error body with the status's default code.
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, errorResponse{Error: msg})
+	writeErrorCode(w, status, errorCodeFor(status), msg)
+}
+
+// writeErrorCode writes an error body with a specific code.
+func writeErrorCode(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, errorResponse{Error: msg, Code: code})
 }
 
 // apiTaskStatus is a task status as the API spells it: snake_case, like

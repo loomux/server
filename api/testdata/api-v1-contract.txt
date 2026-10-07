@@ -16,11 +16,13 @@
 * /api/*
 * /api/* response-header Content-Type
 * /api/* response:unsupported - object
+* /api/* response:unsupported .code string
 * /api/* response:unsupported .error string
 * /api/* response:unsupported .supported_versions []string
 * /api/* status 404
 * /api/v1/*
 * /api/v1/* error - object
+* /api/v1/* error .code string
 * /api/v1/* error .error string
 DELETE /api/v1/credentials/{id}
 DELETE /api/v1/credentials/{id} request-header Authorization
@@ -443,7 +445,6 @@ GET /api/v1/workspaces
 GET /api/v1/workspaces request-header Authorization
 GET /api/v1/workspaces response - object
 GET /api/v1/workspaces response .workspaces []object
-GET /api/v1/workspaces response .workspaces[].capabilities []string
 GET /api/v1/workspaces response .workspaces[].description string
 GET /api/v1/workspaces response .workspaces[].id string
 GET /api/v1/workspaces response .workspaces[].last_used_at time omitempty nullable
@@ -518,6 +519,7 @@ POST /api/v1/dispatch response-header Content-Type
 POST /api/v1/dispatch response-header Location
 POST /api/v1/dispatch response-header Preference-Applied
 POST /api/v1/dispatch response:busy - object
+POST /api/v1/dispatch response:busy .code string
 POST /api/v1/dispatch response:busy .dispatch_id string
 POST /api/v1/dispatch response:busy .error string
 POST /api/v1/dispatch status 200

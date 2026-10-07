@@ -598,6 +598,16 @@ func TestLogin_RepeatedFailures_TriggersBackoffWith429AndRetryAfter(t *testing.T
 	if resp.Header.Get("Retry-After") == "" {
 		t.Error("throttled response has no Retry-After header")
 	}
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode throttled body: %v", err)
+	}
+	if body.Code != "rate_limited" || body.Error == "" {
+		t.Errorf("throttled body = %+v, want code rate_limited and an error", body)
+	}
 }
 
 func TestLogin_SuccessAfterFailure_ResetsThrottle(t *testing.T) {
@@ -780,7 +790,6 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 			Status         string     `json:"status"`
 			Tags           []string   `json:"tags"`
 			Description    string     `json:"description"`
-			Capabilities   []string   `json:"capabilities"`
 			RollingSummary string     `json:"rolling_summary"`
 			IsDynamic      *bool      `json:"is_dynamic"`
 			LastUsedAt     *time.Time `json:"last_used_at"`
@@ -803,9 +812,6 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 	if meta.Description != "metadata workspace" {
 		t.Fatalf("description = %q, want %q", meta.Description, "metadata workspace")
 	}
-	if !sliceEq(meta.Capabilities, []string{"mcp-git", "mcp-filesystem"}) {
-		t.Fatalf("capabilities = %v, want [mcp-git mcp-filesystem]", meta.Capabilities)
-	}
 	if meta.RollingSummary != "last did some work" {
 		t.Fatalf("rolling_summary = %q, want %q", meta.RollingSummary, "last did some work")
 	}
@@ -825,7 +831,7 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 	if plain.LastUsedAt != nil {
 		t.Fatalf("plain.last_used_at = %v, want nil (omitted when null)", plain.LastUsedAt)
 	}
-	if len(plain.Tags) != 0 || len(plain.Capabilities) != 0 || plain.Description != "" || plain.RollingSummary != "" {
+	if len(plain.Tags) != 0 || plain.Description != "" || plain.RollingSummary != "" {
 		t.Fatalf("plain workspace has unexpected metadata: %+v", plain)
 	}
 
@@ -842,8 +848,9 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 		t.Fatal("plain workspace JSON contains last_used_at; want it omitted when null")
 	}
 
-	// tags and capabilities must serialize as [] even when empty — the
-	// contract says they are always present, never null.
+	// tags must serialize as [] even when empty — the contract says they
+	// are always present, never null. capabilities is no longer part of
+	// the API (freeze review: nothing ever filled it).
 	metaTags, ok := raw.Workspaces[0]["tags"].([]any)
 	if !ok {
 		t.Fatalf("meta workspace tags raw type = %T, want []", raw.Workspaces[0]["tags"])
@@ -858,12 +865,8 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 	if len(plainTags) != 0 {
 		t.Fatalf("plain workspace tags raw value = %v, want []", plainTags)
 	}
-	plainCaps, ok := raw.Workspaces[1]["capabilities"].([]any)
-	if !ok {
-		t.Fatalf("plain workspace capabilities raw type = %T, want []", raw.Workspaces[1]["capabilities"])
-	}
-	if len(plainCaps) != 0 {
-		t.Fatalf("plain workspace capabilities raw value = %v, want []", plainCaps)
+	if _, ok := raw.Workspaces[0]["capabilities"]; ok {
+		t.Fatal("workspace JSON has capabilities; want it gone")
 	}
 }
 

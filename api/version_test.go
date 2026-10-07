@@ -56,6 +56,7 @@ func TestUnsupportedAPIPath_ReturnsStructuredRejection(t *testing.T) {
 
 	var out struct {
 		Error             string   `json:"error"`
+		Code              string   `json:"code"`
 		SupportedVersions []string `json:"supported_versions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -63,6 +64,9 @@ func TestUnsupportedAPIPath_ReturnsStructuredRejection(t *testing.T) {
 	}
 	if out.Error == "" {
 		t.Error("error field is empty")
+	}
+	if out.Code != "unsupported_api_version" {
+		t.Errorf("code = %q, want unsupported_api_version", out.Code)
 	}
 	if len(out.SupportedVersions) != 1 || out.SupportedVersions[0] != api.APIVersion {
 		t.Errorf("supported_versions = %v, want [%q]", out.SupportedVersions, api.APIVersion)

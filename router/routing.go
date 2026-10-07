@@ -28,15 +28,14 @@ const (
 )
 
 // WorkspaceSnapshot is the compact workspace projection design spec §6
-// says routing calls should see — tags/description/capabilities, not
+// says routing calls should see — tags/description, not
 // full history — keeping a routing call's context small and cheap
 // regardless of how many workspaces exist.
 type WorkspaceSnapshot struct {
-	ID           string
-	Name         string
-	Description  string
-	Tags         []string
-	Capabilities []string
+	ID          string
+	Name        string
+	Description string
+	Tags        []string
 	// Status, TargetName, Summary and LastUsed say what state the
 	// workspace is in, where it lives and what was last done there
 	// (LOOM-88), so the routing model can tell a live workspace from a

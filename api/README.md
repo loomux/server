@@ -100,6 +100,45 @@ not engineering taste):
   itself); this is the small server-side hosting addition their design
   flagged as a dependency.
 
+## Errors
+
+Every `/api/v1` error answer has the body `{error, code}`: `error` is
+human-readable text (for display or logs; its wording may change), `code`
+a stable machine-readable name a client branches on instead of parsing
+the text. Both are always present. `writeError` (in `server.go`) sets the
+default code for the status; `writeErrorCode` sets a specific one.
+
+Default codes, by status:
+
+| Status | `code` |
+| --- | --- |
+| 400 | `invalid_request` |
+| 401 | `unauthorized` |
+| 403 | `forbidden` |
+| 404 | `not_found` |
+| 409 | `conflict` |
+| 413 | `too_large` |
+| 422 | `unprocessable` |
+| 429 | `rate_limited` (e.g. the login backoff) |
+| 500 | `internal` |
+| 501 | `not_implemented` |
+| 502 | `bad_gateway` |
+| 503 | `unavailable` |
+| any other | `error` |
+
+Specific codes, where a handler tells apart a case a client can act on:
+
+| Code | Where |
+| --- | --- |
+| `conversation_busy` | `POST /api/v1/dispatch` `409` when the conversation already has a dispatch in flight; the body also carries that dispatch's `dispatch_id` |
+| `idempotency_conflict` | `POST /api/v1/dispatch` `422` when the `Idempotency-Key` was already used for a different request |
+| `unsupported_api_version` | `404` for any `/api` path outside `/api/v1`; the body also carries `supported_versions` |
+
+New codes may be added within v1 (a client should treat an unknown code
+like the status's default); a code once given to a case doesn't change.
+A failed blocking dispatch's `500` is a dispatch job body, not this
+envelope: it classifies the failure with `error_class`.
+
 ## Layout
 
 - `auth.go` — `HashPassword` (bcrypt, used by `loomuxd -hash-password`
@@ -167,8 +206,9 @@ not engineering taste):
     - `conversation_id` empty starts a new conversation (its id is in the
       response). A repeat with the same `Idempotency-Key` and the same
       body returns the original job and runs nothing; the same key with a
-      different body is `422`. A conversation with a job still in flight
-      answers `409 {error, dispatch_id}` naming it (LOOM-83 owns
+      different body is `422` (code `idempotency_conflict`). A conversation
+      with a job still in flight answers `409 {error, code, dispatch_id}`
+      (code `conversation_busy`) naming it (LOOM-83 owns
       serializing instead). `503` while the server is shutting down.
     - `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
       ID (e.g. a chat UI already focused on that workspace's conversation)
@@ -182,10 +222,10 @@ not engineering taste):
     cut it off; error class `interrupted`); `404` if unknown.
   - `GET /api/v1/workspaces` — auth-gated (LOOM-19), lists registered
     workspaces sorted by name: `{workspaces: [{id, name, target_id,
-    status, tags, description, capabilities, rolling_summary,
+    status, tags, description, rolling_summary,
     last_used_at?}, ...]}` (`is_dynamic` was removed before 1.0: every
     workspace is dynamic). Includes the router's matching metadata
-    (tags/description/capabilities/rolling_summary) and the usage
+    (tags/description/rolling_summary) and the usage
     timestamp now that the Phase 2 web fleet-status page consumes them
     (LOOM-44). Wraps `WorkspaceLister.ListWorkspaces`, a narrow seam
     mirroring `SessionStore`, satisfied structurally by `*app.App.Store()`.
@@ -420,7 +460,7 @@ current session behaving like `/logout`)
 against a fake `Dispatcher` and a real (temp-file) sqlite store for sessions, plus
 `/api/v1/workspaces` (auth required, empty-list, populated-and-sorted,
  and metadata round-trip cases, asserting the full field set including
- tags/description/capabilities/rolling_summary/last_used_at
+ tags/description/rolling_summary/last_used_at
  against real store fixtures) and
 `/api/v1/conversations` + `/api/v1/conversations/{id}` (auth required,
 empty-list, recency-sorted grouping across multiple conversations, a
