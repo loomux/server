@@ -112,8 +112,11 @@ of its work they get:
 Empty (the default) is `none` for a target with `purpose: work`, `full`
 otherwise. Everything sent is redacted first (vault values, secret
 shapes). The message being routed always reaches the routing model.
-Under `none`, a turn is never judged "done" by a model, so its session
-stays open until the idle reaper closes it. Messages logged before this
+Under `none`, a turn is never judged "done" by a model, and Loomux
+doesn't guess locally: its session stays open until the idle reaper
+closes it (`LOOMUX_REAP_IDLE_THRESHOLD`, 24h by default). That is on
+purpose: an idle pane for a day costs little, while closing a session
+the agent was still working in loses it. Messages logged before this
 policy existed are matched to their target through their task, or
 failing that, their purpose.
 

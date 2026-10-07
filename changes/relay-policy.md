@@ -13,4 +13,7 @@
 
 - **Work machines (`purpose: work`) default to `none`**: nothing from
   them reaches the router models unless their `relay` is set otherwise.
-  Personal machines keep `full`.
+  Personal machines keep `full`. On the test instance this includes
+  sc1: its replies now arrive as the agent's raw final message (redacted,
+  last 4000 characters) instead of a condensed summary, and its sessions
+  stay open until the idle reaper closes them.
