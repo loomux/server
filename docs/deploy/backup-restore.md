@@ -122,6 +122,17 @@ A backup is only proven by restoring it. This drill does that without
 touching the running instance: it never suspends Flux and never writes to
 the live database.
 
+`deploy/restore-drill.sh` runs all three steps below and their checks
+(integrity, migration, health, login, what's served), cleans up the pod,
+the container and the copy whatever happens, and prints a row for the
+drill record:
+
+```bash
+deploy/restore-drill.sh --image ghcr.io/loomux/server:<deployed sha> --context admin@theWyseKube
+```
+
+The steps, by hand:
+
 1. **Read the newest backup through a short-lived, read-only pod** (the
    backup job's own image and security context; the backup PVC mounted
    read-only):
@@ -184,6 +195,7 @@ when the drill must prove the vault too, i.e. once it holds credentials
 | Date | Backup | Image | Result |
 |---|---|---|---|
 | 2026-10-05 | `loomux-20261005-020017.db` (nightly, 204 KB, schema 13) | `0.1.3` (`b07d5eb`) | `integrity_check` ok; migrated 13 → 18 on start; health healthy; login ok; 5 workspaces, 2 targets, 15 conversations with messages and dispatches served |
+| 2026-10-07 | `loomux-20261007-020017.db` (nightly, 356K, schema 19) | `0.3.11` (`733e9ab`), by `deploy/restore-drill.sh` | `integrity_check` ok; migrated 19 → 22 on start; health healthy; login ok; 7 workspaces, 2 targets, 23 conversations served |
 
 A full in-place restore of the live instance (the procedure above,
 suspending Flux) hasn't been rehearsed: it suspends the cluster-wide

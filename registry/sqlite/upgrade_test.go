@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	_ "embed"
@@ -18,16 +19,17 @@ const v010Schema = 18
 //go:embed testdata/v0.1.0-seed.sql
 var v010Seed string
 
-// TestUpgradeFromV010 (LOOM-126): a database as v0.1.0 left it opens
-// with today's code, every migration since applied, and everything in it
-// reads back through today's store. A migration that breaks a deployed
-// database fails here, not in production. When a release changes how
-// existing rows are read, extend the checks; the seed stays as v0.1.0
-// wrote it.
-func TestUpgradeFromV010(t *testing.T) {
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "v010.db")
+// v020Schema is the last migration v0.2.0 shipped with: what production
+// runs.
+const v020Schema = 19
 
+//go:embed testdata/v0.2.0-seed.sql
+var v020Seed string
+
+// seedAt makes dbPath a database as the release whose last migration is
+// schema left it, holding seed.
+func seedAt(t *testing.T, dbPath string, schema int64, seed string) {
+	t.Helper()
 	db, err := sql.Open("sqlite", dsn(dbPath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -38,15 +40,28 @@ func TestUpgradeFromV010(t *testing.T) {
 	if err := goose.SetDialect("sqlite3"); err != nil {
 		t.Fatalf("SetDialect: %v", err)
 	}
-	if err := goose.UpTo(db, "migrations", v010Schema); err != nil {
-		t.Fatalf("goose.UpTo(%d): %v", v010Schema, err)
+	if err := goose.UpTo(db, "migrations", schema); err != nil {
+		t.Fatalf("goose.UpTo(%d): %v", schema, err)
 	}
-	if _, err := db.ExecContext(ctx, v010Seed); err != nil {
+	if _, err := db.ExecContext(context.Background(), seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestUpgradeFromV010 (LOOM-126): a database as v0.1.0 left it opens
+// with today's code, every migration since applied, and everything in it
+// reads back through today's store. A migration that breaks a deployed
+// database fails here, not in production. When a release changes how
+// existing rows are read, extend the checks; the seed stays as v0.1.0
+// wrote it.
+func TestUpgradeFromV010(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "v010.db")
+
+	seedAt(t, dbPath, v010Schema, v010Seed)
 
 	store, err := Open(dbPath)
 	if err != nil {
@@ -113,5 +128,68 @@ func TestUpgradeFromV010(t *testing.T) {
 	if err := store.CreateMessage(ctx, &registry.Message{ID: "m-new", ConversationID: "conv-1",
 		Role: registry.MessageRoleUser, Content: "after the upgrade"}); err != nil {
 		t.Errorf("writing after the upgrade: %v", err)
+	}
+}
+
+// TestUpgradeFromV020: production runs v0.2.0, so its database must open
+// with today's code too: every migration since applied (the audit trail,
+// SSH port and host keys, the relay policy), the vault still decrypting,
+// and the columns added since reading back as their defaults.
+func TestUpgradeFromV020(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "v020.db")
+	seedAt(t, dbPath, v020Schema, v020Seed)
+
+	store, err := Open(dbPath, WithMasterKey(bytes.Repeat([]byte{7}, 32)))
+	if err != nil {
+		t.Fatalf("Open (applies every migration after v0.2.0): %v", err)
+	}
+	defer store.Close()
+
+	creds, err := store.ListCredentials(ctx)
+	if err != nil || len(creds) != 2 {
+		t.Fatalf("credentials = %+v, %v; want both", creds, err)
+	}
+	// Distinct values, so a row mixup in a scoped lookup would show.
+	for id, want := range map[string]string{"cr-1": "upgrade-test-value", "cr-2": "upgrade-test-value-scoped"} {
+		got, err := store.GetCredential(ctx, id)
+		if err != nil || got.Value != want {
+			t.Errorf("credential %s = %+v, %v; want %q decrypting as before", id, got, err, want)
+		}
+	}
+
+	// Columns since v0.2.0 read back as their defaults: no SSH override
+	// or pin (LOOM-114), the purpose's relay default (work: none).
+	jet, err := store.GetTarget(ctx, "t-jet")
+	if err != nil || jet.SSHPort != 0 || jet.HostKeys != "" || jet.Policy.Relay != "" ||
+		jet.Policy.EffectiveRelay() != registry.RelayFull {
+		t.Errorf("target jet01 = %+v, %v; want no SSH override or pin, relay full by default", jet, err)
+	}
+	sc1, err := store.GetTarget(ctx, "t-work")
+	if err != nil || sc1.Policy.EffectiveRelay() != registry.RelayNone || !sc1.Policy.RequireConfirmation {
+		t.Errorf("target sc1 = %+v, %v; want its work policy kept and relay none by default", sc1, err)
+	}
+	msgs, err := store.ListMessagesByConversation(ctx, "conv-1")
+	if err != nil || len(msgs) != 3 || msgs[1].Origin != registry.TargetPurposePersonal || msgs[1].OriginTargetID != "" {
+		t.Errorf("messages = %+v, %v; want them kept, with no origin target recorded", msgs, err)
+	}
+	if events, err := store.ListDispatchEventsByConversation(ctx, "conv-1"); err != nil || len(events) != 0 {
+		t.Errorf("dispatch events = %+v, %v; want none yet", events, err)
+	}
+	if d, err := store.GetDispatch(ctx, "d-2"); err != nil || d.ConfirmationID != "c-1" {
+		t.Errorf("dispatch = %+v, %v", d, err)
+	}
+
+	// The new tables and columns take writes beside the old rows.
+	if err := store.CreateDispatchEvent(ctx, &registry.DispatchEvent{ID: "e-new", ConversationID: "conv-1",
+		DispatchID: "d-2", Kind: registry.EventOutcome}); err != nil {
+		t.Errorf("writing an event after the upgrade: %v", err)
+	}
+	if err := store.SetTargetHostKeys(ctx, "t-jet", "jet01 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"); err != nil {
+		t.Errorf("pinning after the upgrade: %v", err)
+	}
+	if err := store.CreateMessage(ctx, &registry.Message{ID: "m-new", ConversationID: "conv-1", OriginTargetID: "t-work",
+		Role: registry.MessageRoleUser, Content: "after the upgrade"}); err != nil {
+		t.Errorf("writing a message after the upgrade: %v", err)
 	}
 }
