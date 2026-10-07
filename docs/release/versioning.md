@@ -90,3 +90,30 @@ loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, releas
    builds the image as `0.Y.0` and releases it with the section as notes.
 3. Deploy that commit's image (`loomux-deploy-test-instance <sha>`); it
    reports `0.Y.0 (web 0.Y.0)`.
+
+## The API v1 contract (`api/testdata/api-v1-contract.txt`)
+
+From 1.0.0, `/api/v1` is additions only (`docs/release/v0.2.0.md`, "What
+1.0.0 will mean"). `TestAPIv1Contract` (`api/contract_test.go`) enforces
+it:
+
+- It reads the routes from the `mux.HandleFunc("METHOD /api/v1/...")`
+  calls in `api/`, and each route's bodies (request, response, stream
+  events, the shared error) from `apiV1Bodies` in the test, reflecting
+  on their `json` tags: one line per field, with its JSON kind,
+  `omitempty` and `nullable`. A route missing from `apiV1Bodies`, a
+  `...Request`/`...Response`/`...Event` type no route uses, a map
+  literal written as a response or a stream event that isn't
+  registered fails the test.
+- It compares that with the golden file. **A line gone or changed**
+  (a field removed, renamed, retyped or made `omitempty`; a route
+  removed) fails: it breaks v1 and waits for `/api/v2`. **A new line**
+  fails too, until it is recorded with
+  `go test ./api -run TestAPIv1Contract -update` and the golden file is
+  committed, so every API change shows up in review.
+- Until 1.0.0 a deliberate break is still allowed: record it with
+  `-update` and say so under `### Changed` or `### Removed` in its
+  `changes/` fragment.
+
+It covers routes and JSON field names and kinds, not status codes,
+query parameters or headers; review those by hand.
