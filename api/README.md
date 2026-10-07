@@ -139,7 +139,7 @@ like the status's default); a code once given to a case doesn't change.
 A failed blocking dispatch's `500` is a dispatch job body, not this
 envelope: it classifies the failure with `error_class`.
 
-### API v1 conventions
+## API v1 conventions
 
 - **Identifiers.** A resource's own id is `id`; a reference to another
   resource is `<thing>_id` (`workspace_id`, `target_id`, `task_id`).
