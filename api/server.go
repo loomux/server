@@ -557,7 +557,6 @@ type workspaceSummary struct {
 	Description    string     `json:"description"`
 	Capabilities   []string   `json:"capabilities"`
 	RollingSummary string     `json:"rolling_summary"`
-	IsDynamic      bool       `json:"is_dynamic"`
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	// StatusReason says why the workspace is in its status, e.g. what
 	// made it failed (LOOM-77). Omitted when there's nothing to say.
@@ -570,7 +569,7 @@ type listWorkspacesResponse struct {
 
 // handleListWorkspaces returns a summary of every registered workspace
 // (id/name/target/status plus tags/description/capabilities/rolling_summary/
-// is_dynamic/last_used_at), sorted by name (registry.Store's own
+// last_used_at), sorted by name (registry.Store's own
 // ListWorkspaces order). Wraps WorkspaceLister.ListWorkspaces.
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	workspaces, err := s.workspaces.ListWorkspaces(r.Context())
@@ -589,7 +588,6 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			Description:    ws.Description,
 			Capabilities:   orEmpty(ws.Capabilities),
 			RollingSummary: ws.RollingSummary,
-			IsDynamic:      ws.IsDynamic,
 			LastUsedAt:     ws.LastUsedAt,
 			StatusReason:   ws.StatusReason,
 		})
