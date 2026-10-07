@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -371,6 +372,10 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 			return nil, fmt.Errorf("app: %w", err)
 		}
 	}
+	// Pinned host keys (LOOM-114) are written beside the database, on the
+	// data volume; the database is their source, so the files are
+	// rewritten from it as needed.
+	targets.SetKnownHostsDir(filepath.Join(filepath.Dir(cfg.DBPath), "known_hosts.d"))
 	markerDir := cfg.MarkerDir
 	newExecutor := func(t *registry.Target) (targets.TargetExecutor, error) {
 		return targets.NewExecutorWithMetrics(t, met)
