@@ -360,9 +360,16 @@ A list that can grow without bound carries `has_more` (a boolean, always
 present) beside it, so paging can be introduced without breaking a
 client that assumed the list was complete. Today that is
 `GET /api/v1/conversations` (`conversations`), `GET
-/api/v1/conversations/{id}` (`messages`) and `GET
-/api/v1/tasks/{id}/transcript` (`turns`). Clients must check `has_more`:
-`false` means the list is complete, `true` that more remain.
+/api/v1/conversations/{id}` (`messages`), `GET
+/api/v1/conversations/{id}/events` (`events`, not paged yet: always
+`false`) and `GET /api/v1/tasks/{id}/transcript` (`turns`). Clients must
+check `has_more`: `false` means the list is complete, `true` that more
+remain.
+
+The other lists are **complete lists** for all of v1: `GET /workspaces`,
+`/targets`, `/credentials`, `/sessions` and `/targets/{id}/agents`,
+bounded in practice by what one person registers. They carry no
+`has_more`, and paging them would need new, opt-in parameters.
 
 Paging follows the task transcript's convention (LOOM-122):
 

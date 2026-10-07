@@ -799,7 +799,13 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 	for _, c := range summaries {
 		out = append(out, *c)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	// Ties broken by id, so a limit's cut is the same on every request.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		}
+		return out[i].ConversationID < out[j].ConversationID
+	})
 	more := false
 	if limit > 0 && len(out) > limit {
 		out, more = out[:limit], true

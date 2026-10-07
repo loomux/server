@@ -203,6 +203,7 @@ GET /api/v1/conversations/{id}/events response .events[].target_id string omitem
 GET /api/v1/conversations/{id}/events response .events[].task_id string omitempty
 GET /api/v1/conversations/{id}/events response .events[].tier string omitempty
 GET /api/v1/conversations/{id}/events response .events[].workspace_id string omitempty
+GET /api/v1/conversations/{id}/events response .has_more boolean
 GET /api/v1/conversations/{id}/events response-header Content-Type
 GET /api/v1/conversations/{id}/events status 200
 GET /api/v1/conversations/{id}/events status 401

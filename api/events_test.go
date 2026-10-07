@@ -40,9 +40,14 @@ func TestConversationEvents(t *testing.T) {
 	var body struct {
 		ConversationID string           `json:"conversation_id"`
 		Events         []map[string]any `json:"events"`
+		HasMore        *bool            `json:"has_more"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	// The trail may page in 1.x, so it says has_more now (always false).
+	if body.HasMore == nil || *body.HasMore {
+		t.Errorf("has_more = %v, want present and false", body.HasMore)
 	}
 	if body.ConversationID != "c1" || len(body.Events) != 2 {
 		t.Fatalf("body = %+v, want c1's two events", body)
