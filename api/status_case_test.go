@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -57,5 +58,32 @@ func TestTaskStatusesAreSnakeCase(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(ev.Data), &update); err != nil || ev.Event != "task_update" || update.Status != "awaiting_input" {
 		t.Errorf("stream event %q %s, want task_update with status awaiting_input", ev.Event, ev.Data)
+	}
+}
+
+// permission_mode is snake_case too (#269 review): accept_edits out; in,
+// both accept_edits and the pre-1.0 accept-edits, stored as before.
+func TestPermissionModeSnakeCase(t *testing.T) {
+	srv, _, store := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+	for _, in := range []string{"accept_edits", "accept-edits"} {
+		t.Run(in, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{"name": "box-" + in, "kind": "remote", "host": "box", "user": "u",
+				"permission_mode": in})
+			resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/targets", token, body)
+			defer resp.Body.Close()
+			var out struct {
+				ID             string `json:"id"`
+				PermissionMode string `json:"permission_mode"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+			if resp.StatusCode != http.StatusCreated || out.PermissionMode != "accept_edits" {
+				t.Fatalf("POST permission_mode %q = %d %+v, want 201 and accept_edits", in, resp.StatusCode, out)
+			}
+			stored, _ := store.GetTarget(context.Background(), out.ID)
+			if stored.PermissionMode != registry.PermissionModeAcceptEdits {
+				t.Errorf("stored = %q, want the store's spelling", stored.PermissionMode)
+			}
+		})
 	}
 }

@@ -185,7 +185,7 @@ func (t *Target) Validate() error {
 	switch t.PermissionMode {
 	case "", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual:
 	default:
-		return fmt.Errorf("permission_mode must be empty, %q, %q or %q", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual)
+		return fmt.Errorf("permission_mode must be empty, %q, %q or %q", PermissionModeAuto, "accept_edits", PermissionModeManual)
 	}
 	switch t.Policy.Relay {
 	case "", RelayFull, RelayLastMessage, RelayNone:

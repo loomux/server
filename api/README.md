@@ -210,12 +210,15 @@ not engineering taste):
     latest (status/updated_at already cover "what's happening now").
     `has_more` is `false` unless `?limit=` cut the list short (see
     "Lists and paging").
-  - **Task statuses** are snake_case everywhere in the API, like every
-    other enum: `running`, `awaiting_input`, `needs_attention`,
-    `human_takeover`, `completed`, `failed` (a conversation's `status` is
-    its latest task's). Before 1.0 they were kebab-case
-    (`awaiting-input`, …); the store still spells them that way (API v1
-    freeze review, item 9).
+  - **Enums are snake_case** throughout the API (API v1 freeze review,
+    item 9). Two were kebab-case before 1.0, and the store still spells
+    them that way: task statuses (`running`, `awaiting_input`,
+    `needs_attention`, `human_takeover`, `completed`, `failed`; a
+    conversation's `status` is its latest task's) and a target's
+    `permission_mode` (`auto`, `accept_edits`, `manual`; the legacy
+    `accept-edits` is still accepted as input for 1.x). Agent-type names
+    such as `claude-code` are identifiers, not enums, and keep their
+    spelling.
   - `GET /api/v1/conversations/{id}` — auth-gated (LOOM-18), the full task
     history for one conversation plus its message transcript (LOOM-31):
     `{conversation_id, tasks: [{id, workspace_id, kind, agent_type,

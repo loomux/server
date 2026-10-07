@@ -1427,7 +1427,7 @@ type targetResponse struct {
 	// (LOOM-90); empty means $HOME/loomux-workspaces on the target.
 	WorkspaceRoot string `json:"workspace_root"`
 	// PermissionMode: empty (each agent-type's default), auto,
-	// accept-edits or manual.
+	// accept_edits or manual (accept-edits before 1.0; still accepted).
 	PermissionMode string `json:"permission_mode"`
 	// The target's policy (LOOM-89): purpose (personal, work or empty),
 	// the only agent types allowed there (empty: all), and whether new
@@ -1492,7 +1492,7 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		Host:                t.Host,
 		User:                t.User,
 		WorkspaceRoot:       t.WorkspaceRoot,
-		PermissionMode:      t.PermissionMode,
+		PermissionMode:      apiEnum(t.PermissionMode),
 		Purpose:             t.Policy.Purpose,
 		AllowedAgentTypes:   append([]string{}, t.Policy.AllowedAgentTypes...),
 		AllowProvision:      !t.Policy.NoProvision,
@@ -1589,7 +1589,9 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 		target.WorkspaceRoot = *req.WorkspaceRoot
 	}
 	if req.PermissionMode != nil {
-		target.PermissionMode = *req.PermissionMode
+		// accept_edits in the API; the legacy accept-edits is still taken
+		// for 1.x. The store keeps its spelling.
+		target.PermissionMode = strings.ReplaceAll(*req.PermissionMode, "_", "-")
 	}
 	if err := target.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1885,9 +1887,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // apiTaskStatus is a task status as the API spells it: snake_case, like
-// every other enum the API has ("awaiting_input", "needs_attention",
+// the API's other enums ("awaiting_input", "needs_attention",
 // "human_takeover"). The store keeps its own spelling (API v1 freeze
 // review, item 9).
 func apiTaskStatus(s registry.TaskStatus) string {
-	return strings.ReplaceAll(string(s), "-", "_")
+	return apiEnum(string(s))
+}
+
+// apiEnum spells a stored enum value the API's way: snake_case
+// ("accept-edits" → "accept_edits"). Agent-type names such as
+// "claude-code" are identifiers, not enums, and keep their spelling.
+func apiEnum(s string) string {
+	return strings.ReplaceAll(s, "-", "_")
 }
