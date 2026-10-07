@@ -540,7 +540,6 @@ type workspaceSummary struct {
 	Status         string     `json:"status"`
 	Tags           []string   `json:"tags"`
 	Description    string     `json:"description"`
-	Capabilities   []string   `json:"capabilities"`
 	RollingSummary string     `json:"rolling_summary"`
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	// StatusReason says why the workspace is in its status, e.g. what
@@ -553,7 +552,7 @@ type listWorkspacesResponse struct {
 }
 
 // handleListWorkspaces returns a summary of every registered workspace
-// (id/name/target/status plus tags/description/capabilities/rolling_summary/
+// (id/name/target/status plus tags/description/rolling_summary/
 // last_used_at), sorted by name (registry.Store's own
 // ListWorkspaces order). Wraps WorkspaceLister.ListWorkspaces.
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -571,7 +570,6 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			Status:         string(ws.Status),
 			Tags:           orEmpty(ws.Tags),
 			Description:    ws.Description,
-			Capabilities:   orEmpty(ws.Capabilities),
 			RollingSummary: ws.RollingSummary,
 			LastUsedAt:     ws.LastUsedAt,
 			StatusReason:   ws.StatusReason,

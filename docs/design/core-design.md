@@ -165,7 +165,9 @@ Conceptual schema:
   clean, not `/`; empty = `$HOME/loomux-workspaces` on the target — LOOM-90)
 - `workspaces`: id, name, path, target_id (FK), git remote (nullable),
   short domain tags + description (what the router matches requests
-  against), capabilities (MCPs/tools available there), status
+  against), capabilities (MCPs/tools available there — never filled; kept
+  in the store but dropped from the API and the routing input before
+  1.0, API v1 freeze review), status
   (idle/active/provisioning/archived/failed — `failed` is a workspace whose
   provisioning failed: kept for inspection, never offered to the router
   again; LOOM-71), `status_reason` (why it's in that status — e.g. what
@@ -407,7 +409,7 @@ The router is a single swappable configuration setting, not hardcoded to a
 vendor. Its responsibilities:
 
 - **Routing**: given the incoming chat message and the compact workspace
-  registry (tags/description/capabilities — not full history), decide
+  registry (tags/description, status, last summary — not full history), decide
   whether to answer directly, dispatch to an existing workspace, or
   provision a new one. This is the reason the registry carries short,
   structured metadata instead of Loomux stuffing full workspace history into
