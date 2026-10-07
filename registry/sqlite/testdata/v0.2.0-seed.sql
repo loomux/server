@@ -1,8 +1,9 @@
 -- A v0.2.0 database (schema version 19), as production holds it: the
 -- v0.1.0 rows (v0.2.0 changed no table shape but credentials' unique
 -- index) and the vault, which v0.2.0 shipped (LOOM-134). The credential
--- values are encrypted under the test's master key (32 bytes of 7),
--- "upgrade-test-value". Raw SQL on purpose: it never changes with the
+-- values are encrypted under the test's master key (32 bytes of 7):
+-- "upgrade-test-value" (cr-1, unscoped) and "upgrade-test-value-scoped"
+-- (cr-2). Raw SQL on purpose: it never changes with the
 -- code (TestUpgradeFromV020).
 INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, created_at, updated_at,
     workspace_root, permission_mode, purpose, allowed_agent_types, no_provision, no_shell, require_confirmation)
@@ -50,5 +51,5 @@ VALUES ('s-1', 'hash-1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 INSERT INTO credentials (id, name, workspace_id, agent_type, ciphertext, created_at, updated_at)
 VALUES ('cr-1', 'GH_TOKEN', NULL, '', X'93bb3855e9abda343a4f0da03f0b0f0086d2cf233cd9f42427d005b3f4c74caf10275c0c7bfea1834f1c793644fe',
     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-       ('cr-2', 'GH_TOKEN', 'w-1', 'claude-code', X'93bb3855e9abda343a4f0da03f0b0f0086d2cf233cd9f42427d005b3f4c74caf10275c0c7bfea1834f1c793644fe',
+       ('cr-2', 'GH_TOKEN', 'w-1', 'claude-code', X'446205ce7b97f85a3ee1006a3763a210f8b814c9dcdd98f2648a18e33a33e764bd23d5a438f318ba72905ae55b9107f3dce8faa40d',
     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);

@@ -226,6 +226,24 @@ func TestLoadConfig_EventRetention(t *testing.T) {
 	}
 }
 
+// A negative dispatch ceiling or drain is a startup error, like the
+// retention durations beside them (#256 review).
+func TestLoadConfig_DispatchDurationsNotNegative(t *testing.T) {
+	setRouterEnv(t)
+	for _, v := range []string{"LOOMUX_DISPATCH_MAX_DURATION", "LOOMUX_DISPATCH_DRAIN"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv(v, "-5m")
+			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), v) {
+				t.Fatalf("%s=-5m: err = %v, want it refused", v, err)
+			}
+			t.Setenv(v, "90s")
+			if _, err := LoadConfig(); err != nil {
+				t.Fatalf("%s=90s: %v", v, err)
+			}
+		})
+	}
+}
+
 // Two instances on one target each need their own tmux socket, or each
 // one's orphan sweep reaps the other's sessions.
 func TestLoadConfig_TmuxSocket(t *testing.T) {

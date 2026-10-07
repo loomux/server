@@ -150,10 +150,11 @@ func TestUpgradeFromV020(t *testing.T) {
 	if err != nil || len(creds) != 2 {
 		t.Fatalf("credentials = %+v, %v; want both", creds, err)
 	}
-	for _, c := range creds {
-		got, err := store.GetCredential(ctx, c.ID)
-		if err != nil || got.Value != "upgrade-test-value" {
-			t.Errorf("credential %s = %+v, %v; want it decrypting as before", c.ID, got, err)
+	// Distinct values, so a row mixup in a scoped lookup would show.
+	for id, want := range map[string]string{"cr-1": "upgrade-test-value", "cr-2": "upgrade-test-value-scoped"} {
+		got, err := store.GetCredential(ctx, id)
+		if err != nil || got.Value != want {
+			t.Errorf("credential %s = %+v, %v; want %q decrypting as before", id, got, err, want)
 		}
 	}
 

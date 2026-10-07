@@ -201,16 +201,16 @@ func LoadConfig() (Config, error) {
 	var dispatchMaxDuration time.Duration
 	if raw := os.Getenv(envDispatchMaxDuration); raw != "" {
 		d, err := time.ParseDuration(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("app: %s is not a valid duration: %w", envDispatchMaxDuration, err)
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration (0 means the default): %q", envDispatchMaxDuration, raw)
 		}
 		dispatchMaxDuration = d
 	}
 	dispatchDrain := defaultDispatchDrain
 	if raw := os.Getenv(envDispatchDrain); raw != "" {
 		d, err := time.ParseDuration(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("app: %s is not a valid duration: %w", envDispatchDrain, err)
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration: %q", envDispatchDrain, raw)
 		}
 		dispatchDrain = d
 	}
