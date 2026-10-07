@@ -123,6 +123,10 @@ func sanitizeForFilename(s string) string {
 	return strings.NewReplacer("/", "_", ":", "_", "@", "_").Replace(s)
 }
 
+// destination is user@host, always passed after "--": a user or host
+// starting with "-" must never be read as an ssh option (-oProxyCommand=
+// runs a command on the Loomux server). Target.Validate refuses those on
+// write; "--" covers anything stored before it did.
 func (e *RemoteExecutor) destination() string {
 	return e.user + "@" + e.host
 }
@@ -198,7 +202,7 @@ func (e *RemoteExecutor) sshExecWithin(ctx context.Context, timeout time.Duratio
 	// a script on stdin (LOOM-90 review). The braces make sh read the
 	// whole command before running any of it, and give it /dev/null as
 	// stdin so nothing it runs can swallow the script.
-	sshArgs := append(e.baseArgs(), e.destination(), "/bin/sh")
+	sshArgs := append(e.baseArgs(), "--", e.destination(), "/bin/sh")
 
 	cmd := exec.CommandContext(opCtx, "ssh", sshArgs...)
 	cmd.Stdin = strings.NewReader("{\n" + remoteCmd + "\n} </dev/null\n")
@@ -383,7 +387,7 @@ func (e *RemoteExecutor) ControlMasterAlive(ctx context.Context) (bool, error) {
 		args = append(args, "-p", strconv.Itoa(e.port))
 	}
 	args = append(args, e.extraArgs...)
-	args = append(args, e.destination())
+	args = append(args, "--", e.destination())
 
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	var stderr bytes.Buffer
@@ -409,7 +413,7 @@ func (e *RemoteExecutor) Close() error {
 		args = append(args, "-p", strconv.Itoa(e.port))
 	}
 	args = append(args, e.extraArgs...)
-	args = append(args, e.destination())
+	args = append(args, "--", e.destination())
 
 	cmd := exec.Command("ssh", args...)
 	// "no such master" is the expected case when Close is called without

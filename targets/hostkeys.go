@@ -144,7 +144,7 @@ func ScanHostKey(ctx context.Context, t *registry.Target) ([]HostKey, error) {
 	if t.User != "" {
 		dest = t.User + "@" + t.Host
 	}
-	args = append(args, dest, "true")
+	args = append(args, "--", dest, "true")
 	scanCtx, cancel := context.WithTimeout(ctx, defaultOpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(scanCtx, "ssh", args...)
