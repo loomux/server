@@ -25,6 +25,7 @@ type dispatchReply struct {
 	Error          string `json:"error"`
 	ErrorClass     string `json:"error_class"`
 	ConfirmationID string `json:"confirmation_id"`
+	Code           string `json:"code"`
 }
 
 func postDispatch(t *testing.T, ctx context.Context, url, token string, body map[string]string, headers map[string]string) (*http.Response, dispatchReply, error) {
@@ -262,9 +263,12 @@ func TestDispatch_IdempotencyKeyReused_Unprocessable(t *testing.T) {
 	token, _ := login(t, srv.URL, testPassword)
 	hdr := map[string]string{"Idempotency-Key": "key-x"}
 	mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c", "message": "one"}, hdr)
-	resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c", "message": "two"}, hdr)
+	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c", "message": "two"}, hdr)
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	if out.Code != "idempotency_conflict" || out.Error == "" {
+		t.Fatalf("reused-key body = %+v, want code idempotency_conflict and an error", out)
 	}
 }
 
@@ -282,6 +286,9 @@ func TestDispatch_ConversationBusy_Conflict(t *testing.T) {
 	resp, second := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": "c-busy", "message": "two"}, async)
 	if resp.StatusCode != http.StatusConflict || second.DispatchID != first.DispatchID {
 		t.Fatalf("second dispatch = %d %+v, want 409 naming %s", resp.StatusCode, second, first.DispatchID)
+	}
+	if second.Code != "conversation_busy" || second.Error == "" {
+		t.Fatalf("busy body = %+v, want code conversation_busy and an error", second)
 	}
 }
 
