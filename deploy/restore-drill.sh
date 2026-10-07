@@ -35,7 +35,7 @@ done
 die() { echo "restore-drill: $*" >&2; exit 1; }
 k() { if [ -n "$context" ]; then kubectl --context "$context" -n "$namespace" "$@"; else kubectl -n "$namespace" "$@"; fi; }
 
-pod=loomux-restore-drill
+pod="loomux-restore-drill-$$"
 container="loomux-drill-$$"
 dir=$(mktemp -d)
 chmod 700 "$dir"
@@ -53,6 +53,7 @@ kind: Pod
 metadata: { name: $pod, namespace: $namespace }
 spec:
   restartPolicy: Never
+  terminationGracePeriodSeconds: 1
   securityContext: { fsGroup: 10001, runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
   containers:
     - name: drill
@@ -91,17 +92,24 @@ for _ in $(seq 60); do
   curl -fsS "$base/health" >/dev/null 2>&1 && break
   sleep 1
 done
-health=$(curl -fsS "$base/health" | sed -n 's/.*"status":"\([a-z]*\)".*/\1/p' | head -1)
+health=$( (curl -sS "$base/health" || true) | sed -n 's/.*"status":"\([a-z]*\)".*/\1/p' | head -1)
 [ "$health" = healthy ] || { docker logs "$container" 2>&1 | tail -20 >&2; die "health is '${health:-no answer}'"; }
-token=$(curl -fsS -X POST "$base/login" -H 'Content-Type: application/json' \
-  -d "{\"password\":\"$password\"}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+# The password goes on stdin, not curl's command line (ps).
+token=$(printf '{"password":"%s"}' "$password" | curl -fsS -X POST "$base/login" \
+  -H 'Content-Type: application/json' --data-binary @- | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
 [ -n "$token" ] || die "login with the drill password failed"
 targets=$(curl -fsS "$base/targets" -H "Authorization: Bearer $token" | grep -o '"kind":' | wc -l | tr -d ' ')
 workspaces=$(curl -fsS "$base/workspaces" -H "Authorization: Bearer $token" | grep -o '"target_id":' | wc -l | tr -d ' ')
 conversations=$(curl -fsS "$base/conversations" -H "Authorization: Bearer $token" | grep -o '"conversation_id":' | wc -l | tr -d ' ')
-to_schema=$(docker run --rm -v "$dir:/data:ro" --user "$(id -u):$(id -g)" \
-  docker.io/keinos/sqlite3:3.46.1@sha256:055d4be20d868f4077598cbbc33ce4ff39dbefbbe0b87e39ca7b70f9f51caf51 \
-  sqlite3 -readonly /data/loomux.db 'select max(version_id) from schema_migrations;')
+# The copy as it now stands, after the transfer and the migrations.
+sqlite_local() {
+  docker run --rm -v "$dir:/data:ro" --user "$(id -u):$(id -g)" \
+    docker.io/keinos/sqlite3:3.46.1@sha256:055d4be20d868f4077598cbbc33ce4ff39dbefbbe0b87e39ca7b70f9f51caf51 \
+    sqlite3 -readonly /data/loomux.db "$1"
+}
+local_integrity=$(sqlite_local 'PRAGMA integrity_check;')
+[ "$local_integrity" = ok ] || die "integrity_check of the local copy: $local_integrity"
+to_schema=$(sqlite_local 'select max(version_id) from schema_migrations;')
 [ "$to_schema" -ge "$from_schema" ] || die "schema went from $from_schema to $to_schema"
 
 echo "restore-drill: ok"
