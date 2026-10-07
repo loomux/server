@@ -603,23 +603,6 @@ POST /api/v1/targets status 401
 POST /api/v1/targets status 409
 POST /api/v1/targets status 413
 POST /api/v1/targets status 500
-POST /api/v1/targets/{id}/agents/refresh
-POST /api/v1/targets/{id}/agents/refresh request-header Authorization
-POST /api/v1/targets/{id}/agents/refresh response - object
-POST /api/v1/targets/{id}/agents/refresh response .agents []object
-POST /api/v1/targets/{id}/agents/refresh response .agents[].agent_type string
-POST /api/v1/targets/{id}/agents/refresh response .agents[].auth_status string omitempty
-POST /api/v1/targets/{id}/agents/refresh response .agents[].available boolean
-POST /api/v1/targets/{id}/agents/refresh response .agents[].checked_at time
-POST /api/v1/targets/{id}/agents/refresh response .agents[].path string omitempty
-POST /api/v1/targets/{id}/agents/refresh response .agents[].version string omitempty
-POST /api/v1/targets/{id}/agents/refresh response-header Content-Type
-POST /api/v1/targets/{id}/agents/refresh status 200
-POST /api/v1/targets/{id}/agents/refresh status 401
-POST /api/v1/targets/{id}/agents/refresh status 404
-POST /api/v1/targets/{id}/agents/refresh status 500
-POST /api/v1/targets/{id}/agents/refresh status 501
-POST /api/v1/targets/{id}/agents/refresh status 502
 POST /api/v1/targets/{id}/pin
 POST /api/v1/targets/{id}/pin request - object
 POST /api/v1/targets/{id}/pin request .fingerprint string

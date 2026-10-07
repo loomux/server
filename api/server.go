@@ -161,13 +161,6 @@ type TaskTurnStore interface {
 	ListTaskTurnsPage(ctx context.Context, taskID, beforeID string, limit int) ([]*registry.TaskTurn, bool, error)
 }
 
-// AgentProber re-probes a target for every probe-able agent CLI and
-// records the results (LOOM-71) — satisfied by *app.App. Optional: with
-// none configured (WithAgentProber), the refresh endpoint answers 501.
-type AgentProber interface {
-	RefreshTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error)
-}
-
 // HealthChecker is the narrow seam the health endpoints need from the
 // domain layer (LOOM-105). It is satisfied by *health.Checker.
 type HealthChecker interface {
@@ -215,7 +208,6 @@ type Server struct {
 	messages           MessageLister
 	attachInfo         AttachInfoStore
 	targets            TargetStore
-	agentProber        AgentProber
 	targetProber       TargetProber
 	taskTurns          TaskTurnStore
 	events             EventStore
@@ -271,12 +263,6 @@ func WithStreamPollInterval(d time.Duration) Option {
 // request still 404s, unchanged from before this option existed.
 func WithStaticDir(dir string) Option {
 	return func(s *Server) { s.staticDir = dir }
-}
-
-// WithAgentProber enables POST /api/v1/targets/{id}/agents/refresh
-// (LOOM-71).
-func WithAgentProber(p AgentProber) Option {
-	return func(s *Server) { s.agentProber = p }
 }
 
 // WithTargetProber enables POST /api/v1/targets/{id}/probe (LOOM-86).
@@ -364,7 +350,6 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("PUT /api/v1/targets/{id}", s.requireAuth(s.handleUpdateTarget))
 	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
-	mux.HandleFunc("POST /api/v1/targets/{id}/agents/refresh", s.requireAuth(s.handleRefreshTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/probe", s.requireAuth(s.handleProbeTarget))
 	mux.HandleFunc("POST /api/v1/targets/{id}/test", s.requireAuth(s.handleTestTarget))
 	mux.HandleFunc("POST /api/v1/targets/{id}/scan-host-key", s.requireAuth(s.handleScanHostKey))
@@ -1705,29 +1690,6 @@ func (s *Server) handleListTargetAgents(w http.ResponseWriter, r *http.Request) 
 	agents, err := s.targets.ListTargetAgents(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list target agents")
-		return
-	}
-	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))
-}
-
-// handleRefreshTargetAgents probes the target now for every agent CLI
-// Loomux knows how to look for, records and returns the results. A target
-// that can't be reached is 502: the request was fine, the target wasn't.
-func (s *Server) handleRefreshTargetAgents(w http.ResponseWriter, r *http.Request) {
-	if s.agentProber == nil {
-		writeError(w, http.StatusNotImplemented, "agent probing is not configured on this server")
-		return
-	}
-	agents, err := s.agentProber.RefreshTargetAgents(r.Context(), r.PathValue("id"))
-	if err != nil {
-		switch {
-		case errors.Is(err, registry.ErrNotFound):
-			writeError(w, http.StatusNotFound, "no such target")
-		case errors.Is(err, targets.ErrUnreachable):
-			writeError(w, http.StatusBadGateway, "could not reach the target to probe it")
-		default:
-			writeError(w, http.StatusInternalServerError, "could not probe target agents")
-		}
 		return
 	}
 	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))
