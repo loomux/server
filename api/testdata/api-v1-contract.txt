@@ -20,6 +20,35 @@ DELETE /api/v1/sessions/{id}
 DELETE /api/v1/sessions/{id} response - none
 DELETE /api/v1/targets/{id}
 DELETE /api/v1/targets/{id} response - none
+DELETE /api/v1/targets/{id}/pin
+DELETE /api/v1/targets/{id}/pin response - object
+DELETE /api/v1/targets/{id}/pin response .allow_provision boolean
+DELETE /api/v1/targets/{id}/pin response .allow_shell boolean
+DELETE /api/v1/targets/{id}/pin response .allowed_agent_types []string
+DELETE /api/v1/targets/{id}/pin response .created_at time
+DELETE /api/v1/targets/{id}/pin response .health object nullable
+DELETE /api/v1/targets/{id}/pin response .health.disk_free_bytes number nullable
+DELETE /api/v1/targets/{id}/pin response .health.error string omitempty
+DELETE /api/v1/targets/{id}/pin response .health.last_probed_at time
+DELETE /api/v1/targets/{id}/pin response .health.latency_ms number
+DELETE /api/v1/targets/{id}/pin response .health.reachable boolean
+DELETE /api/v1/targets/{id}/pin response .health.status string
+DELETE /api/v1/targets/{id}/pin response .health.tmux_version string
+DELETE /api/v1/targets/{id}/pin response .host string
+DELETE /api/v1/targets/{id}/pin response .id string
+DELETE /api/v1/targets/{id}/pin response .kind string
+DELETE /api/v1/targets/{id}/pin response .name string
+DELETE /api/v1/targets/{id}/pin response .permission_mode string
+DELETE /api/v1/targets/{id}/pin response .pinned_host_keys []object
+DELETE /api/v1/targets/{id}/pin response .pinned_host_keys[].fingerprint string
+DELETE /api/v1/targets/{id}/pin response .pinned_host_keys[].type string
+DELETE /api/v1/targets/{id}/pin response .purpose string
+DELETE /api/v1/targets/{id}/pin response .require_confirmation boolean
+DELETE /api/v1/targets/{id}/pin response .ssh_key_ref string
+DELETE /api/v1/targets/{id}/pin response .ssh_port number
+DELETE /api/v1/targets/{id}/pin response .updated_at time
+DELETE /api/v1/targets/{id}/pin response .user string
+DELETE /api/v1/targets/{id}/pin response .workspace_root string
 DELETE /api/v1/workspaces/{id}
 DELETE /api/v1/workspaces/{id} response - object
 DELETE /api/v1/workspaces/{id} response .sessions_not_killed []string
@@ -91,6 +120,24 @@ GET /api/v1/conversations/{id} response .tasks[].started_at time omitempty nulla
 GET /api/v1/conversations/{id} response .tasks[].status string
 GET /api/v1/conversations/{id} response .tasks[].updated_at time
 GET /api/v1/conversations/{id} response .tasks[].workspace_id string
+GET /api/v1/conversations/{id}/events
+GET /api/v1/conversations/{id}/events response - object
+GET /api/v1/conversations/{id}/events response .conversation_id string
+GET /api/v1/conversations/{id}/events response .events []object
+GET /api/v1/conversations/{id}/events response .events[].command string omitempty
+GET /api/v1/conversations/{id}/events response .events[].created_at time
+GET /api/v1/conversations/{id}/events response .events[].detail string omitempty
+GET /api/v1/conversations/{id}/events response .events[].dispatch_id string omitempty
+GET /api/v1/conversations/{id}/events response .events[].duration_ms number
+GET /api/v1/conversations/{id}/events response .events[].error_class string omitempty
+GET /api/v1/conversations/{id}/events response .events[].id string
+GET /api/v1/conversations/{id}/events response .events[].kind string
+GET /api/v1/conversations/{id}/events response .events[].model string omitempty
+GET /api/v1/conversations/{id}/events response .events[].outcome string omitempty
+GET /api/v1/conversations/{id}/events response .events[].target_id string omitempty
+GET /api/v1/conversations/{id}/events response .events[].task_id string omitempty
+GET /api/v1/conversations/{id}/events response .events[].tier string omitempty
+GET /api/v1/conversations/{id}/events response .events[].workspace_id string omitempty
 GET /api/v1/conversations/{id}/stream
 GET /api/v1/conversations/{id}/stream event:dispatch_update - object
 GET /api/v1/conversations/{id}/stream event:dispatch_update .dispatch_id string
@@ -173,9 +220,13 @@ GET /api/v1/targets response .targets[].id string
 GET /api/v1/targets response .targets[].kind string
 GET /api/v1/targets response .targets[].name string
 GET /api/v1/targets response .targets[].permission_mode string
+GET /api/v1/targets response .targets[].pinned_host_keys []object
+GET /api/v1/targets response .targets[].pinned_host_keys[].fingerprint string
+GET /api/v1/targets response .targets[].pinned_host_keys[].type string
 GET /api/v1/targets response .targets[].purpose string
 GET /api/v1/targets response .targets[].require_confirmation boolean
 GET /api/v1/targets response .targets[].ssh_key_ref string
+GET /api/v1/targets response .targets[].ssh_port number
 GET /api/v1/targets response .targets[].updated_at time
 GET /api/v1/targets response .targets[].user string
 GET /api/v1/targets response .targets[].workspace_root string
@@ -325,6 +376,7 @@ POST /api/v1/targets request .permission_mode string nullable
 POST /api/v1/targets request .purpose string nullable
 POST /api/v1/targets request .require_confirmation boolean nullable
 POST /api/v1/targets request .ssh_key_ref string nullable
+POST /api/v1/targets request .ssh_port number nullable
 POST /api/v1/targets request .user string
 POST /api/v1/targets request .workspace_root string nullable
 POST /api/v1/targets response - object
@@ -345,9 +397,13 @@ POST /api/v1/targets response .id string
 POST /api/v1/targets response .kind string
 POST /api/v1/targets response .name string
 POST /api/v1/targets response .permission_mode string
+POST /api/v1/targets response .pinned_host_keys []object
+POST /api/v1/targets response .pinned_host_keys[].fingerprint string
+POST /api/v1/targets response .pinned_host_keys[].type string
 POST /api/v1/targets response .purpose string
 POST /api/v1/targets response .require_confirmation boolean
 POST /api/v1/targets response .ssh_key_ref string
+POST /api/v1/targets response .ssh_port number
 POST /api/v1/targets response .updated_at time
 POST /api/v1/targets response .user string
 POST /api/v1/targets response .workspace_root string
@@ -360,6 +416,37 @@ POST /api/v1/targets/{id}/agents/refresh response .agents[].available boolean
 POST /api/v1/targets/{id}/agents/refresh response .agents[].checked_at time
 POST /api/v1/targets/{id}/agents/refresh response .agents[].path string omitempty
 POST /api/v1/targets/{id}/agents/refresh response .agents[].version string omitempty
+POST /api/v1/targets/{id}/pin
+POST /api/v1/targets/{id}/pin request - object
+POST /api/v1/targets/{id}/pin request .fingerprint string
+POST /api/v1/targets/{id}/pin response - object
+POST /api/v1/targets/{id}/pin response .allow_provision boolean
+POST /api/v1/targets/{id}/pin response .allow_shell boolean
+POST /api/v1/targets/{id}/pin response .allowed_agent_types []string
+POST /api/v1/targets/{id}/pin response .created_at time
+POST /api/v1/targets/{id}/pin response .health object nullable
+POST /api/v1/targets/{id}/pin response .health.disk_free_bytes number nullable
+POST /api/v1/targets/{id}/pin response .health.error string omitempty
+POST /api/v1/targets/{id}/pin response .health.last_probed_at time
+POST /api/v1/targets/{id}/pin response .health.latency_ms number
+POST /api/v1/targets/{id}/pin response .health.reachable boolean
+POST /api/v1/targets/{id}/pin response .health.status string
+POST /api/v1/targets/{id}/pin response .health.tmux_version string
+POST /api/v1/targets/{id}/pin response .host string
+POST /api/v1/targets/{id}/pin response .id string
+POST /api/v1/targets/{id}/pin response .kind string
+POST /api/v1/targets/{id}/pin response .name string
+POST /api/v1/targets/{id}/pin response .permission_mode string
+POST /api/v1/targets/{id}/pin response .pinned_host_keys []object
+POST /api/v1/targets/{id}/pin response .pinned_host_keys[].fingerprint string
+POST /api/v1/targets/{id}/pin response .pinned_host_keys[].type string
+POST /api/v1/targets/{id}/pin response .purpose string
+POST /api/v1/targets/{id}/pin response .require_confirmation boolean
+POST /api/v1/targets/{id}/pin response .ssh_key_ref string
+POST /api/v1/targets/{id}/pin response .ssh_port number
+POST /api/v1/targets/{id}/pin response .updated_at time
+POST /api/v1/targets/{id}/pin response .user string
+POST /api/v1/targets/{id}/pin response .workspace_root string
 POST /api/v1/targets/{id}/probe
 POST /api/v1/targets/{id}/probe response - object
 POST /api/v1/targets/{id}/probe response .agents []object
@@ -377,6 +464,24 @@ POST /api/v1/targets/{id}/probe response .health.latency_ms number
 POST /api/v1/targets/{id}/probe response .health.reachable boolean
 POST /api/v1/targets/{id}/probe response .health.status string
 POST /api/v1/targets/{id}/probe response .health.tmux_version string
+POST /api/v1/targets/{id}/scan-host-key
+POST /api/v1/targets/{id}/scan-host-key response - object
+POST /api/v1/targets/{id}/scan-host-key response .expires_at time
+POST /api/v1/targets/{id}/scan-host-key response .host_keys []object
+POST /api/v1/targets/{id}/scan-host-key response .host_keys[].fingerprint string
+POST /api/v1/targets/{id}/scan-host-key response .host_keys[].type string
+POST /api/v1/targets/{id}/scan-host-key response .pinned_host_keys []object
+POST /api/v1/targets/{id}/scan-host-key response .pinned_host_keys[].fingerprint string
+POST /api/v1/targets/{id}/scan-host-key response .pinned_host_keys[].type string
+POST /api/v1/targets/{id}/scan-host-key response .target_id string
+POST /api/v1/targets/{id}/test
+POST /api/v1/targets/{id}/test response - object
+POST /api/v1/targets/{id}/test response .error string omitempty
+POST /api/v1/targets/{id}/test response .host_key_problem boolean
+POST /api/v1/targets/{id}/test response .latency_ms number
+POST /api/v1/targets/{id}/test response .reachable boolean
+POST /api/v1/targets/{id}/test response .target_id string
+POST /api/v1/targets/{id}/test response .tmux_version string omitempty
 POST /api/v1/tasks/{id}/cancel
 POST /api/v1/tasks/{id}/cancel response - object
 POST /api/v1/tasks/{id}/cancel response .dispatch_id string omitempty
@@ -469,6 +574,7 @@ PUT /api/v1/targets/{id} request .permission_mode string nullable
 PUT /api/v1/targets/{id} request .purpose string nullable
 PUT /api/v1/targets/{id} request .require_confirmation boolean nullable
 PUT /api/v1/targets/{id} request .ssh_key_ref string nullable
+PUT /api/v1/targets/{id} request .ssh_port number nullable
 PUT /api/v1/targets/{id} request .user string
 PUT /api/v1/targets/{id} request .workspace_root string nullable
 PUT /api/v1/targets/{id} response - object
@@ -489,9 +595,13 @@ PUT /api/v1/targets/{id} response .id string
 PUT /api/v1/targets/{id} response .kind string
 PUT /api/v1/targets/{id} response .name string
 PUT /api/v1/targets/{id} response .permission_mode string
+PUT /api/v1/targets/{id} response .pinned_host_keys []object
+PUT /api/v1/targets/{id} response .pinned_host_keys[].fingerprint string
+PUT /api/v1/targets/{id} response .pinned_host_keys[].type string
 PUT /api/v1/targets/{id} response .purpose string
 PUT /api/v1/targets/{id} response .require_confirmation boolean
 PUT /api/v1/targets/{id} response .ssh_key_ref string
+PUT /api/v1/targets/{id} response .ssh_port number
 PUT /api/v1/targets/{id} response .updated_at time
 PUT /api/v1/targets/{id} response .user string
 PUT /api/v1/targets/{id} response .workspace_root string

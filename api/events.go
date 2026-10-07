@@ -38,6 +38,12 @@ type eventResponse struct {
 	Detail      string    `json:"detail,omitempty"`
 }
 
+// listEventsResponse is GET /conversations/{id}/events' body.
+type listEventsResponse struct {
+	ConversationID string          `json:"conversation_id"`
+	Events         []eventResponse `json:"events"`
+}
+
 // handleConversationEvents returns the conversation's audit trail, oldest
 // first: what each turn decided (and which router model and tier), ran
 // and where (commands redacted), and how it ended. An unknown
@@ -60,5 +66,5 @@ func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request
 			Outcome: e.Outcome, ErrorClass: string(e.ErrorClass), DurationMS: e.Duration.Milliseconds(), Detail: e.Detail,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"conversation_id": r.PathValue("id"), "events": out})
+	writeJSON(w, http.StatusOK, listEventsResponse{ConversationID: r.PathValue("id"), Events: out})
 }

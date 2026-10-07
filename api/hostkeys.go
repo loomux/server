@@ -131,6 +131,11 @@ func (s *Server) handleScanHostKey(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: expires, Pinned: pinnedHostKeys(t)})
 }
 
+// pinHostKeyRequest is POST /targets/{id}/pin's body.
+type pinHostKeyRequest struct {
+	Fingerprint string `json:"fingerprint"`
+}
+
 // handlePinHostKey pins the key with the given fingerprint from the
 // target's latest scan: from then on the target is checked against it
 // alone, ahead of the mounted known_hosts.
@@ -139,9 +144,7 @@ func (s *Server) handlePinHostKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req struct {
-		Fingerprint string `json:"fingerprint"`
-	}
+	var req pinHostKeyRequest
 	if !readJSON(w, r, &req) {
 		return
 	}
