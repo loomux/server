@@ -97,6 +97,7 @@ DELETE /api/v1/workspaces/{id} status 409
 DELETE /api/v1/workspaces/{id} status 500
 DELETE /api/v1/workspaces/{id} status 501
 GET /api/v1/conversations
+GET /api/v1/conversations query limit
 GET /api/v1/conversations request-header Authorization
 GET /api/v1/conversations response - object
 GET /api/v1/conversations response .conversations []object
@@ -105,11 +106,15 @@ GET /api/v1/conversations response .conversations[].preview string
 GET /api/v1/conversations response .conversations[].status string
 GET /api/v1/conversations response .conversations[].updated_at time
 GET /api/v1/conversations response .conversations[].workspace_id string
+GET /api/v1/conversations response .has_more boolean
 GET /api/v1/conversations response-header Content-Type
 GET /api/v1/conversations status 200
+GET /api/v1/conversations status 400
 GET /api/v1/conversations status 401
 GET /api/v1/conversations status 500
 GET /api/v1/conversations/{id}
+GET /api/v1/conversations/{id} query before
+GET /api/v1/conversations/{id} query limit
 GET /api/v1/conversations/{id} request-header Authorization
 GET /api/v1/conversations/{id} response - object
 GET /api/v1/conversations/{id} response .confirmations []object
@@ -138,6 +143,7 @@ GET /api/v1/conversations/{id} response .dispatches[].finished_at time omitempty
 GET /api/v1/conversations/{id} response .dispatches[].reply string omitempty
 GET /api/v1/conversations/{id} response .dispatches[].started_at time omitempty nullable
 GET /api/v1/conversations/{id} response .dispatches[].status string
+GET /api/v1/conversations/{id} response .has_more boolean
 GET /api/v1/conversations/{id} response .messages []object
 GET /api/v1/conversations/{id} response .messages[].content string
 GET /api/v1/conversations/{id} response .messages[].created_at time
@@ -145,6 +151,7 @@ GET /api/v1/conversations/{id} response .messages[].dispatch_id string omitempty
 GET /api/v1/conversations/{id} response .messages[].id string
 GET /api/v1/conversations/{id} response .messages[].role string
 GET /api/v1/conversations/{id} response .messages[].task_id string omitempty
+GET /api/v1/conversations/{id} response .next_before string omitempty
 GET /api/v1/conversations/{id} response .tasks []object
 GET /api/v1/conversations/{id} response .tasks[].agent_type string
 GET /api/v1/conversations/{id} response .tasks[].attention object omitempty nullable
@@ -172,6 +179,7 @@ GET /api/v1/conversations/{id} response .tasks[].updated_at time
 GET /api/v1/conversations/{id} response .tasks[].workspace_id string
 GET /api/v1/conversations/{id} response-header Content-Type
 GET /api/v1/conversations/{id} status 200
+GET /api/v1/conversations/{id} status 400
 GET /api/v1/conversations/{id} status 401
 GET /api/v1/conversations/{id} status 404
 GET /api/v1/conversations/{id} status 500
@@ -194,6 +202,7 @@ GET /api/v1/conversations/{id}/events response .events[].target_id string omitem
 GET /api/v1/conversations/{id}/events response .events[].task_id string omitempty
 GET /api/v1/conversations/{id}/events response .events[].tier string omitempty
 GET /api/v1/conversations/{id}/events response .events[].workspace_id string omitempty
+GET /api/v1/conversations/{id}/events response .has_more boolean
 GET /api/v1/conversations/{id}/events response-header Content-Type
 GET /api/v1/conversations/{id}/events status 200
 GET /api/v1/conversations/{id}/events status 401

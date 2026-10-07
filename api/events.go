@@ -42,6 +42,10 @@ type eventResponse struct {
 type listEventsResponse struct {
 	ConversationID string          `json:"conversation_id"`
 	Events         []eventResponse `json:"events"`
+	// HasMore is always false today: the trail grows with the
+	// conversation, so it may page in 1.x (api/README.md, "Lists and
+	// paging").
+	HasMore bool `json:"has_more"`
 }
 
 // handleConversationEvents returns the conversation's audit trail, oldest
