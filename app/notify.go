@@ -65,6 +65,9 @@ func (n *turnNotifier) lateReplyEvent(ctx context.Context, task *registry.Task, 
 	if ws, err := n.store.GetWorkspace(ctx, task.WorkspaceID); err == nil {
 		e.Workspace = ws.Name
 	}
+	if n.taskRelay(ctx, task) == registry.RelayNone {
+		e.Summary = withheldSummary
+	}
 	return n.finish(ctx, e, task.ConversationID)
 }
 
@@ -94,7 +97,8 @@ func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.
 	}
 
 	e := notify.Event{Kind: notify.KindDone, Summary: strings.TrimSpace(d.Reply)}
-	if task := n.turnTask(ctx, d); task != nil {
+	task := n.turnTask(ctx, d)
+	if task != nil {
 		if ws, err := n.store.GetWorkspace(ctx, task.WorkspaceID); err == nil {
 			e.Workspace = ws.Name
 		}
@@ -113,7 +117,51 @@ func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.
 	if d.Status == registry.DispatchStatusFailed {
 		e.Kind, e.Summary = notify.KindFailed, d.Error
 	}
+	// A notification leaves Loomux like a router model's input: under a
+	// target's relay policy none, the body says nothing of its work —
+	// not the agent's reply, its prompt, nor an error that can quote it.
+	if n.turnRelay(ctx, d, task) == registry.RelayNone {
+		e.Summary = withheldSummary
+	}
 	return n.finish(ctx, e, d.ConversationID), true
+}
+
+// turnRelay is the relay policy of the target d's turn acted on: its
+// task's target, or for a turn without one (an offer, a failure before
+// launch), the target its logged messages record. A turn that touched no
+// target is full.
+func (n *turnNotifier) turnRelay(ctx context.Context, d *registry.Dispatch, task *registry.Task) string {
+	if task != nil {
+		return n.taskRelay(ctx, task)
+	}
+	msgs, err := n.store.ListMessagesByConversation(ctx, d.ConversationID)
+	if err != nil {
+		return registry.RelayNone
+	}
+	for _, m := range msgs {
+		if m.DispatchID == d.ID && m.OriginTargetID != "" {
+			return n.targetRelay(ctx, m.OriginTargetID)
+		}
+	}
+	return registry.RelayFull
+}
+
+// taskRelay is the relay policy of task's target; one that can't be read
+// says nothing (none).
+func (n *turnNotifier) taskRelay(ctx context.Context, task *registry.Task) string {
+	ws, err := n.store.GetWorkspace(ctx, task.WorkspaceID)
+	if err != nil {
+		return registry.RelayNone
+	}
+	return n.targetRelay(ctx, ws.TargetID)
+}
+
+func (n *turnNotifier) targetRelay(ctx context.Context, targetID string) string {
+	t, err := n.store.GetTarget(ctx, targetID)
+	if err != nil {
+		return registry.RelayNone
+	}
+	return t.Policy.EffectiveRelay()
 }
 
 // madeOffer reports whether d's turn left an offer awaiting an answer.

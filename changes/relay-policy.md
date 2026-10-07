@@ -6,7 +6,9 @@
   model gets everything, only the agent's final message, or nothing (the
   agent's own message is then the reply, and its session stays open);
   the routing model sees the target's conversation history, only its
-  replies, or nothing, and no workspace summary under `none`. Responses
+  replies, or nothing, and no workspace summary under `none`. Under
+  `none` a notification's body carries none of the target's work either:
+  only its kind and workspace, and "Open Loomux to see it." Responses
   show `relay_effective`.
 
 ### Changed

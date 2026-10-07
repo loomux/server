@@ -109,6 +109,12 @@ of its work they get:
 | `last_message` | the agent's final message only (its screen without a final-message hook) | replies only, summary |
 | `none` | nothing: the agent's final message is the reply as it is, redacted and bounded | nothing |
 
+Notifications (ntfy) leave Loomux too, so the same policy covers their
+body: under `none` a notification says only that there's news (done,
+failed, needs you) and in which workspace, with "Open Loomux to see it."
+in place of the reply, prompt or error; under `last_message` and `full`
+the reply is sent, redacted.
+
 Empty (the default) is `none` for a target with `purpose: work`, `full`
 otherwise. Everything sent is redacted first (vault values, secret
 shapes). The message being routed always reaches the routing model.
