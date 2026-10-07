@@ -110,11 +110,12 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	t.UpdatedAt = now
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
-			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, ssh_port, host_keys,
+			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys,
 			created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
-		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.SSHPort, t.HostKeys,
+		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
+		t.SSHPort, t.HostKeys,
 		t.CreatedAt, t.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
@@ -171,11 +172,11 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 	t.UpdatedAt = time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
-			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, ssh_port = ?,
-			updated_at = ?
+			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, relay = ?,
+			ssh_port = ?, updated_at = ?
 		WHERE id = ?`,
 		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
-		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.SSHPort,
+		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay, t.SSHPort,
 		t.UpdatedAt, t.ID,
 	)
 	if isUniqueConstraintErr(err) {
@@ -754,9 +755,10 @@ func attentionJSON(a *registry.Attention) string {
 func (s *Store) CreateMessage(ctx context.Context, m *registry.Message) error {
 	m.CreatedAt = time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO messages (id, conversation_id, task_id, dispatch_id, origin, role, content, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ConversationID, nullIfEmpty(m.TaskID), nullIfEmpty(m.DispatchID), m.Origin, string(m.Role), m.Content, m.CreatedAt,
+		INSERT INTO messages (id, conversation_id, task_id, dispatch_id, origin, origin_target_id, role, content, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ConversationID, nullIfEmpty(m.TaskID), nullIfEmpty(m.DispatchID), m.Origin, m.OriginTargetID, string(m.Role),
+		m.Content, m.CreatedAt,
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: task %q or dispatch %q does not exist", registry.ErrConflict, m.TaskID, m.DispatchID)
@@ -767,7 +769,7 @@ func (s *Store) CreateMessage(ctx context.Context, m *registry.Message) error {
 	return nil
 }
 
-const messageColumns = `id, conversation_id, task_id, dispatch_id, origin, role, content, created_at`
+const messageColumns = `id, conversation_id, task_id, dispatch_id, origin, origin_target_id, role, content, created_at`
 
 // ListMessagesByConversation orders by created_at then the table's
 // implicit rowid — the rowid tiebreak guarantees insertion order even
@@ -831,7 +833,7 @@ func scanMessage(row rowScanner) (*registry.Message, error) {
 	var m registry.Message
 	var taskID, dispatchID sql.NullString
 	var role string
-	if err := row.Scan(&m.ID, &m.ConversationID, &taskID, &dispatchID, &m.Origin, &role, &m.Content, &m.CreatedAt); err != nil {
+	if err := row.Scan(&m.ID, &m.ConversationID, &taskID, &dispatchID, &m.Origin, &m.OriginTargetID, &role, &m.Content, &m.CreatedAt); err != nil {
 		return nil, err
 	}
 	m.TaskID = taskID.String
@@ -1072,14 +1074,15 @@ type rowScanner interface {
 
 // targetColumns is what scanTarget reads, in order.
 const targetColumns = `id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
-	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, ssh_port, host_keys, created_at, updated_at`
+	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys, created_at,
+	updated_at`
 
 func scanTarget(row rowScanner) (*registry.Target, error) {
 	var t registry.Target
 	var kind, allowed string
 	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode,
 		&t.Policy.Purpose, &allowed, &t.Policy.NoProvision, &t.Policy.NoShell, &t.Policy.RequireConfirmation,
-		&t.SSHPort, &t.HostKeys, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.Policy.Relay, &t.SSHPort, &t.HostKeys, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.Kind = registry.TargetKind(kind)

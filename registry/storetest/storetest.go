@@ -645,6 +645,13 @@ func testMessageOrigin(t *testing.T, s registry.Store) {
 	if len(list) != 3 || list[0].Origin != registry.TargetPurposeWork || list[1].Origin != registry.MessageOriginNone || list[2].Origin != "" {
 		t.Fatalf("origins = %+v, want work, none, unknown", list)
 	}
+	if err := s.CreateMessage(ctx, &registry.Message{ID: "msg-origin-target", ConversationID: "conv-origin-target",
+		Origin: registry.TargetPurposeWork, OriginTargetID: "t-sc1", Role: registry.MessageRoleUser, Content: "hi"}); err != nil {
+		t.Fatalf("CreateMessage: %v", err)
+	}
+	if got, _ := s.ListMessagesByConversation(ctx, "conv-origin-target"); len(got) != 1 || got[0].OriginTargetID != "t-sc1" {
+		t.Fatalf("origin target = %+v, want t-sc1", got)
+	}
 }
 
 // testMessageListByConversationOrdering deliberately inserts three
@@ -1763,7 +1770,7 @@ func testTargetPolicy(t *testing.T, s registry.Store) {
 		t.Fatalf("new target's policy = %+v, want the zero (allow-all) policy", got.Policy)
 	}
 	want := registry.TargetPolicy{Purpose: registry.TargetPurposeWork, AllowedAgentTypes: []string{"claude-code"},
-		NoProvision: true, NoShell: true, RequireConfirmation: true}
+		NoProvision: true, NoShell: true, RequireConfirmation: true, Relay: registry.RelayLastMessage}
 	got.Policy = want
 	if err := s.UpdateTarget(ctx, got); err != nil {
 		t.Fatalf("UpdateTarget: %v", err)

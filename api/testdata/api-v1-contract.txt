@@ -43,6 +43,8 @@ DELETE /api/v1/targets/{id}/pin response .pinned_host_keys []object
 DELETE /api/v1/targets/{id}/pin response .pinned_host_keys[].fingerprint string
 DELETE /api/v1/targets/{id}/pin response .pinned_host_keys[].type string
 DELETE /api/v1/targets/{id}/pin response .purpose string
+DELETE /api/v1/targets/{id}/pin response .relay string
+DELETE /api/v1/targets/{id}/pin response .relay_effective string
 DELETE /api/v1/targets/{id}/pin response .require_confirmation boolean
 DELETE /api/v1/targets/{id}/pin response .ssh_key_ref string
 DELETE /api/v1/targets/{id}/pin response .ssh_port number
@@ -224,6 +226,8 @@ GET /api/v1/targets response .targets[].pinned_host_keys []object
 GET /api/v1/targets response .targets[].pinned_host_keys[].fingerprint string
 GET /api/v1/targets response .targets[].pinned_host_keys[].type string
 GET /api/v1/targets response .targets[].purpose string
+GET /api/v1/targets response .targets[].relay string
+GET /api/v1/targets response .targets[].relay_effective string
 GET /api/v1/targets response .targets[].require_confirmation boolean
 GET /api/v1/targets response .targets[].ssh_key_ref string
 GET /api/v1/targets response .targets[].ssh_port number
@@ -374,6 +378,7 @@ POST /api/v1/targets request .kind string
 POST /api/v1/targets request .name string
 POST /api/v1/targets request .permission_mode string nullable
 POST /api/v1/targets request .purpose string nullable
+POST /api/v1/targets request .relay string nullable
 POST /api/v1/targets request .require_confirmation boolean nullable
 POST /api/v1/targets request .ssh_key_ref string nullable
 POST /api/v1/targets request .ssh_port number nullable
@@ -401,6 +406,8 @@ POST /api/v1/targets response .pinned_host_keys []object
 POST /api/v1/targets response .pinned_host_keys[].fingerprint string
 POST /api/v1/targets response .pinned_host_keys[].type string
 POST /api/v1/targets response .purpose string
+POST /api/v1/targets response .relay string
+POST /api/v1/targets response .relay_effective string
 POST /api/v1/targets response .require_confirmation boolean
 POST /api/v1/targets response .ssh_key_ref string
 POST /api/v1/targets response .ssh_port number
@@ -441,6 +448,8 @@ POST /api/v1/targets/{id}/pin response .pinned_host_keys []object
 POST /api/v1/targets/{id}/pin response .pinned_host_keys[].fingerprint string
 POST /api/v1/targets/{id}/pin response .pinned_host_keys[].type string
 POST /api/v1/targets/{id}/pin response .purpose string
+POST /api/v1/targets/{id}/pin response .relay string
+POST /api/v1/targets/{id}/pin response .relay_effective string
 POST /api/v1/targets/{id}/pin response .require_confirmation boolean
 POST /api/v1/targets/{id}/pin response .ssh_key_ref string
 POST /api/v1/targets/{id}/pin response .ssh_port number
@@ -572,6 +581,7 @@ PUT /api/v1/targets/{id} request .kind string
 PUT /api/v1/targets/{id} request .name string
 PUT /api/v1/targets/{id} request .permission_mode string nullable
 PUT /api/v1/targets/{id} request .purpose string nullable
+PUT /api/v1/targets/{id} request .relay string nullable
 PUT /api/v1/targets/{id} request .require_confirmation boolean nullable
 PUT /api/v1/targets/{id} request .ssh_key_ref string nullable
 PUT /api/v1/targets/{id} request .ssh_port number nullable
@@ -599,6 +609,8 @@ PUT /api/v1/targets/{id} response .pinned_host_keys []object
 PUT /api/v1/targets/{id} response .pinned_host_keys[].fingerprint string
 PUT /api/v1/targets/{id} response .pinned_host_keys[].type string
 PUT /api/v1/targets/{id} response .purpose string
+PUT /api/v1/targets/{id} response .relay string
+PUT /api/v1/targets/{id} response .relay_effective string
 PUT /api/v1/targets/{id} response .require_confirmation boolean
 PUT /api/v1/targets/{id} response .ssh_key_ref string
 PUT /api/v1/targets/{id} response .ssh_port number

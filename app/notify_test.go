@@ -222,3 +222,85 @@ func TestTurnNotifierLateReplyEvent(t *testing.T) {
 		t.Fatalf("summary = %q, want it trimmed and scrubbed", e.Summary)
 	}
 }
+
+// A notification leaves Loomux like a router model's input: under a
+// target's relay policy none (a work machine's default), its body says
+// nothing of the work — not the reply, the prompt, an error, a late
+// reply or an offer — only that there's news and where. last_message and
+// full keep the reply.
+func TestTurnNotifierRelayPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, purpose, relay string
+		withheld             bool
+	}{
+		{"full", "", registry.RelayFull, false},
+		{"last_message", "", registry.RelayLastMessage, false},
+		{"none", "", registry.RelayNone, true},
+		{"work machine default", registry.TargetPurposeWork, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openNotifyStore(t)
+			if err := store.CreateTarget(ctx, &registry.Target{ID: "t", Name: "sc1", Kind: registry.TargetKindLocal,
+				Policy: registry.TargetPolicy{Purpose: tc.purpose, Relay: tc.relay}}); err != nil {
+				t.Fatalf("CreateTarget: %v", err)
+			}
+			if err := store.CreateWorkspace(ctx, &registry.Workspace{ID: "w", Name: "work-repo", Path: "/p", TargetID: "t",
+				Status: registry.WorkspaceStatusIdle}); err != nil {
+				t.Fatalf("CreateWorkspace: %v", err)
+			}
+			if err := store.CreateTask(ctx, &registry.Task{ID: "task", WorkspaceID: "w", Kind: registry.TaskKindAgent,
+				TmuxSession: "s", Status: registry.TaskStatusAwaitingInput, ConversationID: "c"}); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+			n := &turnNotifier{store: store, minDuration: time.Minute}
+			start := time.Now().UTC().Add(-5 * time.Minute)
+			end := start.Add(2 * time.Minute)
+			d := &registry.Dispatch{ID: "d", ConversationID: "c", Status: registry.DispatchStatusSucceeded,
+				Reply: "WORK-CONTENT: quarterly numbers", CreatedAt: start, FinishedAt: &end}
+
+			check := func(what string, e notify.Event) {
+				t.Helper()
+				if tc.withheld && (e.Summary != withheldSummary || strings.Contains(e.Summary, "WORK-CONTENT")) {
+					t.Errorf("%s: summary = %q, want only %q", what, e.Summary, withheldSummary)
+				}
+				if !tc.withheld && !strings.Contains(e.Summary, "WORK-CONTENT") {
+					t.Errorf("%s: summary = %q, want the reply kept", what, e.Summary)
+				}
+			}
+			e, _ := n.event(ctx, d)
+			check("done", e)
+			if e.Workspace != "work-repo" {
+				t.Errorf("workspace = %q, want it named either way", e.Workspace)
+			}
+
+			task, _ := store.GetTask(ctx, "task")
+			task.Status = registry.TaskStatusNeedsAttention
+			task.Attention = &registry.Attention{Title: "WORK-CONTENT prompt", Question: "Proceed?"}
+			if err := store.UpdateTask(ctx, task); err != nil {
+				t.Fatalf("UpdateTask: %v", err)
+			}
+			e, _ = n.event(ctx, d)
+			check("needs you", e)
+
+			d.Status, d.Error = registry.DispatchStatusFailed, "WORK-CONTENT in the agent's last output"
+			e, _ = n.event(ctx, d)
+			check("failed", e)
+
+			check("late reply", n.lateReplyEvent(ctx, task, "WORK-CONTENT, later"))
+
+			// An offer: no task, but its logged messages name the target.
+			offer := &registry.Dispatch{ID: "d2", ConversationID: "c2", Status: registry.DispatchStatusSucceeded,
+				Reply: "WORK-CONTENT: I'd run this on sc1", CreatedAt: start, FinishedAt: &end}
+			if err := store.CreateDispatch(ctx, &registry.Dispatch{ID: "d2", ConversationID: "c2", Message: "check it"}, nil); err != nil {
+				t.Fatalf("CreateDispatch: %v", err)
+			}
+			if err := store.CreateMessage(ctx, &registry.Message{ID: "m", ConversationID: "c2", DispatchID: "d2", OriginTargetID: "t",
+				Role: registry.MessageRoleAssistant, Content: "offer"}); err != nil {
+				t.Fatalf("CreateMessage: %v", err)
+			}
+			e, _ = n.event(ctx, offer)
+			check("offer", e)
+		})
+	}
+}

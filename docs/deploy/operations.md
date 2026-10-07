@@ -96,6 +96,36 @@ the tag in a manifest works the same way.
   database, so a deleted conversation's events stay until
   `LOOMUX_EVENT_RETENTION` removes them.
 
+## What the router models see
+
+The routing and relay models are third-party APIs (the configured router
+endpoints). Each target's `relay` policy (`PUT /api/v1/targets/{id}`,
+`relay`; the response's `relay_effective` is what applies) says how much
+of its work they get:
+
+| `relay` | Relay model, per turn | Routing model, of that target's turns |
+|---|---|---|
+| `full` | the output, the user's message, the previous summary | messages, replies, summary |
+| `last_message` | the agent's final message only (its screen without a final-message hook) | replies only, summary |
+| `none` | nothing: the agent's final message is the reply as it is, redacted and bounded | nothing |
+
+Notifications (ntfy) leave Loomux too, so the same policy covers their
+body: under `none` a notification says only that there's news (done,
+failed, needs you) and in which workspace, with "Open Loomux to see it."
+in place of the reply, prompt or error; under `last_message` and `full`
+the reply is sent, redacted.
+
+Empty (the default) is `none` for a target with `purpose: work`, `full`
+otherwise. Everything sent is redacted first (vault values, secret
+shapes). The message being routed always reaches the routing model.
+Under `none`, a turn is never judged "done" by a model, and Loomux
+doesn't guess locally: its session stays open until the idle reaper
+closes it (`LOOMUX_REAP_IDLE_THRESHOLD`, 24h by default). That is on
+purpose: an idle pane for a day costs little, while closing a session
+the agent was still working in loses it. Messages logged before this
+policy existed are matched to their target through their task, or
+failing that, their purpose.
+
 ## Backups
 
 Nightly online SQLite backup, volume snapshots, and pre-migration

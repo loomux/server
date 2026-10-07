@@ -14,6 +14,8 @@ type targetPolicyJSON struct {
 	ID                  string   `json:"id"`
 	Purpose             string   `json:"purpose"`
 	AllowedAgentTypes   []string `json:"allowed_agent_types"`
+	Relay               string   `json:"relay"`
+	RelayEffective      string   `json:"relay_effective"`
 	AllowProvision      bool     `json:"allow_provision"`
 	AllowShell          bool     `json:"allow_shell"`
 	RequireConfirmation bool     `json:"require_confirmation"`
@@ -44,6 +46,9 @@ func TestTargetPolicy_API(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("create status = %d", status)
 	}
+	if def.Relay != "" || def.RelayEffective != "full" {
+		t.Errorf("default relay = %q (effective %q), want the purpose's default, full", def.Relay, def.RelayEffective)
+	}
 	if def.Purpose != "" || !def.AllowProvision || !def.AllowShell || def.RequireConfirmation || len(def.AllowedAgentTypes) != 0 || def.AllowedAgentTypes == nil {
 		t.Errorf("default policy = %+v, want everything allowed and allowed_agent_types []", def)
 	}
@@ -61,7 +66,10 @@ func TestTargetPolicy_API(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("update status = %d", status)
 	}
-	want := targetPolicyJSON{ID: def.ID, Purpose: "work", AllowedAgentTypes: []string{"claude-code"}, RequireConfirmation: true}
+	// A work machine's relay policy defaults to none (user decision
+	// 2026-10-07).
+	want := targetPolicyJSON{ID: def.ID, Purpose: "work", AllowedAgentTypes: []string{"claude-code"}, RequireConfirmation: true,
+		RelayEffective: "none"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("updated = %+v, want %+v", got, want)
 	}
@@ -70,6 +78,23 @@ func TestTargetPolicy_API(t *testing.T) {
 	got, _ = targetRequestJSON(t, http.MethodPut, srv.URL+"/api/v1/targets/"+def.ID, token, base)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("after a PUT without policy = %+v, want %+v", got, want)
+	}
+
+	// An explicit relay setting overrides the purpose's default.
+	withRelay := map[string]any{"relay": "last_message"}
+	for k, v := range base {
+		withRelay[k] = v
+	}
+	got, _ = targetRequestJSON(t, http.MethodPut, srv.URL+"/api/v1/targets/"+def.ID, token, withRelay)
+	if got.Relay != "last_message" || got.RelayEffective != "last_message" || got.Purpose != "work" {
+		t.Errorf("after setting relay = %+v, want last_message on a work machine", got)
+	}
+	badRelay := map[string]any{"relay": "some"}
+	for k, v := range base {
+		badRelay[k] = v
+	}
+	if _, status := targetRequestJSON(t, http.MethodPut, srv.URL+"/api/v1/targets/"+def.ID, token, badRelay); status != http.StatusBadRequest {
+		t.Errorf("bad relay: status = %d, want 400", status)
 	}
 
 	bad := map[string]any{"purpose": "hobby"}
