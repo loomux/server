@@ -161,13 +161,6 @@ type TaskTurnStore interface {
 	ListTaskTurnsPage(ctx context.Context, taskID, beforeID string, limit int) ([]*registry.TaskTurn, bool, error)
 }
 
-// AgentProber re-probes a target for every probe-able agent CLI and
-// records the results (LOOM-71) — satisfied by *app.App. Optional: with
-// none configured (WithAgentProber), the refresh endpoint answers 501.
-type AgentProber interface {
-	RefreshTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error)
-}
-
 // HealthChecker is the narrow seam the health endpoints need from the
 // domain layer (LOOM-105). It is satisfied by *health.Checker.
 type HealthChecker interface {
@@ -215,7 +208,6 @@ type Server struct {
 	messages           MessageLister
 	attachInfo         AttachInfoStore
 	targets            TargetStore
-	agentProber        AgentProber
 	targetProber       TargetProber
 	taskTurns          TaskTurnStore
 	events             EventStore
@@ -271,12 +263,6 @@ func WithStreamPollInterval(d time.Duration) Option {
 // request still 404s, unchanged from before this option existed.
 func WithStaticDir(dir string) Option {
 	return func(s *Server) { s.staticDir = dir }
-}
-
-// WithAgentProber enables POST /api/v1/targets/{id}/agents/refresh
-// (LOOM-71).
-func WithAgentProber(p AgentProber) Option {
-	return func(s *Server) { s.agentProber = p }
 }
 
 // WithTargetProber enables POST /api/v1/targets/{id}/probe (LOOM-86).
@@ -364,7 +350,6 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("PUT /api/v1/targets/{id}", s.requireAuth(s.handleUpdateTarget))
 	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
-	mux.HandleFunc("POST /api/v1/targets/{id}/agents/refresh", s.requireAuth(s.handleRefreshTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/probe", s.requireAuth(s.handleProbeTarget))
 	mux.HandleFunc("POST /api/v1/targets/{id}/test", s.requireAuth(s.handleTestTarget))
 	mux.HandleFunc("POST /api/v1/targets/{id}/scan-host-key", s.requireAuth(s.handleScanHostKey))
@@ -557,7 +542,6 @@ type workspaceSummary struct {
 	Description    string     `json:"description"`
 	Capabilities   []string   `json:"capabilities"`
 	RollingSummary string     `json:"rolling_summary"`
-	IsDynamic      bool       `json:"is_dynamic"`
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	// StatusReason says why the workspace is in its status, e.g. what
 	// made it failed (LOOM-77). Omitted when there's nothing to say.
@@ -570,7 +554,7 @@ type listWorkspacesResponse struct {
 
 // handleListWorkspaces returns a summary of every registered workspace
 // (id/name/target/status plus tags/description/capabilities/rolling_summary/
-// is_dynamic/last_used_at), sorted by name (registry.Store's own
+// last_used_at), sorted by name (registry.Store's own
 // ListWorkspaces order). Wraps WorkspaceLister.ListWorkspaces.
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	workspaces, err := s.workspaces.ListWorkspaces(r.Context())
@@ -589,7 +573,6 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			Description:    ws.Description,
 			Capabilities:   orEmpty(ws.Capabilities),
 			RollingSummary: ws.RollingSummary,
-			IsDynamic:      ws.IsDynamic,
 			LastUsedAt:     ws.LastUsedAt,
 			StatusReason:   ws.StatusReason,
 		})
@@ -878,19 +861,22 @@ type getConversationResponse struct {
 }
 
 type confirmationResponse struct {
-	ID         string     `json:"id"`
-	DispatchID string     `json:"dispatch_id,omitempty"`
-	Kind       string     `json:"kind"`
-	TargetID   string     `json:"target_id,omitempty"`
-	TargetName string     `json:"target_name,omitempty"`
-	AgentType  string     `json:"agent_type,omitempty"`
-	Command    string     `json:"command,omitempty"`
-	Workspace  string     `json:"workspace,omitempty"`
-	GitRemote  string     `json:"git_remote,omitempty"`
-	Status     string     `json:"status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+	ID         string `json:"id"`
+	DispatchID string `json:"dispatch_id,omitempty"`
+	Kind       string `json:"kind"`
+	TargetID   string `json:"target_id,omitempty"`
+	TargetName string `json:"target_name,omitempty"`
+	AgentType  string `json:"agent_type,omitempty"`
+	Command    string `json:"command,omitempty"`
+	// WorkspaceName is the workspace's name, as target_name is the
+	// target's (renamed from "workspace" before 1.0, API v1 freeze
+	// review item 10).
+	WorkspaceName string     `json:"workspace_name,omitempty"`
+	GitRemote     string     `json:"git_remote,omitempty"`
+	Status        string     `json:"status"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
 }
 
 // handleGetConversation returns a conversation's full task history (every
@@ -989,7 +975,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		}
 		confOut = append(confOut, confirmationResponse{
 			ID: c.ID, DispatchID: c.DispatchID, Kind: c.Kind, TargetID: c.TargetID, TargetName: c.TargetName,
-			AgentType: c.AgentType, Command: c.Command, Workspace: c.Workspace, GitRemote: c.GitRemote,
+			AgentType: c.AgentType, Command: c.Command, WorkspaceName: c.Workspace, GitRemote: c.GitRemote,
 			Status: string(status), CreatedAt: c.CreatedAt, ExpiresAt: c.ExpiresAt, ResolvedAt: c.ResolvedAt,
 		})
 	}
@@ -1427,19 +1413,16 @@ func bearerToken(r *http.Request) (string, bool) {
 	return token, true
 }
 
-// targetResponse is a registry.Target as clients see it. Unlike
-// attachTargetInfo (which is a display payload for a human about to SSH
-// somewhere) this includes ssh_key_ref: it is a reference into the
-// credential vault, never secret material itself (see registry.Target),
-// and a client needs it back to round-trip a PUT without silently
-// clearing the field.
+// targetResponse is a registry.Target as clients see it. ssh_key_ref is
+// no longer part of the API (API v1 freeze review, item 1): nothing ever
+// read it — SSH keys come from the mounted secret — so a target's stored
+// value is kept but neither shown nor settable.
 type targetResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Host      string `json:"host"`
-	User      string `json:"user"`
-	SSHKeyRef string `json:"ssh_key_ref"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Host string `json:"host"`
+	User string `json:"user"`
 	// WorkspaceRoot bounds where dynamic workspaces are provisioned
 	// (LOOM-90); empty means $HOME/loomux-workspaces on the target.
 	WorkspaceRoot string `json:"workspace_root"`
@@ -1508,7 +1491,6 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		Kind:                string(t.Kind),
 		Host:                t.Host,
 		User:                t.User,
-		SSHKeyRef:           t.SSHKeyRef,
 		WorkspaceRoot:       t.WorkspaceRoot,
 		PermissionMode:      t.PermissionMode,
 		Purpose:             t.Policy.Purpose,
@@ -1533,9 +1515,8 @@ type targetRequest struct {
 	Kind string `json:"kind"`
 	Host string `json:"host"`
 	User string `json:"user"`
-	// SSHKeyRef and WorkspaceRoot are optional (LOOM-119): omitted on a
-	// PUT keeps what's stored, an explicit "" clears it.
-	SSHKeyRef     *string `json:"ssh_key_ref"`
+	// WorkspaceRoot is optional (LOOM-119): omitted on a PUT keeps what's
+	// stored, an explicit "" clears it.
 	WorkspaceRoot *string `json:"workspace_root"`
 	// PermissionMode is optional the same way.
 	PermissionMode *string `json:"permission_mode"`
@@ -1603,9 +1584,6 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if req.Relay != nil {
 		target.Policy.Relay = *req.Relay
-	}
-	if req.SSHKeyRef != nil {
-		target.SSHKeyRef = *req.SSHKeyRef
 	}
 	if req.WorkspaceRoot != nil {
 		target.WorkspaceRoot = *req.WorkspaceRoot
@@ -1786,29 +1764,6 @@ func (s *Server) handleListTargetAgents(w http.ResponseWriter, r *http.Request) 
 	agents, err := s.targets.ListTargetAgents(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list target agents")
-		return
-	}
-	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))
-}
-
-// handleRefreshTargetAgents probes the target now for every agent CLI
-// Loomux knows how to look for, records and returns the results. A target
-// that can't be reached is 502: the request was fine, the target wasn't.
-func (s *Server) handleRefreshTargetAgents(w http.ResponseWriter, r *http.Request) {
-	if s.agentProber == nil {
-		writeError(w, http.StatusNotImplemented, "agent probing is not configured on this server")
-		return
-	}
-	agents, err := s.agentProber.RefreshTargetAgents(r.Context(), r.PathValue("id"))
-	if err != nil {
-		switch {
-		case errors.Is(err, registry.ErrNotFound):
-			writeError(w, http.StatusNotFound, "no such target")
-		case errors.Is(err, targets.ErrUnreachable):
-			writeError(w, http.StatusBadGateway, "could not reach the target to probe it")
-		default:
-			writeError(w, http.StatusInternalServerError, "could not probe target agents")
-		}
 		return
 	}
 	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))

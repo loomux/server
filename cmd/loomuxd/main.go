@@ -113,7 +113,6 @@ func runServer(ctx context.Context, loomux *app.App) {
 
 	opts := []api.Option{
 		api.WithSessionTTL(apiCfg.SessionTTL),
-		api.WithAgentProber(loomux),
 		api.WithTargetProber(loomux),
 		api.WithWorkspaceManager(loomux),
 		api.WithTaskCanceller(loomux),

@@ -74,7 +74,6 @@ DELETE /api/v1/targets/{id}/pin response .purpose string
 DELETE /api/v1/targets/{id}/pin response .relay string
 DELETE /api/v1/targets/{id}/pin response .relay_effective string
 DELETE /api/v1/targets/{id}/pin response .require_confirmation boolean
-DELETE /api/v1/targets/{id}/pin response .ssh_key_ref string
 DELETE /api/v1/targets/{id}/pin response .ssh_port number
 DELETE /api/v1/targets/{id}/pin response .updated_at time
 DELETE /api/v1/targets/{id}/pin response .user string
@@ -131,7 +130,7 @@ GET /api/v1/conversations/{id} response .confirmations[].resolved_at time omitem
 GET /api/v1/conversations/{id} response .confirmations[].status string
 GET /api/v1/conversations/{id} response .confirmations[].target_id string omitempty
 GET /api/v1/conversations/{id} response .confirmations[].target_name string omitempty
-GET /api/v1/conversations/{id} response .confirmations[].workspace string omitempty
+GET /api/v1/conversations/{id} response .confirmations[].workspace_name string omitempty
 GET /api/v1/conversations/{id} response .conversation_id string
 GET /api/v1/conversations/{id} response .dispatches []object
 GET /api/v1/conversations/{id} response .dispatches[].confirmation_id string omitempty
@@ -162,7 +161,7 @@ GET /api/v1/conversations/{id} response .tasks[].attention.options []object omit
 GET /api/v1/conversations/{id} response .tasks[].attention.options[].description string omitempty
 GET /api/v1/conversations/{id} response .tasks[].attention.options[].label string
 GET /api/v1/conversations/{id} response .tasks[].attention.question string omitempty
-GET /api/v1/conversations/{id} response .tasks[].attention.resets_at string omitempty
+GET /api/v1/conversations/{id} response .tasks[].attention.resets string omitempty
 GET /api/v1/conversations/{id} response .tasks[].attention.selected number
 GET /api/v1/conversations/{id} response .tasks[].attention.title string omitempty
 GET /api/v1/conversations/{id} response .tasks[].command string omitempty
@@ -331,7 +330,6 @@ GET /api/v1/targets response .targets[].purpose string
 GET /api/v1/targets response .targets[].relay string
 GET /api/v1/targets response .targets[].relay_effective string
 GET /api/v1/targets response .targets[].require_confirmation boolean
-GET /api/v1/targets response .targets[].ssh_key_ref string
 GET /api/v1/targets response .targets[].ssh_port number
 GET /api/v1/targets response .targets[].updated_at time
 GET /api/v1/targets response .targets[].user string
@@ -448,7 +446,6 @@ GET /api/v1/workspaces response .workspaces []object
 GET /api/v1/workspaces response .workspaces[].capabilities []string
 GET /api/v1/workspaces response .workspaces[].description string
 GET /api/v1/workspaces response .workspaces[].id string
-GET /api/v1/workspaces response .workspaces[].is_dynamic boolean
 GET /api/v1/workspaces response .workspaces[].last_used_at time omitempty nullable
 GET /api/v1/workspaces response .workspaces[].name string
 GET /api/v1/workspaces response .workspaces[].rolling_summary string
@@ -497,7 +494,6 @@ POST /api/v1/credentials status 409
 POST /api/v1/credentials status 413
 POST /api/v1/credentials status 500
 POST /api/v1/dispatch
-POST /api/v1/dispatch query async
 POST /api/v1/dispatch query wait
 POST /api/v1/dispatch request - object
 POST /api/v1/dispatch request .confirmation_id string omitempty
@@ -576,7 +572,6 @@ POST /api/v1/targets request .permission_mode string nullable
 POST /api/v1/targets request .purpose string nullable
 POST /api/v1/targets request .relay string nullable
 POST /api/v1/targets request .require_confirmation boolean nullable
-POST /api/v1/targets request .ssh_key_ref string nullable
 POST /api/v1/targets request .ssh_port number nullable
 POST /api/v1/targets request .user string
 POST /api/v1/targets request .workspace_root string nullable
@@ -606,7 +601,6 @@ POST /api/v1/targets response .purpose string
 POST /api/v1/targets response .relay string
 POST /api/v1/targets response .relay_effective string
 POST /api/v1/targets response .require_confirmation boolean
-POST /api/v1/targets response .ssh_key_ref string
 POST /api/v1/targets response .ssh_port number
 POST /api/v1/targets response .updated_at time
 POST /api/v1/targets response .user string
@@ -618,23 +612,6 @@ POST /api/v1/targets status 401
 POST /api/v1/targets status 409
 POST /api/v1/targets status 413
 POST /api/v1/targets status 500
-POST /api/v1/targets/{id}/agents/refresh
-POST /api/v1/targets/{id}/agents/refresh request-header Authorization
-POST /api/v1/targets/{id}/agents/refresh response - object
-POST /api/v1/targets/{id}/agents/refresh response .agents []object
-POST /api/v1/targets/{id}/agents/refresh response .agents[].agent_type string
-POST /api/v1/targets/{id}/agents/refresh response .agents[].auth_status string omitempty
-POST /api/v1/targets/{id}/agents/refresh response .agents[].available boolean
-POST /api/v1/targets/{id}/agents/refresh response .agents[].checked_at time
-POST /api/v1/targets/{id}/agents/refresh response .agents[].path string omitempty
-POST /api/v1/targets/{id}/agents/refresh response .agents[].version string omitempty
-POST /api/v1/targets/{id}/agents/refresh response-header Content-Type
-POST /api/v1/targets/{id}/agents/refresh status 200
-POST /api/v1/targets/{id}/agents/refresh status 401
-POST /api/v1/targets/{id}/agents/refresh status 404
-POST /api/v1/targets/{id}/agents/refresh status 500
-POST /api/v1/targets/{id}/agents/refresh status 501
-POST /api/v1/targets/{id}/agents/refresh status 502
 POST /api/v1/targets/{id}/pin
 POST /api/v1/targets/{id}/pin request - object
 POST /api/v1/targets/{id}/pin request .fingerprint string
@@ -664,7 +641,6 @@ POST /api/v1/targets/{id}/pin response .purpose string
 POST /api/v1/targets/{id}/pin response .relay string
 POST /api/v1/targets/{id}/pin response .relay_effective string
 POST /api/v1/targets/{id}/pin response .require_confirmation boolean
-POST /api/v1/targets/{id}/pin response .ssh_key_ref string
 POST /api/v1/targets/{id}/pin response .ssh_port number
 POST /api/v1/targets/{id}/pin response .updated_at time
 POST /api/v1/targets/{id}/pin response .user string
@@ -858,7 +834,6 @@ PUT /api/v1/targets/{id} request .permission_mode string nullable
 PUT /api/v1/targets/{id} request .purpose string nullable
 PUT /api/v1/targets/{id} request .relay string nullable
 PUT /api/v1/targets/{id} request .require_confirmation boolean nullable
-PUT /api/v1/targets/{id} request .ssh_key_ref string nullable
 PUT /api/v1/targets/{id} request .ssh_port number nullable
 PUT /api/v1/targets/{id} request .user string
 PUT /api/v1/targets/{id} request .workspace_root string nullable
@@ -888,7 +863,6 @@ PUT /api/v1/targets/{id} response .purpose string
 PUT /api/v1/targets/{id} response .relay string
 PUT /api/v1/targets/{id} response .relay_effective string
 PUT /api/v1/targets/{id} response .require_confirmation boolean
-PUT /api/v1/targets/{id} response .ssh_key_ref string
 PUT /api/v1/targets/{id} response .ssh_port number
 PUT /api/v1/targets/{id} response .updated_at time
 PUT /api/v1/targets/{id} response .user string

@@ -37,7 +37,7 @@ func TestConversation_Confirmations(t *testing.T) {
 	for _, c := range []*registry.Confirmation{
 		{ID: "conf-live", ConversationID: "c1", DispatchID: out.DispatchID, Kind: registry.ConfirmationRunCommand,
 			TargetName: "jet01", Command: "df -h", ExpiresAt: now.Add(10 * time.Minute)},
-		{ID: "conf-old", ConversationID: "c1", Kind: registry.ConfirmationCloneRemote,
+		{ID: "conf-old", ConversationID: "c1", Kind: registry.ConfirmationCloneRemote, Workspace: "my-app",
 			GitRemote: "https://example.com/r.git", ExpiresAt: now.Add(-time.Minute)},
 	} {
 		if err := store.CreateConfirmation(ctx, c); err != nil {
@@ -63,5 +63,10 @@ func TestConversation_Confirmations(t *testing.T) {
 	}
 	if old["status"] != "expired" || old["git_remote"] != "https://example.com/r.git" {
 		t.Errorf("old = %v, want expired", old)
+	}
+	// The workspace's name is workspace_name, as the target's is
+	// target_name (freeze review item 10).
+	if _, ok := old["workspace"]; ok || old["workspace_name"] != "my-app" {
+		t.Errorf("old = %v, want workspace_name my-app and no workspace", old)
 	}
 }
