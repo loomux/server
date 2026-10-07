@@ -30,7 +30,8 @@ func (r *Router) conversationContext(ctx context.Context, conversationID string,
 		}
 		kept = append(kept, m)
 	}
-	history = boundHistory(kept)
+	// What a target's relay policy lets the routing model see of it.
+	history = boundHistory(r.newHistoryPolicies(ctx).filter(kept))
 
 	tasks, err := r.store.ListTasks(ctx)
 	if err != nil {
@@ -64,7 +65,7 @@ func (r *Router) conversationContext(ctx context.Context, conversationID string,
 			AgentType:     awaiting.AgentType,
 			Status:        string(awaiting.Status),
 		}
-		for i := len(msgs) - 1; i >= 0; i-- {
+		for i := len(msgs) - 1; i >= 0 && r.taskRelayPolicy(ctx, awaiting) != registry.RelayNone; i-- {
 			if msgs[i].TaskID == awaiting.ID && msgs[i].Role == registry.MessageRoleAssistant {
 				open.LastReply = keepEnd(msgs[i].Content, OpenTaskReplyRunes)
 				break
@@ -239,6 +240,7 @@ func (r *Router) targetPurpose(ctx context.Context, targetID string) (purpose st
 // targetID, for the Origin of the messages it logs.
 func (r *Router) withTurnOrigin(ctx context.Context, targetID string) context.Context {
 	tl := turnLogFrom(ctx)
+	tl.originTarget = targetID
 	tl.origin = "?" // the target can't be read: unknown, not "none"
 	if purpose, ok := r.targetPurpose(ctx, targetID); ok {
 		tl.origin = purpose

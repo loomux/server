@@ -73,6 +73,39 @@ type TargetPolicy struct {
 	// command, an agent started in a workspace — wait for the user's
 	// "yes" in chat to the plan.
 	RequireConfirmation bool
+	// Relay is how much of this target's work Loomux's router models (a
+	// third-party API) may see: RelayFull, RelayLastMessage or RelayNone.
+	// Empty means the purpose's default (EffectiveRelay).
+	Relay string
+}
+
+// What the router models may see of a target's work (TargetPolicy.Relay,
+// user decision 2026-10-07).
+const (
+	// RelayFull: the turn's output and context go to the relay model,
+	// and its conversations' history to the routing model.
+	RelayFull = "full"
+	// RelayLastMessage: only the agent's own final message for a turn
+	// (its visible screen, for an agent with no final-message hook); the
+	// routing model sees only those replies of its conversations.
+	RelayLastMessage = "last_message"
+	// RelayNone: nothing from the target reaches either model. The
+	// agent's final message is the chat reply as it is, and the routing
+	// model sees no message, reply or summary from its conversations.
+	RelayNone = "none"
+)
+
+// EffectiveRelay is p.Relay, or the default for p's purpose: none for a
+// work machine, full otherwise.
+func (p TargetPolicy) EffectiveRelay() string {
+	switch {
+	case p.Relay != "":
+		return p.Relay
+	case p.Purpose == TargetPurposeWork:
+		return RelayNone
+	default:
+		return RelayFull
+	}
 }
 
 // AllowsAgent reports whether agentType may run under p.
@@ -152,6 +185,11 @@ func (t *Target) Validate() error {
 	case "", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual:
 	default:
 		return fmt.Errorf("permission_mode must be empty, %q, %q or %q", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual)
+	}
+	switch t.Policy.Relay {
+	case "", RelayFull, RelayLastMessage, RelayNone:
+	default:
+		return fmt.Errorf("relay must be empty (the purpose's default), %q, %q or %q", RelayFull, RelayLastMessage, RelayNone)
 	}
 	switch t.Policy.Purpose {
 	case "", TargetPurposePersonal, TargetPurposeWork:

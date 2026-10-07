@@ -112,18 +112,19 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 	if err != nil {
 		return false, fmt.Errorf("capture pane: %w", err)
 	}
-	result, err := r.model.Relay(ctx, r.relayInput(ctx, task, "", captured))
+	result, relayPolicy, err := r.relayTurn(ctx, task, "", captured, agentMessage)
 	if err != nil {
 		return false, fmt.Errorf("relay: %w", err)
 	}
 	r.recordEvent(ctx, task.ConversationID, registry.DispatchEvent{Kind: registry.EventRelay, Model: result.Model,
 		Tier: result.Tier, WorkspaceID: task.WorkspaceID, TaskID: task.ID, Outcome: "late output relayed",
-		Detail: "agent " + task.AgentType})
+		Detail: "agent " + task.AgentType + ", relay " + relayPolicy})
 	if err := r.store.CreateMessage(ctx, &registry.Message{
 		ID:             uuid.NewString(),
 		ConversationID: task.ConversationID,
 		TaskID:         task.ID,
 		Origin:         r.turnOrigin(ctx, task.ID),
+		OriginTargetID: r.turnOriginTarget(ctx, task.ID),
 		Role:           registry.MessageRoleAssistant,
 		Content:        result.Reply,
 	}); err != nil {

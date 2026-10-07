@@ -276,6 +276,11 @@ not engineering taste):
     dead session is discovered the same way a human always would, by
     trying to attach. Wraps `AttachInfoStore` (`GetTask` → `GetWorkspace`
     → `GetTarget`), a narrow seam mirroring the others here.
+  - Targets carry `relay` (`full`, `last_message`, `none`, or `""` for
+    the purpose's default: `none` for `purpose: work`, else `full`) and
+    show `relay_effective`: what the router models may see of the
+    target's work (`docs/deploy/operations.md`, "What the router models
+    see").
   - `POST /api/v1/targets/{id}/scan-host-key`,
     `POST /api/v1/targets/{id}/pin` `{fingerprint}`,
     `DELETE /api/v1/targets/{id}/pin`, `POST /api/v1/targets/{id}/test` —

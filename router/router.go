@@ -926,7 +926,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 		}
 	}
 
-	result, err := r.model.Relay(ctx, r.relayInput(ctx, task, message, captured))
+	result, relayPolicy, err := r.relayTurn(ctx, task, message, captured, agentMessage)
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: relay: %w", err)
 	}
@@ -937,7 +937,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 		}
 		r.recordEvent(ctx, task.ConversationID, registry.DispatchEvent{Kind: registry.EventAgentTurn,
 			Model: result.Model, Tier: result.Tier, WorkspaceID: task.WorkspaceID, TaskID: task.ID,
-			Outcome: outcome, Duration: time.Since(start), Detail: "agent " + task.AgentType})
+			Outcome: outcome, Duration: time.Since(start), Detail: "agent " + task.AgentType + ", relay " + relayPolicy})
 	}()
 
 	*failClass = registry.ErrorClassInternal
@@ -1154,6 +1154,9 @@ type turnLog struct {
 	// (or the offer being confirmed) names one: a turn that ends without
 	// a task, such as an offer to run something there, still ran there.
 	origin string
+	// originTarget is that target's id, for the relay policy applied to
+	// the turn's messages.
+	originTarget string
 }
 
 type turnLogKey struct{}
@@ -1178,6 +1181,7 @@ func turnLogFrom(ctx context.Context) turnLog {
 func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessage, assistantReply string) error {
 	tl := turnLogFrom(ctx)
 	origin := r.turnOrigin(ctx, taskID)
+	originTarget := r.turnOriginTarget(ctx, taskID)
 	if !tl.userMessageLogged {
 		if err := r.store.CreateMessage(ctx, &registry.Message{
 			ID:             uuid.NewString(),
@@ -1185,6 +1189,7 @@ func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessag
 			TaskID:         taskID,
 			DispatchID:     tl.dispatchID,
 			Origin:         origin,
+			OriginTargetID: originTarget,
 			Role:           registry.MessageRoleUser,
 			Content:        userMessage,
 		}); err != nil {
@@ -1197,6 +1202,7 @@ func (r *Router) logTurn(ctx context.Context, conversationID, taskID, userMessag
 		TaskID:         taskID,
 		DispatchID:     tl.dispatchID,
 		Origin:         origin,
+		OriginTargetID: originTarget,
 		Role:           registry.MessageRoleAssistant,
 		Content:        withReplyNote(tl.replyNote, assistantReply),
 	}); err != nil {
@@ -1556,7 +1562,9 @@ func (r *Router) snapshotTargets(ctx context.Context, targets []*registry.Target
 // broken or retired workspace — and not shell workspaces (LOOM-72).
 func snapshotWorkspaces(workspaces []*registry.Workspace, targets []*registry.Target) []WorkspaceSnapshot {
 	targetNames := make(map[string]string, len(targets))
+	relay := make(map[string]string, len(targets))
 	for _, t := range targets {
+		relay[t.ID] = t.Policy.EffectiveRelay()
 		targetNames[t.ID] = t.Name
 	}
 	kept := make([]*registry.Workspace, 0, len(workspaces))
@@ -1587,11 +1595,21 @@ func snapshotWorkspaces(workspaces []*registry.Workspace, targets []*registry.Ta
 			Capabilities: ws.Capabilities,
 			Status:       string(ws.Status),
 			TargetName:   targetNames[ws.TargetID],
-			Summary:      truncateRunes(ws.RollingSummary, SnapshotSummaryRunes),
+			Summary:      snapshotSummary(ws, relay),
 			LastUsed:     ws.LastUsedAt,
 		})
 	}
 	return out
+}
+
+// snapshotSummary is ws's rolling summary as the routing model sees it:
+// none on a target whose relay policy is none (or an unknown target),
+// whose summary is the agent's own words.
+func snapshotSummary(ws *registry.Workspace, relay map[string]string) string {
+	if p, ok := relay[ws.TargetID]; !ok || p == registry.RelayNone {
+		return ""
+	}
+	return truncateRunes(ws.RollingSummary, SnapshotSummaryRunes)
 }
 
 // truncateRunes keeps the first n runes of s, marking a cut with "…".

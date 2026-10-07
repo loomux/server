@@ -445,9 +445,21 @@ vendor. Its responsibilities:
   `NAME=value` whose name says secret, token, password or key) replaced
   by `[redacted]`; if the vault can't be read, the output is withheld.
   Everything else in that output goes to the vendor as is: code, file
-  names, work data. A per-target setting to send less (or nothing) for
-  a work machine is a follow-up. The stored transcript is redacted the
-  same way.
+  names, work data, under the target's relay policy (below). The stored
+  transcript is redacted the same way.
+  **Relay policy (user decision 2026-10-07).** Each target's policy has
+  `relay`: `full` (everything above), `last_message` (only the agent's
+  own final message for the turn — its visible screen, for an agent
+  with no final-message hook — never the user's message, the previous
+  summary or the scrollback) or `none` (no model call: the agent's
+  final message, redacted and bounded to 4000 characters, is the chat
+  reply and the new summary, and the session stays open since no model
+  judged the task done). Empty means the purpose's default: `none` for
+  `purpose: work`, `full` otherwise. The same policy gates the routing
+  model's view of that target's turns: under `none` it sees no message,
+  reply, open-task reply or workspace summary from them; under
+  `last_message`, their replies only. The message being routed always
+  reaches it — routing needs it.
 
 - **Direct shell commands** (`run_command`, LOOM-72): a request like
   "run `hostname && uptime` on jet01" needs no AI agent. The router names

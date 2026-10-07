@@ -1383,6 +1383,11 @@ type targetResponse struct {
 	AllowProvision      bool     `json:"allow_provision"`
 	AllowShell          bool     `json:"allow_shell"`
 	RequireConfirmation bool     `json:"require_confirmation"`
+	// Relay is what the router models may see of this target's work:
+	// "full", "last_message", "none", or "" for its purpose's default;
+	// RelayEffective is what applies (a work machine's default is none).
+	Relay          string `json:"relay"`
+	RelayEffective string `json:"relay_effective"`
 	// SSHPort overrides the SSH config's port when non-zero (LOOM-114).
 	SSHPort int `json:"ssh_port"`
 	// PinnedHostKeys are the host keys pinned through the API (LOOM-114),
@@ -1440,6 +1445,8 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		AllowProvision:      !t.Policy.NoProvision,
 		AllowShell:          !t.Policy.NoShell,
 		RequireConfirmation: t.Policy.RequireConfirmation,
+		Relay:               t.Policy.Relay,
+		RelayEffective:      t.Policy.EffectiveRelay(),
 		SSHPort:             t.SSHPort,
 		PinnedHostKeys:      pinnedHostKeys(t),
 		CreatedAt:           t.CreatedAt,
@@ -1468,6 +1475,8 @@ type targetRequest struct {
 	AllowProvision      *bool     `json:"allow_provision"`
 	AllowShell          *bool     `json:"allow_shell"`
 	RequireConfirmation *bool     `json:"require_confirmation"`
+	// Relay is optional the same way: "" sets the purpose's default.
+	Relay *string `json:"relay"`
 	// SSHPort is optional the same way (LOOM-114); 0 means the SSH
 	// config's port.
 	SSHPort *int `json:"ssh_port"`
@@ -1520,6 +1529,9 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if req.RequireConfirmation != nil {
 		target.Policy.RequireConfirmation = *req.RequireConfirmation
+	}
+	if req.Relay != nil {
+		target.Policy.Relay = *req.Relay
 	}
 	if req.SSHKeyRef != nil {
 		target.SSHKeyRef = *req.SSHKeyRef

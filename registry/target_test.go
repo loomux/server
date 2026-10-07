@@ -50,6 +50,11 @@ func TestTargetValidate(t *testing.T) {
 			target: registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "fd7a:115c::1", User: "deploy_user-2.x"},
 		},
 		{
+			name:    "unknown relay policy",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindLocal, Policy: registry.TargetPolicy{Relay: "some"}},
+			wantErr: `relay must be empty (the purpose's default), "full", "last_message" or "none"`,
+		},
+		{
 			name:    "missing name",
 			target:  registry.Target{Kind: registry.TargetKindLocal},
 			wantErr: "name is required",
@@ -137,6 +142,25 @@ func TestTargetValidate_PermissionMode(t *testing.T) {
 		target := &registry.Target{Name: "t", Kind: registry.TargetKindLocal, PermissionMode: mode}
 		if err := target.Validate(); (err == nil) != ok {
 			t.Errorf("Validate(permission_mode=%q) = %v, want ok=%v", mode, err, ok)
+		}
+	}
+}
+
+// The relay policy defaults by purpose: none for a work machine, full
+// otherwise; an explicit setting wins (user decision 2026-10-07).
+func TestEffectiveRelay(t *testing.T) {
+	for _, tc := range []struct {
+		policy registry.TargetPolicy
+		want   string
+	}{
+		{registry.TargetPolicy{}, registry.RelayFull},
+		{registry.TargetPolicy{Purpose: registry.TargetPurposePersonal}, registry.RelayFull},
+		{registry.TargetPolicy{Purpose: registry.TargetPurposeWork}, registry.RelayNone},
+		{registry.TargetPolicy{Purpose: registry.TargetPurposeWork, Relay: registry.RelayLastMessage}, registry.RelayLastMessage},
+		{registry.TargetPolicy{Relay: registry.RelayNone}, registry.RelayNone},
+	} {
+		if got := tc.policy.EffectiveRelay(); got != tc.want {
+			t.Errorf("%+v.EffectiveRelay() = %q, want %q", tc.policy, got, tc.want)
 		}
 	}
 }

@@ -31,10 +31,15 @@ type Message struct {
 	// for a turn that touched no target, or empty when unknown — a user
 	// message stored at submit, before routing, or one from before
 	// origins were recorded.
-	Origin    string
-	Role      MessageRole
-	Content   string
-	CreatedAt time.Time
+	Origin string
+	// OriginTargetID is the target the turn acted on, when it acted on
+	// one: what its relay policy is read from (TargetPolicy.Relay). Empty
+	// for older messages, which fall back to their task's target, then
+	// to Origin's default.
+	OriginTargetID string
+	Role           MessageRole
+	Content        string
+	CreatedAt      time.Time
 }
 
 // MessageOriginNone is Message.Origin for a turn that touched no target:
