@@ -151,8 +151,12 @@ envelope: it classifies the failure with `error_class`.
   conversation has no other id; and the stream's `message_added`
   carries `message_id` (and `task_id`). Attach-info's `task_id` is the
   task asked about.
-- **Enums** are snake_case (task statuses since the freeze review).
-- **Errors** are `{error, code}` (see the error section).
+- **Enums** are snake_case: task statuses and `permission_mode` since
+  the freeze review (item 9). Agent-type names such as `claude-code` are
+  identifiers, not enums, and keep their spelling.
+- **Errors** are `{error, code}` (see the error section), except the
+  router's own `404`/`405` for a path or method no route matches, which
+  are plain text.
 - **`/web/*`** is an operations API outside the v1 stability promise
   (`docs/release/versioning.md`, "The API v1 contract").
 
