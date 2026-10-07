@@ -437,7 +437,6 @@ GET /api/v1/workspaces response .workspaces []object
 GET /api/v1/workspaces response .workspaces[].capabilities []string
 GET /api/v1/workspaces response .workspaces[].description string
 GET /api/v1/workspaces response .workspaces[].id string
-GET /api/v1/workspaces response .workspaces[].is_dynamic boolean
 GET /api/v1/workspaces response .workspaces[].last_used_at time omitempty nullable
 GET /api/v1/workspaces response .workspaces[].name string
 GET /api/v1/workspaces response .workspaces[].rolling_summary string
