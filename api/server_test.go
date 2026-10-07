@@ -782,7 +782,7 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 			Description    string     `json:"description"`
 			Capabilities   []string   `json:"capabilities"`
 			RollingSummary string     `json:"rolling_summary"`
-			IsDynamic      bool       `json:"is_dynamic"`
+			IsDynamic      *bool      `json:"is_dynamic"`
 			LastUsedAt     *time.Time `json:"last_used_at"`
 		} `json:"workspaces"`
 	}
@@ -809,8 +809,10 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 	if meta.RollingSummary != "last did some work" {
 		t.Fatalf("rolling_summary = %q, want %q", meta.RollingSummary, "last did some work")
 	}
-	if !meta.IsDynamic {
-		t.Fatal("is_dynamic = false, want true")
+	// is_dynamic is no longer part of the API (freeze review item 2):
+	// every workspace is dynamic.
+	if meta.IsDynamic != nil {
+		t.Fatalf("is_dynamic = %v, want it gone", *meta.IsDynamic)
 	}
 	if meta.LastUsedAt == nil || !meta.LastUsedAt.Equal(lastUsed) {
 		t.Fatalf("last_used_at = %v, want %v", meta.LastUsedAt, lastUsed)
@@ -823,7 +825,7 @@ func TestListWorkspaces_ValidToken_ReturnsWorkspaceMetadata(t *testing.T) {
 	if plain.LastUsedAt != nil {
 		t.Fatalf("plain.last_used_at = %v, want nil (omitted when null)", plain.LastUsedAt)
 	}
-	if len(plain.Tags) != 0 || len(plain.Capabilities) != 0 || plain.Description != "" || plain.RollingSummary != "" || plain.IsDynamic {
+	if len(plain.Tags) != 0 || len(plain.Capabilities) != 0 || plain.Description != "" || plain.RollingSummary != "" {
 		t.Fatalf("plain workspace has unexpected metadata: %+v", plain)
 	}
 

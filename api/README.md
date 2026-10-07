@@ -182,10 +182,11 @@ not engineering taste):
     cut it off; error class `interrupted`); `404` if unknown.
   - `GET /api/v1/workspaces` — auth-gated (LOOM-19), lists registered
     workspaces sorted by name: `{workspaces: [{id, name, target_id,
-    status, tags, description, capabilities, rolling_summary, is_dynamic,
-    last_used_at?}, ...]}`. Includes the router's matching metadata
-    (tags/description/capabilities/rolling_summary) and the dynamic/usage
-    flags now that the Phase 2 web fleet-status page consumes them
+    status, tags, description, capabilities, rolling_summary,
+    last_used_at?}, ...]}` (`is_dynamic` was removed before 1.0: every
+    workspace is dynamic). Includes the router's matching metadata
+    (tags/description/capabilities/rolling_summary) and the usage
+    timestamp now that the Phase 2 web fleet-status page consumes them
     (LOOM-44). Wraps `WorkspaceLister.ListWorkspaces`, a narrow seam
     mirroring `SessionStore`, satisfied structurally by `*app.App.Store()`.
   - `GET /api/v1/conversations` — auth-gated (LOOM-18), one summary row
@@ -312,16 +313,16 @@ not engineering taste):
     The deployment already configures `LOOMUX_AUTH_PASSWORD_HASH`, so
     there is no bootstrap chicken-and-egg to justify one.
 
-    Bodies are `{name, kind, host, user, ssh_key_ref}`; responses add
+    Bodies are `{name, kind, host, user}` plus the optional fields below;
+    responses add
     the server-minted `id` plus `created_at`/`updated_at`. **The id is
     never accepted from the client** — workspaces reference targets by
     id, and letting a caller choose one invites exactly the collisions
     and hand-minted ids this endpoint exists to replace, so it is
-    generated here the way session ids already are. `ssh_key_ref` *is*
-    returned (unlike the deliberately display-only `attach-info`
-    payload): it is a reference into the credential vault, never secret
-    material, and a client needs it back to round-trip a `PUT` without
-    silently clearing the field.
+    generated here the way session ids already are. `ssh_key_ref` is not
+    part of the API (removed before 1.0, freeze review item 1: nothing
+    read it; SSH keys come from the mounted secret); a client that still
+    sends it has it ignored.
 
     Validation enforces the invariants the execution layer assumes but
     cannot check at registration time, so a target that could never be
@@ -370,7 +371,7 @@ current session behaving like `/logout`)
 against a fake `Dispatcher` and a real (temp-file) sqlite store for sessions, plus
 `/api/v1/workspaces` (auth required, empty-list, populated-and-sorted,
  and metadata round-trip cases, asserting the full field set including
- tags/description/capabilities/rolling_summary/is_dynamic/last_used_at
+ tags/description/capabilities/rolling_summary/last_used_at
  against real store fixtures) and
 `/api/v1/conversations` + `/api/v1/conversations/{id}` (auth required,
 empty-list, recency-sorted grouping across multiple conversations, a
