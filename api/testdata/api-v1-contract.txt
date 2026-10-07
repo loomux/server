@@ -125,7 +125,7 @@ GET /api/v1/conversations/{id} response .confirmations[].resolved_at time omitem
 GET /api/v1/conversations/{id} response .confirmations[].status string
 GET /api/v1/conversations/{id} response .confirmations[].target_id string omitempty
 GET /api/v1/conversations/{id} response .confirmations[].target_name string omitempty
-GET /api/v1/conversations/{id} response .confirmations[].workspace string omitempty
+GET /api/v1/conversations/{id} response .confirmations[].workspace_name string omitempty
 GET /api/v1/conversations/{id} response .conversation_id string
 GET /api/v1/conversations/{id} response .dispatches []object
 GET /api/v1/conversations/{id} response .dispatches[].confirmation_id string omitempty

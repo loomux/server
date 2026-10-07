@@ -815,19 +815,22 @@ type getConversationResponse struct {
 }
 
 type confirmationResponse struct {
-	ID         string     `json:"id"`
-	DispatchID string     `json:"dispatch_id,omitempty"`
-	Kind       string     `json:"kind"`
-	TargetID   string     `json:"target_id,omitempty"`
-	TargetName string     `json:"target_name,omitempty"`
-	AgentType  string     `json:"agent_type,omitempty"`
-	Command    string     `json:"command,omitempty"`
-	Workspace  string     `json:"workspace,omitempty"`
-	GitRemote  string     `json:"git_remote,omitempty"`
-	Status     string     `json:"status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+	ID         string `json:"id"`
+	DispatchID string `json:"dispatch_id,omitempty"`
+	Kind       string `json:"kind"`
+	TargetID   string `json:"target_id,omitempty"`
+	TargetName string `json:"target_name,omitempty"`
+	AgentType  string `json:"agent_type,omitempty"`
+	Command    string `json:"command,omitempty"`
+	// WorkspaceName is the workspace's name, as target_name is the
+	// target's (renamed from "workspace" before 1.0, API v1 freeze
+	// review item 10).
+	WorkspaceName string     `json:"workspace_name,omitempty"`
+	GitRemote     string     `json:"git_remote,omitempty"`
+	Status        string     `json:"status"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
 }
 
 // handleGetConversation returns a conversation's full task history (every
@@ -915,7 +918,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		}
 		confOut = append(confOut, confirmationResponse{
 			ID: c.ID, DispatchID: c.DispatchID, Kind: c.Kind, TargetID: c.TargetID, TargetName: c.TargetName,
-			AgentType: c.AgentType, Command: c.Command, Workspace: c.Workspace, GitRemote: c.GitRemote,
+			AgentType: c.AgentType, Command: c.Command, WorkspaceName: c.Workspace, GitRemote: c.GitRemote,
 			Status: string(status), CreatedAt: c.CreatedAt, ExpiresAt: c.ExpiresAt, ResolvedAt: c.ResolvedAt,
 		})
 	}
