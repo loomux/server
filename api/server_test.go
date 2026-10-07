@@ -598,6 +598,16 @@ func TestLogin_RepeatedFailures_TriggersBackoffWith429AndRetryAfter(t *testing.T
 	if resp.Header.Get("Retry-After") == "" {
 		t.Error("throttled response has no Retry-After header")
 	}
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode throttled body: %v", err)
+	}
+	if body.Code != "rate_limited" || body.Error == "" {
+		t.Errorf("throttled body = %+v, want code rate_limited and an error", body)
+	}
 }
 
 func TestLogin_SuccessAfterFailure_ResetsThrottle(t *testing.T) {

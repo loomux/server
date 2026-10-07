@@ -122,6 +122,14 @@ func preferRespondAsync(values []string) bool {
 // the job and the conversation's history. Async mode answers 202 at once;
 // blocking mode waits for the job and answers as this endpoint always
 // has, {reply} or a 500 with the error.
+// busyResponse is POST /api/v1/dispatch's 409 when the conversation
+// already has a dispatch running: the error body plus that dispatch's id,
+// so the client can follow it instead of retrying blind.
+type busyResponse struct {
+	errorResponse
+	DispatchID string `json:"dispatch_id"`
+}
+
 func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	mode, err := parseDispatchMode(r)
 	if err != nil {
@@ -152,10 +160,13 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	var busy *dispatch.BusyError
 	switch {
 	case errors.As(err, &busy):
-		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "dispatch_id": busy.DispatchID})
+		writeJSON(w, http.StatusConflict, busyResponse{
+			errorResponse: errorResponse{Error: err.Error(), Code: codeConversationBusy},
+			DispatchID:    busy.DispatchID,
+		})
 		return
 	case errors.Is(err, dispatch.ErrKeyReused):
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		writeErrorCode(w, http.StatusUnprocessableEntity, codeIdempotencyConflict, err.Error())
 		return
 	case errors.Is(err, dispatch.ErrShuttingDown):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
