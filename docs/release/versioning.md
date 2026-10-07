@@ -105,15 +105,34 @@ it:
   `...Request`/`...Response`/`...Event` type no route uses, a map
   literal written as a response or a stream event that isn't
   registered fails the test.
+- It reads each route's status codes, query parameters and headers from
+  the source (`api/contract_http_test.go`): starting at the functions
+  its `mux.HandleFunc` registers (the handler, and `s.requireAuth`
+  around it, hence the 401s and `Authorization`), it walks every
+  function in `api/` they reach and records one line per fact:
+  `status <code>` for each `http.StatusX` written through
+  `w.WriteHeader`, `http.Error` or a helper that passes its status on
+  (`writeJSON`, `writeError`); `query <name>` for each
+  `r.URL.Query().Get/Has` or `r.FormValue`; `request-header <Name>` for
+  each `r.Header.Get/Values`; `response-header <Name>` for each
+  `w.Header().Set/Add` (connection-level headers such as `Connection`
+  aside). What the walk can't follow fails the test instead of being
+  skipped: a status that isn't a constant, a query or header named by a
+  variable, or the request or response handed to a function outside
+  `api/` that isn't in the test's short list of ones known not to
+  touch them.
 - It compares that with the golden file. **A line gone or changed**
   (a field removed, renamed, retyped or made `omitempty`; a route
-  removed) fails: it breaks v1 and waits for `/api/v2`. **A new line**
-  fails too, until it is recorded with
+  removed; a status code, query parameter or header no longer
+  answered with or read) fails: it breaks v1 and waits for `/api/v2`.
+  **A new line** fails too, until it is recorded with
   `go test ./api -run TestAPIv1Contract -update` and the golden file is
   committed, so every API change shows up in review.
 - Until 1.0.0 a deliberate break is still allowed: record it with
   `-update` and say so under `### Changed` or `### Removed` in its
   `changes/` fragment.
 
-It covers routes and JSON field names and kinds, not status codes,
-query parameters or headers; review those by hand.
+It covers which status codes, query parameters and headers a route
+has, not what they mean: the condition a status is answered for, a
+parameter's accepted values and a header's value are still reviewed by
+hand, as are the mux's own 404 and 405 for an unknown path or method.
