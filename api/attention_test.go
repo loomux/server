@@ -35,7 +35,7 @@ func TestAttentionExposed(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&conv); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(conv.Tasks) != 1 || conv.Tasks[0].Status != "needs-attention" || conv.Tasks[0].Attention == nil ||
+	if len(conv.Tasks) != 1 || conv.Tasks[0].Status != "needs_attention" || conv.Tasks[0].Attention == nil ||
 		conv.Tasks[0].Attention.Detail != "rm -rf build" || len(conv.Tasks[0].Attention.Options) != 2 {
 		t.Errorf("tasks = %+v", conv.Tasks)
 	}

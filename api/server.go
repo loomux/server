@@ -759,7 +759,7 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 		summaries[t.ConversationID] = &conversationSummary{
 			ConversationID: t.ConversationID,
 			WorkspaceID:    t.WorkspaceID,
-			Status:         string(t.Status),
+			Status:         apiTaskStatus(t.Status),
 			UpdatedAt:      t.UpdatedAt,
 		}
 	}
@@ -918,7 +918,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID:   t.WorkspaceID,
 			Kind:          string(t.Kind),
 			AgentType:     t.AgentType,
-			Status:        string(t.Status),
+			Status:        apiTaskStatus(t.Status),
 			CreatedAt:     t.CreatedAt,
 			UpdatedAt:     t.UpdatedAt,
 			StartedAt:     t.StartedAt,
@@ -1224,7 +1224,7 @@ func (s *Server) latestConversationTaskEvent(ctx context.Context, conversationID
 	return &taskUpdateEvent{
 		TaskID:        latest.ID,
 		WorkspaceID:   latest.WorkspaceID,
-		Status:        string(latest.Status),
+		Status:        apiTaskStatus(latest.Status),
 		UpdatedAt:     latest.UpdatedAt,
 		FailureReason: latest.FailureReason,
 		ErrorClass:    string(latest.ErrorClass),
@@ -1882,4 +1882,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, errorResponse{Error: msg})
+}
+
+// apiTaskStatus is a task status as the API spells it: snake_case, like
+// every other enum the API has ("awaiting_input", "needs_attention",
+// "human_takeover"). The store keeps its own spelling (API v1 freeze
+// review, item 9).
+func apiTaskStatus(s registry.TaskStatus) string {
+	return strings.ReplaceAll(string(s), "-", "_")
 }
