@@ -36,7 +36,7 @@ func attentionHarness(t *testing.T) (registry.Store, *fakeExecutor, *router.Rout
 			return &registry.Attention{Kind: registry.AttentionLogin, Title: "Sign-in required", Detail: "Select login method:"}
 		case "LIMIT":
 			return &registry.Attention{Kind: registry.AttentionUsageLimit, Title: "Usage limit reached",
-				Detail: "5-hour limit reached ∙ resets 5pm (Europe/Istanbul)", ResetsAt: "5pm (Europe/Istanbul)"}
+				Detail: "5-hour limit reached ∙ resets 5pm (Europe/Istanbul)", Resets: "5pm (Europe/Istanbul)"}
 		}
 		return nil
 	}

@@ -47,15 +47,15 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 	}
 	if a.Kind == registry.AttentionUsageLimit {
 		reason := fmt.Sprintf("agent %q on %s hit its usage limit", task.AgentType, targetName)
-		if a.ResetsAt != "" {
-			reason += ", resets " + a.ResetsAt
+		if a.Resets != "" {
+			reason += ", resets " + a.Resets
 		}
 		if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
 			Class: registry.ErrorClassAgentRateLimited, Reason: reason, OutputTail: a.Detail,
 		}); err != nil {
 			log.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 		}
-		log.Warn("agent hit its usage limit", "task_id", task.ID, "resets_at", a.ResetsAt)
+		log.Warn("agent hit its usage limit", "task_id", task.ID, "resets", a.Resets)
 		return "", &classedError{class: registry.ErrorClassAgentRateLimited, msg: fmt.Sprintf(
 			"router: dispatch: %s (it shows %q). Send your message again after the reset, or "+
 				"ask for a different agent", reason, a.Detail)}

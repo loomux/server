@@ -190,7 +190,7 @@ func detectUsageLimit(lines []string) *registry.Attention {
 		if m := usageLimitEpoch.FindStringSubmatch(region[i]); m != nil {
 			sec, _ := strconv.ParseInt(m[2], 10, 64)
 			return &registry.Attention{Kind: registry.AttentionUsageLimit, Title: "Usage limit reached", Detail: m[1],
-				ResetsAt: time.Unix(sec, 0).UTC().Format("Jan 2 15:04 UTC")}
+				Resets: time.Unix(sec, 0).UTC().Format("Jan 2 15:04 UTC")}
 		}
 		m := usageLimitLine.FindStringSubmatch(region[i])
 		if m == nil {
@@ -199,9 +199,9 @@ func detectUsageLimit(lines []string) *registry.Attention {
 		a := &registry.Attention{Kind: registry.AttentionUsageLimit, Title: "Usage limit reached",
 			Detail: strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(region[i]), "⎿■"))}
 		// The reset is on the line itself, or else the next one.
-		a.ResetsAt = findReset(m[1])
-		if a.ResetsAt == "" && i+1 < len(region) {
-			a.ResetsAt = findReset(region[i+1])
+		a.Resets = findReset(m[1])
+		if a.Resets == "" && i+1 < len(region) {
+			a.Resets = findReset(region[i+1])
 		}
 		return a
 	}
