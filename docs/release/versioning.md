@@ -118,9 +118,18 @@ it:
   `w.Header().Set/Add` (connection-level headers such as `Connection`
   aside). What the walk can't follow fails the test instead of being
   skipped: a status that isn't a constant, a query or header named by a
-  variable, or the request or response handed to a function outside
+  variable, the request or response handed to a function outside
   `api/` that isn't in the test's short list of ones known not to
-  touch them.
+  touch them, or either one aliased. The walk follows `w` and `r` by
+  name, so they (and `r.URL`, `r.Header`, `w.Header()`) may only appear
+  as the receiver of the methods and fields it reads (`w.Header().Set`,
+  `w.WriteHeader`, `r.Context()`, `r.URL.Query().Get`, ...), as a call
+  argument (to a function in `api/` taking them as a parameter of the
+  same type, or one on that short list), or as `w.(http.Flusher)`;
+  copying one (`rw := w`, a struct literal, `&w`, a return, a channel
+  send, `u := r.URL`) fails with "request/response aliased". It is
+  name-based, not scoped: an unrelated local named like a handler's
+  `w` or `r` anywhere in the same function is held to the same rules.
 - It compares that with the golden file. **A line gone or changed**
   (a field removed, renamed, retyped or made `omitempty`; a route
   removed; a status code, query parameter or header no longer
@@ -135,4 +144,6 @@ it:
 It covers which status codes, query parameters and headers a route
 has, not what they mean: the condition a status is answered for, a
 parameter's accepted values and a header's value are still reviewed by
-hand, as are the mux's own 404 and 405 for an unknown path or method.
+hand, as are the mux's own 404 and 405 for an unknown path or method,
+and the implicit 200 of a route that writes a body without naming a
+status (every route today names its 2xx).

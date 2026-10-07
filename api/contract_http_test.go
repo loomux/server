@@ -19,8 +19,9 @@ import (
 // functions a route's mux.HandleFunc registers (the handler, and
 // s.requireAuth around it), then every function in package api those
 // reach, transitively. Anything the walk can't follow — a status that
-// isn't a constant, a request handed to a function outside the package, a
-// header named by a variable — fails the test rather than being skipped,
+// isn't a constant, a request handed to a function outside the package
+// or copied where the walk loses it (paramUseAllowed), a header named by
+// a variable — fails the test rather than being skipped,
 // so a fact can't leave the contract unnoticed.
 
 // contractSharedHandlers is the function behind each contractShared
@@ -96,6 +97,7 @@ type httpAnalyser struct {
 	facts    map[string]*httpFacts
 	problems map[string][]string
 	statuses map[string]int // http.StatusX name to its code
+	fset     *token.FileSet
 }
 
 // funcKey names a function: "readJSON", or "Server.handleDispatch".
@@ -127,8 +129,9 @@ func recvName(fd *ast.FuncDecl) string {
 	return fd.Recv.List[0].Names[0].Name
 }
 
-func newHTTPAnalyser(src []*ast.File) *httpAnalyser {
+func newHTTPAnalyser(fset *token.FileSet, src []*ast.File) *httpAnalyser {
 	a := &httpAnalyser{
+		fset:     fset,
 		funcs:    map[string]*ast.FuncDecl{},
 		keys:     map[*ast.FuncDecl]string{},
 		methods:  map[string]map[string]*ast.FuncDecl{},
@@ -264,7 +267,10 @@ func (a *httpAnalyser) handlerRoots(e ast.Expr) []*ast.FuncDecl {
 
 // funcParams is fd's parameter names in order, and the names of the
 // ResponseWriter, *http.Request and http.HandlerFunc parameters of fd
-// and of every function literal inside it.
+// and of every function literal inside it. The names are merged into one
+// set, not scoped: a function literal's w is followed throughout fd, and
+// an unrelated local of the same name is held to the same rules
+// (paramUseAllowed), which errs towards failing, never towards skipping.
 type funcParams struct {
 	order               []string
 	resp, req, handlers map[string]bool
@@ -482,7 +488,7 @@ func (a *httpAnalyser) analyse(fd *ast.FuncDecl) {
 	facts := newHTTPFacts()
 	var problems []string
 	problem := func(n ast.Node, format string, args ...any) {
-		problems = append(problems, fmt.Sprintf("%s: %s (%s)", key, fmt.Sprintf(format, args...), types.ExprString(n.(ast.Expr))))
+		problems = append(problems, fmt.Sprintf("%s: %s (%s at %s)", key, fmt.Sprintf(format, args...), types.ExprString(n.(ast.Expr)), a.fset.Position(n.Pos())))
 	}
 	params := paramsOf(fd)
 	isParam := func(e ast.Expr, set map[string]bool) bool {
@@ -500,6 +506,14 @@ func (a *httpAnalyser) analyse(fd *ast.FuncDecl) {
 		stack = append(stack, n)
 
 		switch e := n.(type) {
+		case *ast.Ident:
+			if (params.resp[e.Name] || params.req[e.Name]) && !paramUseAllowed(e, parents, params.req[e.Name]) {
+				var shown ast.Expr = e
+				if sel, ok := parents[len(parents)-1].(*ast.SelectorExpr); ok && sel.X == e {
+					shown = sel // r.URL, not just r
+				}
+				problem(shown, "request/response aliased: the contract can't follow it")
+			}
 		case *ast.CallExpr:
 			for _, arg := range a.statusArgs(fd, e) {
 				codes, _, p := a.resolveStatus(fd, arg)
@@ -581,6 +595,78 @@ func (a *httpAnalyser) analyse(fd *ast.FuncDecl) {
 	a.problems[key] = problems
 }
 
+// respMethods and reqMethods are the methods the walk follows on a
+// ResponseWriter or *http.Request parameter, each only called
+// (w.Header().Set(...), not h := w.Header). reqFields is the fields it
+// follows; URL only further selected by reqURLFields, Header only by the
+// lookups analyse checks.
+var (
+	respMethods = []string{"Header", "Write", "WriteHeader"}
+	reqMethods  = []string{"Context", "PathValue", "FormValue", "PostFormValue", "UserAgent", "Referer", "Cookie", "Cookies", "BasicAuth",
+		// analyse fails these, with their own reason:
+		"ParseForm", "ParseMultipartForm", "MultipartReader"}
+	reqFields = []string{"Method", "Body", "URL", "Header", "Host", "RemoteAddr", "ContentLength", "Proto", "RequestURI",
+		// analyse fails these, with their own reason:
+		"Form", "PostForm", "MultipartForm", "Trailer"}
+	reqURLFields = []string{"Path", "EscapedPath", "RawQuery", "Query"}
+)
+
+// paramUseAllowed reports whether id, a ResponseWriter (or, req, an
+// *http.Request) parameter of the function being analysed, appears where
+// the walk follows it, parents being the nodes above it. Anywhere else —
+// copied (rw := w, return w, ch <- r), put in a composite literal or
+// taken the address of, or r.URL / r.Header / w.Header() taken as values
+// — what is read or set through the copy would go unrecorded, so analyse
+// fails it instead.
+func paramUseAllowed(id *ast.Ident, parents []ast.Node, req bool) bool {
+	at := func(i int) ast.Node { // the node i levels above id
+		if i > len(parents) {
+			return nil
+		}
+		return parents[len(parents)-i]
+	}
+	called := func(fun ast.Node, i int) bool { // fun, i levels above id, is a call's function
+		call, ok := at(i).(*ast.CallExpr)
+		return ok && call.Fun == fun
+	}
+	switch p := at(1).(type) {
+	case *ast.Field: // its declaration, or a struct field of the same name
+		return true
+	case *ast.KeyValueExpr: // a struct literal's key
+		return p.Key == id
+	case *ast.CallExpr: // an argument: checkParamPass, or a function in package api
+		return slices.Contains(p.Args, ast.Expr(id))
+	case *ast.TypeAssertExpr: // w.(http.Flusher): Flush sets nothing the contract records
+		return !req && p.X == id && types.ExprString(p.Type) == "http.Flusher"
+	case *ast.SelectorExpr:
+		if p.Sel == id {
+			return true // x.w: a field, not the parameter
+		}
+		name := p.Sel.Name
+		if !req {
+			return slices.Contains(respMethods, name) && called(p, 2)
+		}
+		if slices.Contains(reqMethods, name) {
+			return called(p, 2)
+		}
+		if name == "WithContext" {
+			// Only straight into a call (next(w, r.WithContext(ctx))),
+			// which checkParamPass follows.
+			outer, ok := at(3).(*ast.CallExpr)
+			return called(p, 2) && ok && slices.Contains(outer.Args, at(2).(ast.Expr))
+		}
+		if name == "URL" {
+			u, ok := at(2).(*ast.SelectorExpr)
+			if !ok || u.X != p || !slices.Contains(reqURLFields, u.Sel.Name) {
+				return false
+			}
+			return (u.Sel.Name != "Query" && u.Sel.Name != "EscapedPath") || called(u, 3)
+		}
+		return slices.Contains(reqFields, name)
+	}
+	return false
+}
+
 // queryUses records the keys read from the r.URL.Query() call q: read
 // directly (r.URL.Query().Get("x")) or through a local (v := r.URL.Query()).
 func (a *httpAnalyser) queryUses(fd *ast.FuncDecl, q *ast.CallExpr, parents []ast.Node, facts *httpFacts, problem func(ast.Node, string, ...any)) {
@@ -625,19 +711,38 @@ func (a *httpAnalyser) queryUses(fd *ast.FuncDecl, q *ast.CallExpr, parents []as
 // given (requireAuth's next, a root of the route itself).
 func (a *httpAnalyser) checkParamPass(fd *ast.FuncDecl, call *ast.CallExpr, params funcParams, problem func(ast.Node, string, ...any)) {
 	passes := false
-	for _, arg := range call.Args {
+	g := a.callee(fd, call.Fun)
+	var gParams funcParams
+	if g != nil {
+		gParams = paramsOf(g)
+	}
+	for i, arg := range call.Args {
+		resp, req := false, false
 		switch x := arg.(type) {
 		case *ast.Ident:
-			passes = passes || params.resp[x.Name] || params.req[x.Name]
+			resp, req = params.resp[x.Name], params.req[x.Name]
 		case *ast.CallExpr: // r.WithContext(ctx)
 			if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "WithContext" {
 				if id, ok := sel.X.(*ast.Ident); ok && params.req[id.Name] {
-					passes = true
+					req = true
 				}
 			}
 		}
+		passes = passes || resp || req
+		// A function in package api is followed through the parameter
+		// it receives the value as, so that must be one of the same
+		// type (not an any it could keep or hand on unseen).
+		if g != nil && (resp || req) {
+			name := ""
+			if i < len(gParams.order) {
+				name = gParams.order[i]
+			}
+			if (resp && !gParams.resp[name]) || (req && !gParams.req[name]) {
+				problem(arg, "request/response aliased: %s takes it as a parameter the contract doesn't follow", a.keys[g])
+			}
+		}
 	}
-	if !passes || a.callee(fd, call.Fun) != nil {
+	if !passes || g != nil {
 		return
 	}
 	if id, ok := call.Fun.(*ast.Ident); ok && params.handlers[id.Name] {
