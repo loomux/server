@@ -139,6 +139,23 @@ like the status's default); a code once given to a case doesn't change.
 A failed blocking dispatch's `500` is a dispatch job body, not this
 envelope: it classifies the failure with `error_class`.
 
+### API v1 conventions
+
+- **Identifiers.** A resource's own id is `id`; a reference to another
+  resource is `<thing>_id` (`workspace_id`, `target_id`, `task_id`).
+  Three places predate the rule and keep their names for all of 1.x
+  (API v1 freeze review, item 7): a dispatch's own id is `dispatch_id`
+  (in `POST /dispatch`, `GET /dispatches/{id}`, a conversation's
+  `dispatches[]` and the stream's `dispatch_update`); a row of
+  `GET /conversations` names its conversation `conversation_id`, as a
+  conversation has no other id; and the stream's `message_added`
+  carries `message_id` (and `task_id`). Attach-info's `task_id` is the
+  task asked about.
+- **Enums** are snake_case (task statuses since the freeze review).
+- **Errors** are `{error, code}` (see the error section).
+- **`/web/*`** is an operations API outside the v1 stability promise
+  (`docs/release/versioning.md`, "The API v1 contract").
+
 ## Layout
 
 - `auth.go` — `HashPassword` (bcrypt, used by `loomuxd -hash-password`

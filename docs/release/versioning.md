@@ -94,8 +94,20 @@ loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, releas
 ## The API v1 contract (`api/testdata/api-v1-contract.txt`)
 
 From 1.0.0, `/api/v1` is additions only (`docs/release/v0.2.0.md`, "What
-1.0.0 will mean"). `TestAPIv1Contract` (`api/contract_test.go`) enforces
-it:
+1.0.0 will mean"), with one exception decided before the freeze (API v1
+freeze review, item 15):
+
+- **`/api/v1/web/*` is an operations API, outside the v1 promise.**
+  `GET /web/version`, `POST /web/update` and `POST /web/rollback`
+  describe and drive the in-place web bundle updater; their bodies
+  mirror the release pipeline (`repo`, `tag`, `tarball`, `sha256`,
+  `schema`, `source`, `latest_error`) and may change with it in any 1.x
+  release. Production runs with web updates off. The contract test still
+  records them, so a change shows up in review, but changing them isn't
+  a v1 break: record it with `-update` and say so in the changes
+  fragment.
+
+`TestAPIv1Contract` (`api/contract_test.go`) enforces the promise:
 
 - It reads the routes from the `mux.HandleFunc("METHOD /api/v1/...")`
   calls in `api/`, and each route's bodies (request, response, stream
