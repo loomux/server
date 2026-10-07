@@ -101,7 +101,7 @@ var contractShared = map[string][]contractBody{
 }
 
 func TestAPIv1Contract(t *testing.T) {
-	src := parseAPISource(t)
+	fset, src := parseAPISource(t)
 
 	routes := registeredV1Routes(src)
 	if len(routes) == 0 {
@@ -161,7 +161,7 @@ func TestAPIv1Contract(t *testing.T) {
 
 	// Each route's status codes, query parameters and headers
 	// (api/contract_http_test.go).
-	httpA := newHTTPAnalyser(src)
+	httpA := newHTTPAnalyser(fset, src)
 	scopes := map[string][]*ast.FuncDecl{}
 	for route, h := range routeHandlers(src) {
 		scopes[route] = httpA.handlerRoots(h)
@@ -417,7 +417,7 @@ func jsonKind(typ reflect.Type) string {
 }
 
 // parseAPISource parses this package's non-test Go files.
-func parseAPISource(t *testing.T) []*ast.File {
+func parseAPISource(t *testing.T) (*token.FileSet, []*ast.File) {
 	t.Helper()
 	paths, err := filepath.Glob("*.go")
 	if err != nil {
@@ -435,7 +435,7 @@ func parseAPISource(t *testing.T) []*ast.File {
 		}
 		files = append(files, f)
 	}
-	return files
+	return fset, files
 }
 
 // registeredV1Routes is every "METHOD /api/v1/..." pattern passed to a
