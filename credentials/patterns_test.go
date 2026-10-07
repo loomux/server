@@ -36,3 +36,24 @@ func TestRedactPatterns(t *testing.T) {
 		}
 	}
 }
+
+// A credential in a URL's userinfo is redacted whatever its shape, the
+// scheme and host kept; an SSH URL's plain "git" user is left alone.
+func TestRedactPatterns_URLUserinfo(t *testing.T) {
+	text := "git clone https://deploy:s3cr3t-Pa55@git.example.com/r.git\n" +
+		"remote https://opaque-token-value-123@host.example/x\n" +
+		"ssh://git@github.com/org/repo.git and git@github.com:org/repo.git\n" +
+		"see https://example.com/a@b and mailto:me@example.com"
+	out := RedactPatterns(text)
+	for _, secret := range []string{"s3cr3t-Pa55", "deploy:", "opaque-token-value-123"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("%q survived:\n%s", secret, out)
+		}
+	}
+	for _, keep := range []string{"https://[redacted]@git.example.com/r.git", "https://[redacted]@host.example/x",
+		"ssh://git@github.com/org/repo.git", "git@github.com:org/repo.git", "https://example.com/a@b", "mailto:me@example.com"} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("%q was lost:\n%s", keep, out)
+		}
+	}
+}

@@ -26,8 +26,14 @@ var assignmentPattern = regexp.MustCompile(
 	`(?i)\b([A-Za-z0-9_]*(?:api_?key|secret|token|passw(?:or)?d|passwd|private_?key|access_?key)[A-Za-z0-9_]*\s*[=:]\s*)` +
 		`("[^"\n]+"|'[^'\n]+'|[^\s"']+)`)
 
+// urlUserinfoPattern is a URL's userinfo (scheme://user:password@host, or
+// a bare token as the user): group 1, the scheme, is kept. Only "git", the
+// usual SSH user, is left as it is.
+var urlUserinfoPattern = regexp.MustCompile(`\b([A-Za-z][A-Za-z0-9+.-]*://)([^/@\s]+)@`)
+
 // RedactPatterns replaces anything in text shaped like a secret with
-// "[redacted]": known token formats, private keys, and the value of an
+// "[redacted]": known token formats, private keys, credentials in a URL,
+// and the value of an
 // assignment whose name says it's a secret. It complements RedactValues,
 // which removes what the vault holds; neither alone is enough for text
 // leaving Loomux.
@@ -35,5 +41,12 @@ func RedactPatterns(text string) string {
 	for _, p := range tokenPatterns {
 		text = p.ReplaceAllString(text, "[redacted]")
 	}
+	text = urlUserinfoPattern.ReplaceAllStringFunc(text, func(m string) string {
+		sub := urlUserinfoPattern.FindStringSubmatch(m)
+		if sub[2] == "git" {
+			return m
+		}
+		return sub[1] + "[redacted]@"
+	})
 	return assignmentPattern.ReplaceAllString(text, "${1}[redacted]")
 }

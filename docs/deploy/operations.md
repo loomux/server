@@ -92,7 +92,9 @@ the tag in a manifest works the same way.
   router model and tier that made it, every command and provisioning run
   (redacted) with its target and exit, offers and how they were answered,
   agent turns, and each dispatch's outcome and error class. It outlives
-  pod logs.
+  pod logs, and the conversation too: events aren't tied to it in the
+  database, so a deleted conversation's events stay until
+  `LOOMUX_EVENT_RETENTION` removes them.
 
 ## Backups
 
