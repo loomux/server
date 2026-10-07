@@ -110,10 +110,12 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	t.UpdatedAt = now
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
-			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, ssh_port, host_keys,
+			created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
-		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.CreatedAt, t.UpdatedAt,
+		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.SSHPort, t.HostKeys,
+		t.CreatedAt, t.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -169,10 +171,12 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 	t.UpdatedAt = time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
-			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, updated_at = ?
+			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, ssh_port = ?,
+			updated_at = ?
 		WHERE id = ?`,
 		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
-		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.UpdatedAt, t.ID,
+		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.SSHPort,
+		t.UpdatedAt, t.ID,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -181,6 +185,15 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 		return fmt.Errorf("sqlite: update target: %w", err)
 	}
 	return requireRowAffected(res, "target", t.ID)
+}
+
+func (s *Store) SetTargetHostKeys(ctx context.Context, id, hostKeys string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE targets SET host_keys = ?, updated_at = ? WHERE id = ?`,
+		hostKeys, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: set target host keys: %w", err)
+	}
+	return requireRowAffected(res, "target", id)
 }
 
 func (s *Store) DeleteTarget(ctx context.Context, id string) error {
@@ -1059,14 +1072,14 @@ type rowScanner interface {
 
 // targetColumns is what scanTarget reads, in order.
 const targetColumns = `id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
-	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, created_at, updated_at`
+	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, ssh_port, host_keys, created_at, updated_at`
 
 func scanTarget(row rowScanner) (*registry.Target, error) {
 	var t registry.Target
 	var kind, allowed string
 	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode,
 		&t.Policy.Purpose, &allowed, &t.Policy.NoProvision, &t.Policy.NoShell, &t.Policy.RequireConfirmation,
-		&t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.SSHPort, &t.HostKeys, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.Kind = registry.TargetKind(kind)

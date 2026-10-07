@@ -24,6 +24,31 @@ func TestTargetValidate(t *testing.T) {
 			name:   "valid remote",
 			target: registry.Target{Name: "bigbox", Kind: registry.TargetKindRemote, Host: "bigbox.example.invalid", User: "loomux"},
 		},
+		// Security (LOOM-114 review): user and host go into ssh's argv.
+		{
+			name:    "user that ssh would read as an option",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "box", User: "-oProxyCommand=touch /tmp/pwned"},
+			wantErr: "user must be a login name: a letter or _, then letters, digits, _ . or -, at most 32",
+		},
+		{
+			name:    "user with an @",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "box", User: "a@evil"},
+			wantErr: "user must be a login name: a letter or _, then letters, digits, _ . or -, at most 32",
+		},
+		{
+			name:    "host that ssh would read as an option",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "-oProxyCommand=touch /tmp/pwned", User: "u"},
+			wantErr: "host must be a host name or address (no leading -, whitespace, @ or /)",
+		},
+		{
+			name:    "host with whitespace",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "box -p 2222", User: "u"},
+			wantErr: "host must be a host name or address (no leading -, whitespace, @ or /)",
+		},
+		{
+			name:   "valid user and IPv6 host",
+			target: registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "fd7a:115c::1", User: "deploy_user-2.x"},
+		},
 		{
 			name:    "missing name",
 			target:  registry.Target{Kind: registry.TargetKindLocal},

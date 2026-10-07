@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -40,7 +41,16 @@ type Target struct {
 	PermissionMode string
 	// Policy is what Loomux may do on this target (LOOM-89). The zero
 	// value allows everything, as before policies existed.
-	Policy    TargetPolicy
+	Policy TargetPolicy
+	// SSHPort, when non-zero, overrides the port the SSH config gives
+	// for this target (LOOM-114: per-target options override the
+	// mounted config, never replace it).
+	SSHPort int
+	// HostKeys are the known_hosts lines pinned for this target through
+	// the API (LOOM-114), or empty. A pinned target is checked against
+	// these alone; others against the mounted known_hosts. Written only
+	// through SetTargetHostKeys, never by UpdateTarget.
+	HostKeys  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -104,6 +114,9 @@ const (
 //
 // Every non-nil error is a validation failure whose text is safe to show
 // to the caller as-is.
+// validSSHUser is a POSIX-style login name, as useradd takes it.
+var validSSHUser = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]{0,31}$`)
+
 func (t *Target) Validate() error {
 	if strings.TrimSpace(t.Name) == "" {
 		return errors.New("name is required")
@@ -117,8 +130,23 @@ func (t *Target) Validate() error {
 		if t.Host == "" || t.User == "" {
 			return errors.New("host and user are required for a remote target")
 		}
+		// Both end up in ssh's argv: nothing ssh could read as an option
+		// (a leading "-", as in -oProxyCommand=…), and nothing that splits
+		// or re-targets user@host.
+		if !validSSHUser.MatchString(t.User) {
+			return errors.New("user must be a login name: a letter or _, then letters, digits, _ . or -, at most 32")
+		}
+		if strings.HasPrefix(t.Host, "-") || strings.ContainsAny(t.Host, "@/\\ \t\r\n\x00") {
+			return errors.New("host must be a host name or address (no leading -, whitespace, @ or /)")
+		}
 	default:
 		return fmt.Errorf("kind must be %q or %q", TargetKindLocal, TargetKindRemote)
+	}
+	if t.SSHPort < 0 || t.SSHPort > 65535 {
+		return errors.New("ssh_port must be 0 (the SSH config's) or a port number")
+	}
+	if t.Kind == TargetKindLocal && t.SSHPort != 0 {
+		return errors.New("ssh_port must be 0 for a local target")
 	}
 	switch t.PermissionMode {
 	case "", PermissionModeAuto, PermissionModeAcceptEdits, PermissionModeManual:

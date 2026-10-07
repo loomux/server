@@ -135,6 +135,10 @@ type Store interface {
 	// the offers themselves.
 	ExpirePendingConfirmations(ctx context.Context) (int, error)
 
+	// SetTargetHostKeys pins (or, with "", unpins) a target's host keys
+	// (LOOM-114); ErrNotFound if there's no such target.
+	SetTargetHostKeys(ctx context.Context, id, hostKeys string) error
+
 	// CreateDispatchEvent, ListDispatchEventsByConversation and
 	// DeleteDispatchEventsBefore keep the audit trail (LOOM-110).
 	// CreateDispatchEvent stamps CreatedAt if zero.
