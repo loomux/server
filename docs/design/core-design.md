@@ -511,7 +511,9 @@ path, so a non-interactive SSH PATH that lacks `~/.local/bin`, or a second
 install elsewhere, can't make the launch run a different binary than the
 one probed and checked. The
 recorded results can also be listed and refreshed on demand
-(`GET /api/v1/targets/{id}/agents`, `POST .../agents/refresh`). A probe
+(`GET /api/v1/targets/{id}/agents`; `POST /api/v1/targets/{id}/probe`
+refreshes them with the target's health — the agents-only refresh route
+was dropped before 1.0, API v1 freeze review). A probe
 that can't run (target unreachable) is an error, never "absent".
 
 **Target health (LOOM-86).** Every target is also probed for health on a
