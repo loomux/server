@@ -77,7 +77,10 @@ Web client updates in place (`LOOMUX_WEB_UPDATES`): `off`, `attested`
 (install the newest bundle loomux/web's CI built on main, verified by
 its build-provenance attestation) or `pinned` (the bundle loomux/server's main
 pins in `deploy/web-ref` and `deploy/web-sha256`). Unset, it's `attested` if
-`LOOMUX_WEB_RELEASES_TOKEN` is set and `off` otherwise. A production
+`LOOMUX_WEB_RELEASES_TOKEN` is set and `off` otherwise. The bundles
+come from `LOOMUX_WEB_RELEASES_REPO` (`loomux/web`), and `pinned` reads
+the pin from `LOOMUX_WEB_PIN_REPO`'s main (`loomux/server`); change them
+only for a fork. A production
 install normally sets `LOOMUX_WEB_UPDATES=off`, so the UI changes only
 with the server image ([`container.md`](container.md)).
 
