@@ -142,7 +142,6 @@ type Decision struct {
 	LeaveOpenTask bool
 }
 
-// RelayResult is what RoutingModel.Relay returns.
 // RelayInput is what the relay model condenses (LOOM-112): the agent's
 // captured output, with what it needs to read it — the user's message
 // that started the turn (so the reply answers that), the workspace's
@@ -168,6 +167,7 @@ const (
 	RelaySummaryRunes     = 1500
 )
 
+// RelayResult is what RoutingModel.Relay returns.
 type RelayResult struct {
 	// Reply is the condensed text — used as both the chat-appropriate
 	// reply and the workspace's new rolling summary, regardless of
