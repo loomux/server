@@ -443,7 +443,6 @@ GET /api/v1/workspaces
 GET /api/v1/workspaces request-header Authorization
 GET /api/v1/workspaces response - object
 GET /api/v1/workspaces response .workspaces []object
-GET /api/v1/workspaces response .workspaces[].capabilities []string
 GET /api/v1/workspaces response .workspaces[].description string
 GET /api/v1/workspaces response .workspaces[].id string
 GET /api/v1/workspaces response .workspaces[].last_used_at time omitempty nullable

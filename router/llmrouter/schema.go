@@ -317,8 +317,8 @@ func renderWorkspace(b *strings.Builder, ws router.WorkspaceSnapshot, now time.T
 	} else {
 		state += ", never used"
 	}
-	fmt.Fprintf(b, "  status: %s\n  description: %s\n  tags: %s\n  capabilities: %s\n",
-		state, ws.Description, strings.Join(ws.Tags, ", "), strings.Join(ws.Capabilities, ", "))
+	fmt.Fprintf(b, "  status: %s\n  description: %s\n  tags: %s\n",
+		state, ws.Description, strings.Join(ws.Tags, ", "))
 	if ws.Summary != "" {
 		fmt.Fprintf(b, "  recent: %s\n", ws.Summary)
 	}
