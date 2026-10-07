@@ -102,6 +102,9 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 	// tier's timeout.
 	for attempt := 0; ; attempt++ {
 		decision, problem, err := m.decideOnce(ctx, client, tierName, tier, messages, workspaceIDs, targetIDs, o)
+		if err == nil && problem == nil {
+			decision.Model, decision.Tier = tier.Model, tierName
+		}
 		if err != nil || problem == nil {
 			return decision, err
 		}

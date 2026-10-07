@@ -99,7 +99,7 @@ func (m *Model) relayWith(ctx context.Context, tierName string, tier Tier, timeo
 	if resp.Usage.TotalTokens > 0 {
 		m.metrics.RecordRouterTokens(tierName, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
 	}
-	return router.RelayResult{Reply: reply, Done: args.Done}, nil
+	return router.RelayResult{Reply: reply, Done: args.Done, Model: tier.Model, Tier: tierName}, nil
 }
 
 // relayUserPrompt lays out a relay call's input (LOOM-112): the turn's

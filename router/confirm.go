@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -49,10 +50,13 @@ const (
 // confirming message itself contributes nothing but "yes".
 type pendingInstall struct {
 	// id is the offer's registry.Confirmation (LOOM-123).
-	id        string
-	kind      pendingKind
-	agentType string
-	targetID  string
+	id string
+	// conversationID is the conversation it was offered in, for the
+	// audit trail (LOOM-110).
+	conversationID string
+	kind           pendingKind
+	agentType      string
+	targetID       string
 	// command is the agent-type's AgentInstall.Command, as shown in the
 	// offer.
 	command string
@@ -114,6 +118,7 @@ func (p *pendingActions) peek(conversationID string, now time.Time) (pendingInst
 // conversation's next message.
 func (r *Router) offer(ctx context.Context, conversationID string, a pendingInstall, c registry.Confirmation) error {
 	a.id = uuid.NewString()
+	a.conversationID = conversationID
 	a.expires = time.Now().Add(pendingTTL)
 	c.ID, c.ConversationID, c.DispatchID = a.id, conversationID, turnLogFrom(ctx).dispatchID
 	c.Status, c.ExpiresAt = registry.ConfirmationPending, a.expires.UTC()
@@ -131,6 +136,8 @@ func (r *Router) offer(ctx context.Context, conversationID string, a pendingInst
 	if err := r.store.CreateConfirmation(ctx, &c); err != nil {
 		return fmt.Errorf("record offer: %w", err)
 	}
+	r.recordEvent(ctx, conversationID, registry.DispatchEvent{Kind: registry.EventOffer, TargetID: c.TargetID,
+		Command: r.redactAllSecrets(ctx, c.Command), Outcome: c.Kind, Detail: r.redactAllSecrets(ctx, offerDetail(c))})
 	r.pending.put(conversationID, a)
 	return nil
 }
@@ -144,6 +151,30 @@ func (r *Router) resolveOffer(ctx context.Context, log *slog.Logger, a pendingIn
 	if err := r.store.ResolveConfirmation(ctx, a.id, status); err != nil {
 		log.Warn("confirmation not recorded", "confirmation_id", a.id, "status", string(status), "error", err)
 	}
+	r.recordEvent(ctx, a.conversationID, registry.DispatchEvent{Kind: registry.EventOfferAnswered,
+		TargetID: a.targetID, Outcome: string(status), Detail: "offer " + a.id})
+}
+
+// offerDetail names what an offer is about besides its command: the
+// agent, workspace or repository.
+func offerDetail(c registry.Confirmation) string {
+	var parts []string
+	if c.AgentType != "" {
+		parts = append(parts, "agent "+c.AgentType)
+	}
+	if c.Workspace != "" {
+		parts = append(parts, "workspace "+c.Workspace)
+	}
+	if c.GitRemote != "" {
+		remote := c.GitRemote
+		// A token in the URL's userinfo isn't kept.
+		if u, err := url.Parse(remote); err == nil && u.User != nil {
+			u.User = nil
+			remote = u.String()
+		}
+		parts = append(parts, "repository "+remote)
+	}
+	return strings.Join(append([]string{"offer " + c.ID}, parts...), "; ")
 }
 
 // staleConfirmationReply answers a card's Approve or Deny for an offer
@@ -265,7 +296,7 @@ func (r *Router) runInstall(ctx context.Context, conversationID string, p pendin
 
 	r.logger.Info("installing agent", "conversation_id", conversationID, "target_id", target.ID,
 		"workspace_id", workspaceID, "agent_type", p.agentType)
-	result, err := r.runCommandTask(ctx, workspaceID, conversationID, p.command, installTimeout)
+	result, err := r.runCommandTask(ctx, registry.EventCommand, workspaceID, conversationID, p.command, installTimeout)
 	if err != nil {
 		return "", result.taskID, fmt.Errorf("install %s: %w", p.agentType, err)
 	}
@@ -326,16 +357,20 @@ func (e *stillRunningError) Error() string {
 // running after timeout is left running in its session and reported as an
 // error naming that session; Router never kills a command it can't see
 // finish.
-func (r *Router) runCommandTask(ctx context.Context, workspaceID, conversationID, command string, timeout time.Duration) (commandResult, error) {
+//
+// What ran, where and how it ended goes in the audit trail as kind
+// (registry.EventCommand or EventProvision, LOOM-110).
+func (r *Router) runCommandTask(ctx context.Context, kind, workspaceID, conversationID, command string, timeout time.Duration) (res commandResult, err error) {
+	start := time.Now()
+	defer func() { r.recordCommand(ctx, conversationID, kind, workspaceID, command, res, err, time.Since(start)) }()
 	task, err := r.orch.Launch(ctx, workspaceID, conversationID, registry.TaskKindCommand, "", command)
 	if err != nil {
-		res := commandResult{}
 		if task != nil {
 			res.taskID = task.ID
 		}
 		return res, fmt.Errorf("launch: %w", err)
 	}
-	res := commandResult{taskID: task.ID, session: task.TmuxSession}
+	res = commandResult{taskID: task.ID, session: task.TmuxSession}
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

@@ -116,6 +116,9 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 	if err != nil {
 		return false, fmt.Errorf("relay: %w", err)
 	}
+	r.recordEvent(ctx, task.ConversationID, registry.DispatchEvent{Kind: registry.EventRelay, Model: result.Model,
+		Tier: result.Tier, WorkspaceID: task.WorkspaceID, TaskID: task.ID, Outcome: "late output relayed",
+		Detail: "agent " + task.AgentType})
 	if err := r.store.CreateMessage(ctx, &registry.Message{
 		ID:             uuid.NewString(),
 		ConversationID: task.ConversationID,

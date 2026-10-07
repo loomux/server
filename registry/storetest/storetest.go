@@ -74,6 +74,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("Dispatch", func(t *testing.T) { testDispatchCRUD(t, newStore(t)) })
 	t.Run("DispatchWithUserMessage", func(t *testing.T) { testDispatchWithUserMessage(t, newStore(t)) })
 	t.Run("Confirmations", func(t *testing.T) { testConfirmations(t, newStore(t)) })
+	t.Run("DispatchEvents", func(t *testing.T) { testDispatchEvents(t, newStore(t)) })
 	t.Run("DispatchConfirmationID", func(t *testing.T) { testDispatchConfirmationID(t, newStore(t)) })
 	t.Run("DispatchIdempotencyKeyUnique", func(t *testing.T) { testDispatchIdempotencyKeyUnique(t, newStore(t)) })
 	t.Run("DispatchOneActivePerConversation", func(t *testing.T) { testDispatchOneActivePerConversation(t, newStore(t)) })
@@ -1823,5 +1824,56 @@ func testDispatchConfirmationID(t *testing.T, s registry.Store) {
 	got, err := s.GetDispatch(ctx, "d-conf")
 	if err != nil || got.ConfirmationID != "c9" {
 		t.Errorf("GetDispatch = %+v, %v; want confirmation c9", got, err)
+	}
+}
+
+// LOOM-110: the audit trail comes back per conversation, oldest first,
+// every field intact, and retention deletes only what's older than the
+// cutoff.
+func testDispatchEvents(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	events := []*registry.DispatchEvent{
+		{ID: "e1", ConversationID: "conv", DispatchID: "d1", CreatedAt: t0, Kind: registry.EventDecision,
+			Model: "llama-3.3-70b", Tier: "primary", TargetID: "t1", Outcome: "run_command", Duration: 850 * time.Millisecond},
+		{ID: "e2", ConversationID: "conv", DispatchID: "d1", CreatedAt: t0.Add(time.Second), Kind: registry.EventCommand,
+			TargetID: "t1", WorkspaceID: "w1", TaskID: "k1", Command: "df -h", Outcome: "exit 0", Duration: 2 * time.Second},
+		{ID: "e3", ConversationID: "conv", DispatchID: "d1", CreatedAt: t0.Add(2 * time.Second), Kind: registry.EventOutcome,
+			Outcome: "failed", ErrorClass: registry.ErrorClassTimeout, Detail: "x"},
+		{ID: "e4", ConversationID: "other", CreatedAt: t0.Add(48 * time.Hour), Kind: registry.EventDecision},
+	}
+	for _, e := range events {
+		if err := s.CreateDispatchEvent(ctx, e); err != nil {
+			t.Fatalf("CreateDispatchEvent %s: %v", e.ID, err)
+		}
+	}
+	if err := s.CreateDispatchEvent(ctx, &registry.DispatchEvent{ID: "e1", ConversationID: "conv", Kind: "x"}); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("duplicate id: %v, want ErrConflict", err)
+	}
+
+	got, err := s.ListDispatchEventsByConversation(ctx, "conv")
+	if err != nil {
+		t.Fatalf("ListDispatchEventsByConversation: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d events, want 3", len(got))
+	}
+	for i, want := range events[:3] {
+		g := *got[i]
+		g.CreatedAt = g.CreatedAt.UTC()
+		if !reflect.DeepEqual(g, *want) {
+			t.Errorf("event %d = %+v, want %+v", i, g, *want)
+		}
+	}
+	if none, err := s.ListDispatchEventsByConversation(ctx, "unknown"); err != nil || len(none) != 0 {
+		t.Errorf("unknown conversation: %v, %v; want empty", none, err)
+	}
+
+	n, err := s.DeleteDispatchEventsBefore(ctx, t0.Add(24*time.Hour))
+	if err != nil || n != 3 {
+		t.Fatalf("DeleteDispatchEventsBefore = %d, %v; want 3", n, err)
+	}
+	if left, _ := s.ListDispatchEventsByConversation(ctx, "other"); len(left) != 1 {
+		t.Errorf("events after retention = %v, want e4 kept", left)
 	}
 }

@@ -321,6 +321,14 @@ Lifecycle for an `agent` task:
    time, latest first (`?limit=`, default 20, and `?before=<turn id>`),
    and kept for `LOOMUX_TURN_RETENTION` (30 days; `0` keeps them) — the
    reaper deletes older ones (LOOM-122).
+   Every turn also leaves an audit trail (LOOM-110), in `dispatch_events`:
+   the routing decision (action, router model and tier, what it named),
+   each command or provisioning run (redacted command, target, task, how
+   it ended), offers and their answers, the agent turn (and the relay
+   model), and the dispatch's outcome and error class. It is served at
+   `GET /api/v1/conversations/{id}/events`, oldest first, and kept for
+   `LOOMUX_EVENT_RETENTION` (90 days; `0` keeps it). Recording never
+   fails a turn: a write that fails is logged.
 4. At any point, attaching via `ssh` + `tmux -L loomux attach` to watch is
    free and has no side effects. Taking over (see §4) pauses automated dispatch for that
    task until released.

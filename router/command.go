@@ -164,7 +164,7 @@ func (r *Router) executeCommand(ctx context.Context, conversationID string, targ
 	if err != nil {
 		return "", "", err
 	}
-	res, err := r.runCommandTask(ctx, ws.ID, conversationID, command, r.commandTimeout)
+	res, err := r.runCommandTask(ctx, registry.EventCommand, ws.ID, conversationID, command, r.commandTimeout)
 	var running *stillRunningError
 	if errors.As(err, &running) {
 		return fmt.Sprintf("`%s` is still running on %s after %s. It's left running in tmux session %s — "+

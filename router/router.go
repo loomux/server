@@ -171,6 +171,8 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	defer func() {
 		r.metrics.RecordDispatch(m.action, m.outcome, m.errClass)
 		r.metrics.RecordDispatchDuration("total", time.Since(start))
+		r.recordEvent(ctx, conversationID, registry.DispatchEvent{Kind: registry.EventOutcome, Outcome: m.outcome,
+			ErrorClass: registry.ErrorClass(m.errClass), Duration: time.Since(start), Detail: m.action})
 	}()
 
 	// A prompt the conversation's agent is stopped at (LOOM-97) takes
@@ -319,7 +321,8 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 
 	routeStart := time.Now()
 	decision, err := r.model.Decide(ctx, message, offered, targetSnapshots, decideOpts...)
-	r.metrics.RecordDispatchDuration("route", time.Since(routeStart))
+	routeTook := time.Since(routeStart)
+	r.metrics.RecordDispatchDuration("route", routeTook)
 	if err != nil {
 		log.Error("routing failed", "error", err)
 		m.outcome = metrics.OutcomeFailure
@@ -332,7 +335,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	// failure further down.
 	if len(targets) == 0 && (decision.Action == ActionProvisionWorkspace || decision.Action == ActionRunCommand) {
 		log.Info("no targets registered", "decided_action", string(decision.Action))
-		decision = Decision{Action: ActionAnswerDirectly, DirectAnswer: NoTargetsReply}
+		decision = Decision{Action: ActionAnswerDirectly, DirectAnswer: NoTargetsReply, Model: decision.Model, Tier: decision.Tier}
 	}
 	decision, affinityFrom := ApplyAffinity(decision, openTask)
 	var substitutedFrom, targetName string
@@ -348,6 +351,14 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	}
 	logDecision(log, decision, substitutedFrom, affinityFrom)
 	r.metrics.RecordRoutingDecision(string(decision.Action))
+	var overrides []string
+	if affinityFrom != "" {
+		overrides = append(overrides, "kept on the open task instead of "+affinityFrom)
+	}
+	if substitutedFrom != "" {
+		overrides = append(overrides, "agent substituted for "+substitutedFrom)
+	}
+	r.recordDecision(ctx, conversationID, decision, routeTook, strings.Join(overrides, "; "))
 
 	// Where the turn runs is recorded with its messages, whatever it ends
 	// in.
@@ -707,7 +718,7 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	// than the turn waiting forever (LOOM-60).
 	recipe := provisioningRecipe(target, spec)
 	log.Info("provisioning workspace", "kind", string(spec.Kind))
-	res, err := r.runCommandTask(ctx, ws.ID, conversationID, recipe, ProvisionTimeout)
+	res, err := r.runCommandTask(ctx, registry.EventProvision, ws.ID, conversationID, recipe, ProvisionTimeout)
 	if err != nil {
 		var running *stillRunningError
 		class := registry.ErrorClassWaitFailed
@@ -919,6 +930,15 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 	if err != nil {
 		return "", fmt.Errorf("router: dispatch: relay: %w", err)
 	}
+	defer func() {
+		outcome := "awaiting input"
+		if result.Done {
+			outcome = "task done"
+		}
+		r.recordEvent(ctx, task.ConversationID, registry.DispatchEvent{Kind: registry.EventAgentTurn,
+			Model: result.Model, Tier: result.Tier, WorkspaceID: task.WorkspaceID, TaskID: task.ID,
+			Outcome: outcome, Duration: time.Since(start), Detail: "agent " + task.AgentType})
+	}()
 
 	*failClass = registry.ErrorClassInternal
 	// A reply that asks the user something isn't a finished turn, whatever

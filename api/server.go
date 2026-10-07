@@ -218,6 +218,7 @@ type Server struct {
 	agentProber        AgentProber
 	targetProber       TargetProber
 	taskTurns          TaskTurnStore
+	events             EventStore
 	workspaceManager   WorkspaceManager
 	taskCanceller      TaskCanceller
 	credentials        CredentialStore
@@ -351,6 +352,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/conversations", s.requireAuth(s.handleListConversations))
 	mux.HandleFunc("GET /api/v1/conversations/{id}", s.requireAuth(s.handleGetConversation))
 	mux.HandleFunc("GET /api/v1/conversations/{id}/stream", s.requireAuth(s.handleStream))
+	mux.HandleFunc("GET /api/v1/conversations/{id}/events", s.requireAuth(s.handleConversationEvents))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attach-info", s.requireAuth(s.handleAttachInfo))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/transcript", s.requireAuth(s.handleTaskTranscript))
 	mux.HandleFunc("POST /api/v1/tasks/{id}/cancel", s.requireAuth(s.handleCancelTask))

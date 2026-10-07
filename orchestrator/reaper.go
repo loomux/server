@@ -61,6 +61,9 @@ type Reaper struct {
 	staleProvisioningAfter time.Duration
 	// turnRetention is how long task turns are kept; zero keeps them.
 	turnRetention time.Duration
+	// eventRetention is how long dispatch events are kept; zero keeps
+	// them.
+	eventRetention time.Duration
 }
 
 // ReaperOption configures a Reaper constructed via NewReaper.
@@ -99,6 +102,12 @@ func WithStaleProvisioningAfter(d time.Duration) ReaperOption {
 // default) keeps them.
 func WithTurnRetention(d time.Duration) ReaperOption {
 	return func(r *Reaper) { r.turnRetention = d }
+}
+
+// WithEventRetention makes each sweep delete dispatch events (LOOM-110's
+// audit trail) recorded more than d ago. Zero (the default) keeps them.
+func WithEventRetention(d time.Duration) ReaperOption {
+	return func(r *Reaper) { r.eventRetention = d }
 }
 
 // NewReaper constructs a Reaper. threshold is how long a reapable task
@@ -150,6 +159,13 @@ func (r *Reaper) Sweep(ctx context.Context) {
 			r.logf("orchestrator: reaper: turn retention: %v", err)
 		} else if n > 0 {
 			r.logf("orchestrator: reaper: deleted %d task turns older than %s", n, r.turnRetention)
+		}
+	}
+	if r.eventRetention > 0 {
+		if n, err := r.orch.store.DeleteDispatchEventsBefore(ctx, now.Add(-r.eventRetention)); err != nil {
+			r.logf("orchestrator: reaper: event retention: %v", err)
+		} else if n > 0 {
+			r.logf("orchestrator: reaper: deleted %d dispatch events older than %s", n, r.eventRetention)
 		}
 	}
 	for _, ws := range workspaces {

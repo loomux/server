@@ -135,6 +135,17 @@ type Store interface {
 	// the offers themselves.
 	ExpirePendingConfirmations(ctx context.Context) (int, error)
 
+	// CreateDispatchEvent, ListDispatchEventsByConversation and
+	// DeleteDispatchEventsBefore keep the audit trail (LOOM-110).
+	// CreateDispatchEvent stamps CreatedAt if zero.
+	CreateDispatchEvent(ctx context.Context, e *DispatchEvent) error
+	// ListDispatchEventsByConversation returns oldest first; unknown is
+	// empty.
+	ListDispatchEventsByConversation(ctx context.Context, conversationID string) ([]*DispatchEvent, error)
+	// DeleteDispatchEventsBefore deletes events recorded before cutoff
+	// (retention), returning how many it deleted.
+	DeleteDispatchEventsBefore(ctx context.Context, cutoff time.Time) (int, error)
+
 	// CreateCredential, GetCredential, ListCredentials, and
 	// DeleteCredential are the vault (design spec §7's second half).
 	// Credential.Value is plaintext at this interface's boundary; a

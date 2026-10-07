@@ -29,6 +29,7 @@ func TestDecide_AnswerDirectly(t *testing.T) {
 		t.Fatalf("Decide: %v", err)
 	}
 	want := router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "Hello there!"}
+	want.Model, want.Tier = "test-model", "primary" // LOOM-110
 	if !reflect.DeepEqual(dec, want) {
 		t.Errorf("Decide = %+v, want %+v", dec, want)
 	}
@@ -52,6 +53,7 @@ func TestDecide_UseWorkspace(t *testing.T) {
 		t.Fatalf("Decide: %v", err)
 	}
 	want := router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: "ws-1", AgentType: "claude-code"}
+	want.Model, want.Tier = "test-model", "primary" // LOOM-110
 	if !reflect.DeepEqual(dec, want) {
 		t.Errorf("Decide = %+v, want %+v", dec, want)
 	}
@@ -89,6 +91,7 @@ func TestDecide_WorkspaceHint_AppearsInPromptAdvisoryOnly(t *testing.T) {
 		t.Fatalf("Decide: %v", err)
 	}
 	want := router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: "ws-other", AgentType: "claude-code"}
+	want.Model, want.Tier = "test-model", "primary" // LOOM-110
 	if !reflect.DeepEqual(dec, want) {
 		t.Errorf("Decide = %+v, want %+v (the hint must be advisory, not binding)", dec, want)
 	}
@@ -128,6 +131,7 @@ func TestDecide_ProvisionWorkspace(t *testing.T) {
 			Description: "a new workspace", Tags: []string{"a", "b"},
 		},
 	}
+	want.Model, want.Tier = "test-model", "primary" // LOOM-110
 	if !reflect.DeepEqual(dec, want) {
 		t.Errorf("Decide = %+v, want %+v", dec, want)
 	}
@@ -527,6 +531,7 @@ func TestDecide_RunCommand(t *testing.T) {
 		t.Fatalf("Decide: %v", err)
 	}
 	want := router.Decision{Action: router.ActionRunCommand, TargetID: "target-1", Command: "hostname && uptime"}
+	want.Model, want.Tier = "test-model", "primary" // LOOM-110
 	if !reflect.DeepEqual(dec, want) {
 		t.Errorf("Decide = %+v, want %+v", dec, want)
 	}
@@ -610,6 +615,7 @@ func TestDecide_NoTargets_TargetActionBecomesRegisterTargetAnswer(t *testing.T) 
 			t.Fatalf("args %v: Decide: %v", args, err)
 		}
 		want := router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: router.NoTargetsReply}
+		want.Model, want.Tier = "test-model", "primary" // LOOM-110
 		if !reflect.DeepEqual(dec, want) {
 			t.Errorf("args %v: Decide = %+v, want %+v", args, dec, want)
 		}

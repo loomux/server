@@ -210,6 +210,22 @@ func TestLoadConfig_TurnRetention(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_EventRetention(t *testing.T) {
+	setRouterEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.EventRetention != defaultEventRetention {
+		t.Fatalf("default EventRetention = %v, %v; want %v", cfg.EventRetention, err, defaultEventRetention)
+	}
+	t.Setenv("LOOMUX_EVENT_RETENTION", "0")
+	if cfg, err := LoadConfig(); err != nil || cfg.EventRetention != 0 {
+		t.Fatalf("EventRetention=0 = %v, %v; want 0 (keep)", cfg.EventRetention, err)
+	}
+	t.Setenv("LOOMUX_EVENT_RETENTION", "-1h")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatalf("a negative retention was accepted")
+	}
+}
+
 // Two instances on one target each need their own tmux socket, or each
 // one's orphan sweep reaps the other's sessions.
 func TestLoadConfig_TmuxSocket(t *testing.T) {
