@@ -4,6 +4,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -375,9 +376,31 @@ type Attention struct {
 	Options []AttentionOption `json:"options,omitempty"`
 	// Selected is the index of the option the prompt's cursor is on.
 	Selected int `json:"selected"`
-	// ResetsAt is, for AttentionUsageLimit, when the limit resets as the
+	// Resets is, for AttentionUsageLimit, when the limit resets as the
 	// agent put it ("5pm (Europe/Berlin)", "in 2 hours"); may be empty.
-	ResetsAt string `json:"resets_at,omitempty"`
+	// Free text, so not "resets_at" like the API's timestamps (renamed
+	// before 1.0, API v1 freeze review item 11); a stored attention
+	// written with the old key still reads (UnmarshalJSON).
+	Resets string `json:"resets,omitempty"`
+}
+
+// UnmarshalJSON reads an Attention, taking the reset text from the
+// pre-1.0 "resets_at" key when "resets" isn't there: tasks stored before
+// the rename keep it.
+func (a *Attention) UnmarshalJSON(b []byte) error {
+	type plain Attention
+	var v struct {
+		plain
+		LegacyResetsAt string `json:"resets_at"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*a = Attention(v.plain)
+	if a.Resets == "" {
+		a.Resets = v.LegacyResetsAt
+	}
+	return nil
 }
 
 // AttentionOption is one choice an Attention offers.

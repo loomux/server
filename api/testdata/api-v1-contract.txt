@@ -154,7 +154,7 @@ GET /api/v1/conversations/{id} response .tasks[].attention.options []object omit
 GET /api/v1/conversations/{id} response .tasks[].attention.options[].description string omitempty
 GET /api/v1/conversations/{id} response .tasks[].attention.options[].label string
 GET /api/v1/conversations/{id} response .tasks[].attention.question string omitempty
-GET /api/v1/conversations/{id} response .tasks[].attention.resets_at string omitempty
+GET /api/v1/conversations/{id} response .tasks[].attention.resets string omitempty
 GET /api/v1/conversations/{id} response .tasks[].attention.selected number
 GET /api/v1/conversations/{id} response .tasks[].attention.title string omitempty
 GET /api/v1/conversations/{id} response .tasks[].command string omitempty

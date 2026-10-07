@@ -155,8 +155,8 @@ func TestDetectPrompt_UsageLimit(t *testing.T) {
 			if got == nil || got.Kind != registry.AttentionUsageLimit {
 				t.Fatalf("DetectPrompt = %+v, want a usage limit", got)
 			}
-			if got.Detail != tc.detail || got.ResetsAt != tc.resets {
-				t.Errorf("detail %q resets %q, want %q and %q", got.Detail, got.ResetsAt, tc.detail, tc.resets)
+			if got.Detail != tc.detail || got.Resets != tc.resets {
+				t.Errorf("detail %q resets %q, want %q and %q", got.Detail, got.Resets, tc.detail, tc.resets)
 			}
 		})
 	}
@@ -173,7 +173,7 @@ func TestDetectPrompt_UsageLimit(t *testing.T) {
 	}
 	// The older form carries the reset as a Unix time.
 	got := DetectPrompt("❯ hi\n\nClaude AI usage limit reached|1760000000\n")
-	if got == nil || got.Kind != registry.AttentionUsageLimit || got.ResetsAt != "Oct 9 08:53 UTC" || got.Detail != "Claude AI usage limit reached" {
+	if got == nil || got.Kind != registry.AttentionUsageLimit || got.Resets != "Oct 9 08:53 UTC" || got.Detail != "Claude AI usage limit reached" {
 		t.Errorf("epoch form: %+v", got)
 	}
 }
