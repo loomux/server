@@ -542,7 +542,6 @@ type workspaceSummary struct {
 	Description    string     `json:"description"`
 	Capabilities   []string   `json:"capabilities"`
 	RollingSummary string     `json:"rolling_summary"`
-	IsDynamic      bool       `json:"is_dynamic"`
 	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
 	// StatusReason says why the workspace is in its status, e.g. what
 	// made it failed (LOOM-77). Omitted when there's nothing to say.
@@ -555,7 +554,7 @@ type listWorkspacesResponse struct {
 
 // handleListWorkspaces returns a summary of every registered workspace
 // (id/name/target/status plus tags/description/capabilities/rolling_summary/
-// is_dynamic/last_used_at), sorted by name (registry.Store's own
+// last_used_at), sorted by name (registry.Store's own
 // ListWorkspaces order). Wraps WorkspaceLister.ListWorkspaces.
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	workspaces, err := s.workspaces.ListWorkspaces(r.Context())
@@ -574,7 +573,6 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			Description:    ws.Description,
 			Capabilities:   orEmpty(ws.Capabilities),
 			RollingSummary: ws.RollingSummary,
-			IsDynamic:      ws.IsDynamic,
 			LastUsedAt:     ws.LastUsedAt,
 			StatusReason:   ws.StatusReason,
 		})
@@ -1341,19 +1339,16 @@ func bearerToken(r *http.Request) (string, bool) {
 	return token, true
 }
 
-// targetResponse is a registry.Target as clients see it. Unlike
-// attachTargetInfo (which is a display payload for a human about to SSH
-// somewhere) this includes ssh_key_ref: it is a reference into the
-// credential vault, never secret material itself (see registry.Target),
-// and a client needs it back to round-trip a PUT without silently
-// clearing the field.
+// targetResponse is a registry.Target as clients see it. ssh_key_ref is
+// no longer part of the API (API v1 freeze review, item 1): nothing ever
+// read it — SSH keys come from the mounted secret — so a target's stored
+// value is kept but neither shown nor settable.
 type targetResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Host      string `json:"host"`
-	User      string `json:"user"`
-	SSHKeyRef string `json:"ssh_key_ref"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Host string `json:"host"`
+	User string `json:"user"`
 	// WorkspaceRoot bounds where dynamic workspaces are provisioned
 	// (LOOM-90); empty means $HOME/loomux-workspaces on the target.
 	WorkspaceRoot string `json:"workspace_root"`
@@ -1422,7 +1417,6 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		Kind:                string(t.Kind),
 		Host:                t.Host,
 		User:                t.User,
-		SSHKeyRef:           t.SSHKeyRef,
 		WorkspaceRoot:       t.WorkspaceRoot,
 		PermissionMode:      t.PermissionMode,
 		Purpose:             t.Policy.Purpose,
@@ -1447,9 +1441,8 @@ type targetRequest struct {
 	Kind string `json:"kind"`
 	Host string `json:"host"`
 	User string `json:"user"`
-	// SSHKeyRef and WorkspaceRoot are optional (LOOM-119): omitted on a
-	// PUT keeps what's stored, an explicit "" clears it.
-	SSHKeyRef     *string `json:"ssh_key_ref"`
+	// WorkspaceRoot is optional (LOOM-119): omitted on a PUT keeps what's
+	// stored, an explicit "" clears it.
 	WorkspaceRoot *string `json:"workspace_root"`
 	// PermissionMode is optional the same way.
 	PermissionMode *string `json:"permission_mode"`
@@ -1517,9 +1510,6 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if req.Relay != nil {
 		target.Policy.Relay = *req.Relay
-	}
-	if req.SSHKeyRef != nil {
-		target.SSHKeyRef = *req.SSHKeyRef
 	}
 	if req.WorkspaceRoot != nil {
 		target.WorkspaceRoot = *req.WorkspaceRoot

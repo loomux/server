@@ -142,20 +142,23 @@ func TestDispatch_Async_PreferHeader(t *testing.T) {
 	}
 }
 
-func TestDispatch_Async_QueryParam(t *testing.T) {
+// ?async=true is no longer part of the API (freeze review item 4): it is
+// ignored, so ?wait=true&async=true is simply a blocking request.
+func TestDispatch_AsyncQueryParamIgnored(t *testing.T) {
 	srv, dispatcher, _ := newTestServer(t)
 	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) { return "ok", nil }
 	token, _ := login(t, srv.URL, testPassword)
-	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?async=true", token, map[string]string{"conversation_id": "c", "message": "hi"}, nil)
-	if resp.StatusCode != http.StatusAccepted || out.DispatchID == "" {
-		t.Fatalf("?async=true = %d %+v", resp.StatusCode, out)
+	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true&async=true", token, map[string]string{"conversation_id": "c", "message": "hi"}, nil)
+	if resp.StatusCode != http.StatusOK || out.Reply != "ok" {
+		t.Fatalf("?wait=true&async=true = %d %+v, want a blocking 200", resp.StatusCode, out)
 	}
 }
 
-func TestDispatch_WaitAndAsyncTogether_BadRequest(t *testing.T) {
+func TestDispatch_WaitAndPreferAsync_BadRequest(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	token, _ := login(t, srv.URL, testPassword)
-	resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true&async=true", token, map[string]string{"conversation_id": "c", "message": "hi"}, nil)
+	resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": "c", "message": "hi"},
+		map[string]string{"Prefer": "respond-async"})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
