@@ -485,7 +485,6 @@ POST /api/v1/credentials status 409
 POST /api/v1/credentials status 413
 POST /api/v1/credentials status 500
 POST /api/v1/dispatch
-POST /api/v1/dispatch query async
 POST /api/v1/dispatch query wait
 POST /api/v1/dispatch request - object
 POST /api/v1/dispatch request .confirmation_id string omitempty
