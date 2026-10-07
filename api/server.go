@@ -686,6 +686,29 @@ type conversationSummary struct {
 
 type listConversationsResponse struct {
 	Conversations []conversationSummary `json:"conversations"`
+	// HasMore says conversations beyond this response remain: only ever
+	// true when ?limit= cut the list short. Lists that can grow carry it
+	// so paging can arrive without breaking a client (api/README.md,
+	// "Lists and paging").
+	HasMore bool `json:"has_more"`
+}
+
+// maxListPage bounds ?limit= on the conversation list and on a
+// conversation's messages. Neither has a default limit: without one,
+// the whole list comes back, as before has_more existed.
+const maxListPage = 500
+
+// parseListLimit reads an optional ?limit= value: 0 when absent (no
+// limit), an error message when it isn't a number from 1 to maxListPage.
+func parseListLimit(raw string) (int, string) {
+	if raw == "" {
+		return 0, ""
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > maxListPage {
+		return 0, fmt.Sprintf("limit must be a number from 1 to %d", maxListPage)
+	}
+	return n, ""
 }
 
 // previewMaxRunes bounds conversationSummary.Preview's length. 200 is
@@ -728,6 +751,11 @@ func firstMessagePreview(content string) string {
 // this tool's expected scale (design spec: personal, single-user) and
 // mirrors handleGetConversation's own reliance on the same interface.
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
+	limit, msg := parseListLimit(r.URL.Query().Get("limit"))
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	tasks, err := s.tasks.ListTasks(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list conversations")
@@ -768,20 +796,26 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 	}
 
 	out := make([]conversationSummary, 0, len(summaries))
-	for convID, c := range summaries {
-		messages, err := s.messages.ListMessagesByConversation(r.Context(), convID)
+	for _, c := range summaries {
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	more := false
+	if limit > 0 && len(out) > limit {
+		out, more = out[:limit], true
+	}
+	for i := range out {
+		messages, err := s.messages.ListMessagesByConversation(r.Context(), out[i].ConversationID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list conversations")
 			return
 		}
 		if len(messages) > 0 {
-			c.Preview = firstMessagePreview(messages[0].Content)
+			out[i].Preview = firstMessagePreview(messages[0].Content)
 		}
-		out = append(out, *c)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
 
-	writeJSON(w, http.StatusOK, listConversationsResponse{Conversations: out})
+	writeJSON(w, http.StatusOK, listConversationsResponse{Conversations: out, HasMore: more})
 }
 
 type conversationTask struct {
@@ -829,6 +863,12 @@ type getConversationResponse struct {
 	// and how it was answered, oldest first (LOOM-123): a card with
 	// Approve and Deny under the offer's reply, by dispatch_id.
 	Confirmations []confirmationResponse `json:"confirmations"`
+	// HasMore says earlier messages remain; NextBefore is the before=
+	// value that fetches them. Messages page like a task transcript
+	// (?limit=, ?before=<message id>), but with no default limit: without
+	// ?limit= every message comes back and HasMore is false.
+	HasMore    bool   `json:"has_more"`
+	NextBefore string `json:"next_before,omitempty"`
 }
 
 type confirmationResponse struct {
@@ -856,8 +896,19 @@ type confirmationResponse struct {
 // unlike handleListConversations, this is a "fetch one thing" endpoint. A
 // conversation that only ever produced answer_directly replies has
 // messages but no tasks, and must still resolve to 200.
+//
+// Messages page (api/README.md, "Lists and paging"): ?limit= returns the
+// latest limit messages, still oldest first, and ?before=<message id>
+// only those before it; has_more and next_before lead to the rest. Tasks,
+// dispatches and confirmations are always complete.
 func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	limit, msg := parseListLimit(r.URL.Query().Get("limit"))
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	before := r.URL.Query().Get("before")
 
 	tasks, err := s.tasks.ListTasks(r.Context())
 	if err != nil {
@@ -946,8 +997,22 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	more, nextBefore := false, ""
+	if before != "" {
+		idx := slices.IndexFunc(msgOut, func(m messageSummary) bool { return m.ID == before })
+		if idx < 0 {
+			writeError(w, http.StatusBadRequest, "before names no message of this conversation")
+			return
+		}
+		msgOut = msgOut[:idx]
+	}
+	if limit > 0 && len(msgOut) > limit {
+		msgOut, more = msgOut[len(msgOut)-limit:], true
+		nextBefore = msgOut[0].ID
+	}
+
 	writeJSON(w, http.StatusOK, getConversationResponse{ConversationID: id, Tasks: out, Messages: msgOut, Dispatches: dispatchOut,
-		Confirmations: confOut})
+		Confirmations: confOut, HasMore: more, NextBefore: nextBefore})
 }
 
 type attachTargetInfo struct {

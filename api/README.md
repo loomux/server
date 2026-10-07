@@ -206,6 +206,8 @@ not engineering taste):
     200 runes with a trailing "…" — the opening line for a conversation
     list UI row, deliberately the earliest message rather than the
     latest (status/updated_at already cover "what's happening now").
+    `has_more` is `false` unless `?limit=` cut the list short (see
+    "Lists and paging").
   - `GET /api/v1/conversations/{id}` — auth-gated (LOOM-18), the full task
     history for one conversation plus its message transcript (LOOM-31):
     `{conversation_id, tasks: [{id, workspace_id, kind, agent_type,
@@ -222,6 +224,9 @@ not engineering taste):
     "every task in this conversation" since a conversation isn't pinned to
     one workspace) and `MessageLister` (`ListMessagesByConversation`),
     both satisfied structurally by `*app.App.Store()`.
+    `has_more` and `next_before` page `messages` with `?limit=` and
+    `?before=<message id>`; without them every message comes back and
+    `has_more` is `false` (see "Lists and paging").
   - `GET /api/v1/conversations/{id}/events` — auth-gated (LOOM-110), the
     conversation's dispatch audit trail, oldest first: `{conversation_id,
     events: [{id, dispatch_id?, created_at, kind, model?, tier?,
@@ -348,6 +353,34 @@ not engineering taste):
   - `GET /api/v1/version` — unauthenticated, `{server_version, api_version}`
     (`server_version` comes from the top-level `version` package, not
     defined in this one)
+
+## Lists and paging
+
+A list that can grow without bound carries `has_more` (a boolean, always
+present) beside it, so paging can be introduced without breaking a
+client that assumed the list was complete. Today that is
+`GET /api/v1/conversations` (`conversations`), `GET
+/api/v1/conversations/{id}` (`messages`) and `GET
+/api/v1/tasks/{id}/transcript` (`turns`). Clients must check `has_more`:
+`false` means the list is complete, `true` that more remain.
+
+Paging follows the task transcript's convention (LOOM-122):
+
+- `?limit=N` returns at most N items. Out of range (not a number, below
+  1, above the route's maximum) is `400`.
+- Items stay in the list's own order. For a list that grows at the end
+  (messages, transcript turns: oldest first), a page is the *latest* N,
+  and `next_before` (present when `has_more` is true) is the `before=`
+  value that fetches the page preceding it: `?before=<id>&limit=N`. A
+  `before` naming no item of the list is `400`.
+- The transcript always pages (default 20, at most 100: a turn carries a
+  pane). The conversation routes have **no default limit** (at most 500
+  when given): without `limit` they return everything and `has_more` is
+  `false`, as before the field existed. Tasks, dispatches and
+  confirmations in `GET /conversations/{id}` are always complete; only
+  `messages` pages. `GET /conversations` (most recently updated first)
+  takes `limit` but no cursor yet: its order moves with activity, so a
+  client wanting more asks for a larger `limit`.
 
 ## Testing
 

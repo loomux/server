@@ -141,6 +141,12 @@ it:
   `-update` and say so under `### Changed` or `### Removed` in its
   `changes/` fragment.
 
+Lists that can grow carry `has_more` (API v1 freeze review, item 17;
+`api/README.md`, "Lists and paging"), so paging them later is an
+addition, not a break: a v1 client must check `has_more` rather than
+assume a list is complete. Paging a list without that field would be a
+break.
+
 It covers which status codes, query parameters and headers a route
 has, not what they mean: the condition a status is answered for, a
 parameter's accepted values and a header's value are still reviewed by
