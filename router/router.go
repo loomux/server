@@ -1588,15 +1588,14 @@ func snapshotWorkspaces(workspaces []*registry.Workspace, targets []*registry.Ta
 	out := make([]WorkspaceSnapshot, 0, len(kept))
 	for _, ws := range kept {
 		out = append(out, WorkspaceSnapshot{
-			ID:           ws.ID,
-			Name:         ws.Name,
-			Description:  ws.Description,
-			Tags:         ws.Tags,
-			Capabilities: ws.Capabilities,
-			Status:       string(ws.Status),
-			TargetName:   targetNames[ws.TargetID],
-			Summary:      snapshotSummary(ws, relay),
-			LastUsed:     ws.LastUsedAt,
+			ID:          ws.ID,
+			Name:        ws.Name,
+			Description: ws.Description,
+			Tags:        ws.Tags,
+			Status:      string(ws.Status),
+			TargetName:  targetNames[ws.TargetID],
+			Summary:     snapshotSummary(ws, relay),
+			LastUsed:    ws.LastUsedAt,
 		})
 	}
 	return out

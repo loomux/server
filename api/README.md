@@ -182,10 +182,10 @@ not engineering taste):
     cut it off; error class `interrupted`); `404` if unknown.
   - `GET /api/v1/workspaces` — auth-gated (LOOM-19), lists registered
     workspaces sorted by name: `{workspaces: [{id, name, target_id,
-    status, tags, description, capabilities, rolling_summary,
+    status, tags, description, rolling_summary,
     last_used_at?}, ...]}` (`is_dynamic` was removed before 1.0: every
     workspace is dynamic). Includes the router's matching metadata
-    (tags/description/capabilities/rolling_summary) and the usage
+    (tags/description/rolling_summary) and the usage
     timestamp now that the Phase 2 web fleet-status page consumes them
     (LOOM-44). Wraps `WorkspaceLister.ListWorkspaces`, a narrow seam
     mirroring `SessionStore`, satisfied structurally by `*app.App.Store()`.
@@ -411,7 +411,7 @@ current session behaving like `/logout`)
 against a fake `Dispatcher` and a real (temp-file) sqlite store for sessions, plus
 `/api/v1/workspaces` (auth required, empty-list, populated-and-sorted,
  and metadata round-trip cases, asserting the full field set including
- tags/description/capabilities/rolling_summary/last_used_at
+ tags/description/rolling_summary/last_used_at
  against real store fixtures) and
 `/api/v1/conversations` + `/api/v1/conversations/{id}` (auth required,
 empty-list, recency-sorted grouping across multiple conversations, a
