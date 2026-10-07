@@ -156,10 +156,11 @@ not engineering taste):
       answers `200 {reply, dispatch_id, conversation_id, status, …}`, or
       `500 {error, error_class, dispatch_id, …}` if it failed or was
       interrupted.
-    - **Async** (the default, `Prefer: respond-async`, or `?async=true`): `202
+    - **Async** (the default, or `Prefer: respond-async`): `202
       {dispatch_id, conversation_id, status}` at once, with `Location:
       /api/v1/dispatches/{id}` (and `Preference-Applied: respond-async`
-      when the header asked). `?wait=true` with an async request is `400`.
+      when the header asked). `?wait=true` with `Prefer: respond-async`
+      is `400`. (`?async=true` was dropped before 1.0 and is ignored.)
     - The default is one constant, `dispatchAsyncByDefault` in
       `api/dispatch.go`: async since the LOOM-81 web shipped (it was
       blocking while the deployed web still expected `{reply}`).

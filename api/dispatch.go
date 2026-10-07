@@ -85,13 +85,15 @@ type dispatchMode struct {
 	preferHeader bool
 }
 
-// parseDispatchMode reads ?wait=true (blocking), and ?async=true or
+// parseDispatchMode reads ?wait=true (blocking) and
 // `Prefer: respond-async` (async). Neither means dispatchAsyncByDefault.
+// ?async=true was dropped before 1.0 (API v1 freeze review, item 4): it
+// duplicated the header and the default, and is now ignored.
 func parseDispatchMode(r *http.Request) (dispatchMode, error) {
 	q := r.URL.Query()
 	wait := q.Get("wait") == "true"
 	preferAsync := preferRespondAsync(r.Header.Values("Prefer"))
-	async := q.Get("async") == "true" || preferAsync
+	async := preferAsync
 	if wait && async {
 		return dispatchMode{}, errors.New("wait=true can't be combined with an async request")
 	}

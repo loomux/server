@@ -129,14 +129,15 @@ Request: `{conversation_id?, message, workspace_hint?}`, optional `Idempotency-K
 Every request creates (or, by idempotency key, finds) a job. The mode only decides whether the
 response waits for it:
 
-- **async**, asked for with `Prefer: respond-async` (RFC 7240) or `?async=true` → `202 Accepted`,
+- **async**, asked for with `Prefer: respond-async` (RFC 7240) → `202 Accepted` (`?async=true`
+  was dropped before 1.0, API v1 freeze review item 4),
   `Location: /api/v1/dispatches/{id}`, `Preference-Applied: respond-async` when the header was used,
   body `{dispatch_id, conversation_id, status}`.
 - **blocking**, asked for with `?wait=true`, or the default (see Rollout) → blocks until the job is
   terminal: `200 {reply, dispatch_id, conversation_id}` on success, `500 {error, error_class,
   dispatch_id, conversation_id}` on failure (today's status, `reply`/`error` keys unchanged). If the
   client disconnects the job carries on.
-- `?wait=true` together with an async request → `400`.
+- `?wait=true` together with `Prefer: respond-async` → `400`.
 - `400` malformed / empty message, `409 {error, dispatch_id}` conversation busy,
   `422` key reused, `503` while shutting down.
 
