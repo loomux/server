@@ -89,13 +89,6 @@ func (a *App) Dispatch(ctx context.Context, conversationID, message, workspaceHi
 	return a.router.Dispatch(ctx, conversationID, message, opts...)
 }
 
-// RefreshTargetAgents re-probes a target for every agent CLI with a
-// declared Binary and records the results (LOOM-71) — see
-// router.Router.RefreshTargetAgents. Satisfies api.AgentProber.
-func (a *App) RefreshTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error) {
-	return a.router.RefreshTargetAgents(ctx, targetID)
-}
-
 // DeleteWorkspace deletes a workspace, its tasks and their sessions
 // (LOOM-70) — see orchestrator.Orchestrator.DeleteWorkspace. Satisfies
 // api.WorkspaceManager.
