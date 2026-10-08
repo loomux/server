@@ -67,6 +67,24 @@ func TestRedactValues_SplitLongValueWithShortSubstring(t *testing.T) {
 	}
 }
 
+// Whitespace means the same thing when a value is stripped as when the
+// text is matched: a value holding Unicode whitespace (NBSP, \v, U+3000)
+// is still redacted verbatim, and when split by such whitespace (#319
+// re-review).
+func TestRedactValues_UnicodeWhitespace(t *testing.T) {
+	secrets := map[string]string{"nbsp": "pass\u00a0word-ABCDEF12", "vt": "key\vvalue-0123456789"}
+	for _, tc := range []struct{ in, want string }{
+		{"a pass\u00a0word-ABCDEF12 b", "a [redacted] b"},
+		{"a key\vvalue-0123456789 b", "a [redacted] b"},
+		{"a password-ABC\u3000DEF12 b", "a [redacted] b"},
+		{"a keyvalue-01234\u008556789 b", "a [redacted] b"},
+	} {
+		if got := credentials.RedactValues(tc.in, secrets); got != tc.want {
+			t.Errorf("RedactValues(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestRedactAll(t *testing.T) {
 	store := fakeLister{creds: []*registry.Credential{
 		{ID: "a", Value: "ghp_secret1"}, {ID: "b", WorkspaceID: "ws", Value: "tok-ws-only"},
