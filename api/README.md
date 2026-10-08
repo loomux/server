@@ -100,8 +100,10 @@ not engineering taste):
   `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
   bare `/api/` root — gets a structured 404 naming `api.APIVersion`
   (`ServeHTTP`, ahead of routing so it can never shadow a real `/api/v1/`
-  route hit with the wrong HTTP method, which correctly gets ServeMux's
-  own 405 instead). `GET /api/v1/version` (unauthenticated) lets a client
+  route hit with the wrong HTTP method, which correctly gets a 405
+  instead). Inside `/api/v1/`, a path no route has is a `404` and a
+  method its routes don't take a `405`, both `{error, code}`
+  (`handleNoRoute`, LOOM-161). `GET /api/v1/version` (unauthenticated) lets a client
   check `api.APIVersion` + `version.Version` before it even logs in. This
   satisfies §10 axis 1's "a mismatch is a clear rejection... not silent
   breakage" for the one version that exists — there's still no
@@ -120,7 +122,10 @@ not engineering taste):
   nor starts with `/api/` is served from there, with fallback to
   `index.html` for anything that isn't a real file — a browser refresh on
   a client-side route like `/conversations/abc123` gets the SPA shell
-  instead of a 404. Routed entirely in `ServeHTTP` ahead of `mux`,
+  instead of a 404. A missing path under `/assets/`, or one whose last
+  segment has an extension (`.js`, `.css`, `.ico`, …), is a plain `404`
+  instead (LOOM-158): a chunk from the bundle before a web update then
+  fails to load cleanly rather than arriving as HTML. Routed entirely in `ServeHTTP` ahead of `mux`,
   mirroring the existing `/api/` version check already there — `/api` and
   every `/api/*` path never reach the static handler (the bare `/api`
   path, with no trailing slash, is checked explicitly alongside the
@@ -146,6 +151,7 @@ Default codes, by status:
 | 401 | `unauthorized` |
 | 403 | `forbidden` |
 | 404 | `not_found` |
+| 405 | `method_not_allowed` (with `Allow`) |
 | 409 | `conflict` |
 | 413 | `too_large` |
 | 422 | `unprocessable` |
@@ -184,9 +190,10 @@ envelope: it classifies the failure with `error_class`.
 - **Enums** are snake_case: task statuses and `permission_mode` since
   the freeze review (item 9). Agent-type names such as `claude-code` are
   identifiers, not enums, and keep their spelling.
-- **Errors** are `{error, code}` (see the error section), except the
-  router's own `404`/`405` for a path or method no route matches, which
-  are plain text.
+- **Errors** are `{error, code}` (see the error section), including the
+  `404` for an `/api/v1` path no route matches and the `405` for a
+  method its routes don't take (LOOM-161; both were ServeMux's plain
+  text before).
 - **`/web/*`** is an operations API outside the v1 stability promise
   (`docs/release/versioning.md`, "The API v1 contract").
 
@@ -258,14 +265,22 @@ envelope: it classifies the failure with `error_class`.
       `api/dispatch.go`: async since the LOOM-81 web shipped (it was
       blocking while the deployed web still expected `{reply}`).
     - `conversation_id` empty starts a new conversation (its id is in the
-      response). A repeat with the same `Idempotency-Key` and the same
-      body returns the original job and runs nothing (a retry of a new
+      response). A non-empty one, like `workspace_hint`, must be 1–64
+      ASCII letters, digits, `-` or `_` (a server-minted id, a UUID,
+      always is), else `400` (LOOM-154): it is a path segment in
+      `GET /conversations/{id}`, so anything else could be stored but
+      never fetched back. A repeat with the same `Idempotency-Key` and
+      the same body returns the original job and runs nothing (a retry of a new
       conversation's first message leaves `conversation_id` empty, as the
       original did); the same key with a
       different body is `422` (code `idempotency_conflict`). A conversation
       with a job still in flight answers `409 {error, code, dispatch_id}`
       (code `conversation_busy`) naming it (LOOM-83 owns
       serializing instead). `503` while the server is shutting down.
+    - A `message` over 36 KiB (`targets.MaxPasteBytes`, 32 KiB, plus a
+      4 KiB margin) is `413` (code `too_large`) before anything runs
+      (LOOM-155): the router couldn't send it to an agent anyway (error
+      class `message_too_large`), and it never reaches the router model.
     - `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
       ID (e.g. a chat UI already focused on that workspace's conversation)
       that's folded into the router model's prompt as advisory context
@@ -469,6 +484,12 @@ envelope: it classifies the failure with `error_class`.
     part of the API (removed before 1.0, freeze review item 1); a client
     that still sends it has it ignored. A target's key is set with
     `ssh_key_id` instead (below).
+
+    `GET /api/v1/targets` also answers `local_targets` (LOOM-183):
+    whether this server allows targets of kind `local`. It is `false`
+    with `LOOMUX_LOCAL_TARGETS=off` (the container image's default,
+    LOOM-141), when a `local` create or update is `400`; a client hides
+    or disables the choice instead of offering it and failing.
 
     Managed targets (LOOM-138, `docs/deploy/ssh.md`): a body may carry
     `ssh_key_id` (a key from `/ssh-keys`; `""` returns the target to the

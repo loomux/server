@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -441,6 +442,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			s.handleUnsupportedAPIPath(w, r)
+			return
+		}
+		if h, pattern := s.mux.Handler(r); pattern == "" {
+			s.handleNoRoute(w, r, h)
 			return
 		}
 		s.mux.ServeHTTP(w, r)
@@ -1408,6 +1413,34 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, versionResponse{ServerVersion: version.Version, APIVersion: APIVersion})
 }
 
+// handleNoRoute answers an /api/v1 request no route matches with the
+// usual {error, code} body instead of ServeMux's plain text (LOOM-161).
+// h is ServeMux's own answer: it tells a path no route has (404) from a
+// method the path's routes don't take (405, with its Allow header).
+func (s *Server) handleNoRoute(w http.ResponseWriter, r *http.Request, h http.Handler) {
+	rec := &noRouteRecorder{header: http.Header{}, status: http.StatusOK}
+	h.ServeHTTP(rec, r)
+	if rec.status == http.StatusMethodNotAllowed {
+		if allow := rec.header.Values("Allow"); len(allow) > 0 {
+			w.Header()["Allow"] = allow
+		}
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeError(w, http.StatusNotFound, "no such API endpoint")
+}
+
+// noRouteRecorder keeps the status and headers ServeMux's 404/405
+// handler writes, and drops its plain-text body.
+type noRouteRecorder struct {
+	header http.Header
+	status int
+}
+
+func (r *noRouteRecorder) Header() http.Header         { return r.header }
+func (r *noRouteRecorder) WriteHeader(status int)      { r.status = status }
+func (r *noRouteRecorder) Write(b []byte) (int, error) { return len(b), nil }
+
 type unsupportedVersionResponse struct {
 	errorResponse
 	SupportedVersions []string `json:"supported_versions"`
@@ -1464,19 +1497,33 @@ func newStaticHandler(dir func() string) http.HandlerFunc {
 		w.Header().Set("Content-Security-Policy", appCSP(inlineScriptHashes(html)))
 		http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(html))
 	}
+	// serveFallback answers a path that isn't a file. Only a client-side
+	// route gets the SPA shell (LOOM-158): a missing asset — anything
+	// under /assets/, or any path whose last segment has an extension,
+	// like a chunk from the bundle before a web update — is a 404, so
+	// the browser sees a failed load it can retry rather than HTML
+	// served as JavaScript.
+	serveFallback := func(w http.ResponseWriter, r *http.Request, root http.Dir) {
+		if r.URL.Path != "/index.html" &&
+			(strings.HasPrefix(r.URL.Path, "/assets/") || path.Ext(r.URL.Path) != "") {
+			http.NotFound(w, r)
+			return
+		}
+		serveIndex(w, r, root)
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", appCSP(nil))
 		// Read per request: a web update (LOOM-118) swaps the directory.
 		root := http.Dir(dir())
 		f, err := root.Open(r.URL.Path)
 		if err != nil {
-			serveIndex(w, r, root)
+			serveFallback(w, r, root)
 			return
 		}
 		info, statErr := f.Stat()
 		f.Close()
 		if statErr != nil || info.IsDir() || r.URL.Path == "/index.html" {
-			serveIndex(w, r, root)
+			serveFallback(w, r, root)
 			return
 		}
 		// Vite names every built asset by its content hash, so one never
@@ -1709,6 +1756,11 @@ func apiSSHProxy(p string) string {
 
 type listTargetsResponse struct {
 	Targets []targetResponse `json:"targets"`
+	// LocalTargets says whether this server allows targets of kind
+	// "local" (LOOM-183): with LOOMUX_LOCAL_TARGETS=off (LOOM-141)
+	// registering one is a 400, and a client offering the choice needs to
+	// know before it asks.
+	LocalTargets bool `json:"local_targets"`
 }
 
 // decodeTargetRequest reads a create/update body into a registry.Target
@@ -1851,7 +1903,7 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read target health")
 		return
 	}
-	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out})
+	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out, LocalTargets: s.localTargets})
 }
 
 // handleUpdateTarget replaces a target's mutable fields wholesale. It is
@@ -2132,6 +2184,8 @@ func errorCodeFor(status int) string {
 		return "forbidden"
 	case http.StatusNotFound:
 		return "not_found"
+	case http.StatusMethodNotAllowed:
+		return "method_not_allowed"
 	case http.StatusConflict:
 		return "conflict"
 	case http.StatusRequestEntityTooLarge:

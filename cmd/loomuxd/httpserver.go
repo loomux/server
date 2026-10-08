@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
 	"time"
 )
@@ -19,4 +22,31 @@ func newHTTPServer(addr string, h http.Handler) *http.Server {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 	}
+}
+
+// serveHTTP serves srv on ln until ctx is done, then shuts down: drain
+// runs first (dispatch jobs get their drain time, LOOM-80), then srv and
+// others stop, with grace for in-flight requests to finish. It returns
+// only once all of that is over (LOOM-147): Serve itself returns as soon
+// as Shutdown begins, and the caller closes the store after us.
+func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener, drain func(), grace time.Duration, others ...*http.Server) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		<-ctx.Done()
+		if drain != nil {
+			drain()
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		for _, o := range others {
+			_ = o.Shutdown(shutdownCtx)
+		}
+	}()
+	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	<-done
+	return nil
 }
