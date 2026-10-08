@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +26,17 @@ const dispatchAsyncByDefault = true
 
 // maxIdempotencyKeyLen bounds the Idempotency-Key header.
 const maxIdempotencyKeyLen = 255
+
+// conversationIDPattern is what a client-supplied conversation_id must
+// look like (LOOM-154): it is a path segment everywhere else in the API
+// (GET /conversations/{id}, its stream), so it is a UUID — what the server
+// assigns — or a short id of letters, digits and dashes, never a path or
+// arbitrary text.
+var conversationIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
+// maxWorkspaceHintLen bounds workspace_hint (LOOM-154): it is folded into
+// the router model's prompt, so it can't be any length.
+const maxWorkspaceHintLen = 255
 
 type dispatchRequest struct {
 	// ConversationID is optional (LOOM-80): empty starts a new
@@ -147,6 +159,14 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Message == "" {
 		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+	if req.ConversationID != "" && !conversationIDPattern.MatchString(req.ConversationID) {
+		writeError(w, http.StatusBadRequest, "conversation_id must be 1-64 letters, digits or dashes (a UUID)")
+		return
+	}
+	if len(req.WorkspaceHint) > maxWorkspaceHintLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("workspace_hint must be at most %d characters", maxWorkspaceHintLen))
 		return
 	}
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -469,5 +470,40 @@ func TestStream_MessageAdded(t *testing.T) {
 			t.Fatalf("message_added = %+v, want the late message only", m)
 		}
 		return
+	}
+}
+
+// A well-formed conversation_id (a UUID, or a short id of letters, digits
+// and dashes) is accepted; a malformed one or an over-long workspace_hint
+// is 400 invalid_request before anything is dispatched (LOOM-154).
+func TestDispatch_ValidatesConversationIDAndWorkspaceHint(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t)
+	var calls atomic.Int32
+	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) {
+		calls.Add(1)
+		return "ok", nil
+	}
+	token, _ := login(t, srv.URL, testPassword)
+
+	for _, id := range []string{"0f8fad5b-d9cb-469f-a165-70867728950e", "c-1", strings.Repeat("a", 64)} {
+		resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"conversation_id": id, "message": "hi"}, nil)
+		if resp.StatusCode != http.StatusOK || out.ConversationID != id {
+			t.Errorf("conversation_id %q: status %d, conversation %q; want 200 and the same id", id, resp.StatusCode, out.ConversationID)
+		}
+	}
+	accepted := calls.Load()
+
+	for _, body := range []map[string]string{
+		{"conversation_id": strings.Repeat("a", 65), "message": "hi"},
+		{"conversation_id": "c_1", "message": "hi"},
+		{"conversation_id": "c1", "message": "hi", "workspace_hint": strings.Repeat("w", 256)},
+	} {
+		resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, body, nil)
+		if resp.StatusCode != http.StatusBadRequest || out.Code != "invalid_request" {
+			t.Errorf("%.40v: status %d code %q, want 400 invalid_request", body, resp.StatusCode, out.Code)
+		}
+	}
+	if calls.Load() != accepted {
+		t.Error("a rejected request still reached the dispatcher")
 	}
 }

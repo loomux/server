@@ -73,7 +73,6 @@ func TestAudit_LoginThrottle_ConcurrentGuessesShareOneWindow(t *testing.T) {
 // conversation_id is a path segment everywhere else in the API, so a
 // client-supplied one must be a well-formed id, not any string.
 func TestAudit_Dispatch_RejectsMalformedConversationID(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F15")
 	srv, dispatcher, _ := newTestServer(t)
 	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) { return "ok", nil }
 	token, _ := login(t, srv.URL, testPassword)

@@ -255,11 +255,12 @@ envelope: it classifies the failure with `error_class`.
       `api/dispatch.go`: async since the LOOM-81 web shipped (it was
       blocking while the deployed web still expected `{reply}`).
     - `conversation_id` empty starts a new conversation (its id is in the
-      response). A repeat with the same `Idempotency-Key` and the same
-      body returns the original job and runs nothing (a retry of a new
-      conversation's first message leaves `conversation_id` empty, as the
-      original did); the same key with a
-      different body is `422` (code `idempotency_conflict`). A conversation
+      response). A given one must be a UUID or 1-64 letters, digits and
+      dashes (`[A-Za-z0-9-]{1,64}`); anything else is `400` (LOOM-154).
+      A repeat with the same `Idempotency-Key` and the same body returns
+      the original job and runs nothing (a retry of a new conversation's
+      first message leaves `conversation_id` empty, as the original did);
+      the same key with a different body is `422` (code `idempotency_conflict`). A conversation
       with a job still in flight answers `409 {error, code, dispatch_id}`
       (code `conversation_busy`) naming it (LOOM-83 owns
       serializing instead). `503` while the server is shutting down.
@@ -267,7 +268,8 @@ envelope: it classifies the failure with `error_class`.
       ID (e.g. a chat UI already focused on that workspace's conversation)
       that's folded into the router model's prompt as advisory context
       only; the router model (design spec §6) keeps final authority over
-      which workspace a message actually goes to.
+      which workspace a message actually goes to. At most 255
+      characters, else `400` (LOOM-154).
   - `GET /api/v1/dispatches/{id}` — auth-gated (LOOM-80), one dispatch job:
     `{dispatch_id, conversation_id, status, reply?, error?, error_class?,
     created_at, started_at?, finished_at?}`, `status` one of `queued`,
