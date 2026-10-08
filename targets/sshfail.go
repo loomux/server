@@ -35,6 +35,9 @@ type UnreachableError struct {
 	// Detail is what ssh said, its banner lines removed; or, for a
 	// deadline Loomux enforced, what that deadline was.
 	Detail string
+	// Managed is set for a managed target (LOOM-138), which has no SSH
+	// secret or config behind it: the hint mustn't point there.
+	Managed bool
 }
 
 func (e *UnreachableError) Is(target error) bool { return target == ErrUnreachable }
@@ -52,6 +55,19 @@ func (e *UnreachableError) Error() string {
 // Hint says, in plain words, what went wrong and what to do about it.
 func (e *UnreachableError) Hint() string {
 	h := e.Host
+	if e.Managed {
+		switch e.Failure {
+		case SSHHostKeyChanged:
+			return "the host key of " + h + " has changed: if that's expected (the machine was reinstalled), scan and pin its new key " +
+				"(Targets, or POST /api/v1/targets/{id}/scan-host-key then /pin); if not, find out why first"
+		case SSHHostKeyUnknown:
+			return h + "'s host key isn't pinned: scan and pin it (Targets, or POST /api/v1/targets/{id}/scan-host-key then /pin)"
+		case SSHAuthFailed:
+			return h + " refused Loomux's SSH key for this target: add its public key (Targets, or GET /api/v1/ssh-keys) to the target user's ~/.ssh/authorized_keys"
+		case SSHDNSFailed:
+			return "the host name " + h + " doesn't resolve: check the target's host"
+		}
+	}
 	switch e.Failure {
 	case SSHHostKeyChanged:
 		return "the host key of " + h + " has changed: if that's expected (the machine was reinstalled), scan and pin its new key " +

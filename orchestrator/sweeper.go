@@ -80,6 +80,11 @@ func (s *OrphanSweeper) Sweep(ctx context.Context) int {
 	}
 	killed := 0
 	for _, target := range targetList {
+		if target.Managed() && strings.TrimSpace(target.HostKeys) == "" {
+			// Mid-onboarding (LOOM-138): unpinned, so never connected to
+			// and not yet connectable. Nothing to sweep, nothing to warn of.
+			continue
+		}
 		log := s.logger.With("target_id", target.ID, "target", target.Name)
 		exec, err := s.orch.newExecutor(target)
 		if err != nil {

@@ -220,6 +220,7 @@ type Server struct {
 	taskCanceller      TaskCanceller
 	credentials        CredentialStore
 	sshKeys            SSHKeyStore
+	dropSSHKey         func(id string)
 	agentTypes         []string
 	health             HealthChecker
 	passwordHash       []byte
@@ -1539,8 +1540,22 @@ type targetResponse struct {
 	PinnedHostKeys []hostKeyResponse `json:"pinned_host_keys"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
+	// SSHMode is "managed" for a target reached with a Loomux SSH key and
+	// no ssh_config (LOOM-138), "config" for one reached through the
+	// deployment's mounted SSH config.
+	SSHMode string `json:"ssh_mode"`
+	// SSHKey is a managed target's key, public parts only; null otherwise.
+	SSHKey *targetSSHKeyResponse `json:"ssh_key"`
+	// SSHProxy is "default" (the server's LOOMUX_SSH_PROXY, or for a
+	// config-mode target the SSH config's) or "none".
+	SSHProxy string `json:"ssh_proxy"`
+	// Ready says the target's latest probe, newer than its last change,
+	// reached it and ran tmux; NextStep, when not ready, is what to do:
+	// pin_host_key, authorize_key or test_connection.
+	Ready    bool    `json:"ready"`
+	NextStep *string `json:"next_step"`
 	// Health is the target's last health probe (LOOM-86); null when it
-	// has never been probed, and in create/update responses.
+	// has never been probed.
 	Health *targetHealthResponse `json:"health"`
 }
 
@@ -1591,6 +1606,8 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		RelayEffective:      t.Policy.EffectiveRelay(),
 		SSHPort:             t.SSHPort,
 		PinnedHostKeys:      pinnedHostKeys(t),
+		SSHMode:             sshMode(t),
+		SSHProxy:            apiSSHProxy(t.SSHProxy),
 		CreatedAt:           t.CreatedAt,
 		UpdatedAt:           t.UpdatedAt,
 	}
@@ -1621,6 +1638,30 @@ type targetRequest struct {
 	// SSHPort is optional the same way (LOOM-114); 0 means the SSH
 	// config's port.
 	SSHPort *int `json:"ssh_port"`
+	// SSHKeyID makes the target managed with that Loomux SSH key
+	// (LOOM-138); "" returns it to the SSH config. Optional the same way.
+	SSHKeyID *string `json:"ssh_key_id"`
+	// GenerateSSHKey makes a new key for the target and uses it.
+	GenerateSSHKey bool `json:"generate_ssh_key"`
+	// SSHProxy is "default" or "none" (managed targets only); optional
+	// the same way.
+	SSHProxy *string `json:"ssh_proxy"`
+}
+
+// sshMode is targetResponse.SSHMode.
+func sshMode(t *registry.Target) string {
+	if t.Managed() {
+		return "managed"
+	}
+	return "config"
+}
+
+// apiSSHProxy is Target.SSHProxy as the API spells it.
+func apiSSHProxy(p string) string {
+	if p == "" {
+		return "default"
+	}
+	return p
 }
 
 type listTargetsResponse struct {
@@ -1632,12 +1673,12 @@ type listTargetsResponse struct {
 // the one validation path every entry point shares (LOOM-65). It writes
 // the error response itself and reports whether the caller should
 // continue.
-func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.Target) (*registry.Target, bool) {
+func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.Target) (target *registry.Target, generateKey, ok bool) {
 	var req targetRequest
 	if !readJSON(w, r, &req) {
-		return nil, false
+		return nil, false, false
 	}
-	target := &registry.Target{
+	target = &registry.Target{
 		Name: strings.TrimSpace(req.Name),
 		Kind: registry.TargetKind(req.Kind),
 		Host: req.Host,
@@ -1649,9 +1690,30 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 		target.SSHKeyRef, target.WorkspaceRoot, target.PermissionMode = base.SSHKeyRef, base.WorkspaceRoot, base.PermissionMode
 		target.Policy = base.Policy
 		target.SSHPort = base.SSHPort
+		target.SSHProxy = base.SSHProxy
 	}
 	if req.SSHPort != nil {
 		target.SSHPort = *req.SSHPort
+	}
+	if req.SSHKeyID != nil && req.GenerateSSHKey {
+		writeError(w, http.StatusBadRequest, "give ssh_key_id or generate_ssh_key, not both")
+		return nil, false, false
+	}
+	if req.SSHKeyID != nil {
+		target.SSHKeyRef = *req.SSHKeyID
+	}
+	if req.GenerateSSHKey {
+		// Validated as managed; the key is made once the rest is valid.
+		target.SSHKeyRef = "generated"
+	}
+	if req.SSHProxy != nil {
+		target.SSHProxy = *req.SSHProxy
+		if target.SSHProxy == "default" {
+			target.SSHProxy = ""
+		}
+	} else if !target.Managed() {
+		// Back to the SSH config, whose proxy then applies.
+		target.SSHProxy = ""
 	}
 	if req.Purpose != nil {
 		target.Policy.Purpose = *req.Purpose
@@ -1684,22 +1746,22 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if err := target.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return nil, false
+		return nil, false, false
 	}
 	if target.Kind == registry.TargetKindLocal && !s.localTargets {
 		writeError(w, http.StatusBadRequest, "local targets are turned off on this server (LOOMUX_LOCAL_TARGETS=off): their agents would run as the server's own user, with access to its database and keys; register the machine as a remote target instead")
-		return nil, false
+		return nil, false, false
 	}
 	if s.agentTypes != nil {
 		for _, a := range target.Policy.AllowedAgentTypes {
 			if !slices.Contains(s.agentTypes, a) {
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("allowed_agent_types: unknown agent type %q (known: %s)",
 					a, strings.Join(s.agentTypes, ", ")))
-				return nil, false
+				return nil, false, false
 			}
 		}
 	}
-	return target, true
+	return target, req.GenerateSSHKey, true
 }
 
 // handleCreateTarget registers an execution target. The id is minted
@@ -1708,20 +1770,29 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 // invites collisions and the hand-minted ids this endpoint exists to
 // replace.
 func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
-	target, ok := s.decodeTargetRequest(w, r, nil)
+	target, generateKey, ok := s.decodeTargetRequest(w, r, nil)
 	if !ok {
 		return
 	}
 	target.ID = uuid.NewString()
-	if err := s.targets.CreateTarget(r.Context(), target); err != nil {
-		if errors.Is(err, registry.ErrConflict) {
-			writeError(w, http.StatusConflict, "a target with that name already exists")
+	var key *registry.SSHKey
+	if generateKey {
+		if key, ok = s.generateTargetKey(w, r.Context(), target.Name); !ok {
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "could not create target")
+		target.SSHKeyRef = key.ID
+	}
+	if err := s.targets.CreateTarget(r.Context(), target); err != nil {
+		s.discardKey(key)
+		writeTargetWriteError(w, err, "create")
 		return
 	}
-	writeJSON(w, http.StatusCreated, newTargetResponse(target))
+	resp, err := s.targetResponseFor(r.Context(), target)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read back created target")
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // handleListTargets is how a client discovers the server-assigned ids
@@ -1732,22 +1803,10 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not list targets")
 		return
 	}
-	healths, err := s.targets.ListTargetHealth(r.Context())
+	out, err := s.targetResponses(r.Context(), targets)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not read target health")
 		return
-	}
-	healthByTarget := make(map[string]*registry.TargetHealth, len(healths))
-	for _, h := range healths {
-		healthByTarget[h.TargetID] = h
-	}
-	out := make([]targetResponse, 0, len(targets))
-	for _, t := range targets {
-		resp := newTargetResponse(t)
-		if h := healthByTarget[t.ID]; h != nil {
-			resp.Health = newTargetHealthResponse(h)
-		}
-		out = append(out, resp)
 	}
 	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out})
 }
@@ -1770,21 +1829,41 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not fetch target")
 		return
 	}
-	target, ok := s.decodeTargetRequest(w, r, existing)
+	target, generateKey, ok := s.decodeTargetRequest(w, r, existing)
 	if !ok {
 		return
 	}
 	target.ID = id
-	if err := s.targets.UpdateTarget(r.Context(), target); err != nil {
-		switch {
-		case errors.Is(err, registry.ErrNotFound):
-			writeError(w, http.StatusNotFound, "no such target")
-		case errors.Is(err, registry.ErrConflict):
-			writeError(w, http.StatusConflict, "a target with that name already exists")
-		default:
-			writeError(w, http.StatusInternalServerError, "could not update target")
+	var key *registry.SSHKey
+	if generateKey {
+		if key, ok = s.generateTargetKey(w, r.Context(), target.Name); !ok {
+			return
 		}
+		target.SSHKeyRef = key.ID
+	}
+	if err := s.targets.UpdateTarget(r.Context(), target); err != nil {
+		s.discardKey(key)
+		writeTargetWriteError(w, err, "update")
 		return
+	}
+	if target.Host != existing.Host || target.SSHPort != existing.SSHPort ||
+		target.SSHKeyRef != existing.SSHKeyRef || target.SSHProxy != existing.SSHProxy {
+		s.forgetScan(id)
+	}
+	if target.SSHKeyRef != existing.SSHKeyRef {
+		s.releaseTargetKey(r.Context(), existing.SSHKeyRef)
+	}
+	// A managed target at a new address must have that machine's host
+	// key confirmed again (LOOM-138): its pin is dropped.
+	if target.Managed() && existing.HostKeys != "" && (target.Host != existing.Host || target.SSHPort != existing.SSHPort) {
+		hk := s.hostKeys
+		if hk == nil {
+			hk, _ = s.targets.(HostKeyStore)
+		}
+		if hk == nil || hk.SetTargetHostKeys(r.Context(), id, "") != nil {
+			writeError(w, http.StatusInternalServerError, "target updated, but its old host key pin could not be dropped; unpin it")
+			return
+		}
 	}
 
 	stored, err := s.targets.GetTarget(r.Context(), id)
@@ -1792,7 +1871,12 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read back updated target")
 		return
 	}
-	writeJSON(w, http.StatusOK, newTargetResponse(stored))
+	resp, err := s.targetResponseFor(r.Context(), stored)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read back updated target")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleDeleteTarget removes a target that nothing references — undoing
@@ -1800,7 +1884,9 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 // conflict, not a 500: the store's foreign key is doing its job and the
 // operator needs to be told which it is.
 func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
-	if err := s.targets.DeleteTarget(r.Context(), r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	existing, _ := s.targets.GetTarget(r.Context(), id)
+	if err := s.targets.DeleteTarget(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, registry.ErrNotFound):
 			writeError(w, http.StatusNotFound, "no such target")
@@ -1810,6 +1896,10 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "could not delete target")
 		}
 		return
+	}
+	s.forgetScan(id)
+	if existing != nil {
+		s.releaseTargetKey(r.Context(), existing.SSHKeyRef)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
