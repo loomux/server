@@ -279,8 +279,8 @@ type dispatchUpdateEvent struct {
 
 // sendDispatchUpdates writes a dispatch_update for every job of the
 // conversation that changed since seen, and returns the updated seen. A
-// nil seen is the stream's first poll: finished jobs are only recorded,
-// jobs still in flight are reported.
+// nil seen is the baseline, taken at connect (LOOM-137): finished jobs
+// are only recorded, jobs still in flight are reported.
 func (s *Server) sendDispatchUpdates(ctx context.Context, w http.ResponseWriter, flusher http.Flusher,
 	conversationID string, seen map[string]dispatchUpdateEvent) map[string]dispatchUpdateEvent {
 	dispatches, err := s.dispatcher.ListByConversation(ctx, conversationID)

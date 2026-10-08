@@ -1110,6 +1110,16 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
+
+	// The baselines are taken now, before the client can see the 200
+	// (LOOM-137): what exists at connect is the past, and everything after
+	// is reported. Taken on the first poll tick instead, a turn that
+	// started and finished in that first interval looked "already
+	// finished" and its terminal update was never sent. Messages first:
+	// that baseline writes nothing; the dispatch one reports jobs already
+	// in flight, flushing only after its query.
+	messagesSeen := s.sendMessagesAdded(r.Context(), w, flusher, id, nil)
+	dispatchSeen := s.sendDispatchUpdates(r.Context(), w, flusher, id, nil)
 	flusher.Flush()
 
 	poll := time.NewTicker(s.streamPollInterval)
@@ -1118,14 +1128,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	defer heartbeat.Stop()
 
 	var lastSent *taskUpdateEvent
-	// dispatchSeen is each job's last reported (status, updated_at), so
-	// a job is reported whenever it changes (LOOM-80). Jobs already
-	// finished when the stream opens are recorded unreported: only what
-	// is still in flight is news to a client connecting now.
-	var dispatchSeen map[string]dispatchUpdateEvent
-	// messagesSeen is every message ID reported, or there when the
-	// stream opened (LOOM-121): nil until the first poll.
-	var messagesSeen map[string]bool
+	// dispatchSeen (above) is each job's last reported (status,
+	// updated_at), so a job is reported whenever it changes (LOOM-80);
+	// jobs already finished at connect are recorded unreported. Likewise
+	// messagesSeen holds every message reported or there at connect
+	// (LOOM-121).
 	for {
 		select {
 		case <-r.Context().Done():
