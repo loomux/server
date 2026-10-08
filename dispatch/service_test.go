@@ -186,43 +186,93 @@ func TestSameIdempotencyKeyRunsOnce(t *testing.T) {
 	}
 }
 
-func TestConcurrentSameIdempotencyKeyRunsOnce(t *testing.T) {
+// A retry of a new conversation's first message carries no
+// conversation_id, like the original: it gets the original dispatch and
+// its conversation, not ErrKeyReused (LOOM-140).
+func TestSameIdempotencyKeyNewConversationRunsOnce(t *testing.T) {
 	var runs atomic.Int32
-	release := make(chan struct{})
 	svc := newService(t, newStore(t), func(context.Context, *registry.Dispatch) (string, error) {
 		runs.Add(1)
-		<-release
 		return "once", nil
 	})
-	req := dispatch.Request{ConversationID: "c", Message: "m", IdempotencyKey: "k-race"}
-	const n = 8
-	ids := make([]string, n)
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			d, err := svc.Submit(context.Background(), req)
-			errs[i] = err
-			if d != nil {
-				ids[i] = d.ID
-			}
-		}()
+	req := dispatch.Request{Message: "m", IdempotencyKey: "k-new"}
+	a, err := svc.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit a: %v", err)
 	}
-	wg.Wait()
-	close(release)
-	for i := range n {
-		if errs[i] != nil {
-			t.Fatalf("Submit %d: %v", i, errs[i])
-		}
-		if ids[i] != ids[0] {
-			t.Fatalf("concurrent submits made different dispatches: %v", ids)
-		}
+	waitDone(t, svc, a.ID)
+	b, err := svc.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit b: %v", err)
 	}
-	waitDone(t, svc, ids[0])
+	if b.ID != a.ID || b.ConversationID != a.ConversationID {
+		t.Fatalf("retry got dispatch %s in %s, want %s in %s", b.ID, b.ConversationID, a.ID, a.ConversationID)
+	}
 	if runs.Load() != 1 {
 		t.Fatalf("run called %d times, want 1", runs.Load())
+	}
+}
+
+// The same key with a different request is still refused when one of
+// them named no conversation.
+func TestIdempotencyKeyNewConversationThenNamedIsReused(t *testing.T) {
+	svc := newService(t, newStore(t), func(context.Context, *registry.Dispatch) (string, error) { return "ok", nil })
+	a, err := svc.Submit(context.Background(), dispatch.Request{Message: "m", IdempotencyKey: "k-mixed"})
+	if err != nil {
+		t.Fatalf("Submit a: %v", err)
+	}
+	waitDone(t, svc, a.ID)
+	_, err = svc.Submit(context.Background(), dispatch.Request{ConversationID: "other", Message: "m", IdempotencyKey: "k-mixed"})
+	if !errors.Is(err, dispatch.ErrKeyReused) {
+		t.Fatalf("Submit b err = %v, want ErrKeyReused", err)
+	}
+}
+
+// Concurrent identical submits race on the key's unique index: the
+// losers get the winner's dispatch. With no conversation_id each submit
+// mints its own conversation id first, so the request hash must not
+// include it (LOOM-140).
+func TestConcurrentSameIdempotencyKeyRunsOnce(t *testing.T) {
+	for name, conversationID := range map[string]string{"named conversation": "c", "new conversation": ""} {
+		t.Run(name, func(t *testing.T) {
+			var runs atomic.Int32
+			release := make(chan struct{})
+			svc := newService(t, newStore(t), func(context.Context, *registry.Dispatch) (string, error) {
+				runs.Add(1)
+				<-release
+				return "once", nil
+			})
+			req := dispatch.Request{ConversationID: conversationID, Message: "m", IdempotencyKey: "k-race"}
+			const n = 8
+			ids := make([]string, n)
+			errs := make([]error, n)
+			var wg sync.WaitGroup
+			for i := range n {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					d, err := svc.Submit(context.Background(), req)
+					errs[i] = err
+					if d != nil {
+						ids[i] = d.ID
+					}
+				}()
+			}
+			wg.Wait()
+			close(release)
+			for i := range n {
+				if errs[i] != nil {
+					t.Fatalf("Submit %d: %v", i, errs[i])
+				}
+				if ids[i] != ids[0] {
+					t.Fatalf("concurrent submits made different dispatches: %v", ids)
+				}
+			}
+			waitDone(t, svc, ids[0])
+			if runs.Load() != 1 {
+				t.Fatalf("run called %d times, want 1", runs.Load())
+			}
+		})
 	}
 }
 

@@ -235,7 +235,9 @@ envelope: it classifies the failure with `error_class`.
       blocking while the deployed web still expected `{reply}`).
     - `conversation_id` empty starts a new conversation (its id is in the
       response). A repeat with the same `Idempotency-Key` and the same
-      body returns the original job and runs nothing; the same key with a
+      body returns the original job and runs nothing (a retry of a new
+      conversation's first message leaves `conversation_id` empty, as the
+      original did); the same key with a
       different body is `422` (code `idempotency_conflict`). A conversation
       with a job still in flight answers `409 {error, code, dispatch_id}`
       (code `conversation_busy`) naming it (LOOM-83 owns
