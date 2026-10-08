@@ -62,5 +62,5 @@ func (s *Server) sessionStillValid(ctx context.Context, sess *registry.Session) 
 		// database error is retried at the next heartbeat.
 		return !errors.Is(err, registry.ErrNotFound)
 	}
-	return time.Since(cur.LastUsedAt) <= s.sessionTTL
+	return !s.sessionExpired(cur, time.Now())
 }

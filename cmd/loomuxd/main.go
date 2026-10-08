@@ -124,6 +124,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 
 	opts := []api.Option{
 		api.WithSessionTTL(apiCfg.SessionTTL),
+		api.WithSessionMaxAge(apiCfg.SessionMaxAge),
 		api.WithLocalTargets(targets.LocalTargets), // set by app.Build from LOOMUX_LOCAL_TARGETS
 		api.WithTargetProber(loomux),
 		api.WithWorkspaceManager(loomux),

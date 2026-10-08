@@ -186,6 +186,13 @@ type HealthChecker interface {
 // reasonable for a personal single-user tool used from mobile.
 const defaultSessionTTL = 30 * 24 * time.Hour
 
+// defaultSessionMaxAge is a session's absolute lifetime (LOOM-175): past
+// it the session ends however recently it was used, so a token that
+// leaked once doesn't stay good for as long as someone keeps using it.
+// 90 days: three sliding windows, so a device used daily signs in again
+// about once a quarter.
+const defaultSessionMaxAge = 90 * 24 * time.Hour
+
 // defaultLoginBackoffBase/Max are loginThrottle's production timing: a
 // mistyped password barely registers (1s), while a sustained brute-force
 // attempt tops out waiting 30s between guesses — see throttle.go for why
@@ -240,6 +247,7 @@ type Server struct {
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
+	sessionMaxAge      time.Duration
 	loginThrottle      *loginThrottle
 	localTargets       bool
 	loginDevices       *loginDevices
@@ -258,6 +266,22 @@ type Option func(*Server)
 // WithSessionTTL overrides the default sliding-expiration window.
 func WithSessionTTL(d time.Duration) Option {
 	return func(s *Server) { s.sessionTTL = d }
+}
+
+// WithSessionMaxAge overrides a session's absolute lifetime
+// (defaultSessionMaxAge); 0 means none, only the sliding window.
+func WithSessionMaxAge(d time.Duration) Option {
+	return func(s *Server) { s.sessionMaxAge = d }
+}
+
+// sessionExpired reports whether sess is past its sliding window or its
+// absolute lifetime at now: requireAuth's test, which the session list
+// and an open stream's re-check share.
+func (s *Server) sessionExpired(sess *registry.Session, now time.Time) bool {
+	if now.Sub(sess.LastUsedAt) > s.sessionTTL {
+		return true
+	}
+	return s.sessionMaxAge > 0 && now.Sub(sess.CreatedAt) > s.sessionMaxAge
 }
 
 // WithLoginBackoff overrides /login's default exponential-backoff timing
@@ -348,6 +372,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 		targets:            targets,
 		passwordHash:       passwordHash,
 		sessionTTL:         defaultSessionTTL,
+		sessionMaxAge:      defaultSessionMaxAge,
 		loginThrottle:      newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
 		streamPollInterval: defaultStreamPollInterval,
 		localTargets:       true,
@@ -575,7 +600,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]sessionSummary, 0, len(sessions))
 	for _, sess := range sessions {
-		if now.Sub(sess.LastUsedAt) > s.sessionTTL {
+		if s.sessionExpired(sess, now) {
 			continue
 		}
 		out = append(out, sessionSummary{
@@ -1512,7 +1537,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		if time.Since(sess.LastUsedAt) > s.sessionTTL {
+		if s.sessionExpired(sess, time.Now()) {
 			_ = s.sessions.DeleteSession(r.Context(), sess.ID) // opportunistic cleanup
 			writeError(w, http.StatusUnauthorized, "invalid or expired session")
 			return

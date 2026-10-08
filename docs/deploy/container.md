@@ -217,7 +217,8 @@ defaults for three of them.
 | `LOOMUX_STATIC_DIR` | `/srv/loomux/web` |
 | `LOOMUX_METRICS_ADDR` | `127.0.0.1:9090` (loopback only) |
 
-**Optional:** `LOOMUX_SESSION_TTL`, `LOOMUX_MARKER_DIR`,
+**Optional:** `LOOMUX_SESSION_TTL` (720h, sliding), `LOOMUX_SESSION_MAX_AGE`
+(2160h: a session's absolute lifetime; `0` for none), `LOOMUX_MARKER_DIR`,
 `LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
 `LOOMUX_TARGET_PROBE_INTERVAL` (5m), `LOOMUX_TURN_RETENTION` (720h; `0` keeps
 per-turn transcripts forever), `LOOMUX_EVENT_RETENTION` (2160h; `0` keeps the
