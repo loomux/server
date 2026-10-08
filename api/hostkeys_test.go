@@ -123,3 +123,100 @@ func toJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+// LOOM-164: a scan still running when a PUT moves the target lands after
+// the update forgot the old scan; its keys came from the old address and
+// must not be pinnable for the new one.
+func TestHostKeyScan_InFlightAcrossAddressChangeNotPinnable(t *testing.T) {
+	scanned, _ := targets.ParseHostKeys(testHostKeyLine)
+	entered, release := make(chan struct{}), make(chan struct{})
+	scan := func(ctx context.Context, tgt *registry.Target) ([]targets.HostKey, error) {
+		close(entered)
+		<-release
+		return scanned, nil
+	}
+	srv, _, store := newTestServerWith(t, func(s registry.Store) []api.Option {
+		return []api.Option{api.WithHostKeyPinning(scan, s)}
+	})
+	ctx := context.Background()
+	if err := store.CreateTarget(ctx, &registry.Target{ID: "remote", Name: "box", Kind: registry.TargetKindRemote, Host: "old-box", User: "u"}); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	token, _ := login(t, srv.URL, testPassword)
+
+	scanDone := make(chan int, 1)
+	go func() {
+		resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/targets/remote/scan-host-key", token, nil)
+		resp.Body.Close()
+		scanDone <- resp.StatusCode
+	}()
+	<-entered
+	raw, _ := json.Marshal(map[string]any{"name": "box", "kind": "remote", "host": "new-box", "user": "u"})
+	put := authedRequest(t, http.MethodPut, srv.URL+"/api/v1/targets/remote", token, raw)
+	put.Body.Close()
+	if put.StatusCode != http.StatusOK {
+		t.Fatalf("PUT host = %d", put.StatusCode)
+	}
+	close(release)
+	if status := <-scanDone; status != http.StatusOK {
+		t.Fatalf("scan = %d", status)
+	}
+
+	pinRaw, _ := json.Marshal(map[string]string{"fingerprint": scanned[0].Fingerprint})
+	pin := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/targets/remote/pin", token, pinRaw)
+	pin.Body.Close()
+	if pin.StatusCode != http.StatusConflict {
+		t.Fatalf("pin of old-box's scan after the move to new-box = %d, want 409", pin.StatusCode)
+	}
+	if got, _ := store.GetTarget(ctx, "remote"); got.HostKeys != "" {
+		t.Fatalf("old address's key pinned for the new one: %q", got.HostKeys)
+	}
+}
+
+// movingHostKeyStore moves the target to another host just before the
+// first pin is written: a PUT racing the pin.
+type movingHostKeyStore struct {
+	registry.Store
+	moved bool
+}
+
+func (m *movingHostKeyStore) SetTargetHostKeys(ctx context.Context, id, hostKeys string) error {
+	if !m.moved {
+		m.moved = true
+		tgt, err := m.Store.GetTarget(ctx, id)
+		if err != nil {
+			return err
+		}
+		tgt.Host = "elsewhere"
+		if err := m.Store.UpdateTarget(ctx, tgt); err != nil {
+			return err
+		}
+	}
+	return m.Store.SetTargetHostKeys(ctx, id, hostKeys)
+}
+
+// LOOM-164: a PUT moving the target while a pin is written leaves no pin
+// for the new address.
+func TestHostKeyPin_RacingAddressChangeIsUndone(t *testing.T) {
+	scanned, _ := targets.ParseHostKeys(testHostKeyLine)
+	scan := func(ctx context.Context, tgt *registry.Target) ([]targets.HostKey, error) { return scanned, nil }
+	srv, _, store := newTestServerWith(t, func(s registry.Store) []api.Option {
+		return []api.Option{api.WithHostKeyPinning(scan, &movingHostKeyStore{Store: s})}
+	})
+	ctx := context.Background()
+	if err := store.CreateTarget(ctx, &registry.Target{ID: "remote", Name: "box", Kind: registry.TargetKindRemote, Host: "box", User: "u"}); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	token, _ := login(t, srv.URL, testPassword)
+	scanResp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/targets/remote/scan-host-key", token, nil)
+	scanResp.Body.Close()
+	pinRaw, _ := json.Marshal(map[string]string{"fingerprint": scanned[0].Fingerprint})
+	pin := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/targets/remote/pin", token, pinRaw)
+	pin.Body.Close()
+	if pin.StatusCode != http.StatusConflict {
+		t.Fatalf("pin racing a move = %d, want 409", pin.StatusCode)
+	}
+	if got, _ := store.GetTarget(ctx, "remote"); got.Host != "elsewhere" || got.HostKeys != "" {
+		t.Fatalf("after the race: host %q, pin %q; want elsewhere and no pin", got.Host, got.HostKeys)
+	}
+}
