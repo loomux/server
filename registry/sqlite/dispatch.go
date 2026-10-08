@@ -94,6 +94,21 @@ func (s *Store) ListDispatchesByConversation(ctx context.Context, conversationID
 	return s.listDispatches(ctx, `SELECT `+dispatchColumns+` FROM dispatches WHERE conversation_id = ? ORDER BY rowid`, conversationID)
 }
 
+// ListDispatchesAfter, like ListMessagesAfter, uses the rowid as the
+// creation cursor; the dispatches in also are reread whatever their age.
+func (s *Store) ListDispatchesAfter(ctx context.Context, conversationID, afterID string, also []string) ([]*registry.Dispatch, error) {
+	query := `SELECT ` + dispatchColumns + ` FROM dispatches WHERE conversation_id = ?
+		AND (rowid > COALESCE((SELECT rowid FROM dispatches WHERE id = ? AND conversation_id = ?), 0)`
+	args := []any{conversationID, afterID, conversationID}
+	if len(also) > 0 {
+		query += ` OR id IN (` + strings.TrimSuffix(strings.Repeat("?, ", len(also)), ", ") + `)`
+		for _, id := range also {
+			args = append(args, id)
+		}
+	}
+	return s.listDispatches(ctx, query+`) ORDER BY rowid`, args...)
+}
+
 func (s *Store) ListDispatchesByStatus(ctx context.Context, statuses ...registry.DispatchStatus) ([]*registry.Dispatch, error) {
 	if len(statuses) == 0 {
 		return []*registry.Dispatch{}, nil
