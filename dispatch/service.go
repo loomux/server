@@ -92,7 +92,6 @@ const (
 // Option configures a Service.
 type Option func(*Service)
 
-// WithMaxDuration overrides the per-job ceiling (defaultMaxDuration).
 // Defaults for retrying a job's status writes: 100ms doubling, six tries,
 // about 3 s of waiting on top of the store's own busy timeout.
 const (
@@ -109,6 +108,7 @@ func WithWriteRetry(attempts int, backoff time.Duration) Option {
 	}
 }
 
+// WithMaxDuration overrides the per-job ceiling (defaultMaxDuration).
 func WithMaxDuration(d time.Duration) Option {
 	return func(s *Service) {
 		if d > 0 {
@@ -336,7 +336,11 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run 
 		d.Status = registry.DispatchStatusRunning
 		d.StartedAt = &started
 		if err := s.transition(bookCtx, log, d, registry.DispatchStatusQueued); err != nil {
-			log.Info("dispatch not started", "reason", err)
+			if errors.Is(err, registry.ErrDispatchStateChanged) {
+				log.Info("dispatch not started", "reason", err)
+			} else {
+				log.Error("dispatch not started: its status couldn't be recorded", "error", err)
+			}
 			return
 		}
 	}
@@ -393,13 +397,29 @@ func (s *Service) transition(ctx context.Context, log *slog.Logger, d *registry.
 	wait := s.writeBackoff
 	for attempt := 1; ; attempt++ {
 		err := s.store.TransitionDispatch(ctx, d, from)
-		if err == nil || errors.Is(err, registry.ErrDispatchStateChanged) || attempt >= s.writeAttempts {
+		if attempt > 1 && errors.Is(err, registry.ErrDispatchStateChanged) {
+			// An earlier attempt may have landed though it reported an
+			// error: the row already says what we were writing.
+			if cur, gerr := s.store.GetDispatch(ctx, d.ID); gerr == nil && cur.Status == d.Status {
+				return nil
+			}
+		}
+		if err == nil || errors.Is(err, registry.ErrDispatchStateChanged) || errors.Is(err, registry.ErrNotFound) ||
+			attempt >= s.writeAttempts || s.isClosing() {
+			// Shutting down: the row stays as it is for the next start's
+			// Recover, rather than holding the drain up with retries.
 			return err
 		}
 		log.Warn("dispatch status write failed, retrying", "status", string(d.Status), "attempt", attempt, "error", err)
 		time.Sleep(wait)
 		wait *= 2
 	}
+}
+
+func (s *Service) isClosing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closing
 }
 
 // safeRun turns a panic in run into a failed job rather than a dead
@@ -558,19 +578,31 @@ func (s *Service) SweepOrphans(ctx context.Context) (int, error) {
 	}
 	// Under mu, a job is in jobs from before its row is written (Submit,
 	// Recover) until after its last status write: a row listed above
-	// with no job here has nothing left to finish it. One that finished
-	// since the list is refused by the store (ErrDispatchStateChanged).
+	// with no job here has nothing left to finish it. The writes happen
+	// after mu is released, so a slow database doesn't hold up Submit:
+	// no job can start for an existing dispatch after Recover, and one a
+	// shutdown interrupts was still in jobs when the orphans were taken.
+	// One that finished since the list is refused by the store
+	// (ErrDispatchStateChanged).
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closing {
+		s.mu.Unlock()
 		return 0, nil
 	}
-	n := 0
+	var orphans []*registry.Dispatch
 	for _, d := range left {
-		if _, live := s.jobs[d.ID]; live {
-			continue
+		if _, live := s.jobs[d.ID]; !live {
+			orphans = append(orphans, d)
 		}
-		if s.markInterrupted(ctx, d, "interrupted: its result couldn't be recorded") {
+	}
+	s.mu.Unlock()
+	n := 0
+	for _, d := range orphans {
+		reason := "interrupted: its result couldn't be recorded"
+		if d.Status == registry.DispatchStatusQueued {
+			reason = "interrupted: it couldn't be started"
+		}
+		if s.markInterrupted(ctx, d, reason) {
 			s.logger.Warn("marked a dispatch with no running job as interrupted", "dispatch_id", d.ID, "conversation_id", d.ConversationID)
 			n++
 		}

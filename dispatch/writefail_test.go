@@ -121,3 +121,48 @@ func TestSweepOrphansLeavesLiveJobsAndShutdownAlone(t *testing.T) {
 	}
 	close(release)
 }
+
+// committedButFailed lands the first terminal write but reports an error,
+// as a dropped connection after commit would.
+type committedButFailed struct {
+	dispatch.Store
+	once sync.Once
+}
+
+func (c *committedButFailed) TransitionDispatch(ctx context.Context, d *registry.Dispatch, from registry.DispatchStatus) error {
+	err := c.Store.TransitionDispatch(ctx, d, from)
+	if err == nil && d.Status.Terminal() {
+		failed := false
+		c.once.Do(func() { failed = true })
+		if failed {
+			return errors.New("connection reset after commit")
+		}
+	}
+	return err
+}
+
+// LOOM-146 review: a retry after a write that did land finds the row
+// already finished; that's success, not "interrupted", and the job's
+// finish is still reported.
+func TestStatusWriteThatLandedDespiteAnErrorCountsAsDone(t *testing.T) {
+	finished := make(chan *registry.Dispatch, 1)
+	svc := newService(t, &committedButFailed{Store: newStore(t)},
+		func(context.Context, *registry.Dispatch) (string, error) { return "ok", nil },
+		dispatch.WithWriteRetry(3, time.Millisecond),
+		dispatch.WithOnFinished(func(d *registry.Dispatch) { finished <- d }))
+	d, err := svc.Submit(context.Background(), dispatch.Request{ConversationID: "c", Message: "m"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if got := waitDone(t, svc, d.ID); got.Status != registry.DispatchStatusSucceeded {
+		t.Fatalf("status = %s, want succeeded", got.Status)
+	}
+	select {
+	case f := <-finished:
+		if f.Status != registry.DispatchStatusSucceeded {
+			t.Fatalf("onFinished got %s", f.Status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("onFinished never ran")
+	}
+}
