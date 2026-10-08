@@ -51,9 +51,50 @@ type Request struct {
 	IdempotencyKey string
 }
 
+// MaxIDLen is the longest client-supplied id Submit accepts: a
+// conversation_id or a workspace_hint (LOOM-154).
+const MaxIDLen = 64
+
+// ValidID reports whether s can be a client-supplied id: 1 to MaxIDLen
+// ASCII letters, digits, '-' or '_'. A server-minted id (a UUID) always
+// is. A conversation id is a path segment everywhere else in the API
+// (GET /conversations/{id}), so one that isn't could be stored but never
+// fetched back.
+func ValidID(s string) bool {
+	if len(s) == 0 || len(s) > MaxIDLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Validate checks what a client supplies: a message, and, when set, a
+// conversation id and workspace hint that are ValidIDs. The error wraps
+// ErrInvalidRequest and names the field.
+func (req Request) Validate() error {
+	if req.Message == "" {
+		return fmt.Errorf("%w: message is required", ErrInvalidRequest)
+	}
+	if req.ConversationID != "" && !ValidID(req.ConversationID) {
+		return fmt.Errorf("%w: conversation_id must be 1 to %d letters, digits, '-' or '_'", ErrInvalidRequest, MaxIDLen)
+	}
+	if req.WorkspaceHint != "" && !ValidID(req.WorkspaceHint) {
+		return fmt.Errorf("%w: workspace_hint must be 1 to %d letters, digits, '-' or '_'", ErrInvalidRequest, MaxIDLen)
+	}
+	return nil
+}
+
 var (
-	// ErrInvalidRequest: the request can't be dispatched as given.
-	ErrInvalidRequest = errors.New("dispatch: message is required")
+	// ErrInvalidRequest: the request can't be dispatched as given. The
+	// error Submit returns wraps it and says what was wrong.
+	ErrInvalidRequest = errors.New("dispatch: invalid request")
 	// ErrKeyReused: the idempotency key was already used for a
 	// different request.
 	ErrKeyReused = errors.New("dispatch: idempotency key was already used for a different request")
@@ -91,6 +132,22 @@ const (
 
 // Option configures a Service.
 type Option func(*Service)
+
+// Defaults for retrying a job's status writes: 100ms doubling, six tries,
+// about 3 s of waiting on top of the store's own busy timeout.
+const (
+	defaultWriteAttempts = 6
+	defaultWriteBackoff  = 100 * time.Millisecond
+)
+
+// WithWriteRetry overrides how a job's status writes are retried
+// (LOOM-146): attempts in all, waiting backoff after the first failure
+// and doubling. For tests.
+func WithWriteRetry(attempts int, backoff time.Duration) Option {
+	return func(s *Service) {
+		s.writeAttempts, s.writeBackoff = attempts, backoff
+	}
+}
 
 // WithMaxDuration overrides the per-job ceiling (defaultMaxDuration).
 func WithMaxDuration(d time.Duration) Option {
@@ -150,6 +207,11 @@ type Service struct {
 	maxDuration time.Duration
 	logger      *slog.Logger
 	classify    func(error) registry.ErrorClass
+	// writeAttempts and writeBackoff bound the retries of a job's own
+	// status writes (LOOM-146): a failed one would otherwise leave the
+	// row queued or running, and its conversation busy, until a restart.
+	writeAttempts int
+	writeBackoff  time.Duration
 
 	// mu guards closing and jobs, and is held across a Submit's insert
 	// and registration, so Shutdown never misses a job that is being
@@ -175,6 +237,9 @@ func New(store Store, run RunFunc, opts ...Option) *Service {
 		logger:      slog.New(slog.DiscardHandler),
 		classify:    func(error) registry.ErrorClass { return registry.ErrorClassInternal },
 		jobs:        make(map[string]*job),
+
+		writeAttempts: defaultWriteAttempts,
+		writeBackoff:  defaultWriteBackoff,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -187,8 +252,8 @@ func New(store Store, run RunFunc, opts ...Option) *Service {
 // job. A repeat of an earlier request with the same IdempotencyKey
 // returns the earlier job and starts nothing.
 func (s *Service) Submit(ctx context.Context, req Request) (*registry.Dispatch, error) {
-	if req.Message == "" {
-		return nil, ErrInvalidRequest
+	if err := req.Validate(); err != nil {
+		return nil, err
 	}
 	// Hashed as the client sent it, before a new conversation gets its
 	// id: a retry of a new conversation's first message (same key, no
@@ -311,8 +376,12 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run 
 	if d.Status == registry.DispatchStatusQueued {
 		d.Status = registry.DispatchStatusRunning
 		d.StartedAt = &started
-		if err := s.store.TransitionDispatch(bookCtx, d, registry.DispatchStatusQueued); err != nil {
-			log.Info("dispatch not started", "reason", err)
+		if err := s.transition(bookCtx, log, d, registry.DispatchStatusQueued); err != nil {
+			if errors.Is(err, registry.ErrDispatchStateChanged) {
+				log.Info("dispatch not started", "reason", err)
+			} else {
+				log.Error("dispatch not started: its status couldn't be recorded", "error", err)
+			}
 			return
 		}
 	}
@@ -342,12 +411,15 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run 
 			d.Error = "cancelled by the user"
 		}
 	}
-	err = s.store.TransitionDispatch(bookCtx, d, registry.DispatchStatusRunning)
+	err = s.transition(bookCtx, log, d, registry.DispatchStatusRunning)
 	switch {
 	case errors.Is(err, registry.ErrDispatchStateChanged):
 		// Shutdown marked it interrupted first; that stands.
 		log.Info("dispatch finished after being interrupted", "status", string(d.Status))
 	case err != nil:
+		// Retried and still failing: SweepOrphans marks the row
+		// interrupted once this job is gone, so the conversation isn't
+		// left busy until a restart.
 		log.Error("dispatch result not recorded", "error", err)
 	case d.Status == registry.DispatchStatusFailed:
 		log.Error("dispatch failed", "error_class", string(d.ErrorClass), "duration_ms", finished.Sub(started).Milliseconds())
@@ -357,6 +429,38 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run 
 	if err == nil && s.onFinished != nil {
 		s.onFinished(copyDispatch(d))
 	}
+}
+
+// transition writes d's new status, retrying a failure (LOOM-146) other
+// than the row having moved on (ErrDispatchStateChanged), which no retry
+// can fix.
+func (s *Service) transition(ctx context.Context, log *slog.Logger, d *registry.Dispatch, from registry.DispatchStatus) error {
+	wait := s.writeBackoff
+	for attempt := 1; ; attempt++ {
+		err := s.store.TransitionDispatch(ctx, d, from)
+		if attempt > 1 && errors.Is(err, registry.ErrDispatchStateChanged) {
+			// An earlier attempt may have landed though it reported an
+			// error: the row already says what we were writing.
+			if cur, gerr := s.store.GetDispatch(ctx, d.ID); gerr == nil && cur.Status == d.Status {
+				return nil
+			}
+		}
+		if err == nil || errors.Is(err, registry.ErrDispatchStateChanged) || errors.Is(err, registry.ErrNotFound) ||
+			attempt >= s.writeAttempts || s.isClosing() {
+			// Shutting down: the row stays as it is for the next start's
+			// Recover, rather than holding the drain up with retries.
+			return err
+		}
+		log.Warn("dispatch status write failed, retrying", "status", string(d.Status), "attempt", attempt, "error", err)
+		time.Sleep(wait)
+		wait *= 2
+	}
+}
+
+func (s *Service) isClosing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closing
 }
 
 // safeRun turns a panic in run into a failed job rather than a dead
@@ -492,6 +596,57 @@ func (s *Service) Recover(ctx context.Context) (int, error) {
 	}
 	if n > 0 {
 		s.logger.Warn("marked dispatches left by a previous run as interrupted", "count", n)
+	}
+	return n, nil
+}
+
+// SweepOrphans marks interrupted every queued or running dispatch with
+// no job in this process (LOOM-146): one whose own status write failed
+// even after retries, which would otherwise hold its conversation busy
+// (409) until the next restart's Recover. It must only run after
+// Recover, and does nothing once Shutdown has begun: the rows a shutdown
+// leaves running are for the next start to resume.
+func (s *Service) SweepOrphans(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	closing := s.closing
+	s.mu.Unlock()
+	if closing {
+		return 0, nil
+	}
+	left, err := s.store.ListDispatchesByStatus(ctx, registry.DispatchStatusQueued, registry.DispatchStatusRunning)
+	if err != nil {
+		return 0, fmt.Errorf("dispatch: sweep: %w", err)
+	}
+	// Under mu, a job is in jobs from before its row is written (Submit,
+	// Recover) until after its last status write: a row listed above
+	// with no job here has nothing left to finish it. The writes happen
+	// after mu is released, so a slow database doesn't hold up Submit:
+	// no job can start for an existing dispatch after Recover, and one a
+	// shutdown interrupts was still in jobs when the orphans were taken.
+	// One that finished since the list is refused by the store
+	// (ErrDispatchStateChanged).
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return 0, nil
+	}
+	var orphans []*registry.Dispatch
+	for _, d := range left {
+		if _, live := s.jobs[d.ID]; !live {
+			orphans = append(orphans, d)
+		}
+	}
+	s.mu.Unlock()
+	n := 0
+	for _, d := range orphans {
+		reason := "interrupted: its result couldn't be recorded"
+		if d.Status == registry.DispatchStatusQueued {
+			reason = "interrupted: it couldn't be started"
+		}
+		if s.markInterrupted(ctx, d, reason) {
+			s.logger.Warn("marked a dispatch with no running job as interrupted", "dispatch_id", d.ID, "conversation_id", d.ConversationID)
+			n++
+		}
 	}
 	return n, nil
 }

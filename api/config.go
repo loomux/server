@@ -24,6 +24,9 @@ type Config struct {
 	Addr string
 	// SessionTTL is the sliding-expiration window (see WithSessionTTL).
 	SessionTTL time.Duration
+	// SessionMaxAge is a session's absolute lifetime, 0 for none (see
+	// WithSessionMaxAge).
+	SessionMaxAge time.Duration
 	// StaticDir, if set, is the directory containing the web client's
 	// built static files (loomux/web's Vite build output) — passed to
 	// WithStaticDir so Server serves it for any non-/api/* path, with SPA
@@ -68,6 +71,7 @@ const (
 	envPasswordHash = "LOOMUX_AUTH_PASSWORD_HASH"
 	envAddr         = "LOOMUX_HTTP_ADDR"
 	envSessionTTL   = "LOOMUX_SESSION_TTL"
+	envSessionMax   = "LOOMUX_SESSION_MAX_AGE"
 	envStaticDir    = "LOOMUX_STATIC_DIR"
 	envMetricsAddr  = "LOOMUX_METRICS_ADDR"
 	envWebBundles   = "LOOMUX_WEB_BUNDLES_DIR"
@@ -110,6 +114,14 @@ func LoadConfig() (Config, error) {
 		}
 		ttl = d
 	}
+	maxAge := defaultSessionMaxAge
+	if raw := os.Getenv(envSessionMax); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("api: %s must be a duration (0 for no limit), not %q", envSessionMax, raw)
+		}
+		maxAge = d
+	}
 
 	metricsAddr := defaultMetricsAddr
 	if raw, ok := os.LookupEnv(envMetricsAddr); ok {
@@ -141,7 +153,7 @@ func LoadConfig() (Config, error) {
 	}
 
 	return Config{
-		PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl, StaticDir: os.Getenv(envStaticDir), MetricsAddr: metricsAddr,
+		PasswordHash: []byte(hash), Addr: addr, SessionTTL: ttl, SessionMaxAge: maxAge, StaticDir: os.Getenv(envStaticDir), MetricsAddr: metricsAddr,
 		WebBundlesDir: webBundles, WebUpdates: webUpdates, WebReleasesToken: os.Getenv(envWebToken), WebPinRepo: webPinRepo, WebReleasesRepo: webRepo,
 	}, nil
 }

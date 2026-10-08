@@ -64,7 +64,9 @@ of casual reach: a process of the same user can still read them.
 
 So local targets are off in the container image
 (`LOOMUX_LOCAL_TARGETS=off`): registering one is refused with a `400`,
-and an existing one fails to run with a plain message. Register the
+and an existing one fails to run with a plain message (`GET
+/api/v1/targets` reports the setting as `local_targets`, so a client can
+leave the choice out). Register the
 machine you want agents on as a remote target instead. A bare `loomuxd`
 binary leaves them on (`LOOMUX_LOCAL_TARGETS=on`), for a single-box
 setup where the person running loomuxd is the person whose agents run.

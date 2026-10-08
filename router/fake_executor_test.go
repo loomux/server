@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -242,7 +243,9 @@ func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.
 	if exit == nil && isProvisioning(sess.command) {
 		// A provisioning recipe always exits (LOOM-90); unless a test
 		// says otherwise it succeeds, reporting the directory it made.
-		exit = &targets.PaneExit{Status: 0, Output: "loomux-workspace-path:" + fakeWorkspacePath(sess.command)}
+		nonce := recipeNonce(sess.command)
+		exit = &targets.PaneExit{Status: 0, Output: "loomux-workspace-root:" + nonce + ":/fake-root\n" +
+			"loomux-workspace-path:" + nonce + ":" + fakeWorkspacePath(sess.command)}
 	}
 	return exit, nil
 }
@@ -250,6 +253,16 @@ func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.
 // isProvisioning reports whether command is a provisioning recipe.
 func isProvisioning(command string) bool {
 	return strings.HasPrefix(command, router.ProvisioningMarker)
+}
+
+// recipeNonce is the nonce a provisioning recipe tags its report with
+// (LOOM-153), read back from the recipe as a target's shell would print it.
+func recipeNonce(recipe string) string {
+	m := regexp.MustCompile(`loomux-workspace-path:([0-9a-f]+):`).FindStringSubmatch(recipe)
+	if m == nil {
+		return ""
+	}
+	return m[1]
 }
 
 // fakeWorkspacePath is where the fake "provisions" the workspace a recipe

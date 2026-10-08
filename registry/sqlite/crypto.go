@@ -35,16 +35,11 @@ func KeyFromEnv(varName string) ([]byte, error) {
 	return key, nil
 }
 
-// encrypt seals plaintext with AES-GCM under key, returning
-// nonce||ciphertext as a single blob (a fresh random nonce is generated
-// per call).
-func encrypt(key []byte, plaintext string) ([]byte, error) {
-	return seal(key, []byte(plaintext), nil)
-}
-
-// seal is encrypt with additional data: the blob opens only with the same
-// aad, which binds it to what it belongs to (an SSH key's row id, so a
-// ciphertext copied onto another row doesn't decrypt there).
+// seal encrypts plaintext with AES-GCM under key, returning
+// nonce||ciphertext as a single blob (a fresh random nonce per call). The
+// blob opens only with the same aad, which binds it to what it belongs
+// to (a credential's or SSH key's row id, so a ciphertext copied onto
+// another row doesn't decrypt there).
 func seal(key, plaintext, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
@@ -57,17 +52,11 @@ func seal(key, plaintext, aad []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-// decrypt opens a nonce||ciphertext blob produced by encrypt. A wrong
-// key or tampered/corrupted data both surface as an error here (AES-GCM
-// is authenticated — there's no way to distinguish "wrong key" from
-// "tampered data" without weakening that guarantee, so this doesn't try
-// to).
-func decrypt(key, data []byte) (string, error) {
-	plaintext, err := open(key, data, nil)
-	return string(plaintext), err
-}
-
-// open is decrypt with the additional data seal was given.
+// open decrypts a blob seal produced, given the same aad. A wrong key,
+// wrong aad or tampered/corrupted data all surface as an error here
+// (AES-GCM is authenticated — there's no way to distinguish "wrong key"
+// from "tampered data" without weakening that guarantee, so this doesn't
+// try to).
 func open(key, data, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -107,6 +108,16 @@ type TaskLister interface {
 	ListTasks(ctx context.Context) ([]*registry.Task, error)
 }
 
+// streamQueries are the narrow reads a conversation's event stream polls
+// with (LOOM-145): one conversation's tasks, and only messages and jobs
+// that are new since the last poll. Every registry.Store has them; a
+// store without them gets the full reads the stream used before.
+type streamQueries interface {
+	ListTasksByConversation(ctx context.Context, conversationID string) ([]*registry.Task, error)
+	ListMessagesAfter(ctx context.Context, conversationID, afterID string) ([]*registry.Message, error)
+	ListDispatchesAfter(ctx context.Context, conversationID, afterID string, also []string) ([]*registry.Dispatch, error)
+}
+
 // MessageLister is the message-transcript slice of registry.Store this
 // package needs to extend conversation-detail (LOOM-18) with real chat
 // turns instead of only task-lifecycle rows (LOOM-31), and to list
@@ -176,6 +187,13 @@ type HealthChecker interface {
 // reasonable for a personal single-user tool used from mobile.
 const defaultSessionTTL = 30 * 24 * time.Hour
 
+// defaultSessionMaxAge is a session's absolute lifetime (LOOM-175): past
+// it the session ends however recently it was used, so a token that
+// leaked once doesn't stay good for as long as someone keeps using it.
+// 90 days: three sliding windows, so a device used daily signs in again
+// about once a quarter.
+const defaultSessionMaxAge = 90 * 24 * time.Hour
+
 // defaultLoginBackoffBase/Max are loginThrottle's production timing: a
 // mistyped password barely registers (1s), while a sustained brute-force
 // attempt tops out waiting 30s between guesses — see throttle.go for why
@@ -209,6 +227,7 @@ type Server struct {
 	workspaces       WorkspaceLister
 	tasks            TaskLister
 	messages         MessageLister
+	streamQ          streamQueries
 	attachInfo       AttachInfoStore
 	targets          TargetStore
 	targetProber     TargetProber
@@ -229,6 +248,7 @@ type Server struct {
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
+	sessionMaxAge      time.Duration
 	loginThrottle      *loginThrottle
 	localTargets       bool
 	loginDevices       *loginDevices
@@ -247,6 +267,22 @@ type Option func(*Server)
 // WithSessionTTL overrides the default sliding-expiration window.
 func WithSessionTTL(d time.Duration) Option {
 	return func(s *Server) { s.sessionTTL = d }
+}
+
+// WithSessionMaxAge overrides a session's absolute lifetime
+// (defaultSessionMaxAge); 0 means none, only the sliding window.
+func WithSessionMaxAge(d time.Duration) Option {
+	return func(s *Server) { s.sessionMaxAge = d }
+}
+
+// sessionExpired reports whether sess is past its sliding window or its
+// absolute lifetime at now: requireAuth's test, which the session list
+// and an open stream's re-check share.
+func (s *Server) sessionExpired(sess *registry.Session, now time.Time) bool {
+	if now.Sub(sess.LastUsedAt) > s.sessionTTL {
+		return true
+	}
+	return s.sessionMaxAge > 0 && now.Sub(sess.CreatedAt) > s.sessionMaxAge
 }
 
 // WithLoginBackoff overrides /login's default exponential-backoff timing
@@ -337,6 +373,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 		targets:            targets,
 		passwordHash:       passwordHash,
 		sessionTTL:         defaultSessionTTL,
+		sessionMaxAge:      defaultSessionMaxAge,
 		loginThrottle:      newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
 		streamPollInterval: defaultStreamPollInterval,
 		localTargets:       true,
@@ -345,6 +382,9 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	for _, opt := range opts {
 		opt(s)
 	}
+	// Asserted on the MessageLister (in production, the store): a
+	// wrapper that hides these methods quietly brings back full reads.
+	s.streamQ, _ = messages.(streamQueries)
 	s.loginDevices = newLoginDevices(passwordHash, s.loginThrottle.base, s.loginThrottle.max)
 	switch {
 	case s.web != nil:
@@ -427,6 +467,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			s.handleUnsupportedAPIPath(w, r)
+			return
+		}
+		if h, pattern := s.mux.Handler(r); pattern == "" {
+			s.handleNoRoute(w, r, h)
 			return
 		}
 		s.mux.ServeHTTP(w, r)
@@ -561,7 +605,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]sessionSummary, 0, len(sessions))
 	for _, sess := range sessions {
-		if now.Sub(sess.LastUsedAt) > s.sessionTTL {
+		if s.sessionExpired(sess, now) {
 			continue
 		}
 		out = append(out, sessionSummary{
@@ -1208,11 +1252,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	defer heartbeat.Stop()
 
 	var lastSent *taskUpdateEvent
-	// dispatchSeen (above) is each job's last reported (status,
+	// dispatchSeen (above) holds each job's last reported (status,
 	// updated_at), so a job is reported whenever it changes (LOOM-80);
 	// jobs already finished at connect are recorded unreported. Likewise
 	// messagesSeen holds every message reported or there at connect
-	// (LOOM-121).
+	// (LOOM-121). Both also hold a cursor, so a poll reads only what's
+	// new (LOOM-145).
 	for {
 		select {
 		case <-ctx.Done():
@@ -1255,25 +1300,44 @@ type messageAddedEvent struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// sendMessagesAdded reports conversationID's messages not in seen, and
-// returns seen with them added. The first call (seen nil) records what
-// is there unreported: only messages logged while the stream is open
-// are news.
+// messageCursor is what a stream knows of its conversation's messages:
+// every one reported or there at connect, and the last one read, from
+// which the next poll reads on (LOOM-145).
+type messageCursor struct {
+	seen map[string]bool
+	last string
+}
+
+// sendMessagesAdded reports conversationID's messages not yet seen, and
+// returns the cursor moved past them. The first call (cur nil) records
+// what is there unreported: only messages logged while the stream is
+// open are news. A failed read returns cur unchanged.
 func (s *Server) sendMessagesAdded(ctx context.Context, w http.ResponseWriter, flusher http.Flusher,
-	conversationID string, seen map[string]bool) map[string]bool {
-	messages, err := s.messages.ListMessagesByConversation(ctx, conversationID)
-	if err != nil {
-		return seen
+	conversationID string, cur *messageCursor) *messageCursor {
+	var messages []*registry.Message
+	var err error
+	if s.streamQ != nil {
+		after := ""
+		if cur != nil {
+			after = cur.last
+		}
+		messages, err = s.streamQ.ListMessagesAfter(ctx, conversationID, after)
+	} else {
+		messages, err = s.messages.ListMessagesByConversation(ctx, conversationID)
 	}
-	first := seen == nil
+	if err != nil {
+		return cur
+	}
+	first := cur == nil
 	if first {
-		seen = make(map[string]bool, len(messages))
+		cur = &messageCursor{seen: make(map[string]bool, len(messages))}
 	}
 	for _, m := range messages {
-		if seen[m.ID] {
+		cur.last = m.ID
+		if cur.seen[m.ID] {
 			continue
 		}
-		seen[m.ID] = true
+		cur.seen[m.ID] = true
 		if first {
 			continue
 		}
@@ -1285,7 +1349,7 @@ func (s *Server) sendMessagesAdded(ctx context.Context, w http.ResponseWriter, f
 		fmt.Fprintf(w, "event: message_added\ndata: %s\n\n", data)
 		flusher.Flush()
 	}
-	return seen
+	return cur
 }
 
 // latestConversationTaskEvent finds conversationID's most-recently-
@@ -1293,7 +1357,13 @@ func (s *Server) sendMessagesAdded(ctx context.Context, w http.ResponseWriter, f
 // scoped to one conversation) and reports it as a taskUpdateEvent. nil,
 // nil means no task exists yet for this conversation.
 func (s *Server) latestConversationTaskEvent(ctx context.Context, conversationID string) (*taskUpdateEvent, error) {
-	tasks, err := s.tasks.ListTasks(ctx)
+	var tasks []*registry.Task
+	var err error
+	if s.streamQ != nil {
+		tasks, err = s.streamQ.ListTasksByConversation(ctx, conversationID)
+	} else {
+		tasks, err = s.tasks.ListTasks(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1368,6 +1438,34 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, versionResponse{ServerVersion: version.Version, APIVersion: APIVersion})
 }
 
+// handleNoRoute answers an /api/v1 request no route matches with the
+// usual {error, code} body instead of ServeMux's plain text (LOOM-161).
+// h is ServeMux's own answer: it tells a path no route has (404) from a
+// method the path's routes don't take (405, with its Allow header).
+func (s *Server) handleNoRoute(w http.ResponseWriter, r *http.Request, h http.Handler) {
+	rec := &noRouteRecorder{header: http.Header{}, status: http.StatusOK}
+	h.ServeHTTP(rec, r)
+	if rec.status == http.StatusMethodNotAllowed {
+		if allow := rec.header.Values("Allow"); len(allow) > 0 {
+			w.Header()["Allow"] = allow
+		}
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeError(w, http.StatusNotFound, "no such API endpoint")
+}
+
+// noRouteRecorder keeps the status and headers ServeMux's 404/405
+// handler writes, and drops its plain-text body.
+type noRouteRecorder struct {
+	header http.Header
+	status int
+}
+
+func (r *noRouteRecorder) Header() http.Header         { return r.header }
+func (r *noRouteRecorder) WriteHeader(status int)      { r.status = status }
+func (r *noRouteRecorder) Write(b []byte) (int, error) { return len(b), nil }
+
 type unsupportedVersionResponse struct {
 	errorResponse
 	SupportedVersions []string `json:"supported_versions"`
@@ -1424,19 +1522,33 @@ func newStaticHandler(dir func() string) http.HandlerFunc {
 		w.Header().Set("Content-Security-Policy", appCSP(inlineScriptHashes(html)))
 		http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(html))
 	}
+	// serveFallback answers a path that isn't a file. Only a client-side
+	// route gets the SPA shell (LOOM-158): a missing asset — anything
+	// under /assets/, or any path whose last segment has an extension,
+	// like a chunk from the bundle before a web update — is a 404, so
+	// the browser sees a failed load it can retry rather than HTML
+	// served as JavaScript.
+	serveFallback := func(w http.ResponseWriter, r *http.Request, root http.Dir) {
+		if r.URL.Path != "/index.html" &&
+			(strings.HasPrefix(r.URL.Path, "/assets/") || path.Ext(r.URL.Path) != "") {
+			http.NotFound(w, r)
+			return
+		}
+		serveIndex(w, r, root)
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", appCSP(nil))
 		// Read per request: a web update (LOOM-118) swaps the directory.
 		root := http.Dir(dir())
 		f, err := root.Open(r.URL.Path)
 		if err != nil {
-			serveIndex(w, r, root)
+			serveFallback(w, r, root)
 			return
 		}
 		info, statErr := f.Stat()
 		f.Close()
 		if statErr != nil || info.IsDir() || r.URL.Path == "/index.html" {
-			serveIndex(w, r, root)
+			serveFallback(w, r, root)
 			return
 		}
 		// Vite names every built asset by its content hash, so one never
@@ -1472,7 +1584,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		if time.Since(sess.LastUsedAt) > s.sessionTTL {
+		if s.sessionExpired(sess, time.Now()) {
 			_ = s.sessions.DeleteSession(r.Context(), sess.ID) // opportunistic cleanup
 			writeError(w, http.StatusUnauthorized, "invalid or expired session")
 			return
@@ -1495,14 +1607,12 @@ func sessionFromContext(ctx context.Context) *registry.Session {
 	return sess
 }
 
+// bearerToken reads the Authorization header's Bearer token. The scheme
+// is case-insensitive (RFC 9110 §11.1, LOOM-175): "bearer x" is the same
+// header as "Bearer x".
 func bearerToken(r *http.Request) (string, bool) {
-	const prefix = "Bearer "
-	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, prefix) {
-		return "", false
-	}
-	token := strings.TrimPrefix(h, prefix)
-	if token == "" {
+	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
 		return "", false
 	}
 	return token, true
@@ -1671,6 +1781,11 @@ func apiSSHProxy(p string) string {
 
 type listTargetsResponse struct {
 	Targets []targetResponse `json:"targets"`
+	// LocalTargets says whether this server allows targets of kind
+	// "local" (LOOM-183): with LOOMUX_LOCAL_TARGETS=off (LOOM-141)
+	// registering one is a 400, and a client offering the choice needs to
+	// know before it asks.
+	LocalTargets bool `json:"local_targets"`
 }
 
 // decodeTargetRequest reads a create/update body into a registry.Target
@@ -1813,7 +1928,7 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read target health")
 		return
 	}
-	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out})
+	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out, LocalTargets: s.localTargets})
 }
 
 // handleUpdateTarget replaces a target's mutable fields wholesale. It is
@@ -2094,6 +2209,8 @@ func errorCodeFor(status int) string {
 		return "forbidden"
 	case http.StatusNotFound:
 		return "not_found"
+	case http.StatusMethodNotAllowed:
+		return "method_not_allowed"
 	case http.StatusConflict:
 		return "conflict"
 	case http.StatusRequestEntityTooLarge:
