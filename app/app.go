@@ -474,7 +474,11 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// Health probes bypass the metrics-wrapped executor so periodic
 	// liveness checks don't pollute the target operation latency/error
 	// counters (LOOM-105).
-	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr)
+	var healthOpts []health.Option
+	if cfg.Logger != nil {
+		healthOpts = append(healthOpts, health.WithLogger(cfg.Logger))
+	}
+	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr, healthOpts...)
 
 	rtr := router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...)
 	// The target health probe (LOOM-86) and the late-output relay
