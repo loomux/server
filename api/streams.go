@@ -52,6 +52,24 @@ func (s *sessionStreams) end(sessionID string) {
 	}
 }
 
+// endAll cancels every open stream, of every session.
+func (s *sessionStreams) endAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, set := range s.streams {
+		for cancel := range set {
+			(*cancel)()
+		}
+	}
+}
+
+// EndStreams ends every open conversation stream (LOOM-147). A stream
+// never goes idle on its own, so an http.Server shutdown would otherwise
+// wait out its whole deadline for them: register this with
+// http.Server.RegisterOnShutdown. Clients see the stream end and
+// reconnect to whichever server is up next.
+func (s *Server) EndStreams() { s.streams.endAll() }
+
 // sessionStillValid re-checks a stream's session, for the case end can't
 // see: a session that expired, or was deleted other than through this
 // API, while its stream stayed open.
