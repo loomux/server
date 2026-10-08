@@ -189,14 +189,14 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The wait ends with its session (LOOM-182), as a stream does
-	// (LOOM-144): a turn that finishes after logout or a revoke must not
-	// hand its reply to the token that was revoked. The session is checked
-	// again once the wait is registered, for a revoke that landed between
-	// requireAuth and here.
+	// (LOOM-144), through the same mechanism: a turn that finishes after
+	// logout or a revoke must not hand its reply to the token that was
+	// revoked. The session is checked again once the wait is registered,
+	// for a revoke that landed between requireAuth and here.
 	sess := sessionFromContext(r.Context())
 	waitCtx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	defer s.streams.add(sess.ID, cancel)()
+	defer s.waits.add(sess.ID, cancel)()
 	if !s.sessionStillValid(waitCtx, sess) {
 		cancel()
 	}

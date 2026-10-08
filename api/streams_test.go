@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Loomux/server/api"
+	"github.com/Loomux/server/dispatch"
+	"github.com/Loomux/server/registry"
 )
 
 // watchEnd reads the stream r to its end in the background; the
@@ -89,6 +92,40 @@ func TestStream_EndsWhenSessionExpires(t *testing.T) {
 	}
 	if !endsWithin(ended, 5*time.Second) {
 		t.Fatal("the expired session's stream stayed open")
+	}
+}
+
+// LOOM-147: EndStreams ends every open stream, so a server shutdown
+// needn't wait out its grace period for them.
+func TestStream_EndStreamsEndsThemAll(t *testing.T) {
+	store := newTestStore(t)
+	jobs := dispatch.New(store, func(context.Context, *registry.Dispatch) (string, error) { return "", nil })
+	server := api.NewServer(jobs, store, store, store, store, store, store, []byte(testPasswordHash(t)))
+	hs := httptest.NewServer(server)
+	t.Cleanup(hs.Close)
+	a, _ := login(t, hs.URL, testPassword)
+	b, _ := login(t, hs.URL, testPassword)
+	endedA := watchEnd(openStream(t, hs.URL, a, "c-1"))
+	endedB := watchEnd(openStream(t, hs.URL, b, "c-2"))
+	time.Sleep(50 * time.Millisecond)
+	server.EndStreams()
+	if !endsWithin(endedA, 5*time.Second) || !endsWithin(endedB, 5*time.Second) {
+		t.Fatal("a stream stayed open after EndStreams")
+	}
+}
+
+// A stream that connects after EndStreams (it was still being
+// authenticated as shutdown began) ends at once too.
+func TestStream_ConnectingAfterEndStreamsEndsAtOnce(t *testing.T) {
+	store := newTestStore(t)
+	jobs := dispatch.New(store, func(context.Context, *registry.Dispatch) (string, error) { return "", nil })
+	server := api.NewServer(jobs, store, store, store, store, store, store, []byte(testPasswordHash(t)))
+	hs := httptest.NewServer(server)
+	t.Cleanup(hs.Close)
+	token, _ := login(t, hs.URL, testPassword)
+	server.EndStreams()
+	if !endsWithin(watchEnd(openStream(t, hs.URL, token, "c-late")), 5*time.Second) {
+		t.Fatal("a stream opened after EndStreams stayed open")
 	}
 }
 
@@ -194,5 +231,36 @@ func TestBlockingDispatch_OtherSessionsRevokeDoesNotEndIt(t *testing.T) {
 	got := <-result
 	if got.err != nil || got.status != http.StatusOK || !strings.Contains(got.body, "the reply") {
 		t.Fatalf("dispatch = %d %s %v, want 200 with the reply", got.status, got.body, got.err)
+	}
+}
+
+// LOOM-182 with LOOM-147: shutdown's EndStreams ends streams, not
+// blocking dispatch waits; those are left to the HTTP drain as before,
+// and get their reply.
+func TestBlockingDispatch_NotEndedByEndStreams(t *testing.T) {
+	store := newTestStore(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	jobs := dispatch.New(store, func(context.Context, *registry.Dispatch) (string, error) {
+		close(started)
+		<-release
+		return "the reply", nil
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = jobs.Shutdown(ctx)
+	})
+	server := api.NewServer(jobs, store, store, store, store, store, store, []byte(testPasswordHash(t)))
+	hs := httptest.NewServer(server)
+	t.Cleanup(hs.Close)
+	token, _ := login(t, hs.URL, testPassword)
+	result := postDispatchAsync(t, hs.URL, token)
+	<-started
+
+	server.EndStreams()
+	close(release)
+	got := <-result
+	if got.err != nil || got.status != http.StatusOK || !strings.Contains(got.body, "the reply") {
+		t.Fatalf("dispatch after EndStreams = %d %s %v, want 200 with the reply", got.status, got.body, got.err)
 	}
 }
