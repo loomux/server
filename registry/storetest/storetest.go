@@ -73,6 +73,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("ConversationActivityEmpty", func(t *testing.T) { testConversationActivityEmpty(t, newStore(t)) })
 
 	t.Run("Dispatch", func(t *testing.T) { testDispatchCRUD(t, newStore(t)) })
+	t.Run("StreamCursors", func(t *testing.T) { testStreamCursors(t, newStore(t)) })
 	t.Run("DispatchWithUserMessage", func(t *testing.T) { testDispatchWithUserMessage(t, newStore(t)) })
 	t.Run("Confirmations", func(t *testing.T) { testConfirmations(t, newStore(t)) })
 	t.Run("DispatchEvents", func(t *testing.T) { testDispatchEvents(t, newStore(t)) })
@@ -2024,4 +2025,94 @@ func testSSHKeyInUse(t *testing.T, s registry.Store) {
 	if err := s.DeleteSSHKey(ctx, "key-1"); err != nil {
 		t.Errorf("DeleteSSHKey once unused: %v", err)
 	}
+}
+
+// testStreamCursors covers the queries a conversation's event stream
+// polls (LOOM-145): tasks by conversation, and messages and dispatches
+// after a cursor.
+func testStreamCursors(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	target := createTestTarget(t, s)
+	ws := &registry.Workspace{ID: "ws-sc", Name: "ws-sc", Path: "/sc", TargetID: target.ID, Status: registry.WorkspaceStatusIdle}
+	if err := s.CreateWorkspace(ctx, ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	for _, tk := range []struct{ id, conv string }{{"t-1", "c-a"}, {"t-2", "c-b"}, {"t-3", "c-a"}} {
+		if err := s.CreateTask(ctx, &registry.Task{ID: tk.id, WorkspaceID: ws.ID, Kind: registry.TaskKindShell,
+			TmuxSession: "s-" + tk.id, Status: registry.TaskStatusRunning, ConversationID: tk.conv}); err != nil {
+			t.Fatalf("CreateTask(%s): %v", tk.id, err)
+		}
+	}
+	tasks, err := s.ListTasksByConversation(ctx, "c-a")
+	if err != nil || len(tasks) != 2 || tasks[0].ID != "t-1" || tasks[1].ID != "t-3" {
+		t.Fatalf("ListTasksByConversation(c-a) = %v, %v; want t-1, t-3", taskIDs(tasks), err)
+	}
+	if none, err := s.ListTasksByConversation(ctx, "c-none"); err != nil || len(none) != 0 {
+		t.Fatalf("ListTasksByConversation(unknown) = %v, %v; want empty", none, err)
+	}
+
+	for _, id := range []string{"m-1", "m-2", "m-3"} {
+		if err := s.CreateMessage(ctx, &registry.Message{ID: id, ConversationID: "c-a", Role: registry.MessageRoleAssistant, Content: id}); err != nil {
+			t.Fatalf("CreateMessage(%s): %v", id, err)
+		}
+	}
+	if err := s.CreateMessage(ctx, &registry.Message{ID: "m-other", ConversationID: "c-b", Role: registry.MessageRoleAssistant, Content: "x"}); err != nil {
+		t.Fatalf("CreateMessage(m-other): %v", err)
+	}
+	for _, tc := range []struct {
+		after string
+		want  []string
+	}{{"", []string{"m-1", "m-2", "m-3"}}, {"m-1", []string{"m-2", "m-3"}}, {"m-3", nil}, {"gone", []string{"m-1", "m-2", "m-3"}}, {"m-other", []string{"m-1", "m-2", "m-3"}}} {
+		got, err := s.ListMessagesAfter(ctx, "c-a", tc.after)
+		if err != nil {
+			t.Fatalf("ListMessagesAfter(%q): %v", tc.after, err)
+		}
+		var ids []string
+		for _, m := range got {
+			ids = append(ids, m.ID)
+		}
+		if strings.Join(ids, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("ListMessagesAfter(%q) = %v, want %v", tc.after, ids, tc.want)
+		}
+	}
+
+	// One active dispatch per conversation: finish each before the next.
+	for _, id := range []string{"d-1", "d-2"} {
+		d := newTestDispatch(id, "c-a")
+		if err := s.CreateDispatch(ctx, d, nil); err != nil {
+			t.Fatalf("CreateDispatch(%s): %v", id, err)
+		}
+		d.Status = registry.DispatchStatusSucceeded
+		if err := s.TransitionDispatch(ctx, d, registry.DispatchStatusQueued); err != nil {
+			t.Fatalf("TransitionDispatch(%s): %v", id, err)
+		}
+	}
+	if err := s.CreateDispatch(ctx, newTestDispatch("d-3", "c-a"), nil); err != nil {
+		t.Fatalf("CreateDispatch(d-3): %v", err)
+	}
+	for _, tc := range []struct {
+		after string
+		also  []string
+		want  []string
+	}{{"", nil, []string{"d-1", "d-2", "d-3"}}, {"d-2", nil, []string{"d-3"}}, {"d-3", []string{"d-1"}, []string{"d-1"}}, {"gone", nil, []string{"d-1", "d-2", "d-3"}}} {
+		got, err := s.ListDispatchesAfter(ctx, "c-a", tc.after, tc.also)
+		if err != nil {
+			t.Fatalf("ListDispatchesAfter(%q, %v): %v", tc.after, tc.also, err)
+		}
+		var ids []string
+		for _, d := range got {
+			ids = append(ids, d.ID)
+		}
+		if strings.Join(ids, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("ListDispatchesAfter(%q, %v) = %v, want %v", tc.after, tc.also, ids, tc.want)
+		}
+	}
+}
+
+func taskIDs(tasks []*registry.Task) []string {
+	var ids []string
+	for _, t := range tasks {
+		ids = append(ids, t.ID)
+	}
+	return ids
 }

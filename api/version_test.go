@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Loomux/server/api"
@@ -87,5 +88,37 @@ func TestWrongMethod_OnKnownPath_Returns405NotTheCatchAll(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusMethodNotAllowed)
+	}
+	// LOOM-161: {error, code} like every other API error, with Allow.
+	var out struct{ Error, Code string }
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v (body isn't JSON)", err)
+	}
+	if out.Code != "method_not_allowed" || out.Error == "" {
+		t.Errorf("body = %+v, want {error, code: method_not_allowed}", out)
+	}
+	if allow := resp.Header.Get("Allow"); !strings.Contains(allow, "POST") {
+		t.Errorf("Allow = %q, want it to list POST", allow)
+	}
+}
+
+// An /api/v1 path no route has is a 404 {error, code: not_found}
+// (LOOM-161), not ServeMux's plain text.
+func TestUnknownV1Path_JSONNotFound(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	for _, p := range []string{"/api/v1/nonexistent", "/api/v1/", "/api/v1/workspaces/x/y/z"} {
+		resp, err := http.Get(srv.URL + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out struct{ Error, Code string }
+		err = json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound || err != nil || out.Code != "not_found" {
+			t.Errorf("GET %s = %d %+v (decode: %v), want 404 not_found", p, resp.StatusCode, out, err)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("GET %s Content-Type = %q, want application/json", p, ct)
+		}
 	}
 }
