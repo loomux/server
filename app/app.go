@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -55,6 +56,7 @@ type App struct {
 	healthChecker    *health.Checker
 	dispatches       *dispatch.Service
 	dispatchDrain    time.Duration
+	sshAgents        *targets.AgentPool
 }
 
 // Dispatches is the dispatch-job service (LOOM-80) the client API
@@ -218,7 +220,17 @@ func (a *App) Close() error {
 		<-a.proberDone
 		<-a.sweepDone
 	}
+	if a.sshAgents != nil {
+		targets.ResetManagedSSH(a.sshAgents)
+		a.sshAgents.Close()
+	}
 	return a.store.Close()
+}
+
+// DropSSHKey stops serving a managed SSH key (LOOM-138): the key was
+// deleted.
+func (a *App) DropSSHKey(id string) {
+	a.sshAgents.Drop(id)
 }
 
 // DefaultAgentTypes is the production registered-agent-type set:
@@ -404,6 +416,23 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// data volume; the database is their source, so the files are
 	// rewritten from it as needed.
 	targets.SetKnownHostsDir(filepath.Join(filepath.Dir(cfg.DBPath), "known_hosts.d"))
+	// Managed targets (LOOM-138): keys decrypted only into in-process
+	// agents, whose sockets (like the ControlMaster ones) live under
+	// TMPDIR, never on the data volume.
+	sshAgents := targets.NewAgentPool(filepath.Join(os.TempDir(), "loomux", "agents"))
+	relay, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("app: find loomuxd's own path for the SSH proxy relay: %w", err)
+	}
+	if err := targets.SetManagedSSH(&targets.ManagedSSH{
+		Keys:    store.GetSSHKey,
+		Agents:  sshAgents,
+		KeysDir: filepath.Join(os.TempDir(), "loomux", "keys"),
+		Proxy:   cfg.SSHProxy,
+		Relay:   relay,
+	}); err != nil {
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	markerDir := cfg.MarkerDir
 	newExecutor := func(t *registry.Target) (targets.TargetExecutor, error) {
 		return targets.NewExecutorWithMetrics(t, met)
@@ -572,5 +601,6 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		sweepDone:        sweepDone,
 		metrics:          met,
 		healthChecker:    healthChecker,
+		sshAgents:        sshAgents,
 	}, nil
 }

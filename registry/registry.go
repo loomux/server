@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"path"
 	"regexp"
 	"strings"
@@ -51,9 +52,45 @@ type Target struct {
 	// the API (LOOM-114), or empty. A pinned target is checked against
 	// these alone; others against the mounted known_hosts. Written only
 	// through SetTargetHostKeys, never by UpdateTarget.
-	HostKeys  string
+	HostKeys string
+	// SSHProxy is, for a managed target, whether its connections go
+	// through the server's LOOMUX_SSH_PROXY ("", the default) or straight
+	// to the host (SSHProxyNone). A config-mode target's proxy is the SSH
+	// config's, so it must be "".
+	SSHProxy  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// SSHProxyNone is Target.SSHProxy for a managed target reached without
+// the server's proxy.
+const SSHProxyNone = "none"
+
+// Managed reports whether t is reached with a Loomux-managed SSH key and
+// no ssh_config at all (LOOM-138), rather than through the deployment's
+// mounted SSH config.
+func (t *Target) Managed() bool { return t.SSHKeyRef != "" }
+
+// managedHostLabel is one label of a managed target's host name.
+var managedHostLabel = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
+// validManagedHost reports whether host is an RFC 1123 host name or an
+// IP address. A managed target's host is the real one (no ssh_config
+// alias resolves it) and ssh expands it into the proxy command, so
+// nothing else — no %, quote, shell metacharacter or space — may be in it.
+func validManagedHost(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if !managedHostLabel.MatchString(label) {
+			return false
+		}
+	}
+	return true
 }
 
 // TargetPolicy is what Loomux may do on a target (LOOM-89), enforced by
@@ -175,6 +212,22 @@ func (t *Target) Validate() error {
 		}
 	default:
 		return fmt.Errorf("kind must be %q or %q", TargetKindLocal, TargetKindRemote)
+	}
+	if t.Managed() {
+		if t.Kind != TargetKindRemote {
+			return errors.New("only a remote target can have an SSH key")
+		}
+		if !validManagedHost(t.Host) {
+			return errors.New("host must be a host name (letters, digits and -, dot-separated) or an IP address for a target with a Loomux SSH key")
+		}
+	}
+	switch {
+	case t.SSHProxy == "":
+	case t.SSHProxy == SSHProxyNone && t.Managed():
+	case t.SSHProxy == SSHProxyNone:
+		return errors.New("ssh_proxy applies only to a target with a Loomux SSH key; others use the SSH config's")
+	default:
+		return fmt.Errorf("ssh_proxy must be %q or %q", "default", SSHProxyNone)
 	}
 	if t.SSHPort < 0 || t.SSHPort > 65535 {
 		return errors.New("ssh_port must be 0 (the SSH config's) or a port number")

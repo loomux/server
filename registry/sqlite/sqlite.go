@@ -111,12 +111,12 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
 			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys,
-			created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ssh_proxy, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
 		t.SSHPort, t.HostKeys,
-		t.CreatedAt, t.UpdatedAt,
+		t.SSHProxy, t.CreatedAt, t.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -176,11 +176,11 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
 			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, relay = ?,
-			ssh_port = ?, updated_at = ?
+			ssh_port = ?, ssh_proxy = ?, updated_at = ?
 		WHERE id = ?`,
 		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay, t.SSHPort,
-		t.UpdatedAt, t.ID,
+		t.SSHProxy, t.UpdatedAt, t.ID,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -1080,7 +1080,7 @@ type rowScanner interface {
 
 // targetColumns is what scanTarget reads, in order.
 const targetColumns = `id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
-	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys, created_at,
+	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys, ssh_proxy, created_at,
 	updated_at`
 
 func scanTarget(row rowScanner) (*registry.Target, error) {
@@ -1088,7 +1088,7 @@ func scanTarget(row rowScanner) (*registry.Target, error) {
 	var kind, allowed string
 	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode,
 		&t.Policy.Purpose, &allowed, &t.Policy.NoProvision, &t.Policy.NoShell, &t.Policy.RequireConfirmation,
-		&t.Policy.Relay, &t.SSHPort, &t.HostKeys, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.Policy.Relay, &t.SSHPort, &t.HostKeys, &t.SSHProxy, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.Kind = registry.TargetKind(kind)

@@ -183,10 +183,12 @@ func (r *Router) probeHealth(ctx context.Context, target *registry.Target) (*reg
 // probeFailureReason is why a health probe couldn't run, in plain words.
 func probeFailureReason(err error) string {
 	if u, ok := targets.AsUnreachable(err); ok {
+		// The class goes last, in the form UnreachableError.Error gives it:
+		// clients classify a target's health by it (LOOM-138).
 		if u.Failure == targets.SSHOther && u.Detail != "" {
-			return "unreachable: " + u.Hint() + ": " + u.Detail
+			return "unreachable: " + u.Hint() + ": " + u.Detail + " (" + string(u.Failure) + ")"
 		}
-		return "unreachable: " + u.Hint()
+		return "unreachable: " + u.Hint() + " (" + string(u.Failure) + ")"
 	}
 	if errors.Is(err, targets.ErrUnreachable) {
 		reason := strings.TrimPrefix(err.Error(), targets.ErrUnreachable.Error())

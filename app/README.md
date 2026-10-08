@@ -23,7 +23,9 @@ message directly, bypassing HTTP/auth entirely, for local debugging).
   (optional, defaults to `loomux.db`), `LOOMUX_MARKER_DIR` (optional),
   `LOOMUX_MASTER_KEY` (optional — the credential vault's AES-256 key;
   unset means credential operations fail per `registry/sqlite`'s own
-  fail-fast behavior, not a startup requirement here), the router
+  fail-fast behavior, not a startup requirement here),
+  `LOOMUX_SSH_PROXY` (optional, `socks5://host:port`: managed targets'
+  proxy, LOOM-138; anything else is a startup error), the router
   model's own config via `router/llmrouter.ConfigFromEnv()`, and the
   idle reaper's timing (`LOOMUX_REAP_IDLE_THRESHOLD` default 24h,
   `LOOMUX_REAP_INTERVAL` default 1h — design spec's continuation model,
