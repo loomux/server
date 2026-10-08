@@ -87,7 +87,8 @@ func pinnedKnownHosts(t *registry.Target) (string, error) {
 }
 
 // remoteOptions are t's per-target SSH overrides (LOOM-114): its port,
-// and its pinned host keys checked strictly and alone.
+// and its pinned host keys checked strictly and alone; for a managed
+// target (LOOM-138), everything else ssh needs too.
 func remoteOptions(t *registry.Target) ([]RemoteOption, error) {
 	var opts []RemoteOption
 	if t.SSHPort != 0 {
@@ -100,6 +101,13 @@ func remoteOptions(t *registry.Target) ([]RemoteOption, error) {
 		}
 		opts = append(opts, WithExtraSSHArgs("-o", "UserKnownHostsFile="+path,
 			"-o", "GlobalKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=yes"))
+	}
+	if t.Managed() {
+		more, err := managedOptions(t)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, more...)
 	}
 	return opts, nil
 }
@@ -125,18 +133,29 @@ func ScanHostKey(ctx context.Context, t *registry.Target) ([]HostKey, error) {
 	}
 	defer os.RemoveAll(dir)
 	file := filepath.Join(dir, "known_hosts")
-	args := []string{
+	var args []string
+	if t.Managed() {
+		// Reached the way a managed target is: no ssh_config, the
+		// server's proxy (LOOM-138).
+		m := currentManaged()
+		if m == nil {
+			return nil, errors.New("targets: this target uses a Loomux SSH key, but managed SSH is not configured on this server")
+		}
+		args = append(args, "-F", "/dev/null")
+		args = append(args, managedProxyArgs(m, t)...)
+	}
+	args = append(args,
 		"-o", "BatchMode=yes",
 		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=" + defaultConnectTimeout,
+		"-o", "ConnectTimeout="+defaultConnectTimeout,
 		"-o", "ControlMaster=no",
 		"-o", "ControlPath=none",
 		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=" + file,
+		"-o", "UserKnownHostsFile="+file,
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "HashKnownHosts=no",
 		"-o", "PreferredAuthentications=none",
-	}
+	)
 	if t.SSHPort != 0 {
 		args = append(args, "-p", strconv.Itoa(t.SSHPort))
 	}
@@ -163,7 +182,7 @@ func ScanHostKey(ctx context.Context, t *registry.Target) ([]HostKey, error) {
 		if detail == "" {
 			detail = "no host key was received"
 		}
-		return nil, &UnreachableError{Host: t.Host, Failure: failure, Detail: detail}
+		return nil, &UnreachableError{Host: t.Host, Failure: failure, Detail: detail, Managed: t.Managed()}
 	}
 	return keys, nil
 }

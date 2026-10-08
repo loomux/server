@@ -111,12 +111,12 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
 			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys,
-			created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ssh_proxy, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
 		t.SSHPort, t.HostKeys,
-		t.CreatedAt, t.UpdatedAt,
+		t.SSHProxy, t.CreatedAt, t.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -176,11 +176,11 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
 			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, relay = ?,
-			ssh_port = ?, updated_at = ?
+			ssh_port = ?, ssh_proxy = ?, updated_at = ?
 		WHERE id = ?`,
 		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay, t.SSHPort,
-		t.UpdatedAt, t.ID,
+		t.SSHProxy, t.UpdatedAt, t.ID,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -701,6 +701,27 @@ func (s *Store) DeleteTaskTurnsBefore(ctx context.Context, cutoff time.Time) (in
 	return int(n), nil
 }
 
+func (s *Store) ListTasksByConversation(ctx context.Context, conversationID string) ([]*registry.Task, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE conversation_id = ? ORDER BY created_at, rowid`, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list tasks by conversation: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*registry.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list tasks by conversation: %w", err)
+		}
+		out = append(out, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list tasks by conversation: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Store) ListTasks(ctx context.Context) ([]*registry.Task, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks ORDER BY created_at`)
 	if err != nil {
@@ -776,6 +797,34 @@ func (s *Store) CreateMessage(ctx context.Context, m *registry.Message) error {
 }
 
 const messageColumns = `id, conversation_id, task_id, dispatch_id, origin, origin_target_id, role, content, created_at`
+
+// ListMessagesAfter uses the rowid as the cursor: messages are
+// append-only, so a later insert always has a larger rowid, and an
+// afterID that's gone counts as none (everything is returned).
+func (s *Store) ListMessagesAfter(ctx context.Context, conversationID, afterID string) ([]*registry.Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+messageColumns+` FROM messages
+		WHERE conversation_id = ?
+		  AND rowid > COALESCE((SELECT rowid FROM messages WHERE id = ? AND conversation_id = ?), 0)
+		ORDER BY rowid`, conversationID, afterID, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list messages after: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*registry.Message, 0)
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list messages after: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list messages after: %w", err)
+	}
+	return out, nil
+}
 
 // ListMessagesByConversation orders by created_at then the table's
 // implicit rowid — the rowid tiebreak guarantees insertion order even
@@ -1080,7 +1129,7 @@ type rowScanner interface {
 
 // targetColumns is what scanTarget reads, in order.
 const targetColumns = `id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
-	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys, created_at,
+	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys, ssh_proxy, created_at,
 	updated_at`
 
 func scanTarget(row rowScanner) (*registry.Target, error) {
@@ -1088,7 +1137,7 @@ func scanTarget(row rowScanner) (*registry.Target, error) {
 	var kind, allowed string
 	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode,
 		&t.Policy.Purpose, &allowed, &t.Policy.NoProvision, &t.Policy.NoShell, &t.Policy.RequireConfirmation,
-		&t.Policy.Relay, &t.SSHPort, &t.HostKeys, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.Policy.Relay, &t.SSHPort, &t.HostKeys, &t.SSHProxy, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.Kind = registry.TargetKind(kind)

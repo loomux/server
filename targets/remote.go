@@ -3,6 +3,8 @@ package targets
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -60,6 +62,13 @@ type RemoteExecutor struct {
 	extraArgs      []string
 	opTimeout      time.Duration
 	runOnceTimeout time.Duration
+
+	// sshConfig, when set, is the config file ssh reads instead of the
+	// user's: /dev/null for a managed target (LOOM-138).
+	sshConfig string
+	// controlTag tells this way of reaching user@host:port apart from
+	// others in the ControlMaster path (LOOM-138).
+	controlTag string
 }
 
 // RemoteOption configures a RemoteExecutor. Production's NewExecutor
@@ -109,13 +118,19 @@ func NewRemoteExecutor(host, user string, opts ...RemoteOption) *RemoteExecutor 
 	for _, opt := range opts {
 		opt(e)
 	}
-	e.controlPath = controlPathFor(host, user, e.port)
+	e.controlPath = controlPathFor(host, user, e.port, e.controlTag)
 	return e
 }
 
-func controlPathFor(host, user string, port int) string {
+func controlPathFor(host, user string, port int, tag string) string {
 	dir := filepath.Join(os.TempDir(), "loomux", "ssh-cm")
 	name := fmt.Sprintf("cm-%s-%s-%d.sock", sanitizeForFilename(user), sanitizeForFilename(host), port)
+	if tag != "" {
+		// A managed target (LOOM-138): a digest, so a long host name
+		// can't push the path past what a unix socket allows.
+		sum := sha256.Sum256([]byte(user + "@" + host + ":" + strconv.Itoa(port) + "/" + tag))
+		name = "cm-m-" + hex.EncodeToString(sum[:12]) + ".sock"
+	}
 	return filepath.Join(dir, name)
 }
 
@@ -136,18 +151,18 @@ func (e *RemoteExecutor) destination() string {
 // error-handling principle — "never a silent hang"), plus the
 // multiplexing this ticket requires.
 func (e *RemoteExecutor) baseArgs() []string {
-	args := []string{
+	args := append(e.configArgs(),
 		"-o", "BatchMode=yes",
 		// ssh's own warnings (a new known host, sc1's post-quantum key
 		// exchange notice) would otherwise land in RunOnce's output.
 		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=" + e.connectTimeout,
-		"-o", "ServerAliveInterval=" + serverAliveInterval,
-		"-o", "ServerAliveCountMax=" + serverAliveCountMax,
+		"-o", "ConnectTimeout="+e.connectTimeout,
+		"-o", "ServerAliveInterval="+serverAliveInterval,
+		"-o", "ServerAliveCountMax="+serverAliveCountMax,
 		"-o", "ControlMaster=auto",
-		"-o", "ControlPersist=" + e.controlPersist,
-		"-o", "ControlPath=" + e.controlPath,
-	}
+		"-o", "ControlPersist="+e.controlPersist,
+		"-o", "ControlPath="+e.controlPath,
+	)
 	if e.port != 0 {
 		args = append(args, "-p", strconv.Itoa(e.port))
 	}
@@ -156,6 +171,15 @@ func (e *RemoteExecutor) baseArgs() []string {
 	}
 	args = append(args, e.extraArgs...)
 	return args
+}
+
+// configArgs selects the ssh config file, if this executor has one of
+// its own; first on every command line.
+func (e *RemoteExecutor) configArgs() []string {
+	if e.sshConfig == "" {
+		return nil
+	}
+	return []string{"-F", e.sshConfig}
 }
 
 // sshExec runs a raw (already POSIX-shell-quoted) remote command string over
@@ -216,7 +240,7 @@ func (e *RemoteExecutor) sshExecWithin(ctx context.Context, timeout time.Duratio
 		return stdout, stderr, 0, nil
 	}
 	if ctx.Err() == nil && errors.Is(opCtx.Err(), context.DeadlineExceeded) {
-		return stdout, stderr, -1, &UnreachableError{Host: e.host, Failure: SSHTimeout, Detail: fmt.Sprintf("no answer within %s", timeout)}
+		return stdout, stderr, -1, &UnreachableError{Host: e.host, Failure: SSHTimeout, Detail: fmt.Sprintf("no answer within %s", timeout), Managed: e.sshConfig != ""}
 	}
 	if exitErr, ok := runErr.(*exec.ExitError); ok {
 		if exitErr.ExitCode() == 255 {
@@ -224,7 +248,7 @@ func (e *RemoteExecutor) sshExecWithin(ctx context.Context, timeout time.Duratio
 			if detail == "" {
 				detail = runErr.Error()
 			}
-			return stdout, stderr, 255, &UnreachableError{Host: e.host, Failure: failure, Detail: detail}
+			return stdout, stderr, 255, &UnreachableError{Host: e.host, Failure: failure, Detail: detail, Managed: e.sshConfig != ""}
 		}
 		return stdout, stderr, exitErr.ExitCode(), nil
 	}
@@ -379,10 +403,10 @@ func (e *RemoteExecutor) RunOnce(ctx context.Context, command string) (string, e
 // running for this executor's ControlPath — proof that multiplexing is
 // actually in effect rather than each call paying a fresh handshake.
 func (e *RemoteExecutor) ControlMasterAlive(ctx context.Context) (bool, error) {
-	args := []string{
+	args := append(e.configArgs(),
 		"-O", "check",
-		"-o", "ControlPath=" + e.controlPath,
-	}
+		"-o", "ControlPath="+e.controlPath,
+	)
 	if e.port != 0 {
 		args = append(args, "-p", strconv.Itoa(e.port))
 	}
@@ -405,10 +429,10 @@ func (e *RemoteExecutor) ControlMasterAlive(ctx context.Context) (bool, error) {
 // Close proactively tears down the SSH ControlMaster rather than relying
 // solely on ControlPersist's idle timeout.
 func (e *RemoteExecutor) Close() error {
-	args := []string{
+	args := append(e.configArgs(),
 		"-O", "exit",
-		"-o", "ControlPath=" + e.controlPath,
-	}
+		"-o", "ControlPath="+e.controlPath,
+	)
 	if e.port != 0 {
 		args = append(args, "-p", strconv.Itoa(e.port))
 	}

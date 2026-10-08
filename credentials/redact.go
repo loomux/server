@@ -3,6 +3,7 @@ package credentials
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/Loomux/server/registry"
@@ -13,12 +14,25 @@ import (
 const minRedactLen = 6
 
 // RedactValues replaces every value in secrets (of at least six bytes)
-// found in text with "[redacted]".
+// found in text with "[redacted]". The longest values go first (ties in
+// byte order, so the result never depends on map order): when one value
+// is a prefix or substring of another, replacing the short one first
+// would leave the long one's remainder in the text (LOOM-156).
 func RedactValues(text string, secrets map[string]string) string {
+	values := make([]string, 0, len(secrets))
 	for _, v := range secrets {
 		if len(v) >= minRedactLen {
-			text = strings.ReplaceAll(text, v, "[redacted]")
+			values = append(values, v)
 		}
+	}
+	sort.Slice(values, func(i, j int) bool {
+		if len(values[i]) != len(values[j]) {
+			return len(values[i]) > len(values[j])
+		}
+		return values[i] < values[j]
+	})
+	for _, v := range values {
+		text = strings.ReplaceAll(text, v, "[redacted]")
 	}
 	return text
 }

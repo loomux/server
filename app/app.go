@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -50,10 +51,12 @@ type App struct {
 	stopReaper       context.CancelFunc
 	reaperDone       chan struct{}
 	proberDone       chan struct{}
+	sweepDone        chan struct{}
 	metrics          *metrics.Metrics
 	healthChecker    *health.Checker
 	dispatches       *dispatch.Service
 	dispatchDrain    time.Duration
+	sshAgents        *targets.AgentPool
 }
 
 // Dispatches is the dispatch-job service (LOOM-80) the client API
@@ -215,8 +218,19 @@ func (a *App) Close() error {
 		a.stopReaper()
 		<-a.reaperDone
 		<-a.proberDone
+		<-a.sweepDone
+	}
+	if a.sshAgents != nil {
+		targets.ResetManagedSSH(a.sshAgents)
+		a.sshAgents.Close()
 	}
 	return a.store.Close()
+}
+
+// DropSSHKey stops serving a managed SSH key (LOOM-138): the key was
+// deleted.
+func (a *App) DropSSHKey(id string) {
+	a.sshAgents.Drop(id)
 }
 
 // DefaultAgentTypes is the production registered-agent-type set:
@@ -281,6 +295,27 @@ const (
 
 // reconcileTimeout bounds startup task reconciliation (LOOM-82).
 const reconcileTimeout = 2 * time.Minute
+
+// dispatchSweepInterval is how often dispatches left unfinished with no
+// job are swept (LOOM-146).
+const dispatchSweepInterval = time.Minute
+
+// runDispatchSweep runs dispatches.SweepOrphans every interval until ctx
+// is done.
+func runDispatchSweep(ctx context.Context, dispatches *dispatch.Service, interval time.Duration, logger *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := dispatches.SweepOrphans(ctx); err != nil && logger != nil {
+				logger.Error("dispatch sweep failed", "error", err)
+			}
+		}
+	}
+}
 
 // lateOutputInterval is how often agents waiting for input are checked
 // for output written after their turn was relayed (LOOM-121).
@@ -381,6 +416,23 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// data volume; the database is their source, so the files are
 	// rewritten from it as needed.
 	targets.SetKnownHostsDir(filepath.Join(filepath.Dir(cfg.DBPath), "known_hosts.d"))
+	// Managed targets (LOOM-138): keys decrypted only into in-process
+	// agents, whose sockets (like the ControlMaster ones) live under
+	// TMPDIR, never on the data volume.
+	sshAgents := targets.NewAgentPool(filepath.Join(os.TempDir(), "loomux", "agents"))
+	relay, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("app: find loomuxd's own path for the SSH proxy relay: %w", err)
+	}
+	if err := targets.SetManagedSSH(&targets.ManagedSSH{
+		Keys:    store.GetSSHKey,
+		Agents:  sshAgents,
+		KeysDir: filepath.Join(os.TempDir(), "loomux", "keys"),
+		Proxy:   cfg.SSHProxy,
+		Relay:   relay,
+	}); err != nil {
+		return nil, fmt.Errorf("app: %w", err)
+	}
 	markerDir := cfg.MarkerDir
 	newExecutor := func(t *registry.Target) (targets.TargetExecutor, error) {
 		return targets.NewExecutorWithMetrics(t, met)
@@ -514,6 +566,15 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	}
+	// After Recover, dispatches whose job is gone but whose row was never
+	// finished (a status write that failed even after retries) are marked
+	// interrupted, so their conversation isn't busy until a restart
+	// (LOOM-146).
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		runDispatchSweep(reaperCtx, dispatches, dispatchSweepInterval, cfg.Logger)
+	}()
 	// In the background, bounded: an unreachable target mustn't hold up
 	// startup.
 	go func() {
@@ -537,7 +598,9 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		stopReaper:       stopReaper,
 		reaperDone:       reaperDone,
 		proberDone:       proberDone,
+		sweepDone:        sweepDone,
 		metrics:          met,
 		healthChecker:    healthChecker,
+		sshAgents:        sshAgents,
 	}, nil
 }

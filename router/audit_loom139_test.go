@@ -1,28 +1,18 @@
 package router_test
 
-// LOOM-139 audit regressions. A test whose bug is still open skips naming
-// its finding; LOOMUX_AUDIT_XFAIL=1 runs it.
+// LOOM-139 audit regressions.
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/Loomux/server/router"
 )
 
-func skipUntilFixed(t *testing.T, issue string) {
-	t.Helper()
-	if os.Getenv("LOOMUX_AUDIT_XFAIL") == "" {
-		t.Skipf("known bug, see %s (LOOMUX_AUDIT_XFAIL=1 runs it)", issue)
-	}
-}
-
 // A model-chosen remote skips the clone confirmation only when the user
 // named that exact repository: a URL that merely contains it as a prefix
 // is not the user asking for that clone.
 func TestAudit_Provision_CloneConfirmationNotSkippedBySubstring(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F13")
 	const msg = "set up https://github.com/alice/tools-fork and look around"
 	store, exec, r, model := setup(t)
 	target := createFixtureTarget(t, store)
