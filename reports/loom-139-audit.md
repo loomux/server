@@ -8,7 +8,7 @@ Tracked in Vikunja Loomux #106, Plane LOOM-139.
 |---|---|
 | Server | 0.3.33, `c148af5` (`ghcr.io/loomux/server:c148af5`) |
 | Web | 0.3.11, `5983a69` |
-| Live instance | **TEST, `https://loomux-test.jellyor.net`**, 2026-10-08 08:00–08:30 UTC |
+| Live instance | the Loomux TEST instance, 2026-10-08 08:00–08:30 UTC |
 | Code | loomux/server `c148af5`, loomux/web `5983a69` |
 
 All findings apply to that version. A parallel session (LOOM-138) may deploy
@@ -30,11 +30,7 @@ to test after this; re-check live-only findings against the version then.
 - **Load or DoS testing.** Out of scope.
 - **SSH injection on a live target.** Done in Go tests only.
 
-**Two process findings for command-center:**
-1. **The LOOM-139 brief named `https://loomux.jellyor.net` as the TEST instance. That host is PROD** (it answers `0.2.0`). Test is `loomux-test.jellyor.net` (`theWyseKube-loomux/services/base/loomux/40-loomuxd.yaml`). Before I noticed, I sent four unauthenticated read-only requests to prod: `GET /api/v1/version`, `GET /api/v1/health`, `HEAD /` and one `OPTIONS /api/v1/login` (which returned 405). Nothing else touched prod.
-2. **`sc1` (the work cluster) is a registered target on the TEST instance**, with `allow_shell: true` and `allow_provision: true` (`require_confirmation: true`, relay `none`). A misrouted test message can offer to run something there, and the health prober SSHes into it on every sweep. I suggest removing it from test, or at least setting `allow_shell`/`allow_provision` to false there.
-
-**Test data left on test.** Conversation `not-a-uuid` (one direct answer, "hi"). It was created by the F15 probe and can't be deleted: there is no conversation-delete endpoint (F15).
+Process notes about the deployment (instance hosts, targets registered there, test data left behind) went to command-center in the LOOM-139 handoff rather than into this public report.
 
 ## Findings, by severity
 
@@ -59,16 +55,13 @@ Severity reflects a single-user, self-hosted tool behind a reverse proxy. "Test"
 - **What leaks:** the first `tmux -L loomux new-session` starts the tmux server with loomuxd's env, so every local pane sees `LOOMUX_MASTER_KEY`, the router API keys, `LOOMUX_NTFY_TOKEN`, `LOOMUX_WEB_RELEASES_TOKEN` and the password hash.
 - **Effect:** an agent in auto mode (or one prompt-injected by a repo) can run `env`. As the same uid, it can then read the SQLite DB, decrypt every vault value in every scope, read `~/.ssh` (a pivot to every remote target), or write itself a session row.
 - **Scope:** the test instance has no local target today; the e2e harness and single-box installs do.
-- **Fix:**
-  - Read secrets into memory and then `os.Unsetenv` them.
-  - Give the local executor an allow-listed `cmd.Env`.
-  - Document that a local target is fully trusted, or run local agents as another uid.
+- **Fix:** run local agents as a separate uid (or refuse local targets in the container image), or else document plainly that a local target is fully trusted. Unsetting the secrets at startup and giving the local executor an allow-listed `cmd.Env` only help at the margin: a same-uid agent can still read `/proc/<loomuxd pid>/environ` and the database file.
 
 ### Medium
 
 #### F03 — Parallel requests bypass the login backoff
 - **Where:** `api/server.go:416-433`. `wait()` is checked, then bcrypt runs, then `recordFailure()`. Nothing is reserved between the check and the record, so every request that arrives in the same window gets its own guess.
-- **Evidence:** `TestAudit_LoginThrottle_ConcurrentGuessesShareOneWindow`: **15 of 20** concurrent wrong passwords were checked (401) instead of 1.
+- **Evidence:** `TestAudit_LoginThrottle_ConcurrentGuessesShareOneWindow`: most of 20 concurrent wrong passwords were checked (401) instead of 1: 9 to 15 across runs.
 - **Fix:** reserve the attempt under the mutex. Either add an in-flight flag (429 while one is running), or record the attempt time before bcrypt.
 
 #### F04 — No browser security headers, while the bearer token sits in localStorage
@@ -91,7 +84,7 @@ Severity reflects a single-user, self-hosted tool behind a reverse proxy. "Test"
 - **Where:** `api/server.go:1101-1253`. `requireAuth` runs only at connect.
 - **Effect:** a stream opened with a token that is later revoked keeps delivering `message_added` and `dispatch_update` events, which include reply text, indefinitely. "Log out this device" in Settings doesn't cut off a stolen token's open stream.
 - **Evidence:** `TestAudit_Stream_StopsAfterSessionRevoked`: the event was delivered after logout.
-- **Fix:** re-validate the session on each heartbeat (about every 15s), and close the stream when the session is gone or expired.
+- **Fix:** end a session's open streams when it is revoked or logs out (a per-session cancel), and re-check expiry on each poll tick; checking only on the 15 s heartbeat would still deliver events for up to 15 s after logout (the test asserts none are delivered).
 
 #### F06 — Each open stream re-reads the whole tasks table every 500 ms
 - **Where:** `api/server.go:1101-1253`, `registry/sqlite/sqlite.go:698`.
@@ -100,7 +93,7 @@ Severity reflects a single-user, self-hosted tool behind a reverse proxy. "Test"
 - **Fix:** query by conversation (`ListTasksByConversation`), and read messages and dispatches after a cursor.
 
 #### F07 — A failed dispatch bookkeeping write blocks the conversation until the next restart
-- **Where:** `dispatch/service.go:288-293, 316-325`. If `TransitionDispatch` fails (busy timeout, disk full), the error is only logged. The job leaves the map, but the row stays `queued` or `running`.
+- **Where:** `dispatch/service.go:311` (queued→running) and `:342-348` (the terminal write, only logged at :347). If `TransitionDispatch` fails (busy timeout, disk full), the error is only logged. The job leaves the map, but the row stays `queued` or `running`.
 - **Effect:**
   - Every `POST /dispatch` to that conversation gets 409 `conversation_busy`.
   - Cancel answers "isn't running".
@@ -164,7 +157,7 @@ Severity reflects a single-user, self-hosted tool behind a reverse proxy. "Test"
 
 | ID | Finding | Where | Evidence / test | Fix |
 |---|---|---|---|---|
-| F15 | `conversation_id` isn't validated: any string, of any length up to the 1 MiB body, is accepted, including `a/b` (which can't be fetched back through `/conversations/{id}`). Conversations also can't be deleted, so junk accumulates | `api/dispatch.go:146-160`, `dispatch/service.go:193` | **Live on test:** `{"conversation_id":"not-a-uuid","message":"hi"}` → 202, and the conversation now exists. `TestAudit_Dispatch_RejectsMalformedConversationID` | Require a UUID (or `[A-Za-z0-9-]{1,64}`); also bound `workspace_hint`. Consider `DELETE /conversations/{id}` |
+| F15 | `conversation_id` isn't validated: any string, of any length up to the 1 MiB body, is accepted, including `a/b` (which can't be fetched back through `/conversations/{id}`). Conversations also can't be deleted, so junk accumulates | `api/dispatch.go:146-160`, `dispatch/service.go:193` | **Live on test:** a dispatch with `conversation_id` `"not-a-uuid"` → 202, and that conversation now exists. `TestAudit_Dispatch_RejectsMalformedConversationID` | Require a UUID (or `[A-Za-z0-9-]{1,64}`); also bound `workspace_hint`. Consider `DELETE /conversations/{id}` |
 | F16 | Message size is checked only deep in the router, after routing calls and even provisioning. A 900 KB message is stored twice, sent in full to the LLM (up to 4 calls), then refused | `api/body.go:17`, `router/router.go:826/840` | `TestAudit_Dispatch_RejectsOversizedMessageUpFront`: 200, and the router was called | 413 at `POST /dispatch` above `MaxPasteBytes` plus a margin |
 | F17 | Value redaction iterates a map, so when one vault value is a prefix of another, the longer value's tail leaks | `credentials/redact.go` | `TestAudit_RedactValues_OverlappingValuesNeverLeak`: `token=[redacted]XYZ123456` | Sort values longest first |
 | F18 | `CapturePane` without `-J`: a secret wrapped across pane lines escapes exact-match redaction | `targets/remote.go:353`, `targets/local.go:102` | Code | Use `-J`; also match with whitespace stripped |

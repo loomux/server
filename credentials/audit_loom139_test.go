@@ -10,13 +10,18 @@ import (
 	"github.com/Loomux/server/credentials"
 )
 
+func skipUntilFixed(t *testing.T, issue string) {
+	t.Helper()
+	if os.Getenv("LOOMUX_AUDIT_XFAIL") == "" {
+		t.Skipf("known bug, see %s (LOOMUX_AUDIT_XFAIL=1 runs it)", issue)
+	}
+}
+
 // When one vault value is a prefix of another, replacing the short one
 // first leaves the long one's tail in the text. Map order is random, so
 // the leak is intermittent; 200 rounds make it near-certain.
 func TestAudit_RedactValues_OverlappingValuesNeverLeak(t *testing.T) {
-	if os.Getenv("LOOMUX_AUDIT_XFAIL") == "" {
-		t.Skip("known bug, see LOOM-139 finding F17 (reports/loom-139-audit.md) (LOOMUX_AUDIT_XFAIL=1 runs it)")
-	}
+	skipUntilFixed(t, "LOOM-139 finding F17 (reports/loom-139-audit.md)")
 	secrets := map[string]string{"short": "abcdef", "long": "abcdefXYZ123456"}
 	for i := 0; i < 200; i++ {
 		if got := credentials.RedactValues("token=abcdefXYZ123456", secrets); strings.Contains(got, "XYZ") {
