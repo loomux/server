@@ -255,8 +255,12 @@ envelope: it classifies the failure with `error_class`.
       `api/dispatch.go`: async since the LOOM-81 web shipped (it was
       blocking while the deployed web still expected `{reply}`).
     - `conversation_id` empty starts a new conversation (its id is in the
-      response). A repeat with the same `Idempotency-Key` and the same
-      body returns the original job and runs nothing (a retry of a new
+      response). A non-empty one, like `workspace_hint`, must be 1–64
+      ASCII letters, digits, `-` or `_` (a server-minted id, a UUID,
+      always is), else `400` (LOOM-154): it is a path segment in
+      `GET /conversations/{id}`, so anything else could be stored but
+      never fetched back. A repeat with the same `Idempotency-Key` and
+      the same body returns the original job and runs nothing (a retry of a new
       conversation's first message leaves `conversation_id` empty, as the
       original did); the same key with a
       different body is `422` (code `idempotency_conflict`). A conversation
