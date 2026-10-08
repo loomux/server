@@ -701,6 +701,27 @@ func (s *Store) DeleteTaskTurnsBefore(ctx context.Context, cutoff time.Time) (in
 	return int(n), nil
 }
 
+func (s *Store) ListTasksByConversation(ctx context.Context, conversationID string) ([]*registry.Task, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE conversation_id = ? ORDER BY created_at, rowid`, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list tasks by conversation: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*registry.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list tasks by conversation: %w", err)
+		}
+		out = append(out, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list tasks by conversation: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Store) ListTasks(ctx context.Context) ([]*registry.Task, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks ORDER BY created_at`)
 	if err != nil {
@@ -782,6 +803,34 @@ const messageColumns = `id, conversation_id, task_id, dispatch_id, origin, origi
 // when two messages in the same turn (a user message immediately
 // followed by its assistant reply) land on a created_at value with
 // insufficient resolution to distinguish them on its own.
+// ListMessagesAfter uses the rowid as the cursor: messages are
+// append-only, so a later insert always has a larger rowid, and an
+// afterID that's gone counts as none (everything is returned).
+func (s *Store) ListMessagesAfter(ctx context.Context, conversationID, afterID string) ([]*registry.Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+messageColumns+` FROM messages
+		WHERE conversation_id = ?
+		  AND rowid > COALESCE((SELECT rowid FROM messages WHERE id = ? AND conversation_id = ?), 0)
+		ORDER BY rowid`, conversationID, afterID, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list messages after: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*registry.Message, 0)
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: list messages after: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: list messages after: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Store) ListMessagesByConversation(ctx context.Context, conversationID string) ([]*registry.Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+messageColumns+` FROM messages
