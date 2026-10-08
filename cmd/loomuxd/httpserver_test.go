@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -48,5 +51,58 @@ func TestHTTPServerDefaults(t *testing.T) {
 	// blocking dispatch stay open for as long as the turn runs.
 	if srv.WriteTimeout != 0 || srv.ReadTimeout != 0 {
 		t.Errorf("WriteTimeout %v, ReadTimeout %v; want none", srv.WriteTimeout, srv.ReadTimeout)
+	}
+}
+
+// LOOM-147: serveHTTP returns only after shutdown has finished: a request
+// in flight when the signal comes still gets its full answer, and the
+// dispatch drain runs before the HTTP server stops.
+func TestServeHTTP_WaitsForInFlightRequests(t *testing.T) {
+	var order []string
+	var mu sync.Mutex
+	note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	inHandler := make(chan struct{})
+	srv := newHTTPServer("", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(inHandler)
+		time.Sleep(300 * time.Millisecond)
+		note("handler done")
+		_, _ = io.WriteString(w, "whole answer")
+	}))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() {
+		err := serveHTTP(ctx, srv, ln, func() { note("drained") }, 5*time.Second)
+		note("serveHTTP returned")
+		served <- err
+	}()
+
+	body := make(chan string, 1)
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String() + "/")
+		if err != nil {
+			body <- "error: " + err.Error()
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		body <- string(b)
+	}()
+	<-inHandler
+	stop()
+	if err := <-served; err != nil {
+		t.Fatalf("serveHTTP: %v", err)
+	}
+	if got := <-body; got != "whole answer" {
+		t.Fatalf("in-flight request got %q", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"drained", "handler done", "serveHTTP returned"}
+	if strings.Join(order, ", ") != strings.Join(want, ", ") {
+		t.Fatalf("order = %v, want %v", order, want)
 	}
 }
