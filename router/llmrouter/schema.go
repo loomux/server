@@ -6,16 +6,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/shared"
-
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 )
 
-// decideToolName is the single function Decide forces the model to call
-// via tool_choice, so its output is always a structured, parseable
-// decision rather than free text.
+// decideToolName is the single function Decide has the model call —
+// forced via tool_choice on OpenAI-compatible tiers, strict and
+// prompted on Anthropic ones (LOOM-186) — so its output is always a
+// structured, parseable decision rather than free text.
 const decideToolName = "route_decision"
 
 const decideSystemPrompt = `You are Loomux's routing model. Loomux dispatches chat messages to AI coding agents ` +
@@ -86,8 +84,8 @@ func (m *Model) systemPrompt() string {
 	return b.String()
 }
 
-// relayToolName is the single function Relay forces the model to call
-// via tool_choice, so it always returns both the condensed reply and
+// relayToolName is the single function Relay has the model call (as
+// decideToolName), so it always returns both the condensed reply and
 // the done/continues signal as structured, parseable output.
 const relayToolName = "condense_output"
 
@@ -111,7 +109,7 @@ const relaySystemPrompt = `You are Loomux's relay model. You are given the raw c
 	`Don't repeat the message back. Your reply replaces the summary, so if the previous summary holds ` +
 	`something the next turn still needs that this output doesn't restate, keep it in one short clause.`
 
-// buildDecideTool builds the forced tool/function-call schema for Decide.
+// decideTool builds the tool/function-call schema for Decide.
 // Flat rather than a conditional schema keyed on action — conditional
 // (if/then) JSON Schema support across OpenAI-compatible providers is
 // unverified, so cross-field consistency (e.g. use_workspace with an empty
@@ -122,7 +120,7 @@ const relaySystemPrompt = `You are Loomux's relay model. You are given the raw c
 //
 // leave_open_task (LOOM-87) is offered only when the conversation has a
 // task waiting on the user (openTask).
-func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool) openai.ChatCompletionToolUnionParam {
+func decideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool) toolSpec {
 	// Provisioning and direct commands both need a target: with none
 	// registered they aren't offered at all (LOOM-68).
 	actions := []string{"answer_directly", "use_workspace"}
@@ -187,26 +185,26 @@ func buildDecideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool
 		}
 	}
 
-	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-		Name:        decideToolName,
-		Description: openai.String("Record the routing decision for this message."),
-		Parameters: shared.FunctionParameters{
+	return toolSpec{
+		name:        decideToolName,
+		description: "Record the routing decision for this message.",
+		schema: map[string]any{
 			"type":       "object",
 			"properties": properties,
 			"required":   []string{"action"},
 		},
-	})
+	}
 }
 
-// buildRelayTool builds the forced tool/function-call schema for Relay:
+// relayTool builds the tool/function-call schema for Relay:
 // the condensed reply text plus the done/continues signal (design spec
 // §3 step 3), so that signal is always structured rather than parsed
 // out of free text.
-func buildRelayTool() openai.ChatCompletionToolUnionParam {
-	return openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-		Name:        relayToolName,
-		Description: openai.String("Record the condensed reply and whether the task is fully finished."),
-		Parameters: shared.FunctionParameters{
+func relayTool() toolSpec {
+	return toolSpec{
+		name:        relayToolName,
+		description: "Record the condensed reply and whether the task is fully finished.",
+		schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"reply": map[string]any{
@@ -220,7 +218,7 @@ func buildRelayTool() openai.ChatCompletionToolUnionParam {
 			},
 			"required": []string{"reply", "done"},
 		},
-	})
+	}
 }
 
 func enumStringProperty(description string, values []string) map[string]any {
