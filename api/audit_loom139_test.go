@@ -191,7 +191,6 @@ func staticServer(t *testing.T) string {
 // update) must 404, not answer 200 with index.html: the browser then
 // fails with a MIME error instead of a clean chunk-load retry.
 func TestAudit_Static_MissingAssetIs404(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F19")
 	base := staticServer(t)
 	resp, err := http.Get(base + "/assets/app-old.js")
 	if err != nil {

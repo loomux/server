@@ -117,7 +117,10 @@ not engineering taste):
   nor starts with `/api/` is served from there, with fallback to
   `index.html` for anything that isn't a real file — a browser refresh on
   a client-side route like `/conversations/abc123` gets the SPA shell
-  instead of a 404. Routed entirely in `ServeHTTP` ahead of `mux`,
+  instead of a 404. A missing path under `/assets/`, or one whose last
+  segment has an extension (`.js`, `.css`, `.ico`, …), is a plain `404`
+  instead (LOOM-158): a chunk from the bundle before a web update then
+  fails to load cleanly rather than arriving as HTML. Routed entirely in `ServeHTTP` ahead of `mux`,
   mirroring the existing `/api/` version check already there — `/api` and
   every `/api/*` path never reach the static handler (the bare `/api`
   path, with no trailing slash, is checked explicitly alongside the
