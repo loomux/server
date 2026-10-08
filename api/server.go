@@ -255,7 +255,7 @@ func WithStreamPollInterval(d time.Duration) Option {
 }
 
 // WithLocalTargets says whether targets of kind "local" may be
-// registered (LOOM-141; app.Config.LocalTargets). On by default.
+// registered (LOOM-141; app.Config.LocalTargetsOff). On by default.
 func WithLocalTargets(on bool) Option {
 	return func(s *Server) { s.localTargets = on }
 }

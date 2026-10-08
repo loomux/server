@@ -110,7 +110,9 @@ because a Secret volume's entries are symlinks into `..data/`.
 
 Override the source path with `LOOMUX_SSH_SOURCE` if `/etc/loomux/ssh` is
 inconvenient. If the directory does not exist, the entrypoint logs that it
-is starting without SSH material and continues — local targets still work.
+is starting without SSH material and continues: only local targets can
+then work, and the image turns those off by default
+(`LOOMUX_LOCAL_TARGETS`, see [targets.md](targets.md#local-targets)).
 
 Building the Secret:
 

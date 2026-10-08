@@ -361,6 +361,16 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// watches it. Empty means each target's per-user default, which both
 	// resolve the same way (completion.ResolveMarkerDir).
 	targets.SetLocalTargets(!cfg.LocalTargetsOff)
+	if !cfg.LocalTargetsOff {
+		// Sessions may outlive loomuxd, and with them a tmux server
+		// started with loomuxd's full environment (LOOM-141).
+		scrubCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := targets.ScrubLocalTmuxEnv(scrubCtx)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("app: %w", err)
+		}
+	}
 	if cfg.TmuxSocket != "" {
 		if err := targets.SetTmuxSocket(cfg.TmuxSocket); err != nil {
 			return nil, fmt.Errorf("app: %w", err)
