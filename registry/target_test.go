@@ -39,12 +39,52 @@ func TestTargetValidate(t *testing.T) {
 		{
 			name:    "host that ssh would read as an option",
 			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "-oProxyCommand=touch /tmp/pwned", User: "u"},
-			wantErr: "host must be a host name or address (no leading -, whitespace, @ or /)",
+			wantErr: "host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address",
+		},
+		// LOOM-175: a remote's host is a host name, an ssh_config alias
+		// or an IP address; anything else is refused at registration.
+		{
+			name:   "host: IPv4",
+			target: registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "192.0.2.10", User: "u"},
+		},
+		{
+			name:   "host: ssh_config alias with _",
+			target: registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "work_laptop", User: "u"},
+		},
+		{
+			name:    "host: empty label",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "a..b", User: "u"},
+			wantErr: "host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address",
+		},
+		{
+			name:    "host: label ending in -",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "box-.example.net", User: "u"},
+			wantErr: "host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address",
+		},
+		{
+			name:    "host: ssh token %",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "box%h", User: "u"},
+			wantErr: "host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address",
+		},
+		{
+			name:    "host: shell metacharacters",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "box;id", User: "u"},
+			wantErr: "host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address",
+		},
+		{
+			name:    "host: bracketed IPv6",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "[::1]", User: "u"},
+			wantErr: "host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address",
+		},
+		{
+			name:    "host: label over 63",
+			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: strings.Repeat("a", 64) + ".net", User: "u"},
+			wantErr: "host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address",
 		},
 		{
 			name:    "host with whitespace",
 			target:  registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "box -p 2222", User: "u"},
-			wantErr: "host must be a host name or address (no leading -, whitespace, @ or /)",
+			wantErr: "host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address",
 		},
 		{
 			name:   "valid user and IPv6 host",
