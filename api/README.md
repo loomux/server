@@ -52,7 +52,8 @@ not engineering taste):
   in again. `POST /api/v1/logout` deletes the session
   row outright, for revoking a lost device immediately rather than
   waiting out the window. Logout and `DELETE /sessions/{id}` also end
-  that session's open conversation streams at once (LOOM-144), and an
+  that session's open conversation streams and blocking dispatch waits
+  at once (LOOM-144, LOOM-182), and an
   open stream re-checks its session at each heartbeat, so it ends within
   15 s of the session expiring. A stream doesn't itself count as use:
   only requests refresh `LastUsedAt`, so a tab left streaming doesn't
@@ -260,7 +261,10 @@ envelope: it classifies the failure with `error_class`.
     - **Blocking** (`?wait=true`): waits for the job and
       answers `200 {reply, dispatch_id, conversation_id, status, …}`, or
       `500 {error, error_class, dispatch_id, …}` if it failed or was
-      interrupted.
+      interrupted. A wait whose session ends (logout, `DELETE
+      /sessions/{id}`, or expiry) is `401` at once, without the reply
+      (LOOM-182); the job carries on and its result is in the
+      conversation.
     - **Async** (the default, or `Prefer: respond-async`): `202
       {dispatch_id, conversation_id, status}` at once, with `Location:
       /api/v1/dispatches/{id}` (and `Preference-Applied: respond-async`
@@ -420,8 +424,9 @@ envelope: it classifies the failure with `error_class`.
     without it). A scan returns `{target_id, host_keys: [{type,
     fingerprint}], expires_at, pinned_host_keys}` and trusts nothing; `502`
     with the SSH hint when the host can't be read. A pin must name a
-    fingerprint from the target's latest scan, at most 10 minutes old
-    (`409` otherwise), and returns the target, whose `pinned_host_keys`
+    fingerprint from the target's latest scan, at most 10 minutes old and
+    taken at the target's current host, port, proxy and key (LOOM-164; `409`
+    otherwise, also when a `PUT` moves the target mid-pin), and returns the target, whose `pinned_host_keys`
     then lists it. A pinned target is checked against its pin alone. Only
     remote targets (`400` for local). `test` returns `{target_id, reachable,
     tmux_version?, latency_ms, error?, host_key_problem}`. Targets also

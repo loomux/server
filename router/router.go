@@ -151,7 +151,11 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 // decision, provisioning, and the agent turn, with any failure at error
 // level. The message body itself is never logged — only its length.
 func (r *Router) Dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
-	defer r.conversations.lock(conversationID)()
+	unlock, err := r.conversations.lock(ctx, conversationID)
+	if err != nil {
+		return "", fmt.Errorf("router: waiting for the conversation's previous turn: %w", err)
+	}
+	defer unlock()
 	start := time.Now()
 	var o DispatchOptions
 	for _, opt := range opts {

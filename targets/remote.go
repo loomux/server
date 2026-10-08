@@ -134,6 +134,20 @@ func controlPathFor(host, user string, port int, tag string) string {
 	return filepath.Join(dir, name)
 }
 
+// ensureControlDir makes dir, where ControlMaster sockets live, and its
+// parent private directories of loomuxd's own (LOOM-166). The path is a
+// predictable one in the shared temp dir: another local user who made
+// either first, or put a symlink there, could plant a socket that ssh
+// would take for the master and send every command through. Either
+// level that is a symlink, not a directory or someone else's is
+// refused; each is made 0700.
+func ensureControlDir(dir string) error {
+	if err := ensurePrivateDir(filepath.Dir(dir), "control socket parent dir"); err != nil {
+		return err
+	}
+	return ensurePrivateDir(dir, "control socket dir")
+}
+
 func sanitizeForFilename(s string) string {
 	return strings.NewReplacer("/", "_", ":", "_", "@", "_").Replace(s)
 }
@@ -203,8 +217,8 @@ func (e *RemoteExecutor) sshExec(ctx context.Context, remoteCmd string) (stdout,
 }
 
 func (e *RemoteExecutor) sshExecWithin(ctx context.Context, timeout time.Duration, remoteCmd string) (stdout, stderr string, exitCode int, err error) {
-	if mkErr := os.MkdirAll(filepath.Dir(e.controlPath), 0o700); mkErr != nil {
-		return "", "", -1, fmt.Errorf("targets: create control path dir: %w", mkErr)
+	if mkErr := ensureControlDir(filepath.Dir(e.controlPath)); mkErr != nil {
+		return "", "", -1, mkErr
 	}
 	slots := slotsFor(e.controlPath)
 	select {

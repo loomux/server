@@ -58,6 +58,9 @@ type App struct {
 	dispatchDrain    time.Duration
 	sshAgents        *targets.AgentPool
 	routerSettings   *llmrouter.Settings
+	// bg holds the goroutines Close waits for before closing the store
+	// (LOOM-163).
+	bg *background
 }
 
 // RouterSettings serves /api/v1/settings/router (LOOM-185): the router
@@ -227,6 +230,11 @@ func (a *App) Close() error {
 		<-a.reaperDone
 		<-a.proberDone
 		<-a.sweepDone
+	}
+	// Reconciliation and the sweepers stop with the reaper's context;
+	// a notification on its way is let finish (notifyTimeout bounds it).
+	if a.bg != nil {
+		a.bg.close()
 	}
 	if a.sshAgents != nil {
 		targets.ResetManagedSSH(a.sshAgents)
@@ -486,6 +494,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	routerOpts = append(routerOpts, router.WithMetrics(met))
 	// The notifier (LOOM-102) hears of finished turns from the dispatch
 	// service and of late replies (LOOM-121) from the router.
+	bg := &background{}
 	var notifier *turnNotifier
 	if cfg.Notify.NtfyURL != "" {
 		logger := cfg.Logger
@@ -500,6 +509,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 			minDuration: cfg.Notify.MinDuration,
 			publicURL:   cfg.Notify.PublicURL,
 			logger:      logger,
+			bg:          bg,
 		}
 		routerOpts = append(routerOpts, router.WithLateReplyHook(notifier.lateReply))
 	}
@@ -514,8 +524,10 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		reaper.Run(reaperCtx, interval)
 	}()
 	// The orphan sweep (LOOM-93) shares the reaper's lifetime.
-	go orchestrator.NewOrphanSweeper(orch, orphanTTL, cfg.Logger).Run(reaperCtx, orphanSweepInterval)
-	go orchestrator.NewFinishedPaneSweeper(orch, finishedPaneGrace, cfg.Logger).Run(reaperCtx, finishedPaneSweep)
+	bg.Go(func() { orchestrator.NewOrphanSweeper(orch, orphanTTL, cfg.Logger).Run(reaperCtx, orphanSweepInterval) })
+	bg.Go(func() {
+		orchestrator.NewFinishedPaneSweeper(orch, finishedPaneGrace, cfg.Logger).Run(reaperCtx, finishedPaneSweep)
+	})
 
 	// Health probes bypass the metrics-wrapped executor so periodic
 	// liveness checks don't pollute the target operation latency/error
@@ -573,6 +585,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		stopReaper()
 		<-reaperDone
 		<-proberDone
+		bg.close()
 		_ = store.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	} else if n > 0 && cfg.Logger != nil {
@@ -586,6 +599,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		stopReaper()
 		<-reaperDone
 		<-proberDone
+		bg.close()
 		_ = store.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	}
@@ -599,12 +613,12 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		runDispatchSweep(reaperCtx, dispatches, dispatchSweepInterval, cfg.Logger)
 	}()
 	// In the background, bounded: an unreachable target mustn't hold up
-	// startup.
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), reconcileTimeout)
+	// startup. Close cancels it with the reaper and waits for it.
+	bg.Go(func() {
+		ctx, cancel := context.WithTimeout(reaperCtx, reconcileTimeout)
 		defer cancel()
 		rtr.ReconcileTasks(ctx, resumed)
-	}()
+	})
 	dispatchDrain := cfg.DispatchDrain
 	if dispatchDrain == 0 {
 		dispatchDrain = defaultDispatchDrain
@@ -622,6 +636,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		stopReaper:       stopReaper,
 		reaperDone:       reaperDone,
 		proberDone:       proberDone,
+		bg:               bg,
 		sweepDone:        sweepDone,
 		metrics:          met,
 		healthChecker:    healthChecker,

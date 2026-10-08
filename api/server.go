@@ -260,6 +260,10 @@ type Server struct {
 	web                WebBundles
 	static             http.HandlerFunc
 	mux                *http.ServeMux
+	// waits are blocking dispatches' waits (LOOM-182): ended with their
+	// session like streams, but not by EndStreams at shutdown, which
+	// leaves them to the HTTP drain as before.
+	waits sessionStreams
 }
 
 // Option configures a Server constructed via NewServer.
@@ -566,6 +570,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.streams.end(sess.ID)
+	s.waits.end(sess.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -645,6 +650,7 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.streams.end(id)
+	s.waits.end(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
