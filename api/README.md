@@ -397,8 +397,9 @@ envelope: it classifies the failure with `error_class`.
     without it). A scan returns `{target_id, host_keys: [{type,
     fingerprint}], expires_at, pinned_host_keys}` and trusts nothing; `502`
     with the SSH hint when the host can't be read. A pin must name a
-    fingerprint from the target's latest scan, at most 10 minutes old
-    (`409` otherwise), and returns the target, whose `pinned_host_keys`
+    fingerprint from the target's latest scan, at most 10 minutes old and
+    taken at the target's current host, port, proxy and key (LOOM-164; `409`
+    otherwise, also when a `PUT` moves the target mid-pin), and returns the target, whose `pinned_host_keys`
     then lists it. A pinned target is checked against its pin alone. Only
     remote targets (`400` for local). `test` returns `{target_id, reachable,
     tmux_version?, latency_ms, error?, host_key_problem}`. Targets also
