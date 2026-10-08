@@ -76,6 +76,15 @@ func (b *breaker) record(unavailable bool) (opened bool) {
 	return false
 }
 
+// reset closes the breaker, forgetting every failure: for a primary tier
+// that was just replaced (LOOM-185), whose outage says nothing about the
+// new one.
+func (b *breaker) reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failures, b.openUntil, b.probing = 0, time.Time{}, false
+}
+
 // abandon releases a call that ended without telling anything about the
 // provider (the caller cancelled it), so a half-open breaker lets the
 // next call try instead.
@@ -104,18 +113,22 @@ var errPrimarySkipped = errors.New("skipped: the primary tier failed repeatedly 
 
 // skipPrimary reports whether to go straight to escalation: only with an
 // escalation tier to go to, and while the breaker is open.
-func (m *Model) skipPrimary() bool {
-	return m.cfg.Escalation != nil && !m.primaryBreaker.allow()
+func (m *Model) skipPrimary(cfg *Config) bool {
+	return cfg.Escalation != nil && !m.primaryBreaker.allow()
 }
 
 // recordPrimary feeds a primary call's outcome to the breaker. A call the
-// caller cancelled says nothing about the provider.
-func (m *Model) recordPrimary(ctx context.Context, err error) {
+// caller cancelled says nothing about the provider, and neither does one
+// made on a primary that has since been replaced (gen, LOOM-185).
+func (m *Model) recordPrimary(ctx context.Context, err error, gen uint64) {
+	if m.cfg.Load().gen != gen {
+		return
+	}
 	if ctx.Err() != nil {
 		m.primaryBreaker.abandon()
 		return
 	}
 	if m.primaryBreaker.record(err != nil && isUnavailable(err)) {
-		slog.Warn("router primary tier failing; skipping it", "consecutive_failures", breakerThreshold, "for", breakerCooldown.String(), "error", err)
+		slog.Warn("router primary tier failing; skipping it", "consecutive_failures", breakerThreshold, "for", breakerCooldown.String(), "error", scrubKeys(err))
 	}
 }

@@ -46,13 +46,14 @@ at rest, e.g. with SOPS). Never put them in a ConfigMap or the image.
 |---|---|---|
 | `LOOMUX_AUTH_PASSWORD_HASH` | bcrypt hash of the one login password | `echo -n 'your password' \| docker run --rm -i ghcr.io/loomux/server:0.1.N -hash-password` |
 | `LOOMUX_MASTER_KEY` | AES-256 key for the credential vault: 32 random bytes, base64. **Required**: without it every agent dispatch fails ("resolve credentials"), and run_command output and notification summaries are withheld, even with an empty vault (agents mostly use their own logins on the targets; API keys and tokens for them go in through `/api/v1/credentials`) | `head -c 32 /dev/urandom \| base64` |
-| `LOOMUX_ROUTER_PRIMARY_API_KEY` | the router model's API key | from your provider |
+| `LOOMUX_ROUTER_PRIMARY_API_KEY` | the router model's API key: the bootstrap; once running, Settings can store another key and model over it, and rotate them, without a redeploy ([`router-settings.md`](../design/router-settings.md)) | from your provider |
 | `LOOMUX_ROUTER_ESCALATION_API_KEY` | (optional) the escalation model's key | from your provider |
 | `LOOMUX_NTFY_TOKEN` | (optional) ntfy publish token | from your ntfy server |
 
 **Keep a copy of `LOOMUX_MASTER_KEY` with your backups.** Credentials
 in the vault are encrypted with it; without it a restored database's
-vault can't be read, and there's no way to change the key in place
+vault (and router keys stored through Settings, which then fall back to
+these env ones) can't be read, and there's no way to change the key in place
 (see [`operations.md`](operations.md#rotating-secrets)).
 
 The SSH key and `known_hosts` for reaching targets are a separate

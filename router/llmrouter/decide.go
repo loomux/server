@@ -50,28 +50,32 @@ func (m *Model) Decide(ctx context.Context, message string, workspaces []router.
 		opt(&o)
 	}
 
+	// One config for the whole call: a change (LOOM-185) applies from
+	// the next one.
+	state := m.cfg.Load()
+	cfg := &state.Config
 	var err error
-	if m.skipPrimary() {
+	if m.skipPrimary(cfg) {
 		err = errPrimarySkipped
 	} else {
 		var dec router.Decision
-		dec, err = m.decideWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, message, workspaces, targets, o)
-		m.recordPrimary(ctx, err)
+		dec, err = m.decideWith(ctx, "primary", cfg.Primary, m.primaryTimeout, message, workspaces, targets, o)
+		m.recordPrimary(ctx, err, state.gen)
 		if err == nil {
 			return dec, nil
 		}
 	}
-	if m.cfg.Escalation == nil {
+	if cfg.Escalation == nil {
 		m.metrics.RecordRouterCall(metrics.RouterOpDecide, "primary", metrics.OutcomeFailure, m.primaryTimeout)
-		return router.Decision{}, fmt.Errorf("llmrouter: decide: primary model: %w", err)
+		return router.Decision{}, scrubKeys(fmt.Errorf("llmrouter: decide: primary model: %w", err))
 	}
 
 	m.metrics.RecordRouterEscalation(metrics.RouterOpDecide)
-	dec, err2 := m.decideWith(ctx, "escalation", *m.cfg.Escalation, m.escalationTimeout, message, workspaces, targets, o)
+	dec, err2 := m.decideWith(ctx, "escalation", *cfg.Escalation, m.escalationTimeout, message, workspaces, targets, o)
 	if err2 != nil {
 		m.metrics.RecordRouterCall(metrics.RouterOpDecide, "escalation", metrics.OutcomeFailure, m.escalationTimeout)
-		return router.Decision{}, fmt.Errorf(
-			"llmrouter: decide: primary model failed (%v); escalation model also failed: %w", err, err2)
+		return router.Decision{}, scrubKeys(fmt.Errorf(
+			"llmrouter: decide: primary model failed (%v); escalation model also failed: %w", err, err2))
 	}
 	return dec, nil
 }

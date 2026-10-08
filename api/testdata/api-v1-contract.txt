@@ -40,6 +40,14 @@ DELETE /api/v1/sessions/{id} status 204
 DELETE /api/v1/sessions/{id} status 401
 DELETE /api/v1/sessions/{id} status 404
 DELETE /api/v1/sessions/{id} status 500
+DELETE /api/v1/settings/router/{tier}
+DELETE /api/v1/settings/router/{tier} request-header Authorization
+DELETE /api/v1/settings/router/{tier} response - none
+DELETE /api/v1/settings/router/{tier} response-header Content-Type
+DELETE /api/v1/settings/router/{tier} status 204
+DELETE /api/v1/settings/router/{tier} status 401
+DELETE /api/v1/settings/router/{tier} status 404
+DELETE /api/v1/settings/router/{tier} status 500
 DELETE /api/v1/ssh-keys/{id}
 DELETE /api/v1/ssh-keys/{id} request-header Authorization
 DELETE /api/v1/ssh-keys/{id} response - none
@@ -323,6 +331,43 @@ GET /api/v1/sessions response-header Content-Type
 GET /api/v1/sessions status 200
 GET /api/v1/sessions status 401
 GET /api/v1/sessions status 500
+GET /api/v1/settings/router
+GET /api/v1/settings/router request-header Authorization
+GET /api/v1/settings/router response - object
+GET /api/v1/settings/router response .providers []string
+GET /api/v1/settings/router response .tiers []object
+GET /api/v1/settings/router response .tiers[].base_url string omitempty
+GET /api/v1/settings/router response .tiers[].env_configured boolean
+GET /api/v1/settings/router response .tiers[].key_fingerprint string omitempty
+GET /api/v1/settings/router response .tiers[].key_last4 string omitempty
+GET /api/v1/settings/router response .tiers[].model string omitempty
+GET /api/v1/settings/router response .tiers[].provider string omitempty
+GET /api/v1/settings/router response .tiers[].set_at time omitempty nullable
+GET /api/v1/settings/router response .tiers[].source string
+GET /api/v1/settings/router response .tiers[].stored_unreadable boolean
+GET /api/v1/settings/router response .tiers[].tier string
+GET /api/v1/settings/router response-header Content-Type
+GET /api/v1/settings/router status 200
+GET /api/v1/settings/router status 401
+GET /api/v1/settings/router status 404
+GET /api/v1/settings/router status 500
+GET /api/v1/settings/router/audit
+GET /api/v1/settings/router/audit query limit
+GET /api/v1/settings/router/audit request-header Authorization
+GET /api/v1/settings/router/audit response - object
+GET /api/v1/settings/router/audit response .entries []object
+GET /api/v1/settings/router/audit response .entries[].action string
+GET /api/v1/settings/router/audit response .entries[].actor string
+GET /api/v1/settings/router/audit response .entries[].created_at time
+GET /api/v1/settings/router/audit response .entries[].fields []string
+GET /api/v1/settings/router/audit response .entries[].id string
+GET /api/v1/settings/router/audit response .entries[].tier string
+GET /api/v1/settings/router/audit response-header Content-Type
+GET /api/v1/settings/router/audit status 200
+GET /api/v1/settings/router/audit status 400
+GET /api/v1/settings/router/audit status 401
+GET /api/v1/settings/router/audit status 404
+GET /api/v1/settings/router/audit status 500
 GET /api/v1/ssh-keys
 GET /api/v1/ssh-keys request-header Authorization
 GET /api/v1/ssh-keys response - object
@@ -611,6 +656,21 @@ POST /api/v1/logout response-header Content-Type
 POST /api/v1/logout status 204
 POST /api/v1/logout status 401
 POST /api/v1/logout status 500
+POST /api/v1/settings/router/{tier}/test
+POST /api/v1/settings/router/{tier}/test request-header Authorization
+POST /api/v1/settings/router/{tier}/test response - object
+POST /api/v1/settings/router/{tier}/test response .duration_ms number
+POST /api/v1/settings/router/{tier}/test response .error string omitempty
+POST /api/v1/settings/router/{tier}/test response .error_class string omitempty
+POST /api/v1/settings/router/{tier}/test response .model string
+POST /api/v1/settings/router/{tier}/test response .ok boolean
+POST /api/v1/settings/router/{tier}/test response .source string
+POST /api/v1/settings/router/{tier}/test response .status number omitempty
+POST /api/v1/settings/router/{tier}/test response-header Content-Type
+POST /api/v1/settings/router/{tier}/test status 200
+POST /api/v1/settings/router/{tier}/test status 401
+POST /api/v1/settings/router/{tier}/test status 404
+POST /api/v1/settings/router/{tier}/test status 500
 POST /api/v1/ssh-keys
 POST /api/v1/ssh-keys request - object
 POST /api/v1/ssh-keys request .name string
@@ -1011,6 +1071,32 @@ PUT /api/v1/credentials/{id}/value status 401
 PUT /api/v1/credentials/{id}/value status 404
 PUT /api/v1/credentials/{id}/value status 413
 PUT /api/v1/credentials/{id}/value status 500
+PUT /api/v1/settings/router/{tier}
+PUT /api/v1/settings/router/{tier} request - object
+PUT /api/v1/settings/router/{tier} request .api_key string
+PUT /api/v1/settings/router/{tier} request .base_url string
+PUT /api/v1/settings/router/{tier} request .model string
+PUT /api/v1/settings/router/{tier} request .provider string
+PUT /api/v1/settings/router/{tier} request-header Authorization
+PUT /api/v1/settings/router/{tier} response - object
+PUT /api/v1/settings/router/{tier} response .base_url string omitempty
+PUT /api/v1/settings/router/{tier} response .env_configured boolean
+PUT /api/v1/settings/router/{tier} response .key_fingerprint string omitempty
+PUT /api/v1/settings/router/{tier} response .key_last4 string omitempty
+PUT /api/v1/settings/router/{tier} response .model string omitempty
+PUT /api/v1/settings/router/{tier} response .provider string omitempty
+PUT /api/v1/settings/router/{tier} response .set_at time omitempty nullable
+PUT /api/v1/settings/router/{tier} response .source string
+PUT /api/v1/settings/router/{tier} response .stored_unreadable boolean
+PUT /api/v1/settings/router/{tier} response .tier string
+PUT /api/v1/settings/router/{tier} response-header Content-Type
+PUT /api/v1/settings/router/{tier} status 200
+PUT /api/v1/settings/router/{tier} status 400
+PUT /api/v1/settings/router/{tier} status 401
+PUT /api/v1/settings/router/{tier} status 404
+PUT /api/v1/settings/router/{tier} status 413
+PUT /api/v1/settings/router/{tier} status 500
+PUT /api/v1/settings/router/{tier} status 503
 PUT /api/v1/targets/{id}
 PUT /api/v1/targets/{id} request - object
 PUT /api/v1/targets/{id} request .allow_provision boolean nullable

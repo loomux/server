@@ -57,6 +57,21 @@ type Config struct {
 	Escalation *Tier
 }
 
+// Validate reports whether c is usable: a complete primary tier and, if
+// set, a complete escalation tier (New and SetConfig refuse anything
+// else).
+func (c Config) Validate() error {
+	if err := c.Primary.Validate(); err != nil {
+		return fmt.Errorf("primary tier is incompletely configured: %w", err)
+	}
+	if c.Escalation != nil {
+		if err := c.Escalation.Validate(); err != nil {
+			return fmt.Errorf("escalation tier is incompletely configured: %w", err)
+		}
+	}
+	return nil
+}
+
 const (
 	envPrimaryProvider = "LOOMUX_ROUTER_PRIMARY_PROVIDER"
 	envPrimaryBaseURL  = "LOOMUX_ROUTER_PRIMARY_BASE_URL"

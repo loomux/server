@@ -137,6 +137,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithHealthChecker(loomux.HealthChecker()),
 		api.WithCredentials(loomux.Store()),
 		api.WithSSHKeys(loomux.Store()),
+		api.WithRouterSettings(loomux.RouterSettings()),
 		api.WithSSHKeyDropper(loomux.DropSSHKey),
 		api.WithSSHMigration(targets.ResolveSSHConfig),
 	}

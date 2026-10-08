@@ -57,9 +57,17 @@ type App struct {
 	dispatches       *dispatch.Service
 	dispatchDrain    time.Duration
 	sshAgents        *targets.AgentPool
+	routerSettings   *llmrouter.Settings
 	// bg holds the goroutines Close waits for before closing the store
 	// (LOOM-163).
 	bg *background
+}
+
+// RouterSettings serves /api/v1/settings/router (LOOM-185): the router
+// model's tiers as stored through Settings over the environment's,
+// applied to the running model without a restart.
+func (a *App) RouterSettings() *llmrouter.Settings {
+	return a.routerSettings
 }
 
 // Dispatches is the dispatch-job service (LOOM-80) the client API
@@ -455,6 +463,21 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("app: router model: %w", err)
 	}
+	// Tiers stored through Settings (LOOM-185) override the env's, which
+	// stays the bootstrap and the fallback.
+	routerSettings, err := llmrouter.NewSettings(context.Background(), store, model, cfg.Router)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
+	if cfg.Logger != nil {
+		for _, v := range routerSettings.Tiers() {
+			if v.StoredUnreadable {
+				cfg.Logger.Warn("stored router settings don't decrypt with this master key; using the environment's",
+					"tier", v.Tier, "source", v.Source)
+			}
+		}
+	}
 
 	threshold := cfg.ReapIdleThreshold
 	if threshold == 0 {
@@ -602,6 +625,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 
 	return &App{
+		routerSettings:   routerSettings,
 		router:           rtr,
 		agentTypes:       dispatchableAgentTypeNames(agentTypes),
 		cancelTaskDirect: rtr.CancelTask,
