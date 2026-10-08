@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -1464,19 +1465,33 @@ func newStaticHandler(dir func() string) http.HandlerFunc {
 		w.Header().Set("Content-Security-Policy", appCSP(inlineScriptHashes(html)))
 		http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(html))
 	}
+	// serveFallback answers a path that isn't a file. Only a client-side
+	// route gets the SPA shell (LOOM-158): a missing asset — anything
+	// under /assets/, or any path whose last segment has an extension,
+	// like a chunk from the bundle before a web update — is a 404, so
+	// the browser sees a failed load it can retry rather than HTML
+	// served as JavaScript.
+	serveFallback := func(w http.ResponseWriter, r *http.Request, root http.Dir) {
+		if r.URL.Path != "/index.html" &&
+			(strings.HasPrefix(r.URL.Path, "/assets/") || path.Ext(r.URL.Path) != "") {
+			http.NotFound(w, r)
+			return
+		}
+		serveIndex(w, r, root)
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", appCSP(nil))
 		// Read per request: a web update (LOOM-118) swaps the directory.
 		root := http.Dir(dir())
 		f, err := root.Open(r.URL.Path)
 		if err != nil {
-			serveIndex(w, r, root)
+			serveFallback(w, r, root)
 			return
 		}
 		info, statErr := f.Stat()
 		f.Close()
 		if statErr != nil || info.IsDir() || r.URL.Path == "/index.html" {
-			serveIndex(w, r, root)
+			serveFallback(w, r, root)
 			return
 		}
 		// Vite names every built asset by its content hash, so one never
