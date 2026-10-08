@@ -12,7 +12,9 @@ import (
 // sessionStreams tracks each session's open event streams, so logging out
 // or revoking a session ends them at once (LOOM-144): requireAuth runs
 // only when a stream connects, and a stream otherwise outlives its
-// session for as long as the client keeps it open.
+// session for as long as the client keeps it open. Blocking
+// POST /dispatch?wait=true waits are kept in one too, Server.waits, for
+// the same reason (LOOM-182).
 type sessionStreams struct {
 	mu      sync.Mutex
 	streams map[string]map[*context.CancelFunc]struct{}
