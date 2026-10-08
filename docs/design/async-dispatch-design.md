@@ -68,7 +68,7 @@ Runner context: derived from a service-owned root context created at
 | message | TEXT NOT NULL | the user's text, kept so the job can run (and LOOM-82 can retry) |
 | workspace_hint | TEXT NOT NULL DEFAULT '' | |
 | idempotency_key | TEXT NULL | `UNIQUE` where not null |
-| request_hash | TEXT NOT NULL | sha256 of (conversation_id, message, workspace_hint), for key-reuse checks |
+| request_hash | TEXT NOT NULL | sha256 of (conversation_id as sent, empty for a new conversation, message, workspace_hint, confirmation_id), for key-reuse checks |
 | status | TEXT NOT NULL | see state machine |
 | reply | TEXT NOT NULL DEFAULT '' | set on `succeeded` |
 | error | TEXT NOT NULL DEFAULT '' | set on `failed`/`interrupted` |
@@ -108,7 +108,7 @@ LOOM-95's job; this design leaves room for it (it can key off `dispatch_id`).
 - Seen key, same `request_hash`: return the existing job (202, or under `?wait=true` its result),
   never a second dispatch. Duplicate detection is the unique index, so two concurrent identical
   POSTs race safely: the loser's insert fails, it re-reads and returns the winner's job.
-- Seen key, different `request_hash`: `422 idempotency_key_reused`.
+- Seen key, different `request_hash`: `422 idempotency_conflict`.
 
 Keys live as long as the row. No expiry (single-user deployment, rows are small); revisit with
 retention if it matters.

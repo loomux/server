@@ -190,10 +190,13 @@ func (s *Service) Submit(ctx context.Context, req Request) (*registry.Dispatch, 
 	if req.Message == "" {
 		return nil, ErrInvalidRequest
 	}
+	// Hashed as the client sent it, before a new conversation gets its
+	// id: a retry of a new conversation's first message (same key, no
+	// conversation_id) must match the original, not look reused (LOOM-140).
+	hash := requestHash(req)
 	if req.ConversationID == "" {
 		req.ConversationID = uuid.NewString()
 	}
-	hash := requestHash(req)
 
 	if req.IdempotencyKey != "" {
 		if d, err := s.existing(ctx, req.IdempotencyKey, hash); d != nil || err != nil {
