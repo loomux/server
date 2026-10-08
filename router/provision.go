@@ -124,8 +124,8 @@ var errNoProvisionedPath = errors.New("provisioning finished without reporting t
 // user typed that repository — and not merely contains it (LOOM-152):
 // "…/tools-fork" doesn't name "…/tools". Words split on whitespace,
 // quotes, brackets, backticks and markdown's * and |, and lose trailing
-// punctuation; a
-// trailing "/" or ".git" doesn't make a different repository.
+// punctuation; a trailing "/" or ".git" doesn't make a different
+// repository.
 func namesRemote(message, remote string) bool {
 	want := canonicalRemote(remote)
 	if want == "" {
