@@ -7,10 +7,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"sort"
@@ -225,7 +227,9 @@ type Server struct {
 	loginThrottle      *loginThrottle
 	localTargets       bool
 	loginDevices       *loginDevices
+	streams            sessionStreams
 	streamPollInterval time.Duration
+	streamHeartbeat    time.Duration
 	staticDir          string
 	web                WebBundles
 	static             http.HandlerFunc
@@ -258,6 +262,12 @@ func WithStreamPollInterval(d time.Duration) Option {
 // registered (LOOM-141; app.Config.LocalTargetsOff). On by default.
 func WithLocalTargets(on bool) Option {
 	return func(s *Server) { s.localTargets = on }
+}
+
+// WithStreamHeartbeat overrides the stream's heartbeat interval, which is
+// also how often an open stream re-checks its session. For tests.
+func WithStreamHeartbeat(d time.Duration) Option {
+	return func(s *Server) { s.streamHeartbeat = d }
 }
 
 // WithStaticDir configures Server to serve a built single-page-app from
@@ -325,6 +335,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 		loginThrottle:      newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
 		streamPollInterval: defaultStreamPollInterval,
 		localTargets:       true,
+		streamHeartbeat:    streamHeartbeatInterval,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -404,7 +415,10 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 // handler and get served the SPA shell instead of the same
 // unsupported-path rejection "/api/v2/..." already gets.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	setCommonHeaders(w, r)
 	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		w.Header().Set("Content-Security-Policy", apiCSP)
+		w.Header().Set("Cache-Control", "no-store")
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			s.handleUnsupportedAPIPath(w, r)
 			return
@@ -495,6 +509,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not revoke session")
 		return
 	}
+	s.streams.end(sess.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -573,6 +588,7 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not revoke session")
 		return
 	}
+	s.streams.end(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1148,6 +1164,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	// The stream ends with its session: at once on logout or revoke, and
+	// at the next heartbeat if it expired (LOOM-144).
+	sess := sessionFromContext(r.Context())
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	defer s.streams.add(sess.ID, cancel)()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -1164,19 +1186,19 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// A baseline whose query fails comes back nil: it is tried once more
 	// now, and failing again is taken on the first poll tick as before,
 	// with that tick's narrower window.
-	messagesSeen := s.sendMessagesAdded(r.Context(), w, flusher, id, nil)
+	messagesSeen := s.sendMessagesAdded(ctx, w, flusher, id, nil)
 	if messagesSeen == nil {
-		messagesSeen = s.sendMessagesAdded(r.Context(), w, flusher, id, nil)
+		messagesSeen = s.sendMessagesAdded(ctx, w, flusher, id, nil)
 	}
-	dispatchSeen := s.sendDispatchUpdates(r.Context(), w, flusher, id, nil)
+	dispatchSeen := s.sendDispatchUpdates(ctx, w, flusher, id, nil)
 	if dispatchSeen == nil {
-		dispatchSeen = s.sendDispatchUpdates(r.Context(), w, flusher, id, nil)
+		dispatchSeen = s.sendDispatchUpdates(ctx, w, flusher, id, nil)
 	}
 	flusher.Flush()
 
 	poll := time.NewTicker(s.streamPollInterval)
 	defer poll.Stop()
-	heartbeat := time.NewTicker(streamHeartbeatInterval)
+	heartbeat := time.NewTicker(s.streamHeartbeat)
 	defer heartbeat.Stop()
 
 	var lastSent *taskUpdateEvent
@@ -1187,15 +1209,18 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// (LOOM-121).
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case <-heartbeat.C:
+			if !s.sessionStillValid(ctx, sess) {
+				return
+			}
 			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		case <-poll.C:
-			dispatchSeen = s.sendDispatchUpdates(r.Context(), w, flusher, id, dispatchSeen)
-			messagesSeen = s.sendMessagesAdded(r.Context(), w, flusher, id, messagesSeen)
-			ev, err := s.latestConversationTaskEvent(r.Context(), id)
+			dispatchSeen = s.sendDispatchUpdates(ctx, w, flusher, id, dispatchSeen)
+			messagesSeen = s.sendMessagesAdded(ctx, w, flusher, id, messagesSeen)
+			ev, err := s.latestConversationTaskEvent(ctx, id)
 			if err != nil || ev == nil {
 				continue
 			}
@@ -1382,12 +1407,19 @@ func newStaticHandler(dir func() string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		html, err := io.ReadAll(f)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
 		// Revalidated on every load: after a deploy an old index.html
 		// would point at asset hashes that no longer exist.
 		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeContent(w, r, "index.html", info.ModTime(), f)
+		w.Header().Set("Content-Security-Policy", appCSP(inlineScriptHashes(html)))
+		http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(html))
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", appCSP(nil))
 		// Read per request: a web update (LOOM-118) swaps the directory.
 		root := http.Dir(dir())
 		f, err := root.Open(r.URL.Path)

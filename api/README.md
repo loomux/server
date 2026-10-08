@@ -44,7 +44,12 @@ not engineering taste):
   `time.ParseDuration` syntax) — `requireAuth` refreshes `LastUsedAt` on
   every authenticated request. `POST /api/v1/logout` deletes the session
   row outright, for revoking a lost device immediately rather than
-  waiting out the window.
+  waiting out the window. Logout and `DELETE /sessions/{id}` also end
+  that session's open conversation streams at once (LOOM-144), and an
+  open stream re-checks its session at each heartbeat, so it ends within
+  15 s of the session expiring. A stream doesn't itself count as use:
+  only requests refresh `LastUsedAt`, so a tab left streaming doesn't
+  keep a session alive forever.
 - **`/login` brute-force protection: global exponential backoff, not a
   hard lockout** (LOOM-15). `throttle.go`'s `loginThrottle` is one
   in-memory counter for the whole process — deliberately *not* scoped
@@ -79,6 +84,15 @@ not engineering taste):
     token) can still be held at the global backoff. Anyone holding the
     password hash could mint device tokens, but could equally crack the
     hash offline.
+- **Browser hardening headers** (LOOM-143, `headers.go`): every
+  response carries `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`, plus HSTS
+  when the request came over HTTPS (directly or per the proxy's
+  `X-Forwarded-Proto`). API responses get `Cache-Control: no-store` and a
+  deny-all CSP; the web client gets a CSP limiting script, connections
+  and framing to this origin. index.html's inline scripts (the
+  pre-paint theme snippet) are allowed by hash, computed from the file
+  served, since a web update can change it without a server release.
 - **API version mismatch handling is real but URL-only** (LOOM-10): any
   `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
   bare `/api/` root — gets a structured 404 naming `api.APIVersion`
