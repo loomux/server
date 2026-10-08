@@ -23,7 +23,7 @@ func TestConfigFromEnv_PrimaryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConfigFromEnv: %v", err)
 	}
-	want := Tier{BaseURL: "https://api.groq.com/openai/v1", APIKey: "primary-key", Model: "llama-3.1-8b-instant"}
+	want := Tier{Provider: ProviderOpenAI, BaseURL: "https://api.groq.com/openai/v1", APIKey: "primary-key", Model: "llama-3.1-8b-instant"}
 	if cfg.Primary != want {
 		t.Errorf("Primary = %+v, want %+v", cfg.Primary, want)
 	}
@@ -49,7 +49,7 @@ func TestConfigFromEnv_PrimaryAndEscalation(t *testing.T) {
 	if cfg.Escalation == nil {
 		t.Fatal("Escalation = nil, want set")
 	}
-	want := Tier{BaseURL: "https://api.anthropic.com/v1", APIKey: "escalation-key", Model: "claude-haiku-4-5"}
+	want := Tier{Provider: ProviderOpenAI, BaseURL: "https://api.anthropic.com/v1", APIKey: "escalation-key", Model: "claude-haiku-4-5"}
 	if *cfg.Escalation != want {
 		t.Errorf("Escalation = %+v, want %+v", *cfg.Escalation, want)
 	}
@@ -79,6 +79,94 @@ func TestConfigFromEnv_PartialEscalation(t *testing.T) {
 
 	_, err := ConfigFromEnv()
 	if !errors.Is(err, ErrConfigInvalid) {
+		t.Fatalf("ConfigFromEnv err = %v, want wrapping ErrConfigInvalid", err)
+	}
+}
+
+// LOOM-186: an anthropic tier needs no base URL, and the escalation tier
+// can speak a different provider from the primary.
+func TestConfigFromEnv_AnthropicProvider(t *testing.T) {
+	setEnv(t, map[string]string{
+		envPrimaryProvider:    "anthropic",
+		envPrimaryAPIKey:      "primary-key",
+		envPrimaryModel:       "claude-haiku-4-5",
+		envEscalationProvider: "anthropic",
+		envEscalationAPIKey:   "escalation-key",
+		envEscalationModel:    "claude-sonnet-5-5",
+	})
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	want := Tier{Provider: ProviderAnthropic, BaseURL: "https://api.anthropic.com", APIKey: "primary-key", Model: "claude-haiku-4-5"}
+	if cfg.Primary != want {
+		t.Errorf("Primary = %+v, want %+v", cfg.Primary, want)
+	}
+	if cfg.Escalation == nil || cfg.Escalation.Provider != ProviderAnthropic || cfg.Escalation.Model != "claude-sonnet-5-5" {
+		t.Errorf("Escalation = %+v", cfg.Escalation)
+	}
+}
+
+func TestConfigFromEnv_MixedProviders(t *testing.T) {
+	setEnv(t, map[string]string{
+		envPrimaryBaseURL:     "https://api.groq.com/openai/v1",
+		envPrimaryAPIKey:      "primary-key",
+		envPrimaryModel:       "llama-3.1-8b-instant",
+		envEscalationProvider: "anthropic",
+		envEscalationBaseURL:  "https://llm-proxy.internal",
+		envEscalationAPIKey:   "escalation-key",
+		envEscalationModel:    "claude-sonnet-5-5",
+	})
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.Primary.Provider != ProviderOpenAI {
+		t.Errorf("Primary.Provider = %q, want openai", cfg.Primary.Provider)
+	}
+	if cfg.Escalation == nil || cfg.Escalation.Provider != ProviderAnthropic || cfg.Escalation.BaseURL != "https://llm-proxy.internal" {
+		t.Errorf("Escalation = %+v", cfg.Escalation)
+	}
+}
+
+func TestConfigFromEnv_UnknownProvider(t *testing.T) {
+	setEnv(t, map[string]string{
+		envPrimaryProvider: "gemini",
+		envPrimaryBaseURL:  "https://example.com",
+		envPrimaryAPIKey:   "k",
+		envPrimaryModel:    "m",
+	})
+
+	if _, err := ConfigFromEnv(); !errors.Is(err, ErrConfigInvalid) {
+		t.Fatalf("ConfigFromEnv err = %v, want wrapping ErrConfigInvalid", err)
+	}
+}
+
+// An openai tier still needs its base URL.
+func TestConfigFromEnv_OpenAINeedsBaseURL(t *testing.T) {
+	setEnv(t, map[string]string{
+		envPrimaryProvider: "openai",
+		envPrimaryAPIKey:   "k",
+		envPrimaryModel:    "m",
+	})
+
+	if _, err := ConfigFromEnv(); !errors.Is(err, ErrConfigInvalid) {
+		t.Fatalf("ConfigFromEnv err = %v, want wrapping ErrConfigInvalid", err)
+	}
+}
+
+// Setting only an escalation provider is a partial configuration.
+func TestConfigFromEnv_EscalationProviderOnly(t *testing.T) {
+	setEnv(t, map[string]string{
+		envPrimaryBaseURL:     "https://api.groq.com/openai/v1",
+		envPrimaryAPIKey:      "primary-key",
+		envPrimaryModel:       "llama-3.1-8b-instant",
+		envEscalationProvider: "anthropic",
+	})
+
+	if _, err := ConfigFromEnv(); !errors.Is(err, ErrConfigInvalid) {
 		t.Fatalf("ConfigFromEnv err = %v, want wrapping ErrConfigInvalid", err)
 	}
 }

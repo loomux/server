@@ -45,6 +45,24 @@ const scanTTL = 10 * time.Minute
 type scanResult struct {
 	keys    []targets.HostKey
 	expires time.Time
+	// at is the address the keys were read from. A scan still running
+	// when a PUT moved the target lands after the update dropped the
+	// old one; it is pinnable only while the target is still there
+	// (LOOM-164).
+	at scanEndpoint
+}
+
+// scanEndpoint is what decides which machine a scan reached: host,
+// port and the proxy in between. The key a target logs in with is
+// part of it too: a scan made while another key was in use belongs to
+// a different configuration, which handleUpdateTarget forgets.
+type scanEndpoint struct {
+	host, proxy, keyRef string
+	port                int
+}
+
+func endpointOf(t *registry.Target) scanEndpoint {
+	return scanEndpoint{host: t.Host, port: t.SSHPort, proxy: t.SSHProxy, keyRef: t.SSHKeyRef}
 }
 
 // scanResults holds each target's latest scan, in memory: a restart
@@ -125,7 +143,7 @@ func (s *Server) handleScanHostKey(w http.ResponseWriter, r *http.Request) {
 	}
 	expires := time.Now().Add(scanTTL).UTC()
 	s.scans.mu.Lock()
-	s.scans.byTarget[t.ID] = scanResult{keys: keys, expires: expires}
+	s.scans.byTarget[t.ID] = scanResult{keys: keys, expires: expires, at: endpointOf(t)}
 	s.scans.mu.Unlock()
 	writeJSON(w, http.StatusOK, scanHostKeyResponse{TargetID: t.ID, HostKeys: hostKeyResponses(keys),
 		ExpiresAt: expires, Pinned: pinnedHostKeys(t)})
@@ -151,7 +169,7 @@ func (s *Server) handlePinHostKey(w http.ResponseWriter, r *http.Request) {
 	s.scans.mu.Lock()
 	scan, scanned := s.scans.byTarget[t.ID]
 	s.scans.mu.Unlock()
-	if !scanned || time.Now().After(scan.expires) {
+	if !scanned || time.Now().After(scan.expires) || scan.at != endpointOf(t) {
 		writeError(w, http.StatusConflict, "scan the target's host key first (POST /api/v1/targets/{id}/scan-host-key); "+
 			"a scan can be pinned for 10 minutes")
 		return
@@ -168,6 +186,19 @@ func (s *Server) handlePinHostKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.hostKeys.SetTargetHostKeys(r.Context(), t.ID, line); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not pin the host key")
+		return
+	}
+	// A PUT that moved the target between the read above and the pin
+	// would leave the old machine's key pinned for the new address: put
+	// back what the update left, which for a managed target is no pin
+	// (LOOM-138).
+	if now, err := s.targets.GetTarget(r.Context(), t.ID); err != nil || endpointOf(now) != endpointOf(t) {
+		restore := t.HostKeys
+		if t.Managed() || (now != nil && now.Managed()) {
+			restore = ""
+		}
+		_ = s.hostKeys.SetTargetHostKeys(context.WithoutCancel(r.Context()), t.ID, restore)
+		writeError(w, http.StatusConflict, "the target changed while pinning; scan its host key again")
 		return
 	}
 	s.scans.mu.Lock()

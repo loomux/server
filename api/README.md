@@ -30,7 +30,10 @@ not engineering taste):
   client exactly once; only its SHA-256 hash is ever persisted
   (`registry.Session.TokenHash`) — a database compromise alone doesn't
   hand out working credentials. Every other request sends it as
-  `Authorization: Bearer <token>`.
+  `Authorization: Bearer <token>` (the scheme in any case, LOOM-175).
+- **Request bodies** are one JSON value, at most 1 MiB, arriving within
+  30 s (LOOM-132): over the limit is `413` whatever the content
+  (LOOM-175), and anything but whitespace after the value is `400`.
   - The user's stated plan is SSO/OAuth later. The seam for that is the
     session layer itself, not a shared `Authenticator` interface: however
     a future auth method proves identity (an OAuth callback, say), it
@@ -42,10 +45,15 @@ not engineering taste):
   session stays valid as long as it's used at least once within
   `SessionTTL` (default 30 days, `LOOMUX_SESSION_TTL` overridable,
   `time.ParseDuration` syntax) — `requireAuth` refreshes `LastUsedAt` on
-  every authenticated request. `POST /api/v1/logout` deletes the session
+  every authenticated request. However much it's used, a session also
+  ends `SessionMaxAge` after it was created (LOOM-175; default 90 days,
+  `LOOMUX_SESSION_MAX_AGE`, `0` for no limit), so a token that leaked
+  doesn't stay good for as long as it keeps being used; the device signs
+  in again. `POST /api/v1/logout` deletes the session
   row outright, for revoking a lost device immediately rather than
   waiting out the window. Logout and `DELETE /sessions/{id}` also end
-  that session's open conversation streams at once (LOOM-144), and an
+  that session's open conversation streams and blocking dispatch waits
+  at once (LOOM-144, LOOM-182), and an
   open stream re-checks its session at each heartbeat, so it ends within
   15 s of the session expiring. A stream doesn't itself count as use:
   only requests refresh `LastUsedAt`, so a tab left streaming doesn't
@@ -97,8 +105,10 @@ not engineering taste):
   `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
   bare `/api/` root — gets a structured 404 naming `api.APIVersion`
   (`ServeHTTP`, ahead of routing so it can never shadow a real `/api/v1/`
-  route hit with the wrong HTTP method, which correctly gets ServeMux's
-  own 405 instead). `GET /api/v1/version` (unauthenticated) lets a client
+  route hit with the wrong HTTP method, which correctly gets a 405
+  instead). Inside `/api/v1/`, a path no route has is a `404` and a
+  method its routes don't take a `405`, both `{error, code}`
+  (`handleNoRoute`, LOOM-161). `GET /api/v1/version` (unauthenticated) lets a client
   check `api.APIVersion` + `version.Version` before it even logs in. This
   satisfies §10 axis 1's "a mismatch is a clear rejection... not silent
   breakage" for the one version that exists — there's still no
@@ -117,7 +127,10 @@ not engineering taste):
   nor starts with `/api/` is served from there, with fallback to
   `index.html` for anything that isn't a real file — a browser refresh on
   a client-side route like `/conversations/abc123` gets the SPA shell
-  instead of a 404. Routed entirely in `ServeHTTP` ahead of `mux`,
+  instead of a 404. A missing path under `/assets/`, or one whose last
+  segment has an extension (`.js`, `.css`, `.ico`, …), is a plain `404`
+  instead (LOOM-158): a chunk from the bundle before a web update then
+  fails to load cleanly rather than arriving as HTML. Routed entirely in `ServeHTTP` ahead of `mux`,
   mirroring the existing `/api/` version check already there — `/api` and
   every `/api/*` path never reach the static handler (the bare `/api`
   path, with no trailing slash, is checked explicitly alongside the
@@ -143,6 +156,7 @@ Default codes, by status:
 | 401 | `unauthorized` |
 | 403 | `forbidden` |
 | 404 | `not_found` |
+| 405 | `method_not_allowed` (with `Allow`) |
 | 409 | `conflict` |
 | 413 | `too_large` |
 | 422 | `unprocessable` |
@@ -181,9 +195,10 @@ envelope: it classifies the failure with `error_class`.
 - **Enums** are snake_case: task statuses and `permission_mode` since
   the freeze review (item 9). Agent-type names such as `claude-code` are
   identifiers, not enums, and keep their spelling.
-- **Errors** are `{error, code}` (see the error section), except the
-  router's own `404`/`405` for a path or method no route matches, which
-  are plain text.
+- **Errors** are `{error, code}` (see the error section), including the
+  `404` for an `/api/v1` path no route matches and the `405` for a
+  method its routes don't take (LOOM-161; both were ServeMux's plain
+  text before).
 - **`/web/*`** is an operations API outside the v1 stability promise
   (`docs/release/versioning.md`, "The API v1 contract").
 
@@ -200,7 +215,8 @@ envelope: it classifies the failure with `error_class`.
 - `config.go` — `Config`, `LoadConfig()`: `LOOMUX_AUTH_PASSWORD_HASH`
   (required, validated as a real bcrypt hash), `LOOMUX_HTTP_ADDR`
   (optional, default `:8080`), `LOOMUX_SESSION_TTL` (optional, default 30
-  days), `LOOMUX_STATIC_DIR` (optional, default unset — static serving
+  days), `LOOMUX_SESSION_MAX_AGE` (optional, default 90 days, `0` for no
+  absolute limit), `LOOMUX_STATIC_DIR` (optional, default unset — static serving
   disabled).
 - `server.go` — `Server` (implements `http.Handler`), `NewServer`,
   `Dispatcher`/`SessionStore` (the narrow seams this package depends on —
@@ -245,7 +261,10 @@ envelope: it classifies the failure with `error_class`.
     - **Blocking** (`?wait=true`): waits for the job and
       answers `200 {reply, dispatch_id, conversation_id, status, …}`, or
       `500 {error, error_class, dispatch_id, …}` if it failed or was
-      interrupted.
+      interrupted. A wait whose session ends (logout, `DELETE
+      /sessions/{id}`, or expiry) is `401` at once, without the reply
+      (LOOM-182); the job carries on and its result is in the
+      conversation.
     - **Async** (the default, or `Prefer: respond-async`): `202
       {dispatch_id, conversation_id, status}` at once, with `Location:
       /api/v1/dispatches/{id}` (and `Preference-Applied: respond-async`
@@ -255,14 +274,22 @@ envelope: it classifies the failure with `error_class`.
       `api/dispatch.go`: async since the LOOM-81 web shipped (it was
       blocking while the deployed web still expected `{reply}`).
     - `conversation_id` empty starts a new conversation (its id is in the
-      response). A repeat with the same `Idempotency-Key` and the same
-      body returns the original job and runs nothing (a retry of a new
+      response). A non-empty one, like `workspace_hint`, must be 1–64
+      ASCII letters, digits, `-` or `_` (a server-minted id, a UUID,
+      always is), else `400` (LOOM-154): it is a path segment in
+      `GET /conversations/{id}`, so anything else could be stored but
+      never fetched back. A repeat with the same `Idempotency-Key` and
+      the same body returns the original job and runs nothing (a retry of a new
       conversation's first message leaves `conversation_id` empty, as the
       original did); the same key with a
       different body is `422` (code `idempotency_conflict`). A conversation
       with a job still in flight answers `409 {error, code, dispatch_id}`
       (code `conversation_busy`) naming it (LOOM-83 owns
       serializing instead). `503` while the server is shutting down.
+    - A `message` over 36 KiB (`targets.MaxPasteBytes`, 32 KiB, plus a
+      4 KiB margin) is `413` (code `too_large`) before anything runs
+      (LOOM-155): the router couldn't send it to an agent anyway (error
+      class `message_too_large`), and it never reaches the router model.
     - `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
       ID (e.g. a chat UI already focused on that workspace's conversation)
       that's folded into the router model's prompt as advisory context
@@ -397,8 +424,9 @@ envelope: it classifies the failure with `error_class`.
     without it). A scan returns `{target_id, host_keys: [{type,
     fingerprint}], expires_at, pinned_host_keys}` and trusts nothing; `502`
     with the SSH hint when the host can't be read. A pin must name a
-    fingerprint from the target's latest scan, at most 10 minutes old
-    (`409` otherwise), and returns the target, whose `pinned_host_keys`
+    fingerprint from the target's latest scan, at most 10 minutes old and
+    taken at the target's current host, port, proxy and key (LOOM-164; `409`
+    otherwise, also when a `PUT` moves the target mid-pin), and returns the target, whose `pinned_host_keys`
     then lists it. A pinned target is checked against its pin alone. Only
     remote targets (`400` for local). `test` returns `{target_id, reachable,
     tmux_version?, latency_ms, error?, host_key_problem}`. Targets also
@@ -467,6 +495,12 @@ envelope: it classifies the failure with `error_class`.
     that still sends it has it ignored. A target's key is set with
     `ssh_key_id` instead (below).
 
+    `GET /api/v1/targets` also answers `local_targets` (LOOM-183):
+    whether this server allows targets of kind `local`. It is `false`
+    with `LOOMUX_LOCAL_TARGETS=off` (the container image's default,
+    LOOM-141), when a `local` create or update is `400`; a client hides
+    or disables the choice instead of offering it and failing.
+
     Managed targets (LOOM-138, `docs/deploy/ssh.md`): a body may carry
     `ssh_key_id` (a key from `/ssh-keys`; `""` returns the target to the
     SSH config), or `"generate_ssh_key": true` (a new key named after the
@@ -493,7 +527,10 @@ envelope: it classifies the failure with `error_class`.
     discovered broken later: `kind` must be one of the two
     `targets.NewExecutor` knows; a `remote` needs both `host` and
     `user`, because `RemoteExecutor.destination()` builds `user+"@"+host`
-    and ssh rejects a bare `@host`; a `local` must carry neither, since
+    and ssh rejects a bare `@host`; that `host` is a host name, an
+    ssh_config `Host` alias (labels of letters, digits, `-` and `_`,
+    dot-separated) or an IPv4/IPv6 address (LOOM-175; a managed target's
+    takes no `_`); a `local` must carry neither, since
     clearing them silently would hide a caller's misunderstanding until
     an attach-info response came back missing fields they thought they
     had set. Bad body or failed validation is `400`, a duplicate name

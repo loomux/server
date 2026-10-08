@@ -204,7 +204,8 @@ defaults for three of them.
 | --- | --- |
 | `LOOMUX_AUTH_PASSWORD_HASH` | bcrypt; generate with `loomuxd -hash-password`. Validated at startup — a malformed value is a hard failure |
 | `LOOMUX_MASTER_KEY` | Credential-vault key. Its absence is only a *warning* at startup, and then every vault operation fails at runtime. Treat it as required |
-| `LOOMUX_ROUTER_PRIMARY_BASE_URL` | Router model endpoint |
+| `LOOMUX_ROUTER_PRIMARY_PROVIDER` | `openai` (default, any Chat Completions endpoint) or `anthropic` (Claude's Messages API) |
+| `LOOMUX_ROUTER_PRIMARY_BASE_URL` | Router model endpoint (optional for `anthropic`) |
 | `LOOMUX_ROUTER_PRIMARY_API_KEY` | |
 | `LOOMUX_ROUTER_PRIMARY_MODEL` | |
 
@@ -218,7 +219,8 @@ defaults for three of them.
 | `LOOMUX_STATIC_DIR` | `/srv/loomux/web` |
 | `LOOMUX_METRICS_ADDR` | `127.0.0.1:9090` (loopback only) |
 
-**Optional:** `LOOMUX_SESSION_TTL`, `LOOMUX_MARKER_DIR`,
+**Optional:** `LOOMUX_SESSION_TTL` (720h, sliding), `LOOMUX_SESSION_MAX_AGE`
+(2160h: a session's absolute lifetime; `0` for none), `LOOMUX_MARKER_DIR`,
 `LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
 `LOOMUX_TARGET_PROBE_INTERVAL` (5m), `LOOMUX_TURN_RETENTION` (720h; `0` keeps
 per-turn transcripts forever), `LOOMUX_EVENT_RETENTION` (2160h; `0` keeps the
@@ -226,8 +228,8 @@ dispatch audit trail forever), `LOOMUX_DISPATCH_MAX_DURATION` (2h: the
 ceiling on one dispatch job end to end; each agent turn has its own,
 tighter bounds inside it), `LOOMUX_DISPATCH_DRAIN` (20s: how long a
 shutdown lets in-flight dispatch jobs finish before leaving them for the
-next start to resume; keep it under the pod's termination grace period,
-30s by default), `LOOMUX_TMUX_SOCKET` (`loomux`: the tmux
+next start to resume; then other HTTP requests get 5s more, so keep the
+drain plus 5s under the pod's termination grace period, 30s by default), `LOOMUX_TMUX_SOCKET` (`loomux`: the tmux
 socket every session runs on; two instances driving the same targets,
 such as test and production, each need their own, or each one's orphan
 sweep reaps the other's sessions), `LOOMUX_LOCAL_TARGETS` (`off` in this
@@ -341,12 +343,17 @@ as sensitive anyway:
 `GET /api/v1/health` is the cheap, unauthenticated liveness/readiness probe.
 It pings the database and verifies the router model is configured, but it
 does **not** probe targets or the Tailscale sidecar. Use it for Kubernetes
-liveness and readiness.
+liveness and readiness. A database it can't reach makes it `unhealthy`; a
+router model that isn't configured, `degraded`; both answer `503`. Since
+it needs no session, a failed component's `error` is always the fixed
+`unavailable`; the reason is in `/api/v1/health/deep`.
 
 `GET /api/v1/health/deep` is authenticated and returns per-component detail:
 database, router model, every registered target (via a short `tmux -V`
 probe), and the sidecar SOCKS5 port. Use it for operational dashboards and
-for debugging "why can't Loomux reach target X?".
+for debugging "why can't Loomux reach target X?". The target probes and the
+sidecar dial run at once under one 10-second deadline; a target that hasn't
+answered by then is reported `unhealthy` with the error `timed out`.
 
 ```yaml
 livenessProbe:

@@ -57,8 +57,10 @@ LOOMUX_NOTIFY_EVENTS          which to notify: done,failed,needs_you (default: a
 LOOMUX_NOTIFY_MIN_DURATION    skip turns quicker than this (default: 30s)
 LOOMUX_PUBLIC_URL             where the web client is served, for notification links (optional)
 
-LOOMUX_ROUTER_PRIMARY_BASE_URL / _API_KEY / _MODEL       (required — see router/llmrouter)
-LOOMUX_ROUTER_ESCALATION_BASE_URL / _API_KEY / _MODEL    (optional, all-or-nothing)
+LOOMUX_ROUTER_PRIMARY_PROVIDER / _BASE_URL / _API_KEY / _MODEL       (required — see router/llmrouter;
+                                                                      provider openai (default) or anthropic,
+                                                                      base URL optional for anthropic)
+LOOMUX_ROUTER_ESCALATION_PROVIDER / _BASE_URL / _API_KEY / _MODEL    (optional, all-or-nothing)
 
 # api.LoadConfig — the HTTP/auth layer (only read in the default server mode)
 LOOMUX_AUTH_PASSWORD_HASH    bcrypt hash of the single v1 user's password (required — see loomuxd -hash-password)
