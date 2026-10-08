@@ -36,6 +36,37 @@ func TestRedactValues_NestedValuesLongestFirst(t *testing.T) {
 	}
 }
 
+// A value broken up by whitespace (a TUI's own line wrap, or spaced
+// groups) is still redacted, whole (LOOM-157).
+func TestRedactValues_WhitespaceSplitValue(t *testing.T) {
+	secrets := map[string]string{"K": "sk-live-ABCDEF123456", "SPACED": "9876 5432 1098", "SHORT": "ab cdef"}
+	for _, tc := range []struct{ in, want string }{
+		{"token: sk-live-ABC\nDEF123456 done", "token: [redacted] done"},
+		{"token: sk-live-\r\n    ABCDEF\t123456", "token: [redacted]"},
+		{"card 987654321098 and 9876 5432 1098", "card [redacted] and [redacted]"},
+		{"sk-live and ABCDEF stay", "sk-live and ABCDEF stay"},
+		// Under twelve bytes a value matches exactly, not across lines.
+		{"x ab cdef y, ab\ncdef", "x [redacted] y, ab\ncdef"},
+	} {
+		if got := credentials.RedactValues(tc.in, secrets); got != tc.want {
+			t.Errorf("RedactValues(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// One pass, longest first, covers both fixes together: a long value
+// split across a line break, with a short value that is an exact
+// substring of it, is redacted whole (LOOM-156 + LOOM-157 review).
+func TestRedactValues_SplitLongValueWithShortSubstring(t *testing.T) {
+	secrets := map[string]string{"long": "ghp_ABCDEFGHIJ0123456789", "short": "ABCDEFGHIJ"}
+	for i := 0; i < 100; i++ {
+		got := credentials.RedactValues("token ghp_ABCDEFGHIJ012\n3456789 and ABCDEFGHIJ", secrets)
+		if got != "token [redacted] and [redacted]" {
+			t.Fatalf("round %d: RedactValues = %q", i, got)
+		}
+	}
+}
+
 func TestRedactAll(t *testing.T) {
 	store := fakeLister{creds: []*registry.Credential{
 		{ID: "a", Value: "ghp_secret1"}, {ID: "b", WorkspaceID: "ws", Value: "tok-ws-only"},

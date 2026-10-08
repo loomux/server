@@ -102,7 +102,7 @@ func (e *LocalExecutor) PasteText(ctx context.Context, target, text string, ente
 }
 
 func (e *LocalExecutor) CapturePane(ctx context.Context, target string) (string, error) {
-	return e.run(ctx, "capture-pane", "-t", target, "-p")
+	return e.run(ctx, captureArgs(target)...)
 }
 
 func (e *LocalExecutor) KillSession(ctx context.Context, session string) error {

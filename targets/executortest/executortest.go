@@ -28,6 +28,7 @@ func Run(t *testing.T, newExecutor func(t *testing.T) targets.TargetExecutor) {
 	t.Run("PaneSurvivesCommandExit", func(t *testing.T) { testPaneSurvivesCommandExit(t, newExecutor(t)) })
 	t.Run("NoReparseByOtherShells", func(t *testing.T) { testNoReparseByOtherShells(t, newExecutor(t)) })
 	t.Run("SessionIsSized", func(t *testing.T) { testSessionIsSized(t, newExecutor(t)) })
+	t.Run("CaptureJoinsWrappedLines", func(t *testing.T) { testCaptureJoinsWrappedLines(t, newExecutor(t)) })
 	t.Run("PasteText", func(t *testing.T) { testPasteText(t, newExecutor(t)) })
 	t.Run("PasteStaysBracketed", func(t *testing.T) { testPasteStaysBracketed(t, newExecutor(t)) })
 }
@@ -151,6 +152,30 @@ func testSessionIsSized(t *testing.T, exec targets.TargetExecutor) {
 	if got := strings.TrimSpace(out); got != "220x50" {
 		t.Errorf("session size = %q, want 220x50", got)
 	}
+}
+
+// testCaptureJoinsWrappedLines checks CapturePane returns a line longer
+// than the pane is wide in one piece (LOOM-157): split at the wrap, a
+// secret in it would escape redaction.
+func testCaptureJoinsWrappedLines(t *testing.T, exec targets.TargetExecutor) {
+	ctx := context.Background()
+	session := uniqueSessionName(t)
+	long := fmt.Sprintf("wrapped-%d-", rand.Int()) + strings.Repeat("0123456789", 50)
+	if err := exec.NewSession(ctx, session, "", "printf '%s\\n' "+posixQuote(long)+"; sleep 30"); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
+	var captured string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		var err error
+		if captured, err = exec.CapturePane(ctx, session); err != nil {
+			t.Fatalf("CapturePane: %v", err)
+		}
+		if strings.Contains(captured, long) {
+			return
+		}
+	}
+	t.Fatalf("CapturePane never showed the %d-byte line whole; last capture:\n%s", len(long), captured)
 }
 
 // posixQuote single-quotes s for POSIX sh.

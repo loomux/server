@@ -309,6 +309,13 @@ func parsePaneDead(out string) (exited bool, status int, signal string, err erro
 	}
 }
 
+// captureArgs captures target's visible pane. -J joins lines tmux
+// wrapped at the pane's width (LOOM-157): a secret wrapped across two
+// lines would otherwise reach redaction in pieces, neither matching.
+func captureArgs(target string) []string {
+	return []string{"capture-pane", "-p", "-J", "-t", target}
+}
+
 // paneHistoryArgs captures target's pane from the start of its
 // scrollback.
 func paneHistoryArgs(target string) []string {

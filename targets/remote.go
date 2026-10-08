@@ -388,7 +388,7 @@ func (e *RemoteExecutor) PasteText(ctx context.Context, target, text string, ent
 }
 
 func (e *RemoteExecutor) CapturePane(ctx context.Context, target string) (string, error) {
-	return e.run(ctx, "capture-pane", "-t", target, "-p")
+	return e.run(ctx, captureArgs(target)...)
 }
 
 func (e *RemoteExecutor) KillSession(ctx context.Context, session string) error {
