@@ -30,7 +30,10 @@ not engineering taste):
   client exactly once; only its SHA-256 hash is ever persisted
   (`registry.Session.TokenHash`) — a database compromise alone doesn't
   hand out working credentials. Every other request sends it as
-  `Authorization: Bearer <token>`.
+  `Authorization: Bearer <token>` (the scheme in any case, LOOM-175).
+- **Request bodies** are one JSON value, at most 1 MiB, arriving within
+  30 s (LOOM-132): over the limit is `413` whatever the content
+  (LOOM-175), and anything but whitespace after the value is `400`.
   - The user's stated plan is SSO/OAuth later. The seam for that is the
     session layer itself, not a shared `Authenticator` interface: however
     a future auth method proves identity (an OAuth callback, say), it
