@@ -49,3 +49,20 @@ func TestRedactAll(t *testing.T) {
 		t.Fatalf("RedactAll with an unreadable vault = %q, %v; want no text and ErrUnredactable", got, err)
 	}
 }
+
+// LOOM-185: a system secret (a router provider key) is removed by every
+// scrub, with or without a vault value in the same text, and stays
+// removed after more are added.
+func TestRedactValues_SystemSecrets(t *testing.T) {
+	credentials.AddSystemSecret("router-key-AAAA1111")
+	credentials.AddSystemSecret("short") // under the minimum: ignored
+	credentials.AddSystemSecret("router-key-BBBB2222")
+	got := credentials.RedactValues("a router-key-AAAA1111 b router-key-BBBB2222 c short", map[string]string{"K": "vault-value"})
+	if got != "a [redacted] b [redacted] c short" {
+		t.Fatalf("RedactValues = %q", got)
+	}
+	out, err := credentials.RedactAll(context.Background(), fakeLister{}, "x router-key-AAAA1111")
+	if err != nil || out != "x [redacted]" {
+		t.Fatalf("RedactAll = %q, %v", out, err)
+	}
+}

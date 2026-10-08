@@ -194,6 +194,23 @@ type Store interface {
 	ListSSHKeys(ctx context.Context) ([]*SSHKey, error)
 	DeleteSSHKey(ctx context.Context, id string) error
 
+	// SetRouterTier, ListRouterTiers, DeleteRouterTier and
+	// ListRouterSettingsChanges keep the router model tiers set through
+	// Settings and their audit trail (LOOM-185). SetRouterTier inserts or
+	// replaces t's row and records change in the same transaction,
+	// stamping both times; APIKey is encrypted at rest (ErrNoMasterKey
+	// without a master key). ListRouterTiers decrypts every row, ordered
+	// by tier; a row that doesn't decrypt (or any, without a master key)
+	// is returned without APIKey and with the error joined into err (the
+	// others still come back).
+	// DeleteRouterTier deletes the row and records change, ErrNotFound if
+	// there is none. ListRouterSettingsChanges returns up to limit
+	// entries, newest first.
+	SetRouterTier(ctx context.Context, t *RouterTier, change *RouterSettingsChange) error
+	ListRouterTiers(ctx context.Context) ([]*RouterTier, error)
+	DeleteRouterTier(ctx context.Context, tier string, change *RouterSettingsChange) error
+	ListRouterSettingsChanges(ctx context.Context, limit int) ([]*RouterSettingsChange, error)
+
 	// CreateSession, GetSessionByTokenHash, ListSessions, TouchSession,
 	// and DeleteSession back client auth (design spec §9). TouchSession
 	// updates LastUsedAt (sliding expiration); a caller with an unknown

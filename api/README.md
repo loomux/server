@@ -445,6 +445,24 @@ envelope: it classifies the failure with `error_class`.
     otherwise; `409` if taken). The list (`ssh_keys`, a complete list) works
     without a master key; `used_by` holds the ids of the targets using
     each key, and deleting a key in use is `409`.
+  - `GET /api/v1/settings/router`, `PUT|DELETE
+    /api/v1/settings/router/{tier}`, `POST
+    /api/v1/settings/router/{tier}/test`, `GET
+    /api/v1/settings/router/audit?limit=N` — auth-gated router model
+    settings (LOOM-185, `WithRouterSettings`; 404 without it; design in
+    `docs/design/router-settings.md`). `{tier}` is `primary` or
+    `escalation`. A stored tier `{provider, base_url, model, api_key}`
+    overrides the environment's `LOOMUX_ROUTER_<TIER>_*` and applies
+    without a restart; `DELETE` goes back to the environment's. The key is
+    write-only: responses carry `key_fingerprint`, `key_last4`, `set_at`
+    and which `source` (`stored`, `env`, `none`) is active, never the key.
+    `PUT` may leave `api_key` out to keep the stored one, but only while
+    `provider` and `base_url` are unchanged; `base_url` must be https
+    (http only to loopback), optional for `anthropic`; `503` without a
+    master key. `test` makes one one-token call: `{ok, status?,
+    error_class?, error?, model, source, duration_ms}`, a failure
+    described by its HTTP status and class, never the provider's body. `audit` lists
+    `{id, tier, action, fields, actor, created_at}`, newest first.
   - `POST /api/v1/targets/{id}/migrate-ssh` `{dry_run}` — auth-gated
     (LOOM-138, `WithSSHMigration`; `501` without it, without `/ssh-keys`,
     or, to apply, without probing or pinning). Plans a config-mode remote

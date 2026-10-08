@@ -23,28 +23,32 @@ type relayArguments struct {
 // fails (transport/rate-limit) or returns an unusable (unparseable/
 // invalid tool call, or an empty reply).
 func (m *Model) Relay(ctx context.Context, in router.RelayInput) (router.RelayResult, error) {
+	// One config for the whole call: a change (LOOM-185) applies from
+	// the next one.
+	state := m.cfg.Load()
+	cfg := &state.Config
 	var err error
-	if m.skipPrimary() {
+	if m.skipPrimary(cfg) {
 		err = errPrimarySkipped
 	} else {
 		var result router.RelayResult
-		result, err = m.relayWith(ctx, "primary", m.cfg.Primary, m.primaryTimeout, in)
-		m.recordPrimary(ctx, err)
+		result, err = m.relayWith(ctx, "primary", cfg.Primary, m.primaryTimeout, in)
+		m.recordPrimary(ctx, err, state.gen)
 		if err == nil {
 			return result, nil
 		}
 	}
-	if m.cfg.Escalation == nil {
+	if cfg.Escalation == nil {
 		m.metrics.RecordRouterCall(metrics.RouterOpRelay, "primary", metrics.OutcomeFailure, m.primaryTimeout)
-		return router.RelayResult{}, fmt.Errorf("llmrouter: relay: primary model: %w", err)
+		return router.RelayResult{}, scrubKeys(fmt.Errorf("llmrouter: relay: primary model: %w", err))
 	}
 
 	m.metrics.RecordRouterEscalation(metrics.RouterOpRelay)
-	result, err2 := m.relayWith(ctx, "escalation", *m.cfg.Escalation, m.escalationTimeout, in)
+	result, err2 := m.relayWith(ctx, "escalation", *cfg.Escalation, m.escalationTimeout, in)
 	if err2 != nil {
 		m.metrics.RecordRouterCall(metrics.RouterOpRelay, "escalation", metrics.OutcomeFailure, m.escalationTimeout)
-		return router.RelayResult{}, fmt.Errorf(
-			"llmrouter: relay: primary model failed (%v); escalation model also failed: %w", err, err2)
+		return router.RelayResult{}, scrubKeys(fmt.Errorf(
+			"llmrouter: relay: primary model failed (%v); escalation model also failed: %w", err, err2))
 	}
 	return result, nil
 }

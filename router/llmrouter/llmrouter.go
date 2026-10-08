@@ -1,7 +1,8 @@
 package llmrouter
 
 import (
-	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Loomux/server/internal/metrics"
@@ -23,7 +24,10 @@ const (
 // tier when the primary's output is unusable or the primary is
 // unavailable. See README.md for the full design.
 type Model struct {
-	cfg               Config
+	// cfg is read once per Decide/Relay call and replaced whole by
+	// SetConfig (LOOM-185), so a change applies without a restart and a
+	// call in flight finishes on the config it started with.
+	cfg               atomic.Pointer[configState]
 	agentTypes        []string
 	primaryTimeout    time.Duration
 	escalationTimeout time.Duration
@@ -33,6 +37,8 @@ type Model struct {
 	agentDescriptions map[string]string
 	// primaryBreaker skips the primary tier during an outage (LOOM-107).
 	primaryBreaker *breaker
+	// setMu serializes SetConfig, so generations only ever go up.
+	setMu sync.Mutex
 }
 
 // Option configures a Model constructed via New.
@@ -72,27 +78,67 @@ func WithMetrics(met *metrics.Metrics) Option {
 // with no agent_type — any use_workspace/provision_workspace decision that
 // names one fails validation.
 func New(cfg Config, agentTypes []string, opts ...Option) (*Model, error) {
-	if err := cfg.Primary.Validate(); err != nil {
-		return nil, fmt.Errorf("primary tier is incompletely configured: %w", err)
-	}
-	if cfg.Escalation != nil {
-		if err := cfg.Escalation.Validate(); err != nil {
-			return nil, fmt.Errorf("escalation tier is incompletely configured: %w", err)
-		}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 
 	m := &Model{
-		cfg:               cfg,
 		agentTypes:        agentTypes,
 		primaryTimeout:    defaultPrimaryTimeout,
 		escalationTimeout: defaultEscalationTimeout,
 		primaryBreaker:    newBreaker(),
 	}
+	m.cfg.Store(&configState{Config: *cloneConfig(cfg)})
 	for _, opt := range opts {
 		opt(m)
 	}
 	m.metrics.ObserveRouterBreaker(m.primaryBreaker.open)
 	return m, nil
+}
+
+// Config returns the configuration calls use now.
+func (m *Model) Config() Config { return *cloneConfig(m.cfg.Load().Config) }
+
+// configState is a config with its primary generation: SetConfig bumps
+// gen whenever the primary tier changes, so a call still running on the
+// old primary doesn't count against the new one's breaker.
+type configState struct {
+	Config
+	gen uint64
+}
+
+// SetConfig replaces the configuration (LOOM-185): calls that start
+// after it returns use cfg; calls in flight finish on the old one. An
+// invalid cfg is refused, leaving the old one in place. A new primary
+// tier closes the circuit breaker: the old provider's outage says
+// nothing about the new one.
+func (m *Model) SetConfig(cfg Config) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	m.setMu.Lock()
+	defer m.setMu.Unlock()
+	old := m.cfg.Load()
+	next := &configState{Config: *cloneConfig(cfg), gen: old.gen}
+	if old.Primary != cfg.Primary {
+		next.gen++
+	}
+	m.cfg.Store(next)
+	if next.gen != old.gen {
+		m.primaryBreaker.reset()
+	}
+	return nil
+}
+
+// cloneConfig copies cfg, Escalation too, so no caller shares the
+// pointer a running call reads.
+func cloneConfig(cfg Config) *Config {
+	c := cfg
+	if cfg.Escalation != nil {
+		esc := *cfg.Escalation
+		c.Escalation = &esc
+	}
+	return &c
 }
 
 func (m *Model) isValidAgentType(agentType string) bool {

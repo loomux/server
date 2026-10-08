@@ -115,6 +115,14 @@ LOOMUX_ROUTER_ESCALATION_API_KEY
 LOOMUX_ROUTER_ESCALATION_MODEL
 ```
 
+The environment is the bootstrap and the fallback: a tier stored through
+Settings (`/api/v1/settings/router`, LOOM-185,
+`docs/design/router-settings.md`) overrides the env's for that tier, and
+`Model.SetConfig` applies a change to running calls' successors without
+a restart. A stored tier's key is only kept while its provider and base
+URL stay the same, and a stored base URL must be https (http only to
+loopback).
+
 `ConfigFromEnv()` fails fast (mirrors `registry/sqlite/crypto.go`'s
 `KeyFromEnv` convention) if any primary var is missing, a provider name
 is unknown, or the escalation tier is set partially. An `anthropic`
@@ -160,6 +168,8 @@ name with `ParseProvider` and lists the choices with `Providers()`.
 - `relay.go` — `Relay` (escalation orchestration) and `relayWith` (one
   tier's round trip for the `condense_output` call, parsed into
   `router.RelayResult`).
+- `settings.go` — `Settings` (LOOM-185): stored tiers over env, applied
+  through `Model.SetConfig`, audited; `Test`'s one-token call.
 
 ## Testing
 

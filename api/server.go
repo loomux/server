@@ -240,6 +240,7 @@ type Server struct {
 	taskCanceller    TaskCanceller
 	credentials      CredentialStore
 	sshKeys          SSHKeyStore
+	routerSettings   RouterSettings
 	dropSSHKey       func(id string)
 	resolveSSHConfig SSHConfigResolver
 	// migrating is held while a migrate-ssh is applied (LOOM-138).
@@ -430,6 +431,11 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/ssh-keys", s.requireAuth(s.handleListSSHKeys))
 	mux.HandleFunc("POST /api/v1/ssh-keys", s.requireAuth(s.handleCreateSSHKey))
 	mux.HandleFunc("DELETE /api/v1/ssh-keys/{id}", s.requireAuth(s.handleDeleteSSHKey))
+	mux.HandleFunc("GET /api/v1/settings/router", s.requireAuth(s.handleGetRouterSettings))
+	mux.HandleFunc("GET /api/v1/settings/router/audit", s.requireAuth(s.handleListRouterSettingsChanges))
+	mux.HandleFunc("PUT /api/v1/settings/router/{tier}", s.requireAuth(s.handleSetRouterTier))
+	mux.HandleFunc("DELETE /api/v1/settings/router/{tier}", s.requireAuth(s.handleClearRouterTier))
+	mux.HandleFunc("POST /api/v1/settings/router/{tier}/test", s.requireAuth(s.handleTestRouterTier))
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/health/deep", s.requireAuth(s.handleHealthDeep))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
