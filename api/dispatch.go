@@ -130,6 +130,12 @@ type busyResponse struct {
 	DispatchID string `json:"dispatch_id"`
 }
 
+// invalidRequestText is a dispatch.ErrInvalidRequest's reason without
+// the package's prefix, e.g. "message is required".
+func invalidRequestText(err error) string {
+	return strings.TrimPrefix(err.Error(), dispatch.ErrInvalidRequest.Error()+": ")
+}
+
 func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	mode, err := parseDispatchMode(r)
 	if err != nil {
@@ -145,18 +151,21 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if req.Message == "" {
-		writeError(w, http.StatusBadRequest, "message is required")
-		return
-	}
-
-	d, err := s.dispatcher.Submit(r.Context(), dispatch.Request{
+	dreq := dispatch.Request{
 		ConversationID: req.ConversationID,
 		Message:        req.Message,
 		WorkspaceHint:  req.WorkspaceHint,
 		ConfirmationID: req.ConfirmationID,
 		IdempotencyKey: key,
-	})
+	}
+	// A conversation_id is a path segment everywhere else in the API, so
+	// it must be one that can be fetched back (LOOM-154).
+	if err := dreq.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, invalidRequestText(err))
+		return
+	}
+
+	d, err := s.dispatcher.Submit(r.Context(), dreq)
 	var busy *dispatch.BusyError
 	switch {
 	case errors.As(err, &busy):
@@ -172,7 +181,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	case errors.Is(err, dispatch.ErrInvalidRequest):
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, invalidRequestText(err))
 		return
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "could not start dispatch")
