@@ -340,12 +340,17 @@ as sensitive anyway:
 `GET /api/v1/health` is the cheap, unauthenticated liveness/readiness probe.
 It pings the database and verifies the router model is configured, but it
 does **not** probe targets or the Tailscale sidecar. Use it for Kubernetes
-liveness and readiness.
+liveness and readiness. A database it can't reach makes it `unhealthy`; a
+router model that isn't configured, `degraded`; both answer `503`. Since
+it needs no session, a failed component's `error` is always the fixed
+`unavailable`; the reason is in `/api/v1/health/deep`.
 
 `GET /api/v1/health/deep` is authenticated and returns per-component detail:
 database, router model, every registered target (via a short `tmux -V`
 probe), and the sidecar SOCKS5 port. Use it for operational dashboards and
-for debugging "why can't Loomux reach target X?".
+for debugging "why can't Loomux reach target X?". The target probes and the
+sidecar dial run at once under one 10-second deadline; a target that hasn't
+answered by then is reported `unhealthy` with the error `timed out`.
 
 ```yaml
 livenessProbe:
