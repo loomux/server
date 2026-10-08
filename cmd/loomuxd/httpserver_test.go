@@ -75,8 +75,9 @@ func TestServeHTTP_WaitsForInFlightRequests(t *testing.T) {
 	ctx, stop := context.WithCancel(context.Background())
 	served := make(chan error, 1)
 	go func() {
-		served <- serveHTTP(ctx, srv, ln, func() { note("drained") }, 5*time.Second)
+		err := serveHTTP(ctx, srv, ln, func() { note("drained") }, 5*time.Second)
 		note("serveHTTP returned")
+		served <- err
 	}()
 
 	body := make(chan string, 1)
@@ -98,7 +99,6 @@ func TestServeHTTP_WaitsForInFlightRequests(t *testing.T) {
 	if got := <-body; got != "whole answer" {
 		t.Fatalf("in-flight request got %q", got)
 	}
-	time.Sleep(10 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
 	want := []string{"drained", "handler done", "serveHTTP returned"}

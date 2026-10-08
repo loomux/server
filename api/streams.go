@@ -16,12 +16,19 @@ import (
 type sessionStreams struct {
 	mu      sync.Mutex
 	streams map[string]map[*context.CancelFunc]struct{}
+	// closed is set by endAll: a stream registering after it (one that
+	// was still in auth when shutdown began) is ended at once.
+	closed bool
 }
 
 // add registers cancel under sessionID; the returned func unregisters it.
 func (s *sessionStreams) add(sessionID string, cancel context.CancelFunc) (remove func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		cancel()
+		return func() {}
+	}
 	if s.streams == nil {
 		s.streams = map[string]map[*context.CancelFunc]struct{}{}
 	}
@@ -56,6 +63,7 @@ func (s *sessionStreams) end(sessionID string) {
 func (s *sessionStreams) endAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closed = true
 	for _, set := range s.streams {
 		for cancel := range set {
 			(*cancel)()

@@ -173,8 +173,9 @@ func runServer(ctx context.Context, loomux *app.App) {
 }
 
 // shutdownGrace is how long in-flight HTTP requests get to finish once
-// the dispatch drain is done.
-const shutdownGrace = 10 * time.Second
+// the dispatch drain is done. With the default drain (20 s) the whole
+// shutdown fits the 30 s Kubernetes gives a pod by default.
+const shutdownGrace = 5 * time.Second
 
 // webOption serves the web client from apiCfg.StaticDir, updatable in
 // place (LOOM-118) when a bundles directory is configured. A bundle

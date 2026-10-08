@@ -111,3 +111,18 @@ func TestStream_EndStreamsEndsThemAll(t *testing.T) {
 		t.Fatal("a stream stayed open after EndStreams")
 	}
 }
+
+// A stream that connects after EndStreams (it was still being
+// authenticated as shutdown began) ends at once too.
+func TestStream_ConnectingAfterEndStreamsEndsAtOnce(t *testing.T) {
+	store := newTestStore(t)
+	jobs := dispatch.New(store, func(context.Context, *registry.Dispatch) (string, error) { return "", nil })
+	server := api.NewServer(jobs, store, store, store, store, store, store, []byte(testPasswordHash(t)))
+	hs := httptest.NewServer(server)
+	t.Cleanup(hs.Close)
+	token, _ := login(t, hs.URL, testPassword)
+	server.EndStreams()
+	if !endsWithin(watchEnd(openStream(t, hs.URL, token, "c-late")), 5*time.Second) {
+		t.Fatal("a stream opened after EndStreams stayed open")
+	}
+}
