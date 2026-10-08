@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -203,24 +204,27 @@ const streamHeartbeatInterval = 15 * time.Second
 // TLS/networking (deployment assumption: plain HTTP behind a reverse
 // proxy that terminates TLS — see README.md).
 type Server struct {
-	dispatcher         Dispatcher
-	sessions           SessionStore
-	workspaces         WorkspaceLister
-	tasks              TaskLister
-	messages           MessageLister
-	attachInfo         AttachInfoStore
-	targets            TargetStore
-	targetProber       TargetProber
-	taskTurns          TaskTurnStore
-	events             EventStore
-	scanHostKey        HostKeyScanner
-	hostKeys           HostKeyStore
-	scans              *scanResults
-	workspaceManager   WorkspaceManager
-	taskCanceller      TaskCanceller
-	credentials        CredentialStore
-	sshKeys            SSHKeyStore
-	dropSSHKey         func(id string)
+	dispatcher       Dispatcher
+	sessions         SessionStore
+	workspaces       WorkspaceLister
+	tasks            TaskLister
+	messages         MessageLister
+	attachInfo       AttachInfoStore
+	targets          TargetStore
+	targetProber     TargetProber
+	taskTurns        TaskTurnStore
+	events           EventStore
+	scanHostKey      HostKeyScanner
+	hostKeys         HostKeyStore
+	scans            *scanResults
+	workspaceManager WorkspaceManager
+	taskCanceller    TaskCanceller
+	credentials      CredentialStore
+	sshKeys          SSHKeyStore
+	dropSSHKey       func(id string)
+	resolveSSHConfig SSHConfigResolver
+	// migrating is held while a migrate-ssh is applied (LOOM-138).
+	migrating          sync.Mutex
 	agentTypes         []string
 	health             HealthChecker
 	passwordHash       []byte
@@ -378,6 +382,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("POST /api/v1/targets/{id}/scan-host-key", s.requireAuth(s.handleScanHostKey))
 	mux.HandleFunc("POST /api/v1/targets/{id}/pin", s.requireAuth(s.handlePinHostKey))
 	mux.HandleFunc("DELETE /api/v1/targets/{id}/pin", s.requireAuth(s.handleUnpinHostKey))
+	mux.HandleFunc("POST /api/v1/targets/{id}/migrate-ssh", s.requireAuth(s.handleMigrateSSH))
 	mux.HandleFunc("GET /api/v1/credentials", s.requireAuth(s.handleListCredentials))
 	mux.HandleFunc("POST /api/v1/credentials", s.requireAuth(s.handleCreateCredential))
 	mux.HandleFunc("PUT /api/v1/credentials/{id}/value", s.requireAuth(s.handleSetCredentialValue))
