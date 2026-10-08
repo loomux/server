@@ -97,8 +97,10 @@ not engineering taste):
   `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
   bare `/api/` root — gets a structured 404 naming `api.APIVersion`
   (`ServeHTTP`, ahead of routing so it can never shadow a real `/api/v1/`
-  route hit with the wrong HTTP method, which correctly gets ServeMux's
-  own 405 instead). `GET /api/v1/version` (unauthenticated) lets a client
+  route hit with the wrong HTTP method, which correctly gets a 405
+  instead). Inside `/api/v1/`, a path no route has is a `404` and a
+  method its routes don't take a `405`, both `{error, code}`
+  (`handleNoRoute`, LOOM-161). `GET /api/v1/version` (unauthenticated) lets a client
   check `api.APIVersion` + `version.Version` before it even logs in. This
   satisfies §10 axis 1's "a mismatch is a clear rejection... not silent
   breakage" for the one version that exists — there's still no
@@ -146,6 +148,7 @@ Default codes, by status:
 | 401 | `unauthorized` |
 | 403 | `forbidden` |
 | 404 | `not_found` |
+| 405 | `method_not_allowed` (with `Allow`) |
 | 409 | `conflict` |
 | 413 | `too_large` |
 | 422 | `unprocessable` |
@@ -184,9 +187,10 @@ envelope: it classifies the failure with `error_class`.
 - **Enums** are snake_case: task statuses and `permission_mode` since
   the freeze review (item 9). Agent-type names such as `claude-code` are
   identifiers, not enums, and keep their spelling.
-- **Errors** are `{error, code}` (see the error section), except the
-  router's own `404`/`405` for a path or method no route matches, which
-  are plain text.
+- **Errors** are `{error, code}` (see the error section), including the
+  `404` for an `/api/v1` path no route matches and the `405` for a
+  method its routes don't take (LOOM-161; both were ServeMux's plain
+  text before).
 - **`/web/*`** is an operations API outside the v1 stability promise
   (`docs/release/versioning.md`, "The API v1 contract").
 

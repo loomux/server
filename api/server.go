@@ -444,6 +444,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleUnsupportedAPIPath(w, r)
 			return
 		}
+		if h, pattern := s.mux.Handler(r); pattern == "" {
+			s.handleNoRoute(w, r, h)
+			return
+		}
 		s.mux.ServeHTTP(w, r)
 		return
 	}
@@ -1409,6 +1413,34 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, versionResponse{ServerVersion: version.Version, APIVersion: APIVersion})
 }
 
+// handleNoRoute answers an /api/v1 request no route matches with the
+// usual {error, code} body instead of ServeMux's plain text (LOOM-161).
+// h is ServeMux's own answer: it tells a path no route has (404) from a
+// method the path's routes don't take (405, with its Allow header).
+func (s *Server) handleNoRoute(w http.ResponseWriter, r *http.Request, h http.Handler) {
+	rec := &noRouteRecorder{header: http.Header{}, status: http.StatusOK}
+	h.ServeHTTP(rec, r)
+	if rec.status == http.StatusMethodNotAllowed {
+		if allow := rec.header.Values("Allow"); len(allow) > 0 {
+			w.Header()["Allow"] = allow
+		}
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeError(w, http.StatusNotFound, "no such API endpoint")
+}
+
+// noRouteRecorder keeps the status and headers ServeMux's 404/405
+// handler writes, and drops its plain-text body.
+type noRouteRecorder struct {
+	header http.Header
+	status int
+}
+
+func (r *noRouteRecorder) Header() http.Header         { return r.header }
+func (r *noRouteRecorder) WriteHeader(status int)      { r.status = status }
+func (r *noRouteRecorder) Write(b []byte) (int, error) { return len(b), nil }
+
 type unsupportedVersionResponse struct {
 	errorResponse
 	SupportedVersions []string `json:"supported_versions"`
@@ -2149,6 +2181,8 @@ func errorCodeFor(status int) string {
 		return "forbidden"
 	case http.StatusNotFound:
 		return "not_found"
+	case http.StatusMethodNotAllowed:
+		return "method_not_allowed"
 	case http.StatusConflict:
 		return "conflict"
 	case http.StatusRequestEntityTooLarge:
