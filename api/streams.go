@@ -40,7 +40,10 @@ func (s *sessionStreams) add(sessionID string, cancel context.CancelFunc) (remov
 	}
 }
 
-// end cancels every open stream of sessionID.
+// end cancels every open stream of sessionID. It calls the cancels under
+// s.mu: safe because a plain WithCancel cancel runs no callbacks (no
+// context.AfterFunc is registered on these contexts) and so can't come
+// back for the lock.
 func (s *sessionStreams) end(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
