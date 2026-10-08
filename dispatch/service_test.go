@@ -186,6 +186,48 @@ func TestSameIdempotencyKeyRunsOnce(t *testing.T) {
 	}
 }
 
+// A retry of a new conversation's first message carries no
+// conversation_id, like the original: it gets the original dispatch and
+// its conversation, not ErrKeyReused (LOOM-140).
+func TestSameIdempotencyKeyNewConversationRunsOnce(t *testing.T) {
+	var runs atomic.Int32
+	svc := newService(t, newStore(t), func(context.Context, *registry.Dispatch) (string, error) {
+		runs.Add(1)
+		return "once", nil
+	})
+	req := dispatch.Request{Message: "m", IdempotencyKey: "k-new"}
+	a, err := svc.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit a: %v", err)
+	}
+	waitDone(t, svc, a.ID)
+	b, err := svc.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit b: %v", err)
+	}
+	if b.ID != a.ID || b.ConversationID != a.ConversationID {
+		t.Fatalf("retry got dispatch %s in %s, want %s in %s", b.ID, b.ConversationID, a.ID, a.ConversationID)
+	}
+	if runs.Load() != 1 {
+		t.Fatalf("run called %d times, want 1", runs.Load())
+	}
+}
+
+// The same key with a different request is still refused when one of
+// them named no conversation.
+func TestIdempotencyKeyNewConversationThenNamedIsReused(t *testing.T) {
+	svc := newService(t, newStore(t), func(context.Context, *registry.Dispatch) (string, error) { return "ok", nil })
+	a, err := svc.Submit(context.Background(), dispatch.Request{Message: "m", IdempotencyKey: "k-mixed"})
+	if err != nil {
+		t.Fatalf("Submit a: %v", err)
+	}
+	waitDone(t, svc, a.ID)
+	_, err = svc.Submit(context.Background(), dispatch.Request{ConversationID: "other", Message: "m", IdempotencyKey: "k-mixed"})
+	if !errors.Is(err, dispatch.ErrKeyReused) {
+		t.Fatalf("Submit b err = %v, want ErrKeyReused", err)
+	}
+}
+
 func TestConcurrentSameIdempotencyKeyRunsOnce(t *testing.T) {
 	var runs atomic.Int32
 	release := make(chan struct{})
