@@ -10,8 +10,8 @@ import (
 // built tool schema.
 func targetIDProperty(t *testing.T, targetIDs []string) map[string]any {
 	t.Helper()
-	tool := buildDecideTool([]string{"claude-code"}, []string{"ws-1"}, targetIDs, false)
-	params := map[string]any(tool.OfFunction.Function.Parameters)
+	tool := decideTool([]string{"claude-code"}, []string{"ws-1"}, targetIDs, false)
+	params := tool.schema
 	properties, ok := params["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("tool parameters have no properties map: %+v", params)
@@ -61,8 +61,8 @@ func TestBuildDecideTool_NoTargets_TargetIDUnconstrained(t *testing.T) {
 // actionEnum returns the action enum the decide tool offers the model.
 func actionEnum(t *testing.T, targetIDs []string) []string {
 	t.Helper()
-	tool := buildDecideTool([]string{"claude-code"}, nil, targetIDs, false)
-	params := tool.OfFunction.Function.Parameters
+	tool := decideTool([]string{"claude-code"}, nil, targetIDs, false)
+	params := tool.schema
 	props, _ := params["properties"].(map[string]any)
 	action, _ := props["action"].(map[string]any)
 	enum, ok := action["enum"].([]string)
@@ -89,8 +89,8 @@ func TestBuildDecideTool_NoTargets_HidesTargetActions(t *testing.T) {
 // schema's name pattern is the provisioner's: a name the provisioner
 // accepts (underscores included) must not be rejected by the schema.
 func TestBuildDecideTool_WorkspaceNamePatternAcceptsUnderscore(t *testing.T) {
-	tool := buildDecideTool([]string{"claude-code"}, []string{"ws-1"}, []string{"target-1"}, false)
-	params := map[string]any(tool.OfFunction.Function.Parameters)
+	tool := decideTool([]string{"claude-code"}, []string{"ws-1"}, []string{"target-1"}, false)
+	params := tool.schema
 	nested := params["properties"].(map[string]any)["new_workspace"].(map[string]any)["properties"].(map[string]any)
 	pattern, ok := nested["name"].(map[string]any)["pattern"].(string)
 	if !ok {

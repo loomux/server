@@ -268,6 +268,14 @@ func paneDeadArgs(target string) []string {
 	return []string{"display-message", "-p", "-t", target, "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}"}
 }
 
+// reapArgs has the tmux server reap its exited children, recording a
+// dead pane's exit status: it sends the server a SIGCHLD, which is what
+// tmux reaps on. run-shell runs its command with /bin/sh whatever the
+// target's default-shell, and expands #{pid} to the server's pid.
+func reapArgs() []string {
+	return []string{"run-shell", "kill -CHLD #{pid}"}
+}
+
 // statusPending is parsePaneDead's status for a dead pane whose exit
 // status tmux hasn't recorded yet.
 const statusPending = -2
@@ -343,10 +351,20 @@ func paneExited(ctx context.Context, run func(context.Context, ...string) (strin
 	// by a signal" it would fail a recipe that exited 0. tmux reaps on its
 	// own event loop, which a busy server (many sessions, a loaded host)
 	// can run late: allow it statusPendingWait.
+	//
+	// Waiting alone isn't enough: tmux can miss the SIGCHLD of a command
+	// that exits the instant its pane starts (an agent CLI that isn't
+	// installed), and it only reaps when a SIGCHLD arrives. Its process
+	// then stays a zombie, and the status unrecorded, until some other
+	// child of the server happens to exit — on a quiet server, never
+	// (LOOM-181). So each round also tells the server to reap.
 	for waited := time.Duration(0); status == statusPending; waited += deadPaneRecaptureDelay {
 		if waited >= statusPendingWait {
 			status = -1
 			break
+		}
+		if _, err := run(ctx, reapArgs()...); err != nil {
+			return nil, err
 		}
 		select {
 		case <-ctx.Done():
@@ -363,7 +381,12 @@ func paneExited(ctx context.Context, run func(context.Context, ...string) (strin
 		if err != nil {
 			return nil, err
 		}
-		if s, rest, ok := exitMarker(trimDeadPaneOutput(captured)); ok {
+		// The output too may have been read late (deadPaneOutput gave up
+		// on it): keep the latest.
+		if latest := trimDeadPaneOutput(captured); latest != "" {
+			output = latest
+		}
+		if s, rest, ok := exitMarker(output); ok {
 			return &PaneExit{Status: s, Signal: signal, Output: rest}, nil
 		}
 	}

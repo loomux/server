@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 )
 
 // LOOM-80 dispatch jobs: see docs/design/async-dispatch-design.md.
@@ -469,5 +471,31 @@ func TestStream_MessageAdded(t *testing.T) {
 			t.Fatalf("message_added = %+v, want the late message only", m)
 		}
 		return
+	}
+}
+
+// POST /dispatch takes a message up to targets.MaxPasteBytes plus a 4 KiB
+// margin, and refuses a longer one with 413 too_large before anything is
+// dispatched (LOOM-155).
+func TestDispatch_MessageSizeLimit(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t)
+	var calls atomic.Int32
+	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) {
+		calls.Add(1)
+		return "ok", nil
+	}
+	token, _ := login(t, srv.URL, testPassword)
+	limit := targets.MaxPasteBytes + 4<<10
+
+	resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"message": strings.Repeat("a", limit)}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("message at the limit: status %d, want 200", resp.StatusCode)
+	}
+	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token, map[string]string{"message": strings.Repeat("a", limit+1)}, nil)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge || out.Code != "too_large" {
+		t.Fatalf("message over the limit: status %d code %q, want 413 too_large", resp.StatusCode, out.Code)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("dispatcher called %d times, want 1 (the oversized message must not reach it)", calls.Load())
 	}
 }

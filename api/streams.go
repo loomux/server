@@ -16,12 +16,19 @@ import (
 type sessionStreams struct {
 	mu      sync.Mutex
 	streams map[string]map[*context.CancelFunc]struct{}
+	// closed is set by endAll: a stream registering after it (one that
+	// was still in auth when shutdown began) is ended at once.
+	closed bool
 }
 
 // add registers cancel under sessionID; the returned func unregisters it.
 func (s *sessionStreams) add(sessionID string, cancel context.CancelFunc) (remove func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		cancel()
+		return func() {}
+	}
 	if s.streams == nil {
 		s.streams = map[string]map[*context.CancelFunc]struct{}{}
 	}
@@ -52,6 +59,25 @@ func (s *sessionStreams) end(sessionID string) {
 	}
 }
 
+// endAll cancels every open stream, of every session.
+func (s *sessionStreams) endAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	for _, set := range s.streams {
+		for cancel := range set {
+			(*cancel)()
+		}
+	}
+}
+
+// EndStreams ends every open conversation stream (LOOM-147). A stream
+// never goes idle on its own, so an http.Server shutdown would otherwise
+// wait out its whole deadline for them: register this with
+// http.Server.RegisterOnShutdown. Clients see the stream end and
+// reconnect to whichever server is up next.
+func (s *Server) EndStreams() { s.streams.endAll() }
+
 // sessionStillValid re-checks a stream's session, for the case end can't
 // see: a session that expired, or was deleted other than through this
 // API, while its stream stayed open.
@@ -62,5 +88,5 @@ func (s *Server) sessionStillValid(ctx context.Context, sess *registry.Session) 
 		// database error is retried at the next heartbeat.
 		return !errors.Is(err, registry.ErrNotFound)
 	}
-	return time.Since(cur.LastUsedAt) <= s.sessionTTL
+	return !s.sessionExpired(cur, time.Now())
 }

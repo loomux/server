@@ -34,7 +34,9 @@ on top of it.
   `storetest.Run`'s conformance suite is what any future second backend
   would have to pass regardless of how it replays the same migration
   set. Credential values are encrypted with AES-GCM (`crypto.go`) before
-  they touch the database and decrypted on read; the master key is an
+  they touch the database and decrypted on read, bound to their row id
+  as additional data (LOOM-175; rows sealed before that are re-sealed by
+  the first `Open` with the key); the master key is an
   optional `Open` option (`sqlite.WithMasterKey`, sourced via
   `sqlite.KeyFromEnv` from a base64-encoded 32-byte env var) rather than
   a required parameter, since most callers never touch credentials.
