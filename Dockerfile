@@ -100,7 +100,11 @@ COPY deploy/entrypoint.sh /usr/local/bin/loomux-entrypoint
 ARG WEB_DIST=deploy/web-placeholder
 COPY --chown=loomux:loomux ${WEB_DIST}/ /srv/loomux/web/
 
+# LOOMUX_LOCAL_TARGETS=off (LOOM-141): an agent on a local target would
+# run as loomuxd's own user inside this container, able to read its
+# database, vault key and SSH keys. Register machines as remote targets.
 ENV HOME=/home/loomux \
+    LOOMUX_LOCAL_TARGETS=off \
     LOOMUX_STATIC_DIR=/srv/loomux/web \
     LOOMUX_DB_PATH=/var/lib/loomux/loomux.db \
     LOOMUX_HTTP_ADDR=:8080

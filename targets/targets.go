@@ -209,6 +209,9 @@ func NewExecutor(t *registry.Target) (TargetExecutor, error) {
 func NewExecutorWithMetrics(t *registry.Target, met *metrics.Metrics) (TargetExecutor, error) {
 	switch t.Kind {
 	case registry.TargetKindLocal:
+		if !LocalTargets {
+			return nil, ErrLocalTargetsOff
+		}
 		return newMetricsExecutor(NewLocalExecutor(), met, string(t.Kind), t.Name), nil
 	case registry.TargetKindRemote:
 		opts, err := remoteOptions(t)

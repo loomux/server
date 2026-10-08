@@ -365,6 +365,18 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 			return nil, fmt.Errorf("app: %w", err)
 		}
 	}
+	targets.SetLocalTargets(!cfg.LocalTargetsOff)
+	if !cfg.LocalTargetsOff {
+		// Sessions may outlive loomuxd, and with them a tmux server
+		// started with loomuxd's full environment (LOOM-141). After
+		// SetTmuxSocket: it's this instance's socket that's scrubbed.
+		scrubCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := targets.ScrubLocalTmuxEnv(scrubCtx)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("app: %w", err)
+		}
+	}
 	// Pinned host keys (LOOM-114) are written beside the database, on the
 	// data volume; the database is their source, so the files are
 	// rewritten from it as needed.

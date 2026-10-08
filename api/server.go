@@ -225,6 +225,7 @@ type Server struct {
 	passwordHash       []byte
 	sessionTTL         time.Duration
 	loginThrottle      *loginThrottle
+	localTargets       bool
 	loginDevices       *loginDevices
 	streams            sessionStreams
 	streamPollInterval time.Duration
@@ -255,6 +256,12 @@ func WithLoginBackoff(base, max time.Duration) Option {
 // tests, so they don't wait a full production-length interval per event.
 func WithStreamPollInterval(d time.Duration) Option {
 	return func(s *Server) { s.streamPollInterval = d }
+}
+
+// WithLocalTargets says whether targets of kind "local" may be
+// registered (LOOM-141; app.Config.LocalTargetsOff). On by default.
+func WithLocalTargets(on bool) Option {
+	return func(s *Server) { s.localTargets = on }
 }
 
 // WithStreamHeartbeat overrides the stream's heartbeat interval, which is
@@ -327,6 +334,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 		sessionTTL:         defaultSessionTTL,
 		loginThrottle:      newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
 		streamPollInterval: defaultStreamPollInterval,
+		localTargets:       true,
 		streamHeartbeat:    streamHeartbeatInterval,
 	}
 	for _, opt := range opts {
@@ -1676,6 +1684,10 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if err := target.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
+	if target.Kind == registry.TargetKindLocal && !s.localTargets {
+		writeError(w, http.StatusBadRequest, "local targets are turned off on this server (LOOMUX_LOCAL_TARGETS=off): their agents would run as the server's own user, with access to its database and keys; register the machine as a remote target instead")
 		return nil, false
 	}
 	if s.agentTypes != nil {

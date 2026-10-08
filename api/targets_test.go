@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"github.com/Loomux/server/api"
 	"net/http"
 	"testing"
 
@@ -529,5 +530,30 @@ func TestUpdateTarget_OmittedOptionalFieldsKept(t *testing.T) {
 		"workspace_root": ""})
 	if got.WorkspaceRoot != "" {
 		t.Errorf("after a PUT with \"\": workspace_root=%q, want cleared", got.WorkspaceRoot)
+	}
+}
+
+// LOOM-141: with local targets off, registering one (or turning a target
+// into one) is refused with a plain reason; remote targets are fine.
+func TestTargets_LocalTargetsOff(t *testing.T) {
+	srv, _, _ := newTestServer(t, api.WithLocalTargets(false))
+	token, _ := login(t, srv.URL, testPassword)
+	if _, status := createTarget(t, srv.URL, token, map[string]any{"name": "box", "kind": "local"}); status != http.StatusBadRequest {
+		t.Fatalf("create local target: %d, want 400", status)
+	}
+	remote, status := createTarget(t, srv.URL, token, map[string]any{"name": "r", "kind": "remote", "host": "h.example.net", "user": "loomux"})
+	if status != http.StatusCreated {
+		t.Fatalf("create remote target: %d, want 201", status)
+	}
+	resp := authedRequest(t, http.MethodPut, srv.URL+"/api/v1/targets/"+remote.ID, token, mustJSON(t, map[string]any{"name": "r", "kind": "local"}))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("change a target to local: %d, want 400", resp.StatusCode)
+	}
+
+	on, _, _ := newTestServer(t)
+	onToken, _ := login(t, on.URL, testPassword)
+	if _, status := createTarget(t, on.URL, onToken, map[string]any{"name": "box", "kind": "local"}); status != http.StatusCreated {
+		t.Fatalf("create local target with the default (on): %d, want 201", status)
 	}
 }

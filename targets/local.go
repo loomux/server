@@ -20,6 +20,7 @@ func NewLocalExecutor() *LocalExecutor {
 
 func (e *LocalExecutor) run(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-L", TmuxSocket}, args...)...)
+	cmd.Env = localEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -40,6 +41,7 @@ func (e *LocalExecutor) PaneExited(ctx context.Context, target string) (*PaneExi
 
 func (e *LocalExecutor) HasSession(ctx context.Context, session string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "has-session", "-t", session)
+	cmd.Env = localEnv()
 	err := cmd.Run()
 	if err == nil {
 		return true, nil
@@ -78,6 +80,7 @@ func (e *LocalExecutor) PasteText(ctx context.Context, target, text string, ente
 	}
 	buf := pasteBuffer(target)
 	load := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "load-buffer", "-b", buf, "-")
+	load.Env = localEnv()
 	load.Stdin = strings.NewReader(text)
 	var stderr bytes.Buffer
 	load.Stderr = &stderr
@@ -138,6 +141,7 @@ func (e *LocalExecutor) RunOnce(ctx context.Context, command string) (string, er
 	// argument: what it carries (an env file's secrets, LOOM-113) stays
 	// off the process list.
 	cmd := exec.CommandContext(ctx, "sh")
+	cmd.Env = localEnv()
 	cmd.Stdin = strings.NewReader("{\n" + command + "\n} </dev/null\n")
 	var out bytes.Buffer
 	cmd.Stdout = &out

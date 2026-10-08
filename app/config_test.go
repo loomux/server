@@ -263,3 +263,24 @@ func TestLoadConfig_TmuxSocket(t *testing.T) {
 		}
 	}
 }
+
+// LOOM-141: LOOMUX_LOCAL_TARGETS is on unless set off; anything else is
+// a configuration error, not a silent default.
+func TestLoadConfig_LocalTargets(t *testing.T) {
+	for raw, wantOff := range map[string]bool{"": false, "on": false, "true": false, "off": true, "OFF": true, "false": true, "0": true} {
+		setRouterEnv(t)
+		t.Setenv("LOOMUX_LOCAL_TARGETS", raw)
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
+		if cfg.LocalTargetsOff != wantOff {
+			t.Errorf("%q: LocalTargetsOff = %v, want %v", raw, cfg.LocalTargetsOff, wantOff)
+		}
+	}
+	setRouterEnv(t)
+	t.Setenv("LOOMUX_LOCAL_TARGETS", "maybe")
+	if _, err := LoadConfig(); err == nil {
+		t.Error(`LOOMUX_LOCAL_TARGETS="maybe" was accepted`)
+	}
+}

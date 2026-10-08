@@ -40,6 +40,11 @@ type Config struct {
 	// (LOOMUX_TMUX_SOCKET); empty means targets.DefaultTmuxSocket. Give
 	// two instances driving the same targets different ones.
 	TmuxSocket string
+	// LocalTargetsOff (LOOMUX_LOCAL_TARGETS=off; the container image sets
+	// it) turns local targets off (LOOM-141): a local target's agents run
+	// as loomuxd's own user, so they're fully trusted. The zero value
+	// leaves them on. See targets.LocalTargets.
+	LocalTargetsOff bool
 	// MasterKey is the credential vault's AES-256 key, or nil if
 	// LOOMUX_MASTER_KEY is unset. Optional at this layer: registry/sqlite
 	// already fails fast on any credential operation that actually needs
@@ -110,6 +115,7 @@ const (
 	envDBPath              = "LOOMUX_DB_PATH"
 	envMarkerDir           = "LOOMUX_MARKER_DIR"
 	envTmuxSocket          = "LOOMUX_TMUX_SOCKET"
+	envLocalTargets        = "LOOMUX_LOCAL_TARGETS"
 	envMasterKey           = "LOOMUX_MASTER_KEY"
 	envReapIdleThreshold   = "LOOMUX_REAP_IDLE_THRESHOLD"
 	envReapInterval        = "LOOMUX_REAP_INTERVAL"
@@ -259,8 +265,18 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("app: %s %q: letters, digits, '-' and '_' only", envTmuxSocket, tmuxSocket)
 	}
 
+	localTargetsOff := false
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv(envLocalTargets))); v {
+	case "", "on", "true", "1", "yes":
+	case "off", "false", "0", "no":
+		localTargetsOff = true
+	default:
+		return Config{}, fmt.Errorf("app: %s %q: on or off", envLocalTargets, v)
+	}
+
 	return Config{
 		Notify:              notifyCfg,
+		LocalTargetsOff:     localTargetsOff,
 		AgentProfiles:       agentProfiles,
 		DBPath:              dbPath,
 		MarkerDir:           os.Getenv(envMarkerDir),

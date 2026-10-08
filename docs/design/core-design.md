@@ -577,7 +577,12 @@ Two different problems, two different solutions:
   reimplement this. It only ensures the pane's environment points at an
   already-authenticated config dir for that tool (shared `HOME`/config
   mount for local targets; expected to already exist on remote targets you
-  own).
+  own). *Changed in LOOM-141:* a local target runs as loomuxd's own user,
+  so it is fully trusted; the container image turns local targets off
+  (`LOOMUX_LOCAL_TARGETS=off`) and local processes get an allow-listed
+  environment, never loomuxd's `LOOMUX_*` secrets. Agents on the server
+  itself are planned as a separate provider system (pods/containers as
+  dedicated targets).
 - **Everything else** (GitHub PATs, MCP server tokens, custom API keys)
   goes through a **credential vault Loomux owns**: encrypted at rest,
   scoped per agent-type/workspace, decrypted only at pane-launch time and
