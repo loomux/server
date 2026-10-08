@@ -147,3 +147,89 @@ func TestAgentPool_NeedsThePrivateKey(t *testing.T) {
 		t.Error("Socket with a path-like id accepted")
 	}
 }
+
+// Review of #280: a Drop racing a Socket for the same key must never
+// leave the pool handing out a socket that's gone.
+func TestAgentPool_DropAndSocketRace(t *testing.T) {
+	k, _ := targets.GenerateSSHKey("key-1", "wyzer")
+	pool := targets.NewAgentPool(filepath.Join(shortTempDir(t), "agents"))
+	defer pool.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			pool.Drop("key-1")
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		if _, err := pool.Socket(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-done
+	sock, err := pool.Socket(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("the pool's socket doesn't answer: %v", err)
+	}
+	conn.Close()
+}
+
+func TestAgentPool_SocketIsPrivate(t *testing.T) {
+	k, _ := targets.GenerateSSHKey("key-1", "wyzer")
+	pool := targets.NewAgentPool(filepath.Join(shortTempDir(t), "agents"))
+	defer pool.Close()
+	sock, err := pool.Socket(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(sock); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("socket mode = %v, %v; want 0600", fi.Mode().Perm(), err)
+	}
+}
+
+// The agent directory must be a real directory of loomuxd's own: a
+// symlink planted where it should be is refused, and an existing one is
+// made private.
+func TestAgentPool_RefusesASymlinkedDir(t *testing.T) {
+	base := shortTempDir(t)
+	elsewhere := filepath.Join(base, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "agents")
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	k, _ := targets.GenerateSSHKey("key-1", "wyzer")
+	pool := targets.NewAgentPool(link)
+	defer pool.Close()
+	if _, err := pool.Socket(k); err == nil {
+		t.Error("Socket served from a symlinked directory")
+	}
+
+	existing := filepath.Join(base, "open")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pool2 := targets.NewAgentPool(existing)
+	defer pool2.Close()
+	if _, err := pool2.Socket(k); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(existing); fi.Mode().Perm() != 0o700 {
+		t.Errorf("existing dir left at %v, want 0700", fi.Mode().Perm())
+	}
+}
+
+func TestAgentPool_SocketPathTooLong(t *testing.T) {
+	k, _ := targets.GenerateSSHKey("key-1", "wyzer")
+	pool := targets.NewAgentPool(filepath.Join(shortTempDir(t), strings.Repeat("d", 120)))
+	defer pool.Close()
+	if _, err := pool.Socket(k); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Errorf("Socket with an over-long path: %v, want a clear 'too long' error", err)
+	}
+}

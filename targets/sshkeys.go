@@ -3,6 +3,7 @@ package targets
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -78,14 +80,52 @@ type AgentPool struct {
 
 	mu     sync.Mutex
 	agents map[string]*servedAgent
+	swept  bool
 }
 
 type servedAgent struct {
 	socket   string
 	listener net.Listener
 
-	mu    sync.Mutex
-	conns map[net.Conn]struct{}
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{}
+	closed bool
+}
+
+// maxSocketPath is the longest unix socket path every platform takes
+// (sun_path: 108 bytes on Linux, 104 on macOS and the BSDs).
+const maxSocketPath = 103
+
+// ensureDir makes p.dir a private directory of loomuxd's own: created
+// 0700 if missing, refused if it is a symlink, not a directory or owned
+// by another user (who could swap a socket in it for an agent of their
+// own), made 0700 otherwise. The first time, sockets an earlier process
+// left there are removed.
+func (p *AgentPool) ensureDir() error {
+	if err := os.MkdirAll(p.dir, 0o700); err != nil {
+		return fmt.Errorf("targets: agent dir: %w", err)
+	}
+	fi, err := os.Lstat(p.dir)
+	if err != nil {
+		return fmt.Errorf("targets: agent dir: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("targets: agent dir %s is not a directory", p.dir)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
+		return fmt.Errorf("targets: agent dir %s belongs to another user", p.dir)
+	}
+	if err := os.Chmod(p.dir, 0o700); err != nil {
+		return fmt.Errorf("targets: agent dir: %w", err)
+	}
+	if !p.swept {
+		old, _ := filepath.Glob(filepath.Join(p.dir, "*.sock"))
+		for _, f := range old {
+			_ = os.Remove(f)
+		}
+		p.swept = true
+	}
+	return nil
 }
 
 // NewAgentPool serves agents from sockets in dir, which it creates.
@@ -115,14 +155,19 @@ func (p *AgentPool) Socket(k *registry.SSHKey) (string, error) {
 	if err := keyring.Add(agent.AddedKey{PrivateKey: raw, Comment: "loomux-" + k.Name}); err != nil {
 		return "", fmt.Errorf("targets: ssh key %q: %w", k.Name, err)
 	}
-	if err := os.MkdirAll(p.dir, 0o700); err != nil {
-		return "", fmt.Errorf("targets: agent dir: %w", err)
+	if err := p.ensureDir(); err != nil {
+		return "", err
 	}
-	if err := os.Chmod(p.dir, 0o700); err != nil {
-		return "", fmt.Errorf("targets: agent dir: %w", err)
+	// A name of its own per agent, so a Drop of an earlier one racing
+	// this can never unlink this socket.
+	suffix := make([]byte, 6)
+	if _, err := rand.Read(suffix); err != nil {
+		return "", fmt.Errorf("targets: agent socket: %w", err)
 	}
-	socket := filepath.Join(p.dir, k.ID+".sock")
-	_ = os.Remove(socket) // left behind by an earlier process
+	socket := filepath.Join(p.dir, k.ID+"-"+hex.EncodeToString(suffix)+".sock")
+	if len(socket) > maxSocketPath {
+		return "", fmt.Errorf("targets: agent socket path %q is too long for a unix socket (at most %d bytes)", socket, maxSocketPath)
+	}
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		return "", fmt.Errorf("targets: agent socket: %w", err)
@@ -140,10 +185,9 @@ func (p *AgentPool) Socket(k *registry.SSHKey) (string, error) {
 // Drop stops serving key id (deleted, or rotated away from).
 func (p *AgentPool) Drop(id string) {
 	p.mu.Lock()
-	a, ok := p.agents[id]
-	delete(p.agents, id)
-	p.mu.Unlock()
-	if ok {
+	defer p.mu.Unlock()
+	if a, ok := p.agents[id]; ok {
+		delete(p.agents, id)
 		a.close()
 	}
 }
@@ -151,12 +195,11 @@ func (p *AgentPool) Drop(id string) {
 // Close stops every agent.
 func (p *AgentPool) Close() error {
 	p.mu.Lock()
-	agents := p.agents
-	p.agents = map[string]*servedAgent{}
-	p.mu.Unlock()
-	for _, a := range agents {
+	defer p.mu.Unlock()
+	for _, a := range p.agents {
 		a.close()
 	}
+	p.agents = map[string]*servedAgent{}
 	return nil
 }
 
@@ -167,6 +210,11 @@ func (a *servedAgent) serve(ag agent.Agent) {
 			return
 		}
 		a.mu.Lock()
+		if a.closed {
+			a.mu.Unlock()
+			conn.Close()
+			return
+		}
 		a.conns[conn] = struct{}{}
 		a.mu.Unlock()
 		go func() {
@@ -184,6 +232,7 @@ func (a *servedAgent) close() {
 	_ = os.Remove(a.socket)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.closed = true
 	for c := range a.conns {
 		c.Close()
 	}

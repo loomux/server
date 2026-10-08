@@ -124,3 +124,27 @@ func TestMigration23ClearsDeadSSHKeyRef(t *testing.T) {
 		t.Fatalf("UpdateTarget after migration: %v", err)
 	}
 }
+
+// A wrong master key fails to decrypt, and the error carries nothing of
+// the key.
+func TestSSHKey_WrongMasterKeyErrorHasNoKeyMaterial(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "keys.db")
+	a, err := Open(dbPath, WithMasterKey(bytes.Repeat([]byte("A"), 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CreateSSHKey(ctx, testSSHKey("a", "alpha", "PRIVATE-ALPHA")); err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+	b, err := Open(dbPath, WithMasterKey(bytes.Repeat([]byte("B"), 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	_, err = b.GetSSHKey(ctx, "a")
+	if err == nil || bytes.Contains([]byte(err.Error()), []byte("PRIVATE")) {
+		t.Errorf("GetSSHKey with the wrong master key: %v", err)
+	}
+}
