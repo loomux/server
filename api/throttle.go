@@ -28,6 +28,10 @@ type loginThrottle struct {
 	mu            sync.Mutex
 	failureCount  int
 	lastFailureAt time.Time
+	// checking is set while an admitted attempt's password is being
+	// checked: concurrent attempts would otherwise all pass the backoff
+	// before any of them recorded its failure (LOOM-142).
+	checking bool
 
 	base time.Duration
 	max  time.Duration
@@ -52,6 +56,33 @@ func (t *loginThrottle) wait() time.Duration {
 		return 0
 	}
 	return delay - elapsed
+}
+
+// admit reserves the right to check one password: zero means go ahead,
+// and the caller must then end with recordFailure, recordSuccess or
+// release. Otherwise it is how long to wait — the backoff, or a second
+// while another attempt is being checked.
+func (t *loginThrottle) admit() time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.checking {
+		return time.Second
+	}
+	if t.failureCount > 0 {
+		if left := t.delayForLocked() - time.Since(t.lastFailureAt); left > 0 {
+			return left
+		}
+	}
+	t.checking = true
+	return 0
+}
+
+// release ends an admitted attempt that reached no verdict.
+func (t *loginThrottle) release() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.checking = false
 }
 
 // delayForLocked computes the current backoff delay: base * 2^(n-1),
@@ -79,10 +110,12 @@ func (t *loginThrottle) recordFailure() {
 	defer t.mu.Unlock()
 	t.failureCount++
 	t.lastFailureAt = time.Now()
+	t.checking = false
 }
 
 func (t *loginThrottle) recordSuccess() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.failureCount = 0
+	t.checking = false
 }

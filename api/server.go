@@ -222,6 +222,7 @@ type Server struct {
 	passwordHash       []byte
 	sessionTTL         time.Duration
 	loginThrottle      *loginThrottle
+	loginDevices       *loginDevices
 	streamPollInterval time.Duration
 	staticDir          string
 	web                WebBundles
@@ -319,6 +320,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.loginDevices = newLoginDevices(passwordHash, s.loginThrottle.base, s.loginThrottle.max)
 	switch {
 	case s.web != nil:
 		s.static = newStaticHandler(s.web.Root)
@@ -407,30 +409,45 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type loginRequest struct {
 	Password string `json:"password"`
+	// Device (LOOM-151) is optional: the device token an earlier login
+	// on this browser returned. A known one is throttled on its own
+	// backoff, not the global one strangers' failures drive.
+	Device string `json:"device,omitempty"`
 }
 
 type loginResponse struct {
 	Token string `json:"token"`
+	// Device is this browser's device token, to send with its next
+	// login: the one it presented if still valid, else a new one.
+	Device string `json:"device"`
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if wait := s.loginThrottle.wait(); wait > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
-		writeError(w, http.StatusTooManyRequests, "too many failed login attempts, try again later")
-		return
-	}
-
 	var req loginRequest
 	if !readJSON(w, r, &req) {
 		return
 	}
+	throttle := s.loginThrottle
+	device := req.Device
+	if th := s.loginDevices.throttle(device); th != nil {
+		throttle = th
+	} else {
+		device = ""
+	}
 
+	// admit, not a bare wait check: it reserves the check, so attempts
+	// sent together are checked one at a time, each after its backoff.
+	if wait := throttle.admit(); wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "too many failed login attempts, try again later")
+		return
+	}
 	if err := checkPassword(s.passwordHash, req.Password); err != nil {
-		s.loginThrottle.recordFailure()
+		throttle.recordFailure()
 		writeError(w, http.StatusUnauthorized, "invalid password")
 		return
 	}
-	s.loginThrottle.recordSuccess()
+	throttle.recordSuccess()
 
 	token, tokenHash, err := newToken()
 	if err != nil {
@@ -442,8 +459,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
+	if device == "" {
+		if device, err = s.loginDevices.issue(); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not create session")
+			return
+		}
+	}
 
-	writeJSON(w, http.StatusOK, loginResponse{Token: token})
+	writeJSON(w, http.StatusOK, loginResponse{Token: token, Device: device})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

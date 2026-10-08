@@ -544,8 +544,10 @@ POST /api/v1/dispatches/{id}/cancel status 409
 POST /api/v1/dispatches/{id}/cancel status 500
 POST /api/v1/login
 POST /api/v1/login request - object
+POST /api/v1/login request .device string omitempty
 POST /api/v1/login request .password string
 POST /api/v1/login response - object
+POST /api/v1/login response .device string
 POST /api/v1/login response .token string
 POST /api/v1/login response-header Content-Type
 POST /api/v1/login response-header Retry-After
