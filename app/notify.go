@@ -31,12 +31,27 @@ type turnNotifier struct {
 	// means no link.
 	publicURL string
 	logger    *slog.Logger
+	// bg runs each delivery, so the app's Close waits for it rather
+	// than close the store under it (LOOM-163); nil runs it unwaited.
+	bg *background
+}
+
+// async runs f off the caller's goroutine. Once the app is closing, f
+// doesn't run: the store it reads is about to close.
+func (n *turnNotifier) async(f func(), log *slog.Logger) {
+	if n.bg == nil {
+		go f()
+		return
+	}
+	if !n.bg.Go(f) {
+		log.Warn("notification dropped: shutting down")
+	}
 }
 
 // finished is the dispatch service's WithOnFinished hook: it builds and
 // sends the notification off the job's goroutine.
 func (n *turnNotifier) finished(d *registry.Dispatch) {
-	go func() {
+	n.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
 		defer cancel()
 		e, ok := n.event(ctx, d)
@@ -44,19 +59,19 @@ func (n *turnNotifier) finished(d *registry.Dispatch) {
 			return
 		}
 		n.send(ctx, e, n.logger.With("dispatch_id", d.ID, "kind", string(e.Kind)))
-	}()
+	}, n.logger.With("dispatch_id", d.ID))
 }
 
 // lateReply is the router's WithLateReplyHook (LOOM-121): an agent
 // reported after the turn it ended early. There is no turn length to go
 // by, and the user has likely moved on: it is always news.
 func (n *turnNotifier) lateReply(task *registry.Task, reply string) {
-	go func() {
+	n.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
 		defer cancel()
 		e := n.lateReplyEvent(ctx, task, reply)
 		n.send(ctx, e, n.logger.With("task_id", task.ID, "kind", string(e.Kind)))
-	}()
+	}, n.logger.With("task_id", task.ID))
 }
 
 // lateReplyEvent builds the notification for task's late reply.
