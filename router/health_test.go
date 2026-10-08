@@ -297,3 +297,46 @@ func TestDispatch_TargetSnapshotCarriesHealthProblem(t *testing.T) {
 		t.Errorf("snapshot = %+v, want the target's problem", got)
 	}
 }
+
+// LOOM-174: a target deleted while the periodic sweep runs — before its
+// turn, or while it is being probed — is skipped quietly, not logged as
+// a failed probe.
+func TestProbeAllTargets_SkipsDeletedTargets(t *testing.T) {
+	logs := &logBuffer{}
+	h := newAvailabilityHarnessOpts(t, nil, router.WithLogger(logs.logger()))
+	ctx := context.Background()
+	// Created after h.target, so listed after it.
+	later := &registry.Target{ID: uuid.NewString(), Name: "later", Kind: registry.TargetKindLocal}
+	if err := h.store.CreateTarget(ctx, later); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	list, err := h.store.ListTargets(ctx)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListTargets = %v, %v; want 2 targets", list, err)
+	}
+	probes := 0
+	h.exec.runOnce = func(command string) (string, error) {
+		if strings.Contains(command, router.HealthProbeTmuxPrefix) {
+			probes++
+			// Both targets are deleted while the first is being probed.
+			for _, tg := range list {
+				if err := h.store.DeleteTarget(ctx, tg.ID); err != nil {
+					t.Errorf("DeleteTarget: %v", err)
+				}
+			}
+			return router.HealthProbeTmuxPrefix + "tmux 3.4\n" + router.HealthProbeDiskPrefix + "1048576\n", nil
+		}
+		return h.probes.runOnce(command)
+	}
+
+	h.r.ProbeAllTargets(ctx)
+
+	if probes != 1 {
+		t.Errorf("probes = %d, want 1: the second target was gone by its turn", probes)
+	}
+	for _, rec := range logs.records(t) {
+		if rec["level"] == "ERROR" || rec["level"] == "WARN" {
+			t.Errorf("sweep over deleted targets logged %v", rec)
+		}
+	}
+}

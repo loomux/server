@@ -236,7 +236,8 @@ func (r *Router) installOffer(ctx context.Context, conversationID string, unavai
 		if err != nil {
 			return "", err
 		}
-		recipe = provisioningRecipe(target, *provision)
+		// Shown, not run: the run gets its own nonce.
+		recipe = provisioningRecipe(target, *provision, "<nonce>")
 	}
 	conf := registry.Confirmation{Kind: registry.ConfirmationInstallAgent, TargetName: unavailable.TargetName,
 		Command: entry.Install.Command}

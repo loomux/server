@@ -343,6 +343,7 @@ GET /api/v1/ssh-keys status 500
 GET /api/v1/targets
 GET /api/v1/targets request-header Authorization
 GET /api/v1/targets response - object
+GET /api/v1/targets response .local_targets boolean
 GET /api/v1/targets response .targets []object
 GET /api/v1/targets response .targets[].allow_provision boolean
 GET /api/v1/targets response .targets[].allow_shell boolean

@@ -25,6 +25,17 @@ func TestRedactValues(t *testing.T) {
 	}
 }
 
+// A value inside another (not only a prefix) never leaves a piece of the
+// longer one behind, whatever the map order (LOOM-156).
+func TestRedactValues_NestedValuesLongestFirst(t *testing.T) {
+	secrets := map[string]string{"inner": "XYZ123", "outer": "abcXYZ123def", "other": "zzzzzz"}
+	for i := 0; i < 100; i++ {
+		if got := credentials.RedactValues("t=abcXYZ123def u=XYZ123", secrets); got != "t=[redacted] u=[redacted]" {
+			t.Fatalf("round %d: RedactValues = %q", i, got)
+		}
+	}
+}
+
 func TestRedactAll(t *testing.T) {
 	store := fakeLister{creds: []*registry.Credential{
 		{ID: "a", Value: "ghp_secret1"}, {ID: "b", WorkspaceID: "ws", Value: "tok-ws-only"},
