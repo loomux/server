@@ -1,6 +1,9 @@
 package router
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Test-only exports: what an agent CLI probe prints, so router_test's
 // fake executor can answer one without hard-coding the wire format.
@@ -28,5 +31,6 @@ func SetBootRetry(every, upTo time.Duration) (restore func()) {
 // LockConversation holds conversationID's turn lock, as a turn in flight
 // does, until the returned func is called.
 func LockConversation(r *Router, conversationID string) (unlock func()) {
-	return r.conversations.lock(conversationID)
+	unlock, _ = r.conversations.lock(context.Background(), conversationID)
+	return unlock
 }
