@@ -49,7 +49,9 @@ var localEnvAllowed = map[string]bool{
 // loomuxd (with its full environment) would otherwise keep leaking it.
 // No server running is not an error.
 func ScrubLocalTmuxEnv(ctx context.Context) error {
-	out, err := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "show-environment", "-g").Output()
+	show := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "show-environment", "-g")
+	show.Env = localEnv()
+	out, err := show.Output()
 	if err != nil {
 		return nil // no server: the next one starts with localEnv
 	}
