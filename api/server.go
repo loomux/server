@@ -7,10 +7,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"sort"
@@ -394,7 +396,10 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 // handler and get served the SPA shell instead of the same
 // unsupported-path rejection "/api/v2/..." already gets.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	setCommonHeaders(w, r)
 	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		w.Header().Set("Content-Security-Policy", apiCSP)
+		w.Header().Set("Cache-Control", "no-store")
 		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			s.handleUnsupportedAPIPath(w, r)
 			return
@@ -1343,12 +1348,19 @@ func newStaticHandler(dir func() string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		html, err := io.ReadAll(f)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
 		// Revalidated on every load: after a deploy an old index.html
 		// would point at asset hashes that no longer exist.
 		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeContent(w, r, "index.html", info.ModTime(), f)
+		w.Header().Set("Content-Security-Policy", appCSP(inlineScriptHashes(html)))
+		http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(html))
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", appCSP(nil))
 		// Read per request: a web update (LOOM-118) swaps the directory.
 		root := http.Dir(dir())
 		f, err := root.Open(r.URL.Path)

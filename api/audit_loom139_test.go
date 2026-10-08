@@ -207,7 +207,6 @@ func TestAudit_Static_MissingAssetIs404(t *testing.T) {
 // The app shell holds the bearer token in localStorage; it needs the
 // standard browser hardening headers.
 func TestAudit_Static_SecurityHeaders(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F04")
 	base := staticServer(t)
 	resp, err := http.Get(base + "/")
 	if err != nil {

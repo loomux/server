@@ -66,6 +66,15 @@ not engineering taste):
   convention in this repo to hook into yet), and state resets on
   restart (in-memory only) — acceptable since the confirmed deployment
   has no attacker-triggerable restart path.
+- **Browser hardening headers** (LOOM-143, `headers.go`): every
+  response carries `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`, plus HSTS
+  when the request came over HTTPS (directly or per the proxy's
+  `X-Forwarded-Proto`). API responses get `Cache-Control: no-store` and a
+  deny-all CSP; the web client gets a CSP limiting script, connections
+  and framing to this origin. index.html's inline scripts (the
+  pre-paint theme snippet) are allowed by hash, computed from the file
+  served, since a web update can change it without a server release.
 - **API version mismatch handling is real but URL-only** (LOOM-10): any
   `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
   bare `/api/` root — gets a structured 404 naming `api.APIVersion`
