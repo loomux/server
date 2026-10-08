@@ -100,7 +100,7 @@ const maxSocketPath = 103
 // 0700 if missing, refused if it is a symlink, not a directory or owned
 // by another user (who could swap a socket in it for an agent of their
 // own), made 0700 otherwise. The first time, sockets an earlier process
-// left there are removed.
+// left there are removed: the dir belongs to one loomuxd process.
 func (p *AgentPool) ensureDir() error {
 	if err := os.MkdirAll(p.dir, 0o700); err != nil {
 		return fmt.Errorf("targets: agent dir: %w", err)
