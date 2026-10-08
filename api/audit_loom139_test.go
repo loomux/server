@@ -71,17 +71,40 @@ func TestAudit_LoginThrottle_ConcurrentGuessesShareOneWindow(t *testing.T) {
 }
 
 // conversation_id is a path segment everywhere else in the API, so a
-// client-supplied one must be a well-formed id, not any string.
+// client-supplied one must be a well-formed id, not any string (LOOM-154).
+// workspace_hint is bounded the same way.
 func TestAudit_Dispatch_RejectsMalformedConversationID(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F15")
 	srv, dispatcher, _ := newTestServer(t)
 	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) { return "ok", nil }
 	token, _ := login(t, srv.URL, testPassword)
 
-	for _, id := range []string{"a/b", "../x", strings.Repeat("x", 10_000), " ", "<script>"} {
+	for _, id := range []string{"a/b", "../x", strings.Repeat("x", 10_000), strings.Repeat("x", 65), " ", "<script>", "a.b"} {
 		resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"conversation_id": id, "message": "hi"}, nil)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("conversation_id %.20q: status %d, want 400", id, resp.StatusCode)
+		}
+		resp, _ = mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token, map[string]string{"workspace_hint": id, "message": "hi"}, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("workspace_hint %.20q: status %d, want 400", id, resp.StatusCode)
+		}
+	}
+
+	// The 400 is the usual {error, code} envelope.
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch", token,
+		mustJSON(t, map[string]string{"conversation_id": "a/b", "message": "hi"}))
+	defer resp.Body.Close()
+	var e struct{ Error, Code string }
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil || e.Code != "invalid_request" || !strings.Contains(e.Error, "conversation_id") {
+		t.Errorf("error body = %+v (%v), want code invalid_request naming conversation_id", e, err)
+	}
+
+	// Well-formed ids still go through: a server-minted UUID, a short
+	// one, one of the maximum length.
+	for i, id := range []string{"0b8e3c4e-6d0a-4c1e-9f55-3a0f2b1c9d7e", "c-1_x", strings.Repeat("y", 64)} {
+		resp, _ := mustPostDispatch(t, srv.URL+"/api/v1/dispatch", token,
+			map[string]string{"conversation_id": id, "workspace_hint": "ws-1", "message": "hi " + strings.Repeat("!", i)}, nil)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Errorf("conversation_id %.20q: status %d, want 202", id, resp.StatusCode)
 		}
 	}
 }
@@ -109,7 +132,6 @@ func TestAudit_Dispatch_IdempotentRetryOfNewConversation(t *testing.T) {
 // A message the router will refuse anyway (over targets.MaxPasteBytes)
 // must be refused before any routing call or provisioning.
 func TestAudit_Dispatch_RejectsOversizedMessageUpFront(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F16")
 	srv, dispatcher, _ := newTestServer(t)
 	called := make(chan struct{}, 1)
 	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) {
@@ -191,7 +213,6 @@ func staticServer(t *testing.T) string {
 // update) must 404, not answer 200 with index.html: the browser then
 // fails with a MIME error instead of a clean chunk-load retry.
 func TestAudit_Static_MissingAssetIs404(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F19")
 	base := staticServer(t)
 	resp, err := http.Get(base + "/assets/app-old.js")
 	if err != nil {

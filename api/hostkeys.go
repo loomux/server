@@ -234,11 +234,15 @@ func (s *Server) handleTestTarget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not test target")
 		return
 	}
-	writeJSON(w, http.StatusOK, testTargetResponse{
+	writeJSON(w, http.StatusOK, newTestTargetResponse(h))
+}
+
+func newTestTargetResponse(h *registry.TargetHealth) testTargetResponse {
+	return testTargetResponse{
 		TargetID: h.TargetID, Reachable: h.Reachable && h.TmuxVersion != "", TmuxVersion: h.TmuxVersion,
 		LatencyMS: h.Latency.Milliseconds(), Error: h.Error,
 		HostKeyProblem: strings.Contains(h.Error, string(targets.SSHHostKeyChanged)) ||
 			strings.Contains(h.Error, string(targets.SSHHostKeyUnknown)),
 		Steps: testSteps(h),
-	})
+	}
 }
