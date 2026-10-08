@@ -50,6 +50,7 @@ type App struct {
 	stopReaper       context.CancelFunc
 	reaperDone       chan struct{}
 	proberDone       chan struct{}
+	sweepDone        chan struct{}
 	metrics          *metrics.Metrics
 	healthChecker    *health.Checker
 	dispatches       *dispatch.Service
@@ -215,6 +216,7 @@ func (a *App) Close() error {
 		a.stopReaper()
 		<-a.reaperDone
 		<-a.proberDone
+		<-a.sweepDone
 	}
 	return a.store.Close()
 }
@@ -281,6 +283,27 @@ const (
 
 // reconcileTimeout bounds startup task reconciliation (LOOM-82).
 const reconcileTimeout = 2 * time.Minute
+
+// dispatchSweepInterval is how often dispatches left unfinished with no
+// job are swept (LOOM-146).
+const dispatchSweepInterval = time.Minute
+
+// runDispatchSweep runs dispatches.SweepOrphans every interval until ctx
+// is done.
+func runDispatchSweep(ctx context.Context, dispatches *dispatch.Service, interval time.Duration, logger *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := dispatches.SweepOrphans(ctx); err != nil && logger != nil {
+				logger.Error("dispatch sweep failed", "error", err)
+			}
+		}
+	}
+}
 
 // lateOutputInterval is how often agents waiting for input are checked
 // for output written after their turn was relayed (LOOM-121).
@@ -514,6 +537,15 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("app: %w", err)
 	}
+	// After Recover, dispatches whose job is gone but whose row was never
+	// finished (a status write that failed even after retries) are marked
+	// interrupted, so their conversation isn't busy until a restart
+	// (LOOM-146).
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		runDispatchSweep(reaperCtx, dispatches, dispatchSweepInterval, cfg.Logger)
+	}()
 	// In the background, bounded: an unreachable target mustn't hold up
 	// startup.
 	go func() {
@@ -537,6 +569,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		stopReaper:       stopReaper,
 		reaperDone:       reaperDone,
 		proberDone:       proberDone,
+		sweepDone:        sweepDone,
 		metrics:          met,
 		healthChecker:    healthChecker,
 	}, nil
