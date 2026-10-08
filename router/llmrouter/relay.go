@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openai/openai-go/v3"
-
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/router"
 )
@@ -55,51 +53,31 @@ func (m *Model) relayWith(ctx context.Context, tierName string, tier Tier, timeo
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	start := time.Now()
-	client := buildClient(tier)
-	resp, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: tier.Model,
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(relaySystemPrompt),
-			openai.UserMessage(relayUserPrompt(in)),
-		},
-		Tools: []openai.ChatCompletionToolUnionParam{buildRelayTool()},
-		ToolChoice: openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
-			Name: relayToolName,
-		}),
+	ex := newExchange(tier, relaySystemPrompt, relayUserPrompt(in), relayTool())
+	var result router.RelayResult
+	err := m.converse(ctx, metrics.RouterOpRelay, tierName, ex, relayToolName, relayCorrectionPrompt, func(raw json.RawMessage) error {
+		var args relayArguments
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("unparseable tool call arguments: %w", err)
+		}
+		reply := strings.TrimSpace(args.Reply)
+		if reply == "" {
+			return fmt.Errorf("empty reply")
+		}
+		result = router.RelayResult{Reply: reply, Done: args.Done, Model: tier.Model, Tier: tierName}
+		return nil
 	})
-	duration := time.Since(start)
 	if err != nil {
-		m.metrics.RecordRouterCall(metrics.RouterOpRelay, tierName, metrics.OutcomeFailure, duration)
-		return router.RelayResult{}, &unavailableError{fmt.Errorf("call failed: %w", err)}
+		return router.RelayResult{}, err
 	}
-	if len(resp.Choices) == 0 {
-		m.metrics.RecordRouterCall(metrics.RouterOpRelay, tierName, metrics.OutcomeFailure, duration)
-		return router.RelayResult{}, &unavailableError{fmt.Errorf("no choices returned")}
-	}
+	return result, nil
+}
 
-	toolCalls := resp.Choices[0].Message.ToolCalls
-	if len(toolCalls) == 0 {
-		m.metrics.RecordRouterCall(metrics.RouterOpRelay, tierName, metrics.OutcomeFailure, duration)
-		return router.RelayResult{}, fmt.Errorf("model did not call %s", relayToolName)
-	}
-
-	var args relayArguments
-	if err := json.Unmarshal([]byte(toolCalls[0].Function.Arguments), &args); err != nil {
-		m.metrics.RecordRouterCall(metrics.RouterOpRelay, tierName, metrics.OutcomeFailure, duration)
-		return router.RelayResult{}, fmt.Errorf("unparseable tool call arguments: %w", err)
-	}
-
-	reply := strings.TrimSpace(args.Reply)
-	if reply == "" {
-		m.metrics.RecordRouterCall(metrics.RouterOpRelay, tierName, metrics.OutcomeFailure, duration)
-		return router.RelayResult{}, fmt.Errorf("empty reply")
-	}
-	m.metrics.RecordRouterCall(metrics.RouterOpRelay, tierName, metrics.OutcomeSuccess, duration)
-	if resp.Usage.TotalTokens > 0 {
-		m.metrics.RecordRouterTokens(tierName, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
-	}
-	return router.RelayResult{Reply: reply, Done: args.Done, Model: tier.Model, Tier: tierName}, nil
+// relayCorrectionPrompt tells the model why its condense_output call was
+// refused, for the corrective retry.
+func relayCorrectionPrompt(problem error) string {
+	return "Your previous answer was rejected: " + problem.Error() +
+		". Call " + relayToolName + " again with a non-empty reply and done."
 }
 
 // relayUserPrompt lays out a relay call's input (LOOM-112): the turn's

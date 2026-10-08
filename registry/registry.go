@@ -71,22 +71,34 @@ const SSHProxyNone = "none"
 // mounted SSH config.
 func (t *Target) Managed() bool { return t.SSHKeyRef != "" }
 
-// managedHostLabel is one label of a managed target's host name.
-var managedHostLabel = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+// hostLabel is one label of a target's host name; aliasLabel is one of a
+// config-mode target's, which may also be an ssh_config alias and so
+// contain "_".
+var (
+	hostLabel  = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+	aliasLabel = regexp.MustCompile(`^[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?$`)
+)
 
 // validManagedHost reports whether host is an RFC 1123 host name or an
 // IP address. A managed target's host is the real one (no ssh_config
 // alias resolves it) and ssh expands it into the proxy command, so
 // nothing else — no %, quote, shell metacharacter or space — may be in it.
-func validManagedHost(host string) bool {
+func validManagedHost(host string) bool { return validHost(host, hostLabel) }
+
+// validConfigHost is validManagedHost for a config-mode target (LOOM-175):
+// the same grammar, but a label may contain "_", since the host may be
+// an ssh_config Host alias rather than a DNS name.
+func validConfigHost(host string) bool { return validHost(host, aliasLabel) }
+
+func validHost(host string, label *regexp.Regexp) bool {
 	if net.ParseIP(host) != nil {
 		return true
 	}
 	if len(host) > 253 {
 		return false
 	}
-	for _, label := range strings.Split(host, ".") {
-		if !managedHostLabel.MatchString(label) {
+	for _, l := range strings.Split(host, ".") {
+		if !label.MatchString(l) {
 			return false
 		}
 	}
@@ -207,8 +219,10 @@ func (t *Target) Validate() error {
 		if !validSSHUser.MatchString(t.User) {
 			return errors.New("user must be a login name: a letter or _, then letters, digits, _ . or -, at most 32")
 		}
-		if strings.HasPrefix(t.Host, "-") || strings.ContainsAny(t.Host, "@/\\ \t\r\n\x00") {
-			return errors.New("host must be a host name or address (no leading -, whitespace, @ or /)")
+		// A host name, ssh_config alias or IP address (LOOM-175); a
+		// managed target's is checked more strictly below.
+		if !validConfigHost(t.Host) {
+			return errors.New("host must be a host name or SSH config alias (letters, digits, - and _, dot-separated) or an IPv4 or IPv6 address")
 		}
 	default:
 		return fmt.Errorf("kind must be %q or %q", TargetKindLocal, TargetKindRemote)

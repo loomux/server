@@ -17,14 +17,36 @@ import (
 // failed" via errors.Is.
 var ErrConfigInvalid = errors.New("llmrouter: invalid configuration")
 
-// Tier is one {base URL, API key, model} triple identifying an
-// OpenAI-Chat-Completions-compatible endpoint to call (e.g. Groq, Gemini's
-// OpenAI-compatible endpoint, or any other provider speaking the same wire
-// protocol).
+// Tier is one {provider, base URL, API key, model} set identifying an
+// endpoint to call. Provider picks the wire protocol (LOOM-186): the
+// OpenAI Chat Completions protocol (Groq, Gemini's OpenAI-compatible
+// endpoint, or anyone else speaking it) by default, or Anthropic's native
+// Messages API.
 type Tier struct {
-	BaseURL string
-	APIKey  string
-	Model   string
+	// Provider is the wire protocol; empty means ProviderOpenAI.
+	Provider Provider
+	BaseURL  string
+	APIKey   string
+	Model    string
+}
+
+// Validate reports whether t has what its provider needs: an API key and
+// a model always, and a base URL for ProviderOpenAI (Anthropic's has a
+// default). The error wraps ErrConfigInvalid.
+func (t Tier) Validate() error {
+	p, err := ParseProvider(string(t.Provider))
+	if err != nil {
+		return err
+	}
+	switch {
+	case t.BaseURL == "" && p.defaultBaseURL() == "":
+		return fmt.Errorf("%w: no base URL", ErrConfigInvalid)
+	case t.APIKey == "":
+		return fmt.Errorf("%w: no API key", ErrConfigInvalid)
+	case t.Model == "":
+		return fmt.Errorf("%w: no model", ErrConfigInvalid)
+	}
+	return nil
 }
 
 // Config is the full primary+escalation configuration for a Model.
@@ -36,42 +58,54 @@ type Config struct {
 }
 
 const (
-	envPrimaryBaseURL = "LOOMUX_ROUTER_PRIMARY_BASE_URL"
-	envPrimaryAPIKey  = "LOOMUX_ROUTER_PRIMARY_API_KEY"
-	envPrimaryModel   = "LOOMUX_ROUTER_PRIMARY_MODEL"
+	envPrimaryProvider = "LOOMUX_ROUTER_PRIMARY_PROVIDER"
+	envPrimaryBaseURL  = "LOOMUX_ROUTER_PRIMARY_BASE_URL"
+	envPrimaryAPIKey   = "LOOMUX_ROUTER_PRIMARY_API_KEY"
+	envPrimaryModel    = "LOOMUX_ROUTER_PRIMARY_MODEL"
 
-	envEscalationBaseURL = "LOOMUX_ROUTER_ESCALATION_BASE_URL"
-	envEscalationAPIKey  = "LOOMUX_ROUTER_ESCALATION_API_KEY"
-	envEscalationModel   = "LOOMUX_ROUTER_ESCALATION_MODEL"
+	envEscalationProvider = "LOOMUX_ROUTER_ESCALATION_PROVIDER"
+	envEscalationBaseURL  = "LOOMUX_ROUTER_ESCALATION_BASE_URL"
+	envEscalationAPIKey   = "LOOMUX_ROUTER_ESCALATION_API_KEY"
+	envEscalationModel    = "LOOMUX_ROUTER_ESCALATION_MODEL"
 )
 
 // ConfigFromEnv loads Config from environment variables, failing fast (per
 // this repo's established KeyFromEnv convention, registry/sqlite/crypto.go)
 // on missing primary configuration or a partially-set escalation tier.
-// Escalation is entirely optional: if none of its three vars are set,
+// Escalation is entirely optional: if none of its vars are set,
 // Config.Escalation is nil rather than an error.
+//
+// Each tier's _PROVIDER var (LOOM-186) is "openai" (the default) or
+// "anthropic"; an anthropic tier's _BASE_URL may be left unset, for
+// Anthropic's own API.
 func ConfigFromEnv() (Config, error) {
-	primary, err := tierFromEnv(envPrimaryBaseURL, envPrimaryAPIKey, envPrimaryModel)
+	primary, err := tierFromEnv(envPrimaryProvider, envPrimaryBaseURL, envPrimaryAPIKey, envPrimaryModel)
 	if err != nil {
 		return Config{}, err
 	}
 
-	baseURL := os.Getenv(envEscalationBaseURL)
-	apiKey := os.Getenv(envEscalationAPIKey)
-	model := os.Getenv(envEscalationModel)
-	switch boolCount(baseURL != "", apiKey != "", model != "") {
-	case 0:
+	set := boolCount(os.Getenv(envEscalationProvider) != "", os.Getenv(envEscalationBaseURL) != "",
+		os.Getenv(envEscalationAPIKey) != "", os.Getenv(envEscalationModel) != "")
+	if set == 0 {
 		return Config{Primary: primary}, nil
-	case 3:
-		return Config{Primary: primary, Escalation: &Tier{BaseURL: baseURL, APIKey: apiKey, Model: model}}, nil
-	default:
-		return Config{}, fmt.Errorf("%w: partial escalation-tier configuration (set all of %s/%s/%s, or none)",
-			ErrConfigInvalid, envEscalationBaseURL, envEscalationAPIKey, envEscalationModel)
 	}
+	escalation, err := tierFromEnv(envEscalationProvider, envEscalationBaseURL, envEscalationAPIKey, envEscalationModel)
+	if err != nil {
+		return Config{}, fmt.Errorf("%w (partial escalation-tier configuration: set all of %s/%s/%s, or none)",
+			err, envEscalationBaseURL, envEscalationAPIKey, envEscalationModel)
+	}
+	return Config{Primary: primary, Escalation: &escalation}, nil
 }
 
-func tierFromEnv(baseURLVar, apiKeyVar, modelVar string) (Tier, error) {
+func tierFromEnv(providerVar, baseURLVar, apiKeyVar, modelVar string) (Tier, error) {
+	provider, err := ParseProvider(os.Getenv(providerVar))
+	if err != nil {
+		return Tier{}, fmt.Errorf("%w (%s)", err, providerVar)
+	}
 	baseURL := os.Getenv(baseURLVar)
+	if baseURL == "" {
+		baseURL = provider.defaultBaseURL()
+	}
 	if baseURL == "" {
 		return Tier{}, fmt.Errorf("%w: %s is not set", ErrConfigInvalid, baseURLVar)
 	}
@@ -83,7 +117,7 @@ func tierFromEnv(baseURLVar, apiKeyVar, modelVar string) (Tier, error) {
 	if model == "" {
 		return Tier{}, fmt.Errorf("%w: %s is not set", ErrConfigInvalid, modelVar)
 	}
-	return Tier{BaseURL: baseURL, APIKey: apiKey, Model: model}, nil
+	return Tier{Provider: provider, BaseURL: baseURL, APIKey: apiKey, Model: model}, nil
 }
 
 func boolCount(bs ...bool) int {

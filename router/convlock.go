@@ -1,6 +1,9 @@
 package router
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // convLocks serializes turns per conversation within this process
 // (LOOM-83). Dispatch jobs already refuse a second in-flight message for
@@ -12,60 +15,70 @@ type convLocks struct {
 	locks map[string]*convLock
 }
 
+// convLock is held while its channel holds a value: a channel rather
+// than a mutex so a waiter can give up when its context ends (LOOM-165).
 type convLock struct {
-	mu   sync.Mutex
+	held chan struct{}
 	refs int
 }
 
-// lock blocks until conversationID is free, and returns its unlock.
-func (c *convLocks) lock(conversationID string) (unlock func()) {
+// ref returns conversationID's lock, counting the caller as a user of
+// it until release.
+func (c *convLocks) ref(conversationID string) *convLock {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.locks == nil {
 		c.locks = make(map[string]*convLock)
 	}
 	l := c.locks[conversationID]
 	if l == nil {
-		l = &convLock{}
+		l = &convLock{held: make(chan struct{}, 1)}
 		c.locks[conversationID] = l
 	}
 	l.refs++
-	c.mu.Unlock()
+	return l
+}
 
-	l.mu.Lock()
-	return func() {
-		l.mu.Unlock()
-		c.mu.Lock()
-		if l.refs--; l.refs == 0 {
-			delete(c.locks, conversationID)
-		}
-		c.mu.Unlock()
+func (c *convLocks) release(conversationID string, l *convLock) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if l.refs--; l.refs == 0 {
+		delete(c.locks, conversationID)
 	}
+}
+
+// lock blocks until conversationID is free, and returns its unlock; or,
+// if ctx ends first, returns ctx's error and holds nothing: a cancelled
+// or timed-out turn doesn't wait out the one ahead of it.
+func (c *convLocks) lock(ctx context.Context, conversationID string) (unlock func(), err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	l := c.ref(conversationID)
+	select {
+	case l.held <- struct{}{}:
+	case <-ctx.Done():
+		c.release(conversationID, l)
+		return nil, ctx.Err()
+	}
+	return func() {
+		<-l.held
+		c.release(conversationID, l)
+	}, nil
 }
 
 // tryLock takes conversationID's lock if it is free, returning its
 // unlock, or nil if a turn holds it.
 func (c *convLocks) tryLock(conversationID string) (unlock func()) {
-	c.mu.Lock()
-	if c.locks == nil {
-		c.locks = make(map[string]*convLock)
-	}
-	l := c.locks[conversationID]
-	if l == nil {
-		l = &convLock{}
-		c.locks[conversationID] = l
-	}
-	if !l.mu.TryLock() {
-		c.mu.Unlock()
+	l := c.ref(conversationID)
+	select {
+	case l.held <- struct{}{}:
+	default:
+		c.release(conversationID, l)
 		return nil
 	}
-	l.refs++
-	c.mu.Unlock()
 	return func() {
-		l.mu.Unlock()
-		c.mu.Lock()
-		if l.refs--; l.refs == 0 {
-			delete(c.locks, conversationID)
-		}
-		c.mu.Unlock()
+		<-l.held
+		c.release(conversationID, l)
 	}
 }

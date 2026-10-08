@@ -19,6 +19,7 @@ func TestErrorCodeFor_DefaultPerStatus(t *testing.T) {
 		{http.StatusUnauthorized, "unauthorized"},
 		{http.StatusForbidden, "forbidden"},
 		{http.StatusNotFound, "not_found"},
+		{http.StatusMethodNotAllowed, "method_not_allowed"},
 		{http.StatusConflict, "conflict"},
 		{http.StatusRequestEntityTooLarge, "too_large"},
 		{http.StatusUnprocessableEntity, "unprocessable"},
