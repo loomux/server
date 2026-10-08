@@ -59,6 +59,10 @@ type Store interface {
 	// message), so listing/grouping by conversation needs the
 	// unfiltered view rather than ListTasksByWorkspace.
 	ListTasks(ctx context.Context) ([]*Task, error)
+	// ListTasksByConversation returns conversationID's tasks, oldest
+	// first; unknown is empty (LOOM-145: a conversation's event stream
+	// polls this, not every task).
+	ListTasksByConversation(ctx context.Context, conversationID string) ([]*Task, error)
 	UpdateTask(ctx context.Context, t *Task) error
 	// SetTaskReapedAt records that the idle reaper tore the task's
 	// session down, touching nothing else (LOOM-120): a whole-row
@@ -93,6 +97,10 @@ type Store interface {
 	// ListTasks's own "conversation isn't a stored entity" stance;
 	// there's nothing to 404 on at this layer.
 	ListMessagesByConversation(ctx context.Context, conversationID string) ([]*Message, error)
+	// ListMessagesAfter returns conversationID's messages stored after
+	// the message afterID, in storage order (LOOM-145: a stream reads
+	// only what's new). An empty or unknown afterID returns them all.
+	ListMessagesAfter(ctx context.Context, conversationID, afterID string) ([]*Message, error)
 	// ListConversationActivity returns one ConversationActivity per
 	// distinct conversation_id in the message log, in no particular
 	// order; an empty log returns an empty slice. It is how a
@@ -113,6 +121,11 @@ type Store interface {
 	GetDispatchByIdempotencyKey(ctx context.Context, key string) (*Dispatch, error)
 	// ListDispatchesByConversation returns oldest first; unknown is empty.
 	ListDispatchesByConversation(ctx context.Context, conversationID string) ([]*Dispatch, error)
+	// ListDispatchesAfter returns conversationID's dispatches created
+	// after the dispatch afterID, plus those named in also, in creation
+	// order (LOOM-145: a stream rereads only new jobs and the ones it
+	// last saw unfinished). An empty or unknown afterID returns them all.
+	ListDispatchesAfter(ctx context.Context, conversationID, afterID string, also []string) ([]*Dispatch, error)
 	// ListDispatchesByStatus returns every dispatch in any of statuses.
 	ListDispatchesByStatus(ctx context.Context, statuses ...DispatchStatus) ([]*Dispatch, error)
 	// TransitionDispatch writes d's status, reply, error, error class and
