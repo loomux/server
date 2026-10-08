@@ -798,11 +798,6 @@ func (s *Store) CreateMessage(ctx context.Context, m *registry.Message) error {
 
 const messageColumns = `id, conversation_id, task_id, dispatch_id, origin, origin_target_id, role, content, created_at`
 
-// ListMessagesByConversation orders by created_at then the table's
-// implicit rowid — the rowid tiebreak guarantees insertion order even
-// when two messages in the same turn (a user message immediately
-// followed by its assistant reply) land on a created_at value with
-// insufficient resolution to distinguish them on its own.
 // ListMessagesAfter uses the rowid as the cursor: messages are
 // append-only, so a later insert always has a larger rowid, and an
 // afterID that's gone counts as none (everything is returned).
@@ -831,6 +826,11 @@ func (s *Store) ListMessagesAfter(ctx context.Context, conversationID, afterID s
 	return out, nil
 }
 
+// ListMessagesByConversation orders by created_at then the table's
+// implicit rowid — the rowid tiebreak guarantees insertion order even
+// when two messages in the same turn (a user message immediately
+// followed by its assistant reply) land on a created_at value with
+// insufficient resolution to distinguish them on its own.
 func (s *Store) ListMessagesByConversation(ctx context.Context, conversationID string) ([]*registry.Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+messageColumns+` FROM messages

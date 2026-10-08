@@ -102,6 +102,10 @@ type WorkspaceLister interface {
 // same conversation_id to a different workspace on a later message, so
 // grouping/filtering by conversation has to happen above
 // ListTasksByWorkspace's per-workspace scope.
+type TaskLister interface {
+	ListTasks(ctx context.Context) ([]*registry.Task, error)
+}
+
 // streamQueries are the narrow reads a conversation's event stream polls
 // with (LOOM-145): one conversation's tasks, and only messages and jobs
 // that are new since the last poll. Every registry.Store has them; a
@@ -110,10 +114,6 @@ type streamQueries interface {
 	ListTasksByConversation(ctx context.Context, conversationID string) ([]*registry.Task, error)
 	ListMessagesAfter(ctx context.Context, conversationID, afterID string) ([]*registry.Message, error)
 	ListDispatchesAfter(ctx context.Context, conversationID, afterID string, also []string) ([]*registry.Dispatch, error)
-}
-
-type TaskLister interface {
-	ListTasks(ctx context.Context) ([]*registry.Task, error)
 }
 
 // MessageLister is the message-transcript slice of registry.Store this
@@ -351,6 +351,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	for _, opt := range opts {
 		opt(s)
 	}
+	// Asserted on the MessageLister (in production, the store): a
+	// wrapper that hides these methods quietly brings back full reads.
 	s.streamQ, _ = messages.(streamQueries)
 	s.loginDevices = newLoginDevices(passwordHash, s.loginThrottle.base, s.loginThrottle.max)
 	switch {
