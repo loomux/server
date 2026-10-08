@@ -50,7 +50,15 @@ func appCSP(scriptHashes []string) string {
 // <script> in html (one without src).
 func inlineScriptHashes(html []byte) []string {
 	var hashes []string
-	lower := bytes.ToLower(html)
+	// ASCII-only lowercasing keeps byte offsets equal to html's
+	// (bytes.ToLower can change a non-ASCII character's length).
+	lower := make([]byte, len(html))
+	for i, c := range html {
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		lower[i] = c
+	}
 	for i := 0; ; {
 		start := bytes.Index(lower[i:], []byte("<script"))
 		if start < 0 {

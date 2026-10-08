@@ -25,6 +25,10 @@ func TestInlineScriptHashes(t *testing.T) {
 	if len(crlf) != 1 || crlf[0] != want {
 		t.Errorf("CRLF script hashed as %v, want %s (browsers hash it with LF)", crlf, want)
 	}
+	// A character whose lowercase is longer must not shift the offsets.
+	if got := inlineScriptHashes([]byte("<title>İİİİ</title><script>" + snippet + "</script>")); len(got) != 1 || got[0] != want {
+		t.Errorf("after non-ASCII text: %v, want [%s]", got, want)
+	}
 	if got := inlineScriptHashes([]byte(`<script>unterminated`)); len(got) != 0 {
 		t.Errorf("unterminated script hashed: %v", got)
 	}
