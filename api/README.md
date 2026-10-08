@@ -258,14 +258,22 @@ envelope: it classifies the failure with `error_class`.
       `api/dispatch.go`: async since the LOOM-81 web shipped (it was
       blocking while the deployed web still expected `{reply}`).
     - `conversation_id` empty starts a new conversation (its id is in the
-      response). A repeat with the same `Idempotency-Key` and the same
-      body returns the original job and runs nothing (a retry of a new
+      response). A non-empty one, like `workspace_hint`, must be 1–64
+      ASCII letters, digits, `-` or `_` (a server-minted id, a UUID,
+      always is), else `400` (LOOM-154): it is a path segment in
+      `GET /conversations/{id}`, so anything else could be stored but
+      never fetched back. A repeat with the same `Idempotency-Key` and
+      the same body returns the original job and runs nothing (a retry of a new
       conversation's first message leaves `conversation_id` empty, as the
       original did); the same key with a
       different body is `422` (code `idempotency_conflict`). A conversation
       with a job still in flight answers `409 {error, code, dispatch_id}`
       (code `conversation_busy`) naming it (LOOM-83 owns
       serializing instead). `503` while the server is shutting down.
+    - A `message` over 36 KiB (`targets.MaxPasteBytes`, 32 KiB, plus a
+      4 KiB margin) is `413` (code `too_large`) before anything runs
+      (LOOM-155): the router couldn't send it to an agent anyway (error
+      class `message_too_large`), and it never reaches the router model.
     - `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
       ID (e.g. a chat UI already focused on that workspace's conversation)
       that's folded into the router model's prompt as advisory context
@@ -425,6 +433,25 @@ envelope: it classifies the failure with `error_class`.
     otherwise; `409` if taken). The list (`ssh_keys`, a complete list) works
     without a master key; `used_by` holds the ids of the targets using
     each key, and deleting a key in use is `409`.
+  - `POST /api/v1/targets/{id}/migrate-ssh` `{dry_run}` — auth-gated
+    (LOOM-138, `WithSSHMigration`; `501` without it, without `/ssh-keys`,
+    or, to apply, without probing or pinning). Plans a config-mode remote
+    target (`400` otherwise) as a managed one from what the mounted SSH
+    config does for it (`docs/deploy/ssh.md`, "Migrating a target off the
+    SSH config"): `{target_id, dry_run, can_apply, problems, plan: {host,
+    ssh_port, user, ssh_proxy, key: {type, fingerprint, source_file,
+    existing_key_id}, host_keys}, applied, rolled_back, test, target}`.
+    A dry run changes nothing (`200`). Applying with problems is `409`.
+    A successful apply returns `200` with `test` and the managed `target`.
+    If the test fails, the target is put back as it was and the answer is
+    `502` with `test` and `rolled_back: true`. A config that can't be read
+    is `502`. The private key never appears. `key_file` (a file name in
+    `~/.ssh`) picks the key to import. Another migration running is
+    `409` with the usual `{error}`. A failed test on a target edited
+    meanwhile is `409` too, the target left as edited; that one, and the
+    other answers about the plan or its outcome (`409` with problems,
+    `502`, a `500` from a failed rollback), carry the migrate body, with
+    the reason in `problems`.
   - `POST /api/v1/targets`, `GET /api/v1/targets`,
     `PUT /api/v1/targets/{id}`, `DELETE /api/v1/targets/{id}` —
     auth-gated target registration (LOOM-59). `registry.Store`'s target

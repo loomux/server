@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,6 +106,16 @@ type WorkspaceLister interface {
 // ListTasksByWorkspace's per-workspace scope.
 type TaskLister interface {
 	ListTasks(ctx context.Context) ([]*registry.Task, error)
+}
+
+// streamQueries are the narrow reads a conversation's event stream polls
+// with (LOOM-145): one conversation's tasks, and only messages and jobs
+// that are new since the last poll. Every registry.Store has them; a
+// store without them gets the full reads the stream used before.
+type streamQueries interface {
+	ListTasksByConversation(ctx context.Context, conversationID string) ([]*registry.Task, error)
+	ListMessagesAfter(ctx context.Context, conversationID, afterID string) ([]*registry.Message, error)
+	ListDispatchesAfter(ctx context.Context, conversationID, afterID string, also []string) ([]*registry.Dispatch, error)
 }
 
 // MessageLister is the message-transcript slice of registry.Store this
@@ -204,24 +215,28 @@ const streamHeartbeatInterval = 15 * time.Second
 // TLS/networking (deployment assumption: plain HTTP behind a reverse
 // proxy that terminates TLS — see README.md).
 type Server struct {
-	dispatcher         Dispatcher
-	sessions           SessionStore
-	workspaces         WorkspaceLister
-	tasks              TaskLister
-	messages           MessageLister
-	attachInfo         AttachInfoStore
-	targets            TargetStore
-	targetProber       TargetProber
-	taskTurns          TaskTurnStore
-	events             EventStore
-	scanHostKey        HostKeyScanner
-	hostKeys           HostKeyStore
-	scans              *scanResults
-	workspaceManager   WorkspaceManager
-	taskCanceller      TaskCanceller
-	credentials        CredentialStore
-	sshKeys            SSHKeyStore
-	dropSSHKey         func(id string)
+	dispatcher       Dispatcher
+	sessions         SessionStore
+	workspaces       WorkspaceLister
+	tasks            TaskLister
+	messages         MessageLister
+	streamQ          streamQueries
+	attachInfo       AttachInfoStore
+	targets          TargetStore
+	targetProber     TargetProber
+	taskTurns        TaskTurnStore
+	events           EventStore
+	scanHostKey      HostKeyScanner
+	hostKeys         HostKeyStore
+	scans            *scanResults
+	workspaceManager WorkspaceManager
+	taskCanceller    TaskCanceller
+	credentials      CredentialStore
+	sshKeys          SSHKeyStore
+	dropSSHKey       func(id string)
+	resolveSSHConfig SSHConfigResolver
+	// migrating is held while a migrate-ssh is applied (LOOM-138).
+	migrating          sync.Mutex
 	agentTypes         []string
 	health             HealthChecker
 	passwordHash       []byte
@@ -342,6 +357,9 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	for _, opt := range opts {
 		opt(s)
 	}
+	// Asserted on the MessageLister (in production, the store): a
+	// wrapper that hides these methods quietly brings back full reads.
+	s.streamQ, _ = messages.(streamQueries)
 	s.loginDevices = newLoginDevices(passwordHash, s.loginThrottle.base, s.loginThrottle.max)
 	switch {
 	case s.web != nil:
@@ -379,6 +397,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("POST /api/v1/targets/{id}/scan-host-key", s.requireAuth(s.handleScanHostKey))
 	mux.HandleFunc("POST /api/v1/targets/{id}/pin", s.requireAuth(s.handlePinHostKey))
 	mux.HandleFunc("DELETE /api/v1/targets/{id}/pin", s.requireAuth(s.handleUnpinHostKey))
+	mux.HandleFunc("POST /api/v1/targets/{id}/migrate-ssh", s.requireAuth(s.handleMigrateSSH))
 	mux.HandleFunc("GET /api/v1/credentials", s.requireAuth(s.handleListCredentials))
 	mux.HandleFunc("POST /api/v1/credentials", s.requireAuth(s.handleCreateCredential))
 	mux.HandleFunc("PUT /api/v1/credentials/{id}/value", s.requireAuth(s.handleSetCredentialValue))
@@ -1204,11 +1223,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	defer heartbeat.Stop()
 
 	var lastSent *taskUpdateEvent
-	// dispatchSeen (above) is each job's last reported (status,
+	// dispatchSeen (above) holds each job's last reported (status,
 	// updated_at), so a job is reported whenever it changes (LOOM-80);
 	// jobs already finished at connect are recorded unreported. Likewise
 	// messagesSeen holds every message reported or there at connect
-	// (LOOM-121).
+	// (LOOM-121). Both also hold a cursor, so a poll reads only what's
+	// new (LOOM-145).
 	for {
 		select {
 		case <-ctx.Done():
@@ -1251,25 +1271,44 @@ type messageAddedEvent struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// sendMessagesAdded reports conversationID's messages not in seen, and
-// returns seen with them added. The first call (seen nil) records what
-// is there unreported: only messages logged while the stream is open
-// are news.
+// messageCursor is what a stream knows of its conversation's messages:
+// every one reported or there at connect, and the last one read, from
+// which the next poll reads on (LOOM-145).
+type messageCursor struct {
+	seen map[string]bool
+	last string
+}
+
+// sendMessagesAdded reports conversationID's messages not yet seen, and
+// returns the cursor moved past them. The first call (cur nil) records
+// what is there unreported: only messages logged while the stream is
+// open are news. A failed read returns cur unchanged.
 func (s *Server) sendMessagesAdded(ctx context.Context, w http.ResponseWriter, flusher http.Flusher,
-	conversationID string, seen map[string]bool) map[string]bool {
-	messages, err := s.messages.ListMessagesByConversation(ctx, conversationID)
-	if err != nil {
-		return seen
+	conversationID string, cur *messageCursor) *messageCursor {
+	var messages []*registry.Message
+	var err error
+	if s.streamQ != nil {
+		after := ""
+		if cur != nil {
+			after = cur.last
+		}
+		messages, err = s.streamQ.ListMessagesAfter(ctx, conversationID, after)
+	} else {
+		messages, err = s.messages.ListMessagesByConversation(ctx, conversationID)
 	}
-	first := seen == nil
+	if err != nil {
+		return cur
+	}
+	first := cur == nil
 	if first {
-		seen = make(map[string]bool, len(messages))
+		cur = &messageCursor{seen: make(map[string]bool, len(messages))}
 	}
 	for _, m := range messages {
-		if seen[m.ID] {
+		cur.last = m.ID
+		if cur.seen[m.ID] {
 			continue
 		}
-		seen[m.ID] = true
+		cur.seen[m.ID] = true
 		if first {
 			continue
 		}
@@ -1281,7 +1320,7 @@ func (s *Server) sendMessagesAdded(ctx context.Context, w http.ResponseWriter, f
 		fmt.Fprintf(w, "event: message_added\ndata: %s\n\n", data)
 		flusher.Flush()
 	}
-	return seen
+	return cur
 }
 
 // latestConversationTaskEvent finds conversationID's most-recently-
@@ -1289,7 +1328,13 @@ func (s *Server) sendMessagesAdded(ctx context.Context, w http.ResponseWriter, f
 // scoped to one conversation) and reports it as a taskUpdateEvent. nil,
 // nil means no task exists yet for this conversation.
 func (s *Server) latestConversationTaskEvent(ctx context.Context, conversationID string) (*taskUpdateEvent, error) {
-	tasks, err := s.tasks.ListTasks(ctx)
+	var tasks []*registry.Task
+	var err error
+	if s.streamQ != nil {
+		tasks, err = s.streamQ.ListTasksByConversation(ctx, conversationID)
+	} else {
+		tasks, err = s.tasks.ListTasks(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}

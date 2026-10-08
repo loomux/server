@@ -700,6 +700,92 @@ POST /api/v1/targets status 413
 POST /api/v1/targets status 500
 POST /api/v1/targets status 501
 POST /api/v1/targets status 503
+POST /api/v1/targets/{id}/migrate-ssh
+POST /api/v1/targets/{id}/migrate-ssh request - object
+POST /api/v1/targets/{id}/migrate-ssh request .dry_run boolean
+POST /api/v1/targets/{id}/migrate-ssh request .key_file string
+POST /api/v1/targets/{id}/migrate-ssh request-header Authorization
+POST /api/v1/targets/{id}/migrate-ssh response - object
+POST /api/v1/targets/{id}/migrate-ssh response .applied boolean
+POST /api/v1/targets/{id}/migrate-ssh response .can_apply boolean
+POST /api/v1/targets/{id}/migrate-ssh response .dry_run boolean
+POST /api/v1/targets/{id}/migrate-ssh response .plan object
+POST /api/v1/targets/{id}/migrate-ssh response .plan.host string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.host_keys []object
+POST /api/v1/targets/{id}/migrate-ssh response .plan.host_keys[].fingerprint string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.host_keys[].type string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key.existing_key_id string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key.fingerprint string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key.source_file string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key.type string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.ssh_port number
+POST /api/v1/targets/{id}/migrate-ssh response .plan.ssh_proxy string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.user string
+POST /api/v1/targets/{id}/migrate-ssh response .problems []string
+POST /api/v1/targets/{id}/migrate-ssh response .rolled_back boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.allow_provision boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.allow_shell boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.allowed_agent_types []string
+POST /api/v1/targets/{id}/migrate-ssh response .target.created_at time
+POST /api/v1/targets/{id}/migrate-ssh response .target.health object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.disk_free_bytes number nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.error string omitempty
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.last_probed_at time
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.latency_ms number
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.reachable boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.status string
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.tmux_version string
+POST /api/v1/targets/{id}/migrate-ssh response .target.host string
+POST /api/v1/targets/{id}/migrate-ssh response .target.id string
+POST /api/v1/targets/{id}/migrate-ssh response .target.kind string
+POST /api/v1/targets/{id}/migrate-ssh response .target.name string
+POST /api/v1/targets/{id}/migrate-ssh response .target.next_step string nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.permission_mode string
+POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys []object
+POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys[].fingerprint string
+POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys[].type string
+POST /api/v1/targets/{id}/migrate-ssh response .target.purpose string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ready boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.relay string
+POST /api/v1/targets/{id}/migrate-ssh response .target.relay_effective string
+POST /api/v1/targets/{id}/migrate-ssh response .target.require_confirmation boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.fingerprint string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.id string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.name string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.public_key string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.type string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_mode string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_port number
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_proxy string
+POST /api/v1/targets/{id}/migrate-ssh response .target.updated_at time
+POST /api/v1/targets/{id}/migrate-ssh response .target.user string
+POST /api/v1/targets/{id}/migrate-ssh response .target.workspace_root string
+POST /api/v1/targets/{id}/migrate-ssh response .target_id string
+POST /api/v1/targets/{id}/migrate-ssh response .test object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .test.error string omitempty
+POST /api/v1/targets/{id}/migrate-ssh response .test.host_key_problem boolean
+POST /api/v1/targets/{id}/migrate-ssh response .test.latency_ms number
+POST /api/v1/targets/{id}/migrate-ssh response .test.reachable boolean
+POST /api/v1/targets/{id}/migrate-ssh response .test.steps []object
+POST /api/v1/targets/{id}/migrate-ssh response .test.steps[].error string omitempty
+POST /api/v1/targets/{id}/migrate-ssh response .test.steps[].name string
+POST /api/v1/targets/{id}/migrate-ssh response .test.steps[].status string
+POST /api/v1/targets/{id}/migrate-ssh response .test.target_id string
+POST /api/v1/targets/{id}/migrate-ssh response .test.tmux_version string omitempty
+POST /api/v1/targets/{id}/migrate-ssh response-header Content-Type
+POST /api/v1/targets/{id}/migrate-ssh status 200
+POST /api/v1/targets/{id}/migrate-ssh status 400
+POST /api/v1/targets/{id}/migrate-ssh status 401
+POST /api/v1/targets/{id}/migrate-ssh status 404
+POST /api/v1/targets/{id}/migrate-ssh status 409
+POST /api/v1/targets/{id}/migrate-ssh status 413
+POST /api/v1/targets/{id}/migrate-ssh status 500
+POST /api/v1/targets/{id}/migrate-ssh status 501
+POST /api/v1/targets/{id}/migrate-ssh status 502
+POST /api/v1/targets/{id}/migrate-ssh status 503
 POST /api/v1/targets/{id}/pin
 POST /api/v1/targets/{id}/pin request - object
 POST /api/v1/targets/{id}/pin request .fingerprint string
