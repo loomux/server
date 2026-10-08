@@ -1533,6 +1533,20 @@ func TestStaticFileServing(t *testing.T) {
 		}
 	})
 
+	// LOOM-158: a missing file the page asked for is a 404, not the SPA
+	// shell; only a path that can be a client-side route falls back.
+	for _, p := range []string{"/assets/app-old.js", "/assets/gone", "/assets/", "/favicon.ico", "/conversations/x/app.css"} {
+		t.Run("missing file "+p+" is 404", func(t *testing.T) {
+			resp, body := get(t, p)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", resp.StatusCode)
+			}
+			if strings.Contains(body, "spa shell") {
+				t.Errorf("body = %q, want no SPA shell", body)
+			}
+		})
+	}
+
 	t.Run("root path serves index.html", func(t *testing.T) {
 		resp, body := get(t, "/")
 		if resp.StatusCode != http.StatusOK {

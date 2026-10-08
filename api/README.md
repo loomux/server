@@ -117,7 +117,11 @@ not engineering taste):
   nor starts with `/api/` is served from there, with fallback to
   `index.html` for anything that isn't a real file — a browser refresh on
   a client-side route like `/conversations/abc123` gets the SPA shell
-  instead of a 404. Routed entirely in `ServeHTTP` ahead of `mux`,
+  instead of a 404. A missing path under `/assets/` or with a file
+  extension (`/favicon.ico`) is a `404`, not the shell (LOOM-158): it is
+  a file the page asked for, such as a chunk from before a web update,
+  and the shell in its place would fail as a MIME error rather than a
+  chunk load the client can retry. Routed entirely in `ServeHTTP` ahead of `mux`,
   mirroring the existing `/api/` version check already there — `/api` and
   every `/api/*` path never reach the static handler (the bare `/api`
   path, with no trailing slash, is checked explicitly alongside the
@@ -569,7 +573,8 @@ ticker run concurrently with request handling, and this is the one
 handler in this package doing that.
 `server_test.go` also covers `WithStaticDir` (LOOM-33): a real static
 file served as-is, an unknown client-side route and the root path both
-falling back to `index.html`, `/api/*` paths staying untouched by static
+falling back to `index.html`, a missing asset or file with an extension
+answering `404` instead, `/api/*` paths staying untouched by static
 serving (including the unsupported-API-version rejection still winning
 over the SPA fallback, and the bare `/api` path with no trailing slash
 specifically — a prior version of this routing check missed it and let

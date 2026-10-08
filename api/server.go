@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -1382,7 +1383,8 @@ func (s *Server) handleUnsupportedAPIPath(w http.ResponseWriter, r *http.Request
 // dir/index.html, so a browser refresh on a client-side route (e.g.
 // /conversations/abc123, React Router) gets the SPA shell instead of a
 // 404 (design spec web-client-design.md, "Hosting / serving
-// integration"). Uses http.Dir.Open (not a raw os.Stat) specifically
+// integration"). A missing file that can't be a client-side route (see
+// spaRoute) is a 404 instead. Uses http.Dir.Open (not a raw os.Stat) specifically
 // because it already rejects ".." path elements — a traversal attempt
 // falls into the same "no such file" branch as any other unknown path
 // and gets the SPA shell, never an out-of-dir file.
@@ -1425,12 +1427,20 @@ func newStaticHandler(dir func() string) http.HandlerFunc {
 		root := http.Dir(dir())
 		f, err := root.Open(r.URL.Path)
 		if err != nil {
+			if !spaRoute(r.URL.Path) {
+				http.NotFound(w, r)
+				return
+			}
 			serveIndex(w, r, root)
 			return
 		}
 		info, statErr := f.Stat()
 		f.Close()
 		if statErr != nil || info.IsDir() || r.URL.Path == "/index.html" {
+			if r.URL.Path != "/index.html" && !spaRoute(r.URL.Path) {
+				http.NotFound(w, r)
+				return
+			}
 			serveIndex(w, r, root)
 			return
 		}
@@ -1441,6 +1451,16 @@ func newStaticHandler(dir func() string) http.HandlerFunc {
 		}
 		http.FileServer(root).ServeHTTP(w, r)
 	}
+}
+
+// spaRoute reports whether p, a path with no file behind it, may be one
+// of the web client's own routes and so gets index.html (LOOM-158). A
+// path under /assets/ or with a file extension never is: it is a file
+// the page asked for, such as a chunk of the bundle before a web update,
+// and it must 404 — index.html in its place fails as a MIME error
+// instead of a chunk load the client can retry.
+func spaRoute(p string) bool {
+	return !strings.HasPrefix(p, "/assets/") && path.Ext(p) == ""
 }
 
 type sessionContextKey struct{}
