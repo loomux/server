@@ -517,7 +517,10 @@ envelope: it classifies the failure with `error_class`.
     discovered broken later: `kind` must be one of the two
     `targets.NewExecutor` knows; a `remote` needs both `host` and
     `user`, because `RemoteExecutor.destination()` builds `user+"@"+host`
-    and ssh rejects a bare `@host`; a `local` must carry neither, since
+    and ssh rejects a bare `@host`; that `host` is a host name, an
+    ssh_config `Host` alias (labels of letters, digits, `-` and `_`,
+    dot-separated) or an IPv4/IPv6 address (LOOM-175; a managed target's
+    takes no `_`); a `local` must carry neither, since
     clearing them silently would hide a caller's misunderstanding until
     an attach-info response came back missing fields they thought they
     had set. Bad body or failed validation is `400`, a duplicate name
