@@ -1,6 +1,7 @@
 package registry_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Loomux/server/registry"
@@ -161,6 +162,52 @@ func TestEffectiveRelay(t *testing.T) {
 	} {
 		if got := tc.policy.EffectiveRelay(); got != tc.want {
 			t.Errorf("%+v.EffectiveRelay() = %q, want %q", tc.policy, got, tc.want)
+		}
+	}
+}
+
+// LOOM-138: a managed target (one with a Loomux SSH key) is reached
+// without any ssh_config, its host expanded by ssh into the proxy command:
+// only a plain host name or IP address will do.
+func TestTargetValidate_ManagedHost(t *testing.T) {
+	managed := func(host string) registry.Target {
+		return registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: host, User: "u", SSHKeyRef: "key-1"}
+	}
+	for _, host := range []string{"wyzer", "wyzer.tail1234.ts.net", "10.0.0.7", "fd7a:115c:a1e0::1", "a-b.c-d", "x1"} {
+		tgt := managed(host)
+		if err := tgt.Validate(); err != nil {
+			t.Errorf("host %q refused: %v", host, err)
+		}
+	}
+	for _, host := range []string{"a;id", "$(id)", "`id`", "%d", "a%h", "h'x", `h"x`, "a b", "a\nb", "a|b", "a&b", "-x", "a..b", ".a",
+		"a.", "a_b", "[::1]", "a:22", "é.example", strings.Repeat("a", 64) + ".example", strings.Repeat("a.", 127) + "a"} {
+		tgt := managed(host)
+		if err := tgt.Validate(); err == nil {
+			t.Errorf("host %q accepted for a managed target", host)
+		}
+	}
+	// A target reached through the mounted config keeps today's looser
+	// rule: an alias with an underscore stays valid.
+	cfg := registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "a_b", User: "u"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("config-mode host a_b refused: %v", err)
+	}
+}
+
+func TestTargetValidate_SSHProxy(t *testing.T) {
+	for _, p := range []string{"", registry.SSHProxyNone} {
+		tgt := registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHKeyRef: "k", SSHProxy: p}
+		if err := tgt.Validate(); err != nil {
+			t.Errorf("ssh_proxy %q refused: %v", p, err)
+		}
+	}
+	for _, tgt := range []registry.Target{
+		{Name: "x", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHKeyRef: "k", SSHProxy: "socks5://evil:1080"},
+		{Name: "x", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHProxy: registry.SSHProxyNone}, // config mode: the config decides
+		{Name: "x", Kind: registry.TargetKindLocal, SSHKeyRef: "k"},
+	} {
+		if err := tgt.Validate(); err == nil {
+			t.Errorf("%+v accepted", tgt)
 		}
 	}
 }

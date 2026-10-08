@@ -147,5 +147,8 @@ func (s *Server) handleDeleteSSHKey(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if s.dropSSHKey != nil {
+		s.dropSSHKey(r.PathValue("id"))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

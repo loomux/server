@@ -1,5 +1,12 @@
 # SSH access to remote targets
 
+> **Two ways to reach a target (LOOM-138).** A target with a
+> Loomux-managed SSH key (`ssh_mode: managed`) needs nothing below the
+> next section: no `~/.ssh` at all. See [Managed targets](#managed-targets-loom-138).
+> Everything else here is about **config-mode** targets, reached through
+> the mounted SSH config, which is how every target registered before
+> LOOM-138 still works.
+
 `loomuxd` reaches a remote execution target by exec'ing the `ssh(1)` binary
 (`targets/remote.go`), not by using an in-process SSH library. Production
 constructs the remote executor with **no options**:
@@ -232,6 +239,58 @@ The key Loomux authenticates with, and the proxy, still come from the
 secret. Loomux has one user today; if it ever has several, scanning and
 pinning must become admin-only, since whoever pins decides which machine
 every later command reaches.
+
+## Managed targets (LOOM-138)
+
+A managed target is reached with a key Loomux generated and keeps,
+and with **no ssh_config at all**: ssh runs with `-F /dev/null`, and
+everything it needs is on its command line, built from the target's
+validated fields and the server's own settings. Design and threat model:
+`docs/design/target-onboarding.md`.
+
+Onboarding one, in the web UI or through the API:
+
+1. `POST /api/v1/targets` with `kind: remote`, `host` (the real host
+   name or IP address: no alias resolves it; letters, digits and `-`,
+   dot-separated), `user`, `ssh_port` if not 22, and
+   `"generate_ssh_key": true` (or `ssh_key_id` of an existing key).
+   The response has `ssh_key.public_key` and `next_step: pin_host_key`.
+2. Scan and pin the host key, as above. A managed target **refuses to
+   connect without a pin**; there is no `known_hosts` to fall back to.
+   Changing its `host` or `ssh_port` drops the pin, so the new machine's
+   key is confirmed again.
+3. Add `ssh_key.public_key` to `~/.ssh/authorized_keys` of `user` on the
+   target. Prefixing it with
+   `no-port-forwarding,no-agent-forwarding,no-X11-forwarding ` is fine:
+   Loomux needs none of them.
+4. `POST /api/v1/targets/{id}/test`. Its `steps` say which of `connect`,
+   `host_key`, `auth` and `tmux` failed, with the reason; the target's
+   `next_step` turns null and `ready` true once a probe newer than the
+   last change reaches it.
+
+What reaches the target:
+
+- **The key** never touches the disk in the clear. It is stored
+  encrypted with `LOOMUX_MASTER_KEY` (so managed targets need it), and
+  decrypted into an in-process ssh-agent that serves only that key, on a
+  socket in a 0700 directory under `$TMPDIR/loomux/agents`. ssh is told
+  `IdentityAgent=<socket>`, `IdentitiesOnly=yes` and the key's public
+  half, so the mounted key, if any, is never offered. Password and
+  keyboard-interactive authentication, and agent and port forwarding,
+  are off.
+- **The proxy** is `LOOMUX_SSH_PROXY` (`socks5://127.0.0.1:1055` for the
+  userspace Tailscale sidecar). The `ProxyCommand` is loomuxd itself,
+  relaying through it (`loomuxd -ssh-proxy-connect PROXY HOST PORT`), so
+  `nc` isn't needed. A target with `"ssh_proxy": "none"` is reached
+  directly. The proxy is server configuration only: the API can choose
+  it or not, never set it.
+- **The ControlMaster** of a managed target is its own: its path carries
+  a tag of the key, proxy and pin, so a connection made through the SSH
+  config, with another key, or under an earlier pin is never reused.
+
+Deleting a key (`DELETE /api/v1/ssh-keys/{id}`, refused while a target
+uses it) stops its agent. A lost `LOOMUX_MASTER_KEY` makes managed keys
+unreadable: generate new ones and authorize them again.
 
 ## Follow-up: env-driven SSH options
 

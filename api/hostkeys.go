@@ -196,7 +196,12 @@ func (s *Server) writeStoredTarget(w http.ResponseWriter, r *http.Request, id st
 		writeError(w, http.StatusInternalServerError, "could not read back the target")
 		return
 	}
-	writeJSON(w, http.StatusOK, newTargetResponse(stored))
+	resp, err := s.targetResponseFor(r.Context(), stored)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read back target")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type testTargetResponse struct {
@@ -208,6 +213,9 @@ type testTargetResponse struct {
 	// HostKeyProblem is set when the target's host key changed or isn't
 	// known: scan and pin it (or fix the SSH secret's known_hosts).
 	HostKeyProblem bool `json:"host_key_problem"`
+	// Steps are connect, host_key, auth and tmux, each ok, failed or
+	// skipped (LOOM-138), so a person sees where it stopped.
+	Steps []testStep `json:"steps"`
 }
 
 // handleTestTarget checks a target now: can Loomux reach it over SSH, and
@@ -231,5 +239,6 @@ func (s *Server) handleTestTarget(w http.ResponseWriter, r *http.Request) {
 		LatencyMS: h.Latency.Milliseconds(), Error: h.Error,
 		HostKeyProblem: strings.Contains(h.Error, string(targets.SSHHostKeyChanged)) ||
 			strings.Contains(h.Error, string(targets.SSHHostKeyUnknown)),
+		Steps: testSteps(h),
 	})
 }

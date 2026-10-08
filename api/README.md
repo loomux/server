@@ -402,7 +402,10 @@ envelope: it classifies the failure with `error_class`.
     then lists it. A pinned target is checked against its pin alone. Only
     remote targets (`400` for local). `test` returns `{target_id, reachable,
     tmux_version?, latency_ms, error?, host_key_problem}`. Targets also
-    take and show `ssh_port` (0: the SSH config's). Single user today;
+    take and show `ssh_port` (0: the SSH config's). `test` also returns
+    `steps` (LOOM-138): `connect`, `host_key`, `auth` and `tmux`, each
+    `{name, status: ok|failed|skipped, error?}`, the failed one carrying
+    the reason and what to do. Single user today;
     scanning and pinning must become admin-only if Loomux ever has
     several (see `docs/deploy/ssh.md`).
   - `GET /api/v1/ssh-keys`, `POST /api/v1/ssh-keys` `{name}`,
@@ -440,9 +443,24 @@ envelope: it classifies the failure with `error_class`.
     id, and letting a caller choose one invites exactly the collisions
     and hand-minted ids this endpoint exists to replace, so it is
     generated here the way session ids already are. `ssh_key_ref` is not
-    part of the API (removed before 1.0, freeze review item 1: nothing
-    read it; SSH keys come from the mounted secret); a client that still
-    sends it has it ignored.
+    part of the API (removed before 1.0, freeze review item 1); a client
+    that still sends it has it ignored. A target's key is set with
+    `ssh_key_id` instead (below).
+
+    Managed targets (LOOM-138, `docs/deploy/ssh.md`): a body may carry
+    `ssh_key_id` (a key from `/ssh-keys`; `""` returns the target to the
+    SSH config), or `"generate_ssh_key": true` (a new key named after the
+    target; `501` without `/ssh-keys`, `503` without a master key; not
+    both, `400`), and `ssh_proxy` (`default` or `none`, managed targets
+    only). A managed target's `host` must be a host name or IP address
+    (`400` otherwise), and changing its `host` or `ssh_port` drops its
+    pin. An unknown `ssh_key_id` is `400` (`no such SSH key`). Every
+    target response adds `ssh_mode` (`managed` or `config`), `ssh_key`
+    (`{id, name, type, fingerprint, public_key}`, null in config mode),
+    `ssh_proxy`, `ready`, and `next_step` (`pin_host_key`,
+    `authorize_key`, `test_connection`, or null when ready), judged from
+    the latest probe newer than the target's last change. Create, update
+    and pin responses now also carry the target's `health`.
 
     Validation enforces the invariants the execution layer assumes but
     cannot check at registration time, so a target that could never be
