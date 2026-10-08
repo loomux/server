@@ -18,7 +18,8 @@ type SSHKey struct {
 	PublicKey string
 	// Fingerprint is the SHA256 fingerprint as ssh-keygen -l prints it.
 	Fingerprint string
-	// Origin is SSHKeyOriginGenerated or SSHKeyOriginImported.
+	// Origin is SSHKeyOriginGenerated, SSHKeyOriginImported or
+	// SSHKeyOriginTarget.
 	Origin string
 	// PrivateKey is the OpenSSH-format private key. Plaintext at this
 	// level, like Credential.Value: the store encrypts it at rest. Only
@@ -31,6 +32,9 @@ type SSHKey struct {
 const (
 	SSHKeyOriginGenerated = "generated"
 	SSHKeyOriginImported  = "imported"
+	// SSHKeyOriginTarget is a key generated for one target
+	// (generate_ssh_key), deleted when that target stops using it.
+	SSHKeyOriginTarget = "target"
 )
 
 // ErrNoMasterKey is a secret-holding operation attempted on a store that

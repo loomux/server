@@ -50,6 +50,10 @@ type Config struct {
 	// already fails fast on any credential operation that actually needs
 	// it, rather than this process refusing to start without one.
 	MasterKey []byte
+	// SSHProxy is the SOCKS5 proxy (host:port) managed targets are
+	// reached through unless they opt out (LOOMUX_SSH_PROXY, as
+	// socks5://host:port; LOOM-138); "" for none.
+	SSHProxy string
 	// Router is the LLM-backed RoutingModel's own configuration.
 	Router llmrouter.Config
 	// ReapIdleThreshold is how long a task can go without a state change
@@ -117,6 +121,7 @@ const (
 	envTmuxSocket          = "LOOMUX_TMUX_SOCKET"
 	envLocalTargets        = "LOOMUX_LOCAL_TARGETS"
 	envMasterKey           = "LOOMUX_MASTER_KEY"
+	envSSHProxy            = "LOOMUX_SSH_PROXY"
 	envReapIdleThreshold   = "LOOMUX_REAP_IDLE_THRESHOLD"
 	envReapInterval        = "LOOMUX_REAP_INTERVAL"
 	envTargetProbeInterval = "LOOMUX_TARGET_PROBE_INTERVAL"
@@ -260,6 +265,11 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	sshProxy, err := parseSSHProxy(os.Getenv(envSSHProxy))
+	if err != nil {
+		return Config{}, err
+	}
+
 	tmuxSocket := os.Getenv(envTmuxSocket)
 	if tmuxSocket != "" && !targets.ValidTmuxSocket(tmuxSocket) {
 		return Config{}, fmt.Errorf("app: %s %q: letters, digits, '-' and '_' only", envTmuxSocket, tmuxSocket)
@@ -282,6 +292,7 @@ func LoadConfig() (Config, error) {
 		MarkerDir:           os.Getenv(envMarkerDir),
 		TmuxSocket:          tmuxSocket,
 		MasterKey:           masterKey,
+		SSHProxy:            sshProxy,
 		Router:              routerCfg,
 		ReapIdleThreshold:   reapIdleThreshold,
 		ReapInterval:        reapInterval,
@@ -293,6 +304,26 @@ func LoadConfig() (Config, error) {
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil
+}
+
+// parseSSHProxy reads LOOMUX_SSH_PROXY: socks5://host:port, no
+// credentials, path or query. It returns host:port, which goes into
+// managed targets' ProxyCommand (targets.SetManagedSSH vets it again).
+func parseSSHProxy(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "socks5" || u.User != nil || u.Port() == "" || u.Hostname() == "" ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("app: %s must be socks5://host:port: %q", envSSHProxy, raw)
+	}
+	for _, r := range u.Hostname() {
+		if !(r == '.' || r == '-' || r == ':' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return "", fmt.Errorf("app: %s must be socks5://host:port: %q", envSSHProxy, raw)
+		}
+	}
+	return u.Host, nil
 }
 
 // loadNotifyConfig reads NotifyConfig (LOOM-102) from the environment.

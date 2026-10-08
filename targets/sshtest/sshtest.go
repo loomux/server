@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -40,6 +41,29 @@ type Server struct {
 	// loginShell runs each exec request's command as `<loginShell> -c
 	// <command>`, the way sshd hands it to the user's login shell.
 	loginShell string
+
+	mu         sync.Mutex
+	authorized [][]byte
+}
+
+// Authorize lets the key on an authorized_keys line log in too, as
+// appending it to the user's authorized_keys would (LOOM-138: a key
+// Loomux generated).
+func (s *Server) Authorize(t *testing.T, authorizedKeysLine string) {
+	t.Helper()
+	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(authorizedKeysLine))
+	if err != nil {
+		t.Fatalf("sshtest: authorize: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authorized = append(s.authorized, key.Marshal())
+}
+
+// KnownHostsLine is the server's host key as a known_hosts line, the way
+// ssh records a host on a non-standard port.
+func (s *Server) KnownHostsLine() string {
+	return fmt.Sprintf("[%s]:%d %s", s.Host, s.Port, s.HostKey)
 }
 
 // Start generates a fresh host keypair and a fresh client keypair, starts
@@ -74,10 +98,15 @@ func StartWithLoginShell(t *testing.T, loginShell string) *Server {
 		t.Fatalf("sshtest: client public key: %v", err)
 	}
 
+	s := &Server{authorized: [][]byte{authorizedKey.Marshal()}}
 	config := &ssh.ServerConfig{
 		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if bytes.Equal(key.Marshal(), authorizedKey.Marshal()) {
-				return &ssh.Permissions{}, nil
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			for _, k := range s.authorized {
+				if bytes.Equal(key.Marshal(), k) {
+					return &ssh.Permissions{}, nil
+				}
 			}
 			return nil, fmt.Errorf("sshtest: unauthorized key")
 		},
@@ -90,14 +119,12 @@ func StartWithLoginShell(t *testing.T, loginShell string) *Server {
 	}
 	t.Cleanup(func() { ln.Close() })
 
-	s := &Server{
-		Host:         "127.0.0.1",
-		Port:         ln.Addr().(*net.TCPAddr).Port,
-		IdentityFile: writeIdentityFile(t, clientPriv),
-		HostKey:      strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostSigner.PublicKey()))),
-		listener:     ln,
-		loginShell:   loginShell,
-	}
+	s.Host = "127.0.0.1"
+	s.Port = ln.Addr().(*net.TCPAddr).Port
+	s.IdentityFile = writeIdentityFile(t, clientPriv)
+	s.HostKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostSigner.PublicKey())))
+	s.listener = ln
+	s.loginShell = loginShell
 
 	go s.serve(config)
 

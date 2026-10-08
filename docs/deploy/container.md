@@ -231,7 +231,10 @@ socket every session runs on; two instances driving the same targets,
 such as test and production, each need their own, or each one's orphan
 sweep reaps the other's sessions), `LOOMUX_LOCAL_TARGETS` (`off` in this
 image, `on` for a bare binary: whether targets of kind `local` may run;
-see [targets.md](targets.md#local-targets)),
+see [targets.md](targets.md#local-targets)), `LOOMUX_SSH_PROXY`
+(`socks5://host:port`, e.g. `socks5://127.0.0.1:1055` for a userspace
+Tailscale sidecar: the proxy targets with a Loomux-managed SSH key are
+reached through, relayed by loomuxd itself; see `docs/deploy/ssh.md`),
 `LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
 provisioning and dispatch — see below), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a

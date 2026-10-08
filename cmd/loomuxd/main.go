@@ -31,6 +31,17 @@ import (
 )
 
 func main() {
+	// ssh's ProxyCommand for a managed target (LOOM-138): relay stdin and
+	// stdout to HOST:PORT through the SOCKS5 proxy, then exit. Not a flag
+	// a person runs, so not in -help.
+	if len(os.Args) == 5 && os.Args[1] == targets.RelayFlag {
+		if err := targets.RelaySOCKS5(os.Args[2], os.Args[3], os.Args[4], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	showVersion := flag.Bool("version", false, "print the server version and exit")
 	hashPassword := flag.Bool("hash-password", false, "read a password from stdin, print its bcrypt hash (for LOOMUX_AUTH_PASSWORD_HASH), and exit")
 	message := flag.String("message", "", "dispatch a single message directly (bypassing HTTP/auth) and exit, for local debugging")
@@ -125,6 +136,8 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithHealthChecker(loomux.HealthChecker()),
 		api.WithCredentials(loomux.Store()),
 		api.WithSSHKeys(loomux.Store()),
+		api.WithSSHKeyDropper(loomux.DropSSHKey),
+		api.WithSSHMigration(targets.ResolveSSHConfig),
 	}
 	if apiCfg.StaticDir != "" {
 		opts = append(opts, webOption(apiCfg))

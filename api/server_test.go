@@ -76,9 +76,15 @@ func newTestServer(t *testing.T, opts ...api.Option) (*httptest.Server, *fakeDis
 // newTestServerWith is newTestServer for options that need the store.
 func newTestServerWith(t *testing.T, optsFor func(registry.Store) []api.Option) (*httptest.Server, *fakeDispatcher, registry.Store) {
 	t.Helper()
+	return newTestServerOn(t, newTestStore(t), optsFor)
+}
+
+// newTestServerOn is newTestServerWith on a store of the caller's (one
+// with a master key, say).
+func newTestServerOn(t *testing.T, store registry.Store, optsFor func(registry.Store) []api.Option) (*httptest.Server, *fakeDispatcher, registry.Store) {
+	t.Helper()
 	hash := testPasswordHash(t)
 	dispatcher := &fakeDispatcher{}
-	store := newTestStore(t)
 	dispatcher.Jobs = dispatch.New(store, func(ctx context.Context, d *registry.Dispatch) (string, error) {
 		return dispatcher.Dispatch(ctx, d.ConversationID, d.Message, d.WorkspaceHint)
 	})
