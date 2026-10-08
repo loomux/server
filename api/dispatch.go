@@ -12,6 +12,7 @@ import (
 	"github.com/Loomux/server/dispatch"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 )
 
 // dispatchAsyncByDefault is the LOOM-80 rollout switch: what POST
@@ -25,6 +26,15 @@ const dispatchAsyncByDefault = true
 
 // maxIdempotencyKeyLen bounds the Idempotency-Key header.
 const maxIdempotencyKeyLen = 255
+
+// maxDispatchMessageBytes is the largest message POST /dispatch accepts
+// (LOOM-155). The router refuses anything over targets.MaxPasteBytes with
+// its context (error class message_too_large), but only after a routing
+// call; a message that alone is well past it can never be sent, so it is
+// refused here before any routing or provisioning. The margin leaves the
+// borderline case, where only the added context tips it over, to the
+// router's own check and its error class.
+const maxDispatchMessageBytes = targets.MaxPasteBytes + 1<<10
 
 type dispatchRequest struct {
 	// ConversationID is optional (LOOM-80): empty starts a new
@@ -147,6 +157,13 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Message == "" {
 		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+	if len(req.Message) > maxDispatchMessageBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf(
+			"message is %d KiB, over the %d KiB Loomux sends to an agent. "+
+				"Put the long part in a file in the workspace and ask the agent to read it",
+			(len(req.Message)+1023)/1024, targets.MaxPasteBytes>>10))
 		return
 	}
 

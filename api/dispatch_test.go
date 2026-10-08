@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 )
 
 // LOOM-80 dispatch jobs: see docs/design/async-dispatch-design.md.
@@ -469,5 +471,33 @@ func TestStream_MessageAdded(t *testing.T) {
 			t.Fatalf("message_added = %+v, want the late message only", m)
 		}
 		return
+	}
+}
+
+// LOOM-155: a message at the paste limit still reaches the router (whose
+// own check sees it with its context); one well past it is a 413
+// {error, code} before any routing.
+func TestDispatch_MessageSizeLimit(t *testing.T) {
+	srv, dispatcher, _ := newTestServer(t)
+	var calls atomic.Int32
+	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) {
+		calls.Add(1)
+		return "ok", nil
+	}
+	token, _ := login(t, srv.URL, testPassword)
+
+	resp, out := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token,
+		map[string]string{"message": strings.Repeat("a", targets.MaxPasteBytes)}, nil)
+	if resp.StatusCode != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("message at the limit = %d %+v (router calls %d), want 200 and one call", resp.StatusCode, out, calls.Load())
+	}
+
+	resp, out = mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token,
+		map[string]string{"message": strings.Repeat("a", 64<<10)}, nil)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge || out.Code != "too_large" || out.Error == "" {
+		t.Fatalf("64 KiB message = %d %+v, want 413 {error, code: too_large}", resp.StatusCode, out)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("router called %d times, want the oversized message never routed", calls.Load())
 	}
 }

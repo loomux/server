@@ -263,6 +263,11 @@ envelope: it classifies the failure with `error_class`.
       with a job still in flight answers `409 {error, code, dispatch_id}`
       (code `conversation_busy`) naming it (LOOM-83 owns
       serializing instead). `503` while the server is shutting down.
+    - A `message` over 33 KiB (`targets.MaxPasteBytes` plus 1 KiB) is
+      `413 {error, code: too_large}` before any routing (LOOM-155): it
+      could never reach an agent. Up to that, the router's own check
+      (the message with its context, error class `message_too_large`)
+      decides.
     - `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
       ID (e.g. a chat UI already focused on that workspace's conversation)
       that's folded into the router model's prompt as advisory context
