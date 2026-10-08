@@ -149,7 +149,9 @@ arbitrary uid the way a pure-Go image could.
 **`/tmp` must be writable.** `sshExec` multiplexes connections with
 `ControlMaster=auto` and puts the control sockets under
 `${TMPDIR:-/tmp}/loomux/ssh-cm/`, creating that directory at 0700 on
-demand. With `readOnlyRootFilesystem: true`, mount an `emptyDir` at `/tmp`.
+demand. It and `loomux/` above it must be loomuxd's own directories: a
+symlink or one another user owns is refused before ssh runs (LOOM-166),
+since a socket planted there would be taken for the master. With `readOnlyRootFilesystem: true`, mount an `emptyDir` at `/tmp`.
 A Unix socket cannot live on a `tmpfs`-less read-only path, and the failure
 is a connection error, not a clear permissions message.
 
