@@ -13,6 +13,8 @@ func TestNamesRemote(t *testing.T) {
 		"clone `https://github.com/alice/tools`":                     true,
 		`clone "https://github.com/alice/tools.git"`:                 true,
 		"clone https://github.com/alice/tools/ please":               true,
+		"clone **https://github.com/alice/tools**":                   true,
+		"| repo | https://github.com/alice/tools |":                  true,
 		"set up https://github.com/alice/tools-fork and look around": false,
 		"set up https://github.com/alice/toolsx":                     false,
 		"use github.com/alice/tools":                                 false,

@@ -123,7 +123,8 @@ var errNoProvisionedPath = errors.New("provisioning finished without reporting t
 // namesRemote says whether message names remote as a whole word — the
 // user typed that repository — and not merely contains it (LOOM-152):
 // "…/tools-fork" doesn't name "…/tools". Words split on whitespace,
-// quotes, brackets and backticks, and lose trailing punctuation; a
+// quotes, brackets, backticks and markdown's * and |, and lose trailing
+// punctuation; a
 // trailing "/" or ".git" doesn't make a different repository.
 func namesRemote(message, remote string) bool {
 	want := canonicalRemote(remote)
@@ -131,7 +132,7 @@ func namesRemote(message, remote string) bool {
 		return false
 	}
 	words := strings.FieldsFunc(message, func(r rune) bool {
-		return unicode.IsSpace(r) || strings.ContainsRune("\"'`<>()[]{}", r)
+		return unicode.IsSpace(r) || strings.ContainsRune("\"'`<>()[]{}*|", r)
 	})
 	for _, w := range words {
 		if canonicalRemote(strings.TrimRight(w, ".,;:!?")) == want {
