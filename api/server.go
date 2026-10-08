@@ -1711,6 +1711,11 @@ func apiSSHProxy(p string) string {
 
 type listTargetsResponse struct {
 	Targets []targetResponse `json:"targets"`
+	// LocalTargets says whether this server allows targets of kind
+	// "local" (LOOM-183): with LOOMUX_LOCAL_TARGETS=off (LOOM-141)
+	// registering one is a 400, and a client offering the choice needs to
+	// know before it asks.
+	LocalTargets bool `json:"local_targets"`
 }
 
 // decodeTargetRequest reads a create/update body into a registry.Target
@@ -1853,7 +1858,7 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not read target health")
 		return
 	}
-	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out})
+	writeJSON(w, http.StatusOK, listTargetsResponse{Targets: out, LocalTargets: s.localTargets})
 }
 
 // handleUpdateTarget replaces a target's mutable fields wholesale. It is

@@ -467,6 +467,12 @@ envelope: it classifies the failure with `error_class`.
     that still sends it has it ignored. A target's key is set with
     `ssh_key_id` instead (below).
 
+    `GET /api/v1/targets` also answers `local_targets` (LOOM-183):
+    whether this server allows targets of kind `local`. It is `false`
+    with `LOOMUX_LOCAL_TARGETS=off` (the container image's default,
+    LOOM-141), when a `local` create or update is `400`; a client hides
+    or disables the choice instead of offering it and failing.
+
     Managed targets (LOOM-138, `docs/deploy/ssh.md`): a body may carry
     `ssh_key_id` (a key from `/ssh-keys`; `""` returns the target to the
     SSH config), or `"generate_ssh_key": true` (a new key named after the
