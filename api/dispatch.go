@@ -188,10 +188,28 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	done, err := s.dispatcher.Wait(r.Context(), d.ID)
+	// The wait ends with its session (LOOM-182), as a stream does
+	// (LOOM-144): a turn that finishes after logout or a revoke must not
+	// hand its reply to the token that was revoked. The session is checked
+	// again once the wait is registered, for a revoke that landed between
+	// requireAuth and here.
+	sess := sessionFromContext(r.Context())
+	waitCtx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	defer s.streams.add(sess.ID, cancel)()
+	if !s.sessionStillValid(waitCtx, sess) {
+		cancel()
+	}
+	done, err := s.dispatcher.Wait(waitCtx, d.ID)
 	if err != nil {
 		if r.Context().Err() != nil {
 			return // the client is gone; the job carries on without it
+		}
+		if waitCtx.Err() != nil {
+			// The session ended; the job carries on, its result in the
+			// conversation for whoever signs in next.
+			writeError(w, http.StatusUnauthorized, "invalid or expired session")
+			return
 		}
 		writeError(w, http.StatusInternalServerError, "could not wait for dispatch")
 		return

@@ -2,7 +2,9 @@ package api_test
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,5 +89,110 @@ func TestStream_EndsWhenSessionExpires(t *testing.T) {
 	}
 	if !endsWithin(ended, 5*time.Second) {
 		t.Fatal("the expired session's stream stayed open")
+	}
+}
+
+// postDispatchAsync starts a blocking POST /api/v1/dispatch?wait=true in
+// the background; the returned channel delivers its status and body.
+func postDispatchAsync(t *testing.T, baseURL, token string) <-chan dispatchResult {
+	t.Helper()
+	out := make(chan dispatchResult, 1)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/v1/dispatch?wait=true",
+		strings.NewReader(`{"conversation_id":"c-wait","message":"hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			out <- dispatchResult{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		out <- dispatchResult{status: resp.StatusCode, body: string(body), err: err}
+	}()
+	return out
+}
+
+type dispatchResult struct {
+	status int
+	body   string
+	err    error
+}
+
+// LOOM-182: a blocking dispatch started before logout doesn't hand its
+// reply to the revoked token: the wait ends with the session, 401, and
+// the turn itself carries on.
+func TestBlockingDispatch_EndsWithSession(t *testing.T) {
+	srv, fd, store := newTestServer(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	fd.DispatchFunc = func(ctx context.Context, _, _, _ string) (string, error) {
+		close(started)
+		<-release
+		return "secret reply", nil
+	}
+	token, _ := login(t, srv.URL, testPassword)
+	result := postDispatchAsync(t, srv.URL, token)
+	<-started
+
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/logout", token, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout: %d", resp.StatusCode)
+	}
+	var got dispatchResult
+	select {
+	case got = <-result:
+	case <-time.After(5 * time.Second):
+		close(release)
+		got = <-result
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.status != http.StatusUnauthorized || strings.Contains(got.body, "secret reply") {
+		t.Fatalf("dispatch after logout = %d %s, want 401 without the reply", got.status, got.body)
+	}
+
+	// The turn wasn't cancelled with the wait: it still finishes, and its
+	// result is recorded.
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ds, err := store.ListDispatchesByConversation(context.Background(), "c-wait")
+		if err == nil && len(ds) == 1 && ds[0].Reply == "secret reply" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the turn's result was never recorded: %+v, %v", ds, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// LOOM-182: revoking another session leaves a blocking dispatch's wait
+// alone.
+func TestBlockingDispatch_OtherSessionsRevokeDoesNotEndIt(t *testing.T) {
+	srv, fd, _ := newTestServer(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	fd.DispatchFunc = func(ctx context.Context, _, _, _ string) (string, error) {
+		close(started)
+		<-release
+		return "the reply", nil
+	}
+	token, _ := login(t, srv.URL, testPassword)
+	other, _ := login(t, srv.URL, testPassword)
+	result := postDispatchAsync(t, srv.URL, token)
+	<-started
+
+	resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/logout", other, nil)
+	resp.Body.Close()
+	close(release)
+	got := <-result
+	if got.err != nil || got.status != http.StatusOK || !strings.Contains(got.body, "the reply") {
+		t.Fatalf("dispatch = %d %s %v, want 200 with the reply", got.status, got.body, got.err)
 	}
 }
