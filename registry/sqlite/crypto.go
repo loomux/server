@@ -39,6 +39,13 @@ func KeyFromEnv(varName string) ([]byte, error) {
 // nonce||ciphertext as a single blob (a fresh random nonce is generated
 // per call).
 func encrypt(key []byte, plaintext string) ([]byte, error) {
+	return seal(key, []byte(plaintext), nil)
+}
+
+// seal is encrypt with additional data: the blob opens only with the same
+// aad, which binds it to what it belongs to (an SSH key's row id, so a
+// ciphertext copied onto another row doesn't decrypt there).
+func seal(key, plaintext, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
@@ -47,7 +54,7 @@ func encrypt(key []byte, plaintext string) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("sqlite: generate nonce: %w", err)
 	}
-	return gcm.Seal(nonce, nonce, []byte(plaintext), nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
 // decrypt opens a nonce||ciphertext blob produced by encrypt. A wrong
@@ -56,19 +63,25 @@ func encrypt(key []byte, plaintext string) ([]byte, error) {
 // "tampered data" without weakening that guarantee, so this doesn't try
 // to).
 func decrypt(key, data []byte) (string, error) {
+	plaintext, err := open(key, data, nil)
+	return string(plaintext), err
+}
+
+// open is decrypt with the additional data seal was given.
+func open(key, data, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(data) < gcm.NonceSize() {
-		return "", errors.New("sqlite: ciphertext too short")
+		return nil, errors.New("sqlite: ciphertext too short")
 	}
 	nonce, ciphertext := data[:gcm.NonceSize()], data[gcm.NonceSize():]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
-		return "", fmt.Errorf("sqlite: decrypt: %w", err)
+		return nil, fmt.Errorf("sqlite: decrypt: %w", err)
 	}
-	return string(plaintext), nil
+	return plaintext, nil
 }
 
 func newGCM(key []byte) (cipher.AEAD, error) {

@@ -40,6 +40,15 @@ DELETE /api/v1/sessions/{id} status 204
 DELETE /api/v1/sessions/{id} status 401
 DELETE /api/v1/sessions/{id} status 404
 DELETE /api/v1/sessions/{id} status 500
+DELETE /api/v1/ssh-keys/{id}
+DELETE /api/v1/ssh-keys/{id} request-header Authorization
+DELETE /api/v1/ssh-keys/{id} response - none
+DELETE /api/v1/ssh-keys/{id} response-header Content-Type
+DELETE /api/v1/ssh-keys/{id} status 204
+DELETE /api/v1/ssh-keys/{id} status 401
+DELETE /api/v1/ssh-keys/{id} status 404
+DELETE /api/v1/ssh-keys/{id} status 409
+DELETE /api/v1/ssh-keys/{id} status 500
 DELETE /api/v1/targets/{id}
 DELETE /api/v1/targets/{id} request-header Authorization
 DELETE /api/v1/targets/{id} response - none
@@ -304,6 +313,23 @@ GET /api/v1/sessions response-header Content-Type
 GET /api/v1/sessions status 200
 GET /api/v1/sessions status 401
 GET /api/v1/sessions status 500
+GET /api/v1/ssh-keys
+GET /api/v1/ssh-keys request-header Authorization
+GET /api/v1/ssh-keys response - object
+GET /api/v1/ssh-keys response .ssh_keys []object
+GET /api/v1/ssh-keys response .ssh_keys[].created_at time
+GET /api/v1/ssh-keys response .ssh_keys[].fingerprint string
+GET /api/v1/ssh-keys response .ssh_keys[].id string
+GET /api/v1/ssh-keys response .ssh_keys[].name string
+GET /api/v1/ssh-keys response .ssh_keys[].origin string
+GET /api/v1/ssh-keys response .ssh_keys[].public_key string
+GET /api/v1/ssh-keys response .ssh_keys[].type string
+GET /api/v1/ssh-keys response .ssh_keys[].used_by []string
+GET /api/v1/ssh-keys response-header Content-Type
+GET /api/v1/ssh-keys status 200
+GET /api/v1/ssh-keys status 401
+GET /api/v1/ssh-keys status 404
+GET /api/v1/ssh-keys status 500
 GET /api/v1/targets
 GET /api/v1/targets request-header Authorization
 GET /api/v1/targets response - object
@@ -562,6 +588,28 @@ POST /api/v1/logout response-header Content-Type
 POST /api/v1/logout status 204
 POST /api/v1/logout status 401
 POST /api/v1/logout status 500
+POST /api/v1/ssh-keys
+POST /api/v1/ssh-keys request - object
+POST /api/v1/ssh-keys request .name string
+POST /api/v1/ssh-keys request-header Authorization
+POST /api/v1/ssh-keys response - object
+POST /api/v1/ssh-keys response .created_at time
+POST /api/v1/ssh-keys response .fingerprint string
+POST /api/v1/ssh-keys response .id string
+POST /api/v1/ssh-keys response .name string
+POST /api/v1/ssh-keys response .origin string
+POST /api/v1/ssh-keys response .public_key string
+POST /api/v1/ssh-keys response .type string
+POST /api/v1/ssh-keys response .used_by []string
+POST /api/v1/ssh-keys response-header Content-Type
+POST /api/v1/ssh-keys status 201
+POST /api/v1/ssh-keys status 400
+POST /api/v1/ssh-keys status 401
+POST /api/v1/ssh-keys status 404
+POST /api/v1/ssh-keys status 409
+POST /api/v1/ssh-keys status 413
+POST /api/v1/ssh-keys status 500
+POST /api/v1/ssh-keys status 503
 POST /api/v1/targets
 POST /api/v1/targets request - object
 POST /api/v1/targets request .allow_provision boolean nullable

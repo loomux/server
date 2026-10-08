@@ -373,6 +373,19 @@ envelope: it classifies the failure with `error_class`.
     take and show `ssh_port` (0: the SSH config's). Single user today;
     scanning and pinning must become admin-only if Loomux ever has
     several (see `docs/deploy/ssh.md`).
+  - `GET /api/v1/ssh-keys`, `POST /api/v1/ssh-keys` `{name}`,
+    `DELETE /api/v1/ssh-keys/{id}` — auth-gated SSH keys Loomux manages
+    for reaching targets (LOOM-138, `WithSSHKeys`; 404 without it; design
+    in `docs/design/target-onboarding.md`). `POST` generates an ed25519
+    key and returns `{id, name, type, fingerprint, public_key, origin,
+    created_at, used_by}` — `public_key` is the `authorized_keys` line to
+    add on a target, commented `loomux-<name>`. The private key is
+    encrypted at rest with `LOOMUX_MASTER_KEY` (`503` without it) and is
+    never returned by any endpoint. `name` is letters, digits, `.`, `_`
+    and `-`, starting with a letter or digit, at most 64 (`400`
+    otherwise; `409` if taken). The list (`ssh_keys`, a complete list) works
+    without a master key; `used_by` holds the ids of the targets using
+    each key, and deleting a key in use is `409`.
   - `POST /api/v1/targets`, `GET /api/v1/targets`,
     `PUT /api/v1/targets/{id}`, `DELETE /api/v1/targets/{id}` —
     auth-gated target registration (LOOM-59). `registry.Store`'s target
@@ -439,7 +452,7 @@ check `has_more`: `false` means the list is complete, `true` that more
 remain.
 
 The other lists are **complete lists** for all of v1: `GET /workspaces`,
-`/targets`, `/credentials`, `/sessions` and `/targets/{id}/agents`,
+`/targets`, `/credentials`, `/ssh-keys`, `/sessions` and `/targets/{id}/agents`,
 bounded in practice by what one person registers. They carry no
 `has_more`, and paging them would need new, opt-in parameters.
 

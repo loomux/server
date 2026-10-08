@@ -345,7 +345,7 @@ func TestDispatch_Logs_NeverIncludeTargetHost(t *testing.T) {
 		Kind:      registry.TargetKindRemote,
 		Host:      "bigbox.tailnet.example.invalid",
 		User:      "loomux-remote-user",
-		SSHKeyRef: "vault:bigbox-key",
+		SSHKeyRef: createBigboxKey(t, store),
 	}
 	if err := store.CreateTarget(context.Background(), remote); err != nil {
 		t.Fatalf("CreateTarget: %v", err)
