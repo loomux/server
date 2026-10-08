@@ -44,7 +44,10 @@ not engineering taste):
   `time.ParseDuration` syntax) — `requireAuth` refreshes `LastUsedAt` on
   every authenticated request. `POST /api/v1/logout` deletes the session
   row outright, for revoking a lost device immediately rather than
-  waiting out the window.
+  waiting out the window. Logout and `DELETE /sessions/{id}` also end
+  that session's open conversation streams at once (LOOM-144), and an
+  open stream re-checks its session at each heartbeat, so it ends within
+  15 s of the session expiring.
 - **`/login` brute-force protection: global exponential backoff, not a
   hard lockout** (LOOM-15). `throttle.go`'s `loginThrottle` is one
   in-memory counter for the whole process — deliberately *not* scoped
