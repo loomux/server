@@ -1640,3 +1640,40 @@ func TestStaticFileServing_CacheHeaders(t *testing.T) {
 		}
 	}
 }
+
+// LOOM-161: an /api/v1 path no route matches, or a known one with the
+// wrong method, answers {error, code} like every other API error; the
+// 405 keeps its Allow header.
+func TestUnmatchedAPIRoute_JSONError(t *testing.T) {
+	httpSrv, _, _ := newTestServer(t)
+	for _, tc := range []struct {
+		method, path string
+		status       int
+		code, allow  string
+	}{
+		{http.MethodGet, "/api/v1/nonexistent", http.StatusNotFound, "not_found", ""},
+		{http.MethodPost, "/api/v1/conversations/c1/nope", http.StatusNotFound, "not_found", ""},
+		{http.MethodGet, "/api/v1/login", http.StatusMethodNotAllowed, "method_not_allowed", "POST"},
+		{http.MethodDelete, "/api/v1/dispatch", http.StatusMethodNotAllowed, "method_not_allowed", "POST"},
+	} {
+		req, err := http.NewRequest(tc.method, httpSrv.URL+tc.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body struct{ Error, Code string }
+		decodeErr := json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if resp.StatusCode != tc.status || decodeErr != nil || body.Code != tc.code || body.Error == "" ||
+			!strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+			t.Errorf("%s %s = %d %q %+v (decode %v), want %d {error, code: %s}",
+				tc.method, tc.path, resp.StatusCode, resp.Header.Get("Content-Type"), body, decodeErr, tc.status, tc.code)
+		}
+		if tc.allow != "" && !strings.Contains(resp.Header.Get("Allow"), tc.allow) {
+			t.Errorf("%s %s: Allow = %q, want it to name %s", tc.method, tc.path, resp.Header.Get("Allow"), tc.allow)
+		}
+	}
+}

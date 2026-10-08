@@ -402,8 +402,9 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 // rather than a bare 404. This check is a simple path-prefix test done
 // ahead of routing, not a registered ServeMux pattern, specifically so
 // it can never shadow a real /api/v1/... route hit with the wrong HTTP
-// method (ServeMux's own 405 for that case is the correct, distinct
-// response — a known path used incorrectly, not an unknown version).
+// method (the 405 for that case is the correct, distinct response — a
+// known path used incorrectly, not an unknown version; serveAPI gives it
+// the {error, code} body).
 //
 // Every other path (anything not equal to /api and not starting with
 // /api/) goes to the static handler when WithStaticDir was used
@@ -424,7 +425,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleUnsupportedAPIPath(w, r)
 			return
 		}
-		s.mux.ServeHTTP(w, r)
+		s.serveAPI(w, r)
 		return
 	}
 	if s.static != nil {
@@ -432,6 +433,49 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// serveAPI routes an /api/v1/ request through mux. A path no route
+// matches, or a known path with a method it doesn't take, gets mux's own
+// 404 or 405 rewritten as the {error, code} body every other API error
+// has (LOOM-161), keeping the 405's Allow header.
+func (s *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
+	h, pattern := s.mux.Handler(r)
+	if pattern != "" {
+		s.mux.ServeHTTP(w, r)
+		return
+	}
+	rec := &statusRecorder{header: http.Header{}}
+	h.ServeHTTP(rec, r)
+	switch rec.status {
+	case http.StatusMethodNotAllowed:
+		if allow := rec.header.Get("Allow"); allow != "" {
+			w.Header().Set("Allow", allow)
+		}
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed for this path")
+	default:
+		writeError(w, http.StatusNotFound, "no such API path")
+	}
+}
+
+// statusRecorder takes the answer of mux's unmatched-route handler,
+// keeping its status and headers and dropping its plain-text body.
+type statusRecorder struct {
+	header http.Header
+	status int
+}
+
+func (r *statusRecorder) Header() http.Header { return r.header }
+
+func (r *statusRecorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	r.WriteHeader(http.StatusOK)
+	return len(b), nil
 }
 
 type loginRequest struct {
@@ -2089,6 +2133,8 @@ func errorCodeFor(status int) string {
 		return "forbidden"
 	case http.StatusNotFound:
 		return "not_found"
+	case http.StatusMethodNotAllowed:
+		return "method_not_allowed"
 	case http.StatusConflict:
 		return "conflict"
 	case http.StatusRequestEntityTooLarge:

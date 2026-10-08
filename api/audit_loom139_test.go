@@ -228,7 +228,6 @@ func TestAudit_Static_SecurityHeaders(t *testing.T) {
 // Unknown paths under /api/v1/ answer plain text today; every other API
 // error is {error, code}.
 func TestAudit_UnknownAPIPath_IsJSONError(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F22")
 	srv, _, _ := newTestServer(t)
 	resp, err := http.Get(srv.URL + "/api/v1/nonexistent")
 	if err != nil {

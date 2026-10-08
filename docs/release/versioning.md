@@ -162,6 +162,6 @@ break.
 It covers which status codes, query parameters and headers a route
 has, not what they mean: the condition a status is answered for, a
 parameter's accepted values and a header's value are still reviewed by
-hand, as are the mux's own 404 and 405 for an unknown path or method,
+hand, as are the 404 and 405 for an unknown path or method,
 and the implicit 200 of a route that writes a body without naming a
 status (every route today names its 2xx).
