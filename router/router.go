@@ -716,7 +716,8 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	// reported in its own output), recorded with the exact script that
 	// ran, and bounded — a clone that hangs fails the workspace rather
 	// than the turn waiting forever (LOOM-60).
-	recipe := provisioningRecipe(target, spec)
+	nonce := newRecipeNonce()
+	recipe := provisioningRecipe(target, spec, nonce)
 	log.Info("provisioning workspace", "kind", string(spec.Kind))
 	res, err := r.runCommandTask(ctx, registry.EventProvision, ws.ID, conversationID, recipe, ProvisionTimeout)
 	if err != nil {
@@ -740,7 +741,7 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		}, err)
 		return "", fmt.Errorf("provision workspace: %w", err)
 	}
-	path := parseProvisionedPath(res.output)
+	path := parseProvisionedPath(res.output, nonce)
 	if path == "" {
 		fail("run", res.taskID, taskFailure(registry.ErrorClassProvisionFailed, errNoProvisionedPath, ""), errNoProvisionedPath)
 		return "", fmt.Errorf("provision workspace: %w", errNoProvisionedPath)
