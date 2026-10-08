@@ -61,11 +61,13 @@ func TestProvisionSpecValidate(t *testing.T) {
 	}
 }
 
+const testNonce = "0123456789abcdef"
+
 // runRecipe runs the provisioning recipe through a real sh, as a target
 // would, and returns its combined output and exit code.
 func runRecipe(t *testing.T, target *registry.Target, spec ProvisionSpec, home string) (string, int) {
 	t.Helper()
-	cmd := exec.Command("sh", "-c", provisioningRecipe(target, spec))
+	cmd := exec.Command("sh", "-c", provisioningRecipe(target, spec, testNonce))
 	cmd.Env = append(os.Environ(), "HOME="+home)
 	out, err := cmd.CombinedOutput()
 	if exitErr, ok := err.(*exec.ExitError); ok {
@@ -99,7 +101,7 @@ func TestProvisioningRecipe_RealShell(t *testing.T) {
 			t.Fatalf("exit %d: %s", code, out)
 		}
 		want := filepath.Join(realRoot(root), "ws1")
-		if got := parseProvisionedPath(out); got != want {
+		if got := parseProvisionedPath(out, testNonce); got != want {
 			t.Errorf("resolved path = %q, want %q (output %q)", got, want, out)
 		}
 		if st, err := os.Stat(want); err != nil || !st.IsDir() {
@@ -109,13 +111,13 @@ func TestProvisioningRecipe_RealShell(t *testing.T) {
 	t.Run("empty under default root", func(t *testing.T) {
 		out, code := runRecipe(t, defaulted, ProvisionSpec{Name: "ws2", Kind: ProvisionEmpty}, home)
 		want := filepath.Join(realRoot(home), "loomux-workspaces", "ws2")
-		if code != 0 || parseProvisionedPath(out) != want {
+		if code != 0 || parseProvisionedPath(out, testNonce) != want {
 			t.Errorf("exit %d, output %q; want %q", code, out, want)
 		}
 	})
 	t.Run("existing_dir that doesn't exist", func(t *testing.T) {
 		out, code := runRecipe(t, configured, ProvisionSpec{Name: "nope", Kind: ProvisionExistingDir}, home)
-		if code == 0 || parseProvisionedPath(out) != "" {
+		if code == 0 || parseProvisionedPath(out, testNonce) != "" {
 			t.Errorf("exit %d, output %q; want a failure", code, out)
 		}
 	})
@@ -129,7 +131,7 @@ func TestProvisioningRecipe_RealShell(t *testing.T) {
 		}
 		for _, kind := range []ProvisionKind{ProvisionEmpty, ProvisionExistingDir} {
 			out, code := runRecipe(t, configured, ProvisionSpec{Name: "sneaky", Kind: kind}, home)
-			if code == 0 || parseProvisionedPath(out) != "" || !strings.Contains(out, "outside the workspace root") {
+			if code == 0 || parseProvisionedPath(out, testNonce) != "" || !strings.Contains(out, "outside the workspace root") {
 				t.Errorf("%s: exit %d, output %q; want refused as outside the root", kind, code, out)
 			}
 		}
@@ -157,5 +159,45 @@ func TestProvisioningRecipe_QuotesRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the root's $(...) ran")
+	}
+}
+
+// LOOM-153: the pane shows whatever the clone printed before the recipe's
+// own report. Only lines tagged with this run's nonce count, the last
+// ones win, and the path must be clean and inside the reported root.
+func TestParseProvisionedPath_IgnoresSpoofedLines(t *testing.T) {
+	const n = testNonce
+	real := "loomux-workspace-root:" + n + ":/home/u/loomux-workspaces\n" +
+		"loomux-workspace-path:" + n + ":/home/u/loomux-workspaces/ws\n"
+	for name, tc := range map[string]struct {
+		output string
+		want   string
+	}{
+		"the recipe's own report":            {real, "/home/u/loomux-workspaces/ws"},
+		"a spoof without the nonce, earlier": {"remote: loomux-workspace-path:/home/u\n" + real, "/home/u/loomux-workspaces/ws"},
+		"a spoof with another nonce, later":  {real + "loomux-workspace-path:ffff:/home/u\n", "/home/u/loomux-workspaces/ws"},
+		"no report at all":                   {"loomux-workspace-path:/home/u\n", ""},
+		"path outside the root": {"loomux-workspace-root:" + n + ":/home/u/loomux-workspaces\n" +
+			"loomux-workspace-path:" + n + ":/home/u\n", ""},
+		"path that is the root": {"loomux-workspace-root:" + n + ":/r\nloomux-workspace-path:" + n + ":/r\n", ""},
+		"a sibling sharing the root's prefix": {"loomux-workspace-root:" + n + ":/r\n" +
+			"loomux-workspace-path:" + n + ":/r-evil/ws\n", ""},
+		"path with ..": {"loomux-workspace-root:" + n + ":/r\nloomux-workspace-path:" + n + ":/r/../etc\n", ""},
+		"no root line": {"loomux-workspace-path:" + n + ":/r/ws\n", ""},
+	} {
+		if got := parseProvisionedPath(tc.output, n); got != tc.want {
+			t.Errorf("%s: parseProvisionedPath = %q, want %q", name, got, tc.want)
+		}
+	}
+	if got := parseProvisionedPath(real, ""); got != "" {
+		t.Errorf("an empty nonce matched: %q", got)
+	}
+}
+
+// Each run gets its own nonce.
+func TestNewRecipeNonce(t *testing.T) {
+	a, b := newRecipeNonce(), newRecipeNonce()
+	if a == b || len(a) != 24 || strings.Trim(a, "0123456789abcdef") != "" {
+		t.Fatalf("nonces %q, %q: want distinct 24-char hex", a, b)
 	}
 }

@@ -1,8 +1,11 @@
 package router
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	pathpkg "path"
 	"regexp"
 	"strings"
 	"unicode"
@@ -15,9 +18,15 @@ import (
 // command, or an offer.
 const provisioningMarker = "# loomux provisioning:"
 
-// provisionedPathPrefix marks the line a recipe prints with the
-// directory it resolved: what the workspace's path becomes.
-const provisionedPathPrefix = "loomux-workspace-path:"
+// provisionedPathPrefix and provisionedRootPrefix mark the lines a
+// recipe prints with the directory it resolved and the root it confined
+// it to. Each is followed by the run's nonce (LOOM-153), so a line the
+// clone's own output puts on the screen can't pass for one: see
+// parseProvisionedPath.
+const (
+	provisionedPathPrefix = "loomux-workspace-path:"
+	provisionedRootPrefix = "loomux-workspace-root:"
+)
 
 // defaultWorkspaceRoot is where a target with no WorkspaceRoot configured
 // gets its workspaces, relative to the login user's $HOME there.
@@ -67,8 +76,9 @@ func (s ProvisionSpec) Validate() error {
 // value in it quoted. It creates (or clones, or adopts) <root>/<name>,
 // resolves that directory with symlinks followed, refuses it unless it is
 // still inside the root — so a symlink can't hand an agent ~/.ssh — and
-// prints the resolved path. spec must have passed Validate.
-func provisioningRecipe(target *registry.Target, spec ProvisionSpec) string {
+// prints the resolved path and root, tagged with nonce (newRecipeNonce).
+// spec must have passed Validate.
+func provisioningRecipe(target *registry.Target, spec ProvisionSpec, nonce string) string {
 	root := `"$HOME"/` + defaultWorkspaceRoot
 	if target.WorkspaceRoot != "" {
 		root = shellQuote(target.WorkspaceRoot)
@@ -91,7 +101,8 @@ func provisioningRecipe(target *registry.Target, spec ProvisionSpec) string {
 	}
 	b.WriteString(`real=$(cd -- "$p" && pwd -P)` + "\n")
 	b.WriteString(`case "$real" in "$r"/*) ;; *) echo "loomux: $p resolves to $real, outside the workspace root $r" >&2; exit 1 ;; esac` + "\n")
-	b.WriteString(`printf '` + provisionedPathPrefix + `%s\n' "$real"` + "\n")
+	b.WriteString(`printf '` + provisionedRootPrefix + nonce + `:%s\n' "$r"` + "\n")
+	b.WriteString(`printf '` + provisionedPathPrefix + nonce + `:%s\n' "$real"` + "\n")
 	return b.String()
 }
 
@@ -106,16 +117,45 @@ func workspaceDisplayPath(target *registry.Target, name string) string {
 	return root + "/" + name
 }
 
-// parseProvisionedPath reads the resolved directory a recipe printed, or
-// "" if it printed none (or something that isn't an absolute path).
-func parseProvisionedPath(output string) string {
+// newRecipeNonce is a fresh, shell-safe nonce for one recipe run.
+func newRecipeNonce() string {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("router: recipe nonce: %v", err))
+	}
+	return hex.EncodeToString(b)
+}
+
+// parseProvisionedPath reads the directory a recipe run tagged nonce
+// printed, or "" if it printed none that holds up (LOOM-153). The output
+// is the pane's screen, which also shows whatever the clone printed — a
+// hostile git server's messages, escape sequences and all — so only lines
+// carrying this run's nonce count, the last of each wins (the recipe
+// prints them at the very end), and the path must be clean and inside
+// the root the recipe printed: the confinement the shell checked is
+// checked again here.
+func parseProvisionedPath(output, nonce string) string {
+	if nonce == "" {
+		return ""
+	}
+	var root, path string
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
-		if p, ok := strings.CutPrefix(line, provisionedPathPrefix); ok && strings.HasPrefix(p, "/") {
-			return p
+		if v, ok := strings.CutPrefix(line, provisionedRootPrefix+nonce+":"); ok {
+			root = v
+		}
+		if v, ok := strings.CutPrefix(line, provisionedPathPrefix+nonce+":"); ok {
+			path = v
 		}
 	}
-	return ""
+	if !strings.HasPrefix(root, "/") || !strings.HasPrefix(path, "/") ||
+		pathpkg.Clean(root) != root || pathpkg.Clean(path) != path {
+		return ""
+	}
+	if !strings.HasPrefix(path, strings.TrimSuffix(root, "/")+"/") || path == root {
+		return ""
+	}
+	return path
 }
 
 var errNoProvisionedPath = errors.New("provisioning finished without reporting the workspace directory")
