@@ -66,12 +66,14 @@ ones a fresh install sets:
 
 ```
 LOOMUX_DB_PATH=/data/loomux.db          # on the persistent volume (image default: /var/lib/loomux/loomux.db)
-LOOMUX_ROUTER_PRIMARY_BASE_URL=https://…/v1
-LOOMUX_ROUTER_PRIMARY_MODEL=…
+LOOMUX_ROUTER_PRIMARY_PROVIDER=openai     # or anthropic (Claude's native API)
+LOOMUX_ROUTER_PRIMARY_BASE_URL=https://…/v1   # not needed for anthropic
+LOOMUX_ROUTER_PRIMARY_MODEL=…            # e.g. claude-haiku-4-5 with anthropic
 LOOMUX_PUBLIC_URL=https://loomux.example # links in notifications
 # optional
-LOOMUX_ROUTER_ESCALATION_BASE_URL=…      # all three escalation vars, or none
-LOOMUX_ROUTER_ESCALATION_MODEL=…
+LOOMUX_ROUTER_ESCALATION_PROVIDER=…      # the escalation tier fully, or none of it
+LOOMUX_ROUTER_ESCALATION_BASE_URL=…
+LOOMUX_ROUTER_ESCALATION_MODEL=…         # e.g. claude-sonnet-5-5 with anthropic
 LOOMUX_NTFY_URL=https://ntfy.example
 LOOMUX_NTFY_TOPIC=loomux
 LOOMUX_METRICS_ADDR=:9090                # default is loopback only

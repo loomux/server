@@ -203,7 +203,8 @@ defaults for three of them.
 | --- | --- |
 | `LOOMUX_AUTH_PASSWORD_HASH` | bcrypt; generate with `loomuxd -hash-password`. Validated at startup — a malformed value is a hard failure |
 | `LOOMUX_MASTER_KEY` | Credential-vault key. Its absence is only a *warning* at startup, and then every vault operation fails at runtime. Treat it as required |
-| `LOOMUX_ROUTER_PRIMARY_BASE_URL` | Router model endpoint |
+| `LOOMUX_ROUTER_PRIMARY_PROVIDER` | `openai` (default, any Chat Completions endpoint) or `anthropic` (Claude's Messages API) |
+| `LOOMUX_ROUTER_PRIMARY_BASE_URL` | Router model endpoint (optional for `anthropic`) |
 | `LOOMUX_ROUTER_PRIMARY_API_KEY` | |
 | `LOOMUX_ROUTER_PRIMARY_MODEL` | |
 
