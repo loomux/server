@@ -122,6 +122,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithHostKeyPinning(targets.ScanHostKey, loomux.Store()),
 		api.WithHealthChecker(loomux.HealthChecker()),
 		api.WithCredentials(loomux.Store()),
+		api.WithSSHKeys(loomux.Store()),
 	}
 	if apiCfg.StaticDir != "" {
 		opts = append(opts, webOption(apiCfg))

@@ -168,6 +168,19 @@ type Store interface {
 	// its name and scope.
 	SetCredentialValue(ctx context.Context, id, value string) error
 
+	// CreateSSHKey, GetSSHKey, ListSSHKeys and DeleteSSHKey keep the SSH
+	// keys Loomux manages (LOOM-138). CreateSSHKey stamps CreatedAt and
+	// encrypts PrivateKey at rest (ErrNoMasterKey without a master key);
+	// a duplicate name is ErrConflict. GetSSHKey decrypts it.
+	// ListSSHKeys returns every key without PrivateKey, ordered by name,
+	// decrypting nothing. DeleteSSHKey is ErrConflict while a target's
+	// SSHKeyRef names the key; a target can only name a key that exists
+	// (ErrConflict on create or update otherwise).
+	CreateSSHKey(ctx context.Context, k *SSHKey) error
+	GetSSHKey(ctx context.Context, id string) (*SSHKey, error)
+	ListSSHKeys(ctx context.Context) ([]*SSHKey, error)
+	DeleteSSHKey(ctx context.Context, id string) error
+
 	// CreateSession, GetSessionByTokenHash, ListSessions, TouchSession,
 	// and DeleteSession back client auth (design spec §9). TouchSession
 	// updates LastUsedAt (sliding expiration); a caller with an unknown

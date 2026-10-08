@@ -121,6 +121,9 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
 	}
+	if isTriggerErr(err, "no such ssh key") {
+		return &registry.ConflictError{Reason: "no such SSH key"}
+	}
 	if err != nil {
 		return fmt.Errorf("sqlite: create target: %w", err)
 	}
@@ -181,6 +184,9 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
+	}
+	if isTriggerErr(err, "no such ssh key") {
+		return &registry.ConflictError{Reason: "no such SSH key"}
 	}
 	if err != nil {
 		return fmt.Errorf("sqlite: update target: %w", err)
