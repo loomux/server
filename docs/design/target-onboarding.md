@@ -1,6 +1,6 @@
 # Target onboarding without an SSH config (LOOM-138)
 
-**Status:** draft, awaiting the user's approval · **Ticket:** LOOM-138 (Vikunja Loomux #105 / id 1433)
+**Status:** approved 2026-10-08 with all five recommendations below · **Ticket:** LOOM-138 (Vikunja Loomux #105 / id 1433)
 **Builds on:** LOOM-114 (host-key scan/pin/test, migration `00021_target_ssh`), the credential vault's
 AES-256-GCM encryption (`registry/sqlite/crypto.go`, `LOOMUX_MASTER_KEY`).
 
@@ -31,7 +31,7 @@ AES-256-GCM encryption (`registry/sqlite/crypto.go`, `LOOMUX_MASTER_KEY`).
 Existing targets stay in `config` mode and keep working byte-for-byte; nothing changes for them until they are
 migrated. New targets created in the UI are `managed`.
 
-### Data model (migration `00023_ssh_keys`)
+### Data model (migrations `00023_ssh_keys`, PR 1, and `00024_target_ssh_proxy`, PR 2)
 
 ```sql
 CREATE TABLE ssh_keys (
@@ -44,11 +44,14 @@ CREATE TABLE ssh_keys (
   origin      TEXT NOT NULL,           -- 'generated' | 'imported'
   created_at  TIMESTAMP NOT NULL
 );
+-- 00024:
 ALTER TABLE targets ADD COLUMN ssh_proxy TEXT NOT NULL DEFAULT '';  -- '' = server default, 'none'
 ```
 
 `targets.ssh_key_ref` (existing column) holds an `ssh_keys.id`; a foreign key isn't addable to the existing
-column in SQLite, so the store enforces it (a key in use can't be deleted: 409). No new column for the host —
+column in SQLite, so triggers enforce it: a target can only name an existing key, and a key in use can't be
+deleted (409). Nothing ever read `ssh_key_ref` before, so 00023 clears whatever an early client stored there;
+from then on a non-empty value means `managed`. No new column for the host —
 `host` simply must be real in managed mode.
 
 ### Key storage

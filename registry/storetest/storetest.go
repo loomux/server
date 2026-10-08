@@ -94,6 +94,9 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 		testDeleteWorkspaceAndTasksKeepsCredentialScoped(t, newStore(t))
 	})
 
+	t.Run("SSHKey", func(t *testing.T) { testSSHKeyCRUD(t, newStore(t)) })
+	t.Run("SSHKeyInUse", func(t *testing.T) { testSSHKeyInUse(t, newStore(t)) })
+
 	t.Run("Session", func(t *testing.T) { testSessionCRUD(t, newStore(t)) })
 	t.Run("SessionNotFound", func(t *testing.T) { testSessionNotFound(t, newStore(t)) })
 	t.Run("SessionTouchUpdatesLastUsedAt", func(t *testing.T) { testSessionTouchUpdatesLastUsedAt(t, newStore(t)) })
@@ -1917,5 +1920,101 @@ func testTargetSSH(t *testing.T, s registry.Store) {
 	}
 	if err := s.SetTargetHostKeys(ctx, "missing", line); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("SetTargetHostKeys on an unknown target = %v, want ErrNotFound", err)
+	}
+}
+
+func newTestSSHKey(id, name string) *registry.SSHKey {
+	return &registry.SSHKey{
+		ID: id, Name: name, Type: "ssh-ed25519",
+		PublicKey:   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample loomux-" + name,
+		Fingerprint: "SHA256:example-" + name,
+		Origin:      registry.SSHKeyOriginGenerated,
+		PrivateKey:  []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nsecret-" + name + "\n-----END OPENSSH PRIVATE KEY-----\n"),
+	}
+}
+
+func testSSHKeyCRUD(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	k := newTestSSHKey("key-1", "wyzer")
+	if err := s.CreateSSHKey(ctx, k); err != nil {
+		t.Fatalf("CreateSSHKey: %v", err)
+	}
+	if k.CreatedAt.IsZero() {
+		t.Error("CreatedAt not stamped")
+	}
+	got, err := s.GetSSHKey(ctx, "key-1")
+	if err != nil {
+		t.Fatalf("GetSSHKey: %v", err)
+	}
+	want := newTestSSHKey("key-1", "wyzer")
+	if got.Name != want.Name || got.Type != want.Type || got.PublicKey != want.PublicKey ||
+		got.Fingerprint != want.Fingerprint || got.Origin != want.Origin || string(got.PrivateKey) != string(want.PrivateKey) {
+		t.Errorf("GetSSHKey = %+v, want %+v", got, want)
+	}
+
+	if err := s.CreateSSHKey(ctx, newTestSSHKey("key-2", "wyzer")); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("duplicate name: %v, want ErrConflict", err)
+	}
+	if err := s.CreateSSHKey(ctx, newTestSSHKey("key-0", "alpha")); err != nil {
+		t.Fatalf("CreateSSHKey alpha: %v", err)
+	}
+	list, err := s.ListSSHKeys(ctx)
+	if err != nil {
+		t.Fatalf("ListSSHKeys: %v", err)
+	}
+	if len(list) != 2 || list[0].Name != "alpha" || list[1].Name != "wyzer" {
+		t.Fatalf("ListSSHKeys = %+v, want alpha then wyzer", list)
+	}
+	for _, k := range list {
+		if len(k.PrivateKey) != 0 {
+			t.Errorf("ListSSHKeys returned the private key of %q", k.Name)
+		}
+		if k.PublicKey == "" || k.Fingerprint == "" {
+			t.Errorf("ListSSHKeys lost the public parts of %q", k.Name)
+		}
+	}
+
+	if _, err := s.GetSSHKey(ctx, "nope"); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("GetSSHKey unknown: %v, want ErrNotFound", err)
+	}
+	if err := s.DeleteSSHKey(ctx, "key-1"); err != nil {
+		t.Fatalf("DeleteSSHKey: %v", err)
+	}
+	if err := s.DeleteSSHKey(ctx, "key-1"); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("DeleteSSHKey again: %v, want ErrNotFound", err)
+	}
+}
+
+// A target can only name a key that exists, and a key can't be deleted
+// while a target uses it.
+func testSSHKeyInUse(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	if err := s.CreateSSHKey(ctx, newTestSSHKey("key-1", "wyzer")); err != nil {
+		t.Fatalf("CreateSSHKey: %v", err)
+	}
+	dangling := &registry.Target{ID: "t-0", Name: "dangling", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHKeyRef: "missing"}
+	if err := s.CreateTarget(ctx, dangling); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("CreateTarget naming a missing key: %v, want ErrConflict", err)
+	}
+	target := &registry.Target{ID: "t-1", Name: "wyzer", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHKeyRef: "key-1"}
+	if err := s.CreateTarget(ctx, target); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	if got, err := s.GetTarget(ctx, "t-1"); err != nil || got.SSHKeyRef != "key-1" {
+		t.Fatalf("GetTarget = %+v, %v", got, err)
+	}
+	if err := s.DeleteSSHKey(ctx, "key-1"); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("DeleteSSHKey in use: %v, want ErrConflict", err)
+	}
+	target.SSHKeyRef = "missing"
+	if err := s.UpdateTarget(ctx, target); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("UpdateTarget naming a missing key: %v, want ErrConflict", err)
+	}
+	target.SSHKeyRef = ""
+	if err := s.UpdateTarget(ctx, target); err != nil {
+		t.Fatalf("UpdateTarget clearing the key: %v", err)
+	}
+	if err := s.DeleteSSHKey(ctx, "key-1"); err != nil {
+		t.Errorf("DeleteSSHKey once unused: %v", err)
 	}
 }

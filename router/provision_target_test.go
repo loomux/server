@@ -100,7 +100,7 @@ func TestDispatch_PassesRegisteredTargetsToModel(t *testing.T) {
 		Kind:      registry.TargetKindRemote,
 		Host:      "bigbox.example.invalid",
 		User:      "loomux",
-		SSHKeyRef: "vault:bigbox-key",
+		SSHKeyRef: createBigboxKey(t, store),
 	}
 	if err := store.CreateTarget(context.Background(), remote); err != nil {
 		t.Fatalf("CreateTarget: %v", err)
@@ -121,9 +121,22 @@ func TestDispatch_PassesRegisteredTargetsToModel(t *testing.T) {
 	// TargetSnapshot grows: the snapshot is what reaches the third-party
 	// router vendor, so host, user and key ref must not be in it.
 	rendered := fmt.Sprintf("%+v", got)
-	for _, unwanted := range []string{"bigbox.example.invalid", "loomux", "vault:bigbox-key"} {
+	for _, unwanted := range []string{"bigbox.example.invalid", "loomux", remote.SSHKeyRef} {
 		if strings.Contains(rendered, unwanted) {
 			t.Errorf("target snapshot carries %q, want only id/name/kind: %s", unwanted, rendered)
 		}
 	}
+}
+
+// createBigboxKey stores a managed SSH key for a test target to name
+// (LOOM-138: a target's SSHKeyRef must name one) and returns its id.
+func createBigboxKey(t *testing.T, store registry.Store) string {
+	t.Helper()
+	k := &registry.SSHKey{ID: "bigbox-key-" + uuid.NewString(), Name: "bigbox-" + uuid.NewString()[:8], Type: "ssh-ed25519",
+		PublicKey: "ssh-ed25519 AAAA loomux-bigbox", Fingerprint: "SHA256:bigbox", Origin: registry.SSHKeyOriginGenerated,
+		PrivateKey: []byte("private")}
+	if err := store.CreateSSHKey(context.Background(), k); err != nil {
+		t.Fatalf("CreateSSHKey: %v", err)
+	}
+	return k.ID
 }
