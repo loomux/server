@@ -1535,14 +1535,12 @@ func sessionFromContext(ctx context.Context) *registry.Session {
 	return sess
 }
 
+// bearerToken reads the Authorization header's Bearer token. The scheme
+// is case-insensitive (RFC 9110 §11.1, LOOM-175): "bearer x" is the same
+// header as "Bearer x".
 func bearerToken(r *http.Request) (string, bool) {
-	const prefix = "Bearer "
-	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, prefix) {
-		return "", false
-	}
-	token := strings.TrimPrefix(h, prefix)
-	if token == "" {
+	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
 		return "", false
 	}
 	return token, true

@@ -1640,3 +1640,35 @@ func TestStaticFileServing_CacheHeaders(t *testing.T) {
 		}
 	}
 }
+
+// LOOM-175: the Authorization scheme is case-insensitive (RFC 9110
+// §11.1); a missing token, another scheme or no space still fail.
+func TestRequireAuth_BearerScheme(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+	cases := []struct {
+		header string
+		want   int
+	}{
+		{"Bearer " + token, http.StatusOK},
+		{"bearer " + token, http.StatusOK},
+		{"BEARER " + token, http.StatusOK},
+		{"bEaReR " + token, http.StatusOK},
+		{"Bearer ", http.StatusUnauthorized},
+		{"Bearer" + token, http.StatusUnauthorized},
+		{"Basic " + token, http.StatusUnauthorized},
+		{token, http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/sessions", nil)
+		req.Header.Set("Authorization", tc.header)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("Authorization %q = %d, want %d", strings.Replace(tc.header, token, "<token>", 1), resp.StatusCode, tc.want)
+		}
+	}
+}
