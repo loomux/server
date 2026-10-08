@@ -51,9 +51,50 @@ type Request struct {
 	IdempotencyKey string
 }
 
+// MaxIDLen is the longest client-supplied id Submit accepts: a
+// conversation_id or a workspace_hint (LOOM-154).
+const MaxIDLen = 64
+
+// ValidID reports whether s can be a client-supplied id: 1 to MaxIDLen
+// ASCII letters, digits, '-' or '_'. A server-minted id (a UUID) always
+// is. A conversation id is a path segment everywhere else in the API
+// (GET /conversations/{id}), so one that isn't could be stored but never
+// fetched back.
+func ValidID(s string) bool {
+	if len(s) == 0 || len(s) > MaxIDLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Validate checks what a client supplies: a message, and, when set, a
+// conversation id and workspace hint that are ValidIDs. The error wraps
+// ErrInvalidRequest and names the field.
+func (req Request) Validate() error {
+	if req.Message == "" {
+		return fmt.Errorf("%w: message is required", ErrInvalidRequest)
+	}
+	if req.ConversationID != "" && !ValidID(req.ConversationID) {
+		return fmt.Errorf("%w: conversation_id must be 1 to %d letters, digits, '-' or '_'", ErrInvalidRequest, MaxIDLen)
+	}
+	if req.WorkspaceHint != "" && !ValidID(req.WorkspaceHint) {
+		return fmt.Errorf("%w: workspace_hint must be 1 to %d letters, digits, '-' or '_'", ErrInvalidRequest, MaxIDLen)
+	}
+	return nil
+}
+
 var (
-	// ErrInvalidRequest: the request can't be dispatched as given.
-	ErrInvalidRequest = errors.New("dispatch: message is required")
+	// ErrInvalidRequest: the request can't be dispatched as given. The
+	// error Submit returns wraps it and says what was wrong.
+	ErrInvalidRequest = errors.New("dispatch: invalid request")
 	// ErrKeyReused: the idempotency key was already used for a
 	// different request.
 	ErrKeyReused = errors.New("dispatch: idempotency key was already used for a different request")
@@ -211,8 +252,8 @@ func New(store Store, run RunFunc, opts ...Option) *Service {
 // job. A repeat of an earlier request with the same IdempotencyKey
 // returns the earlier job and starts nothing.
 func (s *Service) Submit(ctx context.Context, req Request) (*registry.Dispatch, error) {
-	if req.Message == "" {
-		return nil, ErrInvalidRequest
+	if err := req.Validate(); err != nil {
+		return nil, err
 	}
 	// Hashed as the client sent it, before a new conversation gets its
 	// id: a retry of a new conversation's first message (same key, no

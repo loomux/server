@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -85,6 +86,25 @@ func TestSubmitMintsConversationID(t *testing.T) {
 	}
 	if d.ConversationID == "" {
 		t.Fatalf("no conversation id minted: %+v", d)
+	}
+}
+
+// Client-supplied ids are bounded and path-safe (LOOM-154); a bad one is
+// refused before anything is stored.
+func TestSubmitRejectsMalformedIDs(t *testing.T) {
+	store := newStore(t)
+	svc := newService(t, store, func(context.Context, *registry.Dispatch) (string, error) { return "", nil })
+	for _, req := range []dispatch.Request{
+		{ConversationID: "a/b", Message: "hi"},
+		{ConversationID: strings.Repeat("x", dispatch.MaxIDLen+1), Message: "hi"},
+		{ConversationID: "c", WorkspaceHint: "ws 1", Message: "hi"},
+	} {
+		if _, err := svc.Submit(context.Background(), req); !errors.Is(err, dispatch.ErrInvalidRequest) {
+			t.Errorf("Submit(%+v) = %v, want ErrInvalidRequest", req, err)
+		}
+	}
+	if !dispatch.ValidID(strings.Repeat("x", dispatch.MaxIDLen)) || dispatch.ValidID("") {
+		t.Error("ValidID bounds wrong")
 	}
 }
 

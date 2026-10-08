@@ -104,7 +104,7 @@ func (r *Router) ProbeTarget(ctx context.Context, targetID string) (*registry.Ta
 	}
 	h, err := r.probeHealth(ctx, target)
 	if err != nil {
-		return nil, nil, fmt.Errorf("router: probe target: %w", err)
+		return nil, nil, fmt.Errorf("router: probe target: %w", r.goneOr(ctx, targetID, err))
 	}
 	agents := []*registry.TargetAgent{}
 	if h.Reachable {
@@ -115,6 +115,9 @@ func (r *Router) ProbeTarget(ctx context.Context, targetID string) (*registry.Ta
 		agents, err = r.RefreshTargetAgents(agentCtx, targetID)
 		cancel()
 		if err != nil {
+			if err := r.goneOr(ctx, targetID, err); errors.Is(err, registry.ErrNotFound) {
+				return nil, nil, fmt.Errorf("router: probe target: %w", err)
+			}
 			r.logger.Warn("target agent probe failed", "target_id", targetID, "error", err)
 			agents = []*registry.TargetAgent{}
 		}
@@ -135,9 +138,28 @@ func (r *Router) ProbeAllTargets(ctx context.Context) {
 			return
 		}
 		if _, _, err := r.ProbeTarget(ctx, t.ID); err != nil {
+			// A target deleted since the list was read is simply gone
+			// (LOOM-174), not a failed probe.
+			if errors.Is(err, registry.ErrNotFound) {
+				r.logger.Debug("target health probe skipped: target deleted", "target_id", t.ID)
+				continue
+			}
 			r.logger.Error("target health probe failed", "target_id", t.ID, "error", err)
 		}
 	}
+}
+
+// goneOr is err, or registry.ErrNotFound if targetID no longer exists:
+// a target deleted while it was being probed fails the probe's writes
+// with whatever the store says about a missing row (LOOM-174).
+func (r *Router) goneOr(ctx context.Context, targetID string, err error) error {
+	if errors.Is(err, registry.ErrNotFound) || ctx.Err() != nil {
+		return err
+	}
+	if _, gerr := r.store.GetTarget(ctx, targetID); errors.Is(gerr, registry.ErrNotFound) {
+		return fmt.Errorf("%w: target %q was deleted during its probe", registry.ErrNotFound, targetID)
+	}
+	return err
 }
 
 // probeHealth runs the health probe on target and records the result,
