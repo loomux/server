@@ -132,7 +132,6 @@ func TestAudit_Dispatch_IdempotentRetryOfNewConversation(t *testing.T) {
 // A message the router will refuse anyway (over targets.MaxPasteBytes)
 // must be refused before any routing call or provisioning.
 func TestAudit_Dispatch_RejectsOversizedMessageUpFront(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F16")
 	srv, dispatcher, _ := newTestServer(t)
 	called := make(chan struct{}, 1)
 	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) {
