@@ -8,6 +8,7 @@ import (
 	pathpkg "path"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/Loomux/server/registry"
 )
@@ -158,3 +159,30 @@ func parseProvisionedPath(output, nonce string) string {
 }
 
 var errNoProvisionedPath = errors.New("provisioning finished without reporting the workspace directory")
+
+// namesRemote says whether message names remote as a whole word — the
+// user typed that repository — and not merely contains it (LOOM-152):
+// "…/tools-fork" doesn't name "…/tools". Words split on whitespace,
+// quotes, brackets, backticks and markdown's * and |, and lose trailing
+// punctuation; a trailing "/" or ".git" doesn't make a different
+// repository.
+func namesRemote(message, remote string) bool {
+	want := canonicalRemote(remote)
+	if want == "" {
+		return false
+	}
+	words := strings.FieldsFunc(message, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune("\"'`<>()[]{}*|", r)
+	})
+	for _, w := range words {
+		if canonicalRemote(strings.TrimRight(w, ".,;:!?")) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalRemote(remote string) string {
+	remote = strings.TrimSuffix(remote, "/")
+	return strings.TrimSuffix(remote, ".git")
+}
