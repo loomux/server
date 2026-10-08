@@ -3,6 +3,8 @@ package targets
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -122,10 +124,13 @@ func NewRemoteExecutor(host, user string, opts ...RemoteOption) *RemoteExecutor 
 
 func controlPathFor(host, user string, port int, tag string) string {
 	dir := filepath.Join(os.TempDir(), "loomux", "ssh-cm")
+	name := fmt.Sprintf("cm-%s-%s-%d.sock", sanitizeForFilename(user), sanitizeForFilename(host), port)
 	if tag != "" {
-		tag = "-" + tag
+		// A managed target (LOOM-138): a digest, so a long host name
+		// can't push the path past what a unix socket allows.
+		sum := sha256.Sum256([]byte(user + "@" + host + ":" + strconv.Itoa(port) + "/" + tag))
+		name = "cm-m-" + hex.EncodeToString(sum[:12]) + ".sock"
 	}
-	name := fmt.Sprintf("cm-%s-%s-%d%s.sock", sanitizeForFilename(user), sanitizeForFilename(host), port, tag)
 	return filepath.Join(dir, name)
 }
 

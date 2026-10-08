@@ -36,7 +36,9 @@ type sshKeyResponse struct {
 	Fingerprint string `json:"fingerprint"`
 	// PublicKey is the authorized_keys line to add on a target.
 	PublicKey string `json:"public_key"`
-	// Origin is "generated" or "imported".
+	// Origin is "generated" (through POST /ssh-keys), "target" (made for
+	// one target by generate_ssh_key, and deleted when it stops using it)
+	// or "imported".
 	Origin    string    `json:"origin"`
 	CreatedAt time.Time `json:"created_at"`
 	// UsedBy are the ids of the targets that connect with this key.

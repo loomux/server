@@ -32,6 +32,12 @@ func (d *droppedKeys) drop(id string) {
 // targets and SSH keys from it (as production does).
 func managedServer(t *testing.T, masterKey []byte, opts ...api.Option) (base, token string, store registry.Store, dropped *droppedKeys) {
 	t.Helper()
+	return managedServerWith(t, masterKey, func(registry.Store) []api.Option { return opts })
+}
+
+// managedServerWith is managedServer for options that need the store.
+func managedServerWith(t *testing.T, masterKey []byte, optsFor func(registry.Store) []api.Option) (base, token string, store registry.Store, dropped *droppedKeys) {
+	t.Helper()
 	var sopts []sqlite.Option
 	if masterKey != nil {
 		sopts = append(sopts, sqlite.WithMasterKey(masterKey))
@@ -43,7 +49,7 @@ func managedServer(t *testing.T, masterKey []byte, opts ...api.Option) (base, to
 	t.Cleanup(func() { st.Close() })
 	dropped = &droppedKeys{}
 	srv, _, _ := newTestServerOn(t, st, func(s registry.Store) []api.Option {
-		return append([]api.Option{api.WithSSHKeys(s), api.WithSSHKeyDropper(dropped.drop)}, opts...)
+		return append([]api.Option{api.WithSSHKeys(s), api.WithSSHKeyDropper(dropped.drop)}, optsFor(s)...)
 	})
 	token, _ = login(t, srv.URL, testPassword)
 	return srv.URL, token, st, dropped
@@ -286,11 +292,11 @@ func TestTestTarget_Steps(t *testing.T) {
 	}{
 		{"all good", registry.TargetHealth{Reachable: true, TmuxVersion: "tmux 3.5"},
 			map[string]string{"connect": "ok", "host_key": "ok", "auth": "ok", "tmux": "ok"}},
-		{"auth", registry.TargetHealth{Error: (&targets.UnreachableError{Host: "b", Failure: targets.SSHAuthFailed, Managed: true}).Error()},
+		{"auth", registry.TargetHealth{Error: healthReason(targets.SSHAuthFailed)},
 			map[string]string{"connect": "ok", "host_key": "ok", "auth": "failed", "tmux": "skipped"}},
-		{"host key", registry.TargetHealth{Error: (&targets.UnreachableError{Host: "b", Failure: targets.SSHHostKeyUnknown}).Error()},
+		{"host key", registry.TargetHealth{Error: healthReason(targets.SSHHostKeyUnknown)},
 			map[string]string{"connect": "ok", "host_key": "failed", "auth": "skipped", "tmux": "skipped"}},
-		{"proxy", registry.TargetHealth{Error: (&targets.UnreachableError{Host: "b", Failure: targets.SSHProxyUnreachable}).Error()},
+		{"proxy", registry.TargetHealth{Error: healthReason(targets.SSHProxyUnreachable)},
 			map[string]string{"connect": "failed", "host_key": "skipped", "auth": "skipped", "tmux": "skipped"}},
 		{"no tmux", registry.TargetHealth{Reachable: true, Error: "tmux not found"},
 			map[string]string{"connect": "ok", "host_key": "ok", "auth": "ok", "tmux": "failed"}},
@@ -313,5 +319,148 @@ func TestTestTarget_Steps(t *testing.T) {
 		if status != http.StatusOK || len(out.Steps) != 4 || toJSON(got) != toJSON(tc.want) {
 			t.Errorf("%s: %d steps %v, want %v (%s)", tc.name, status, got, tc.want, body)
 		}
+	}
+}
+
+// healthReason is a probe's Error as router.probeFailureReason stores it
+// for an unreachable managed target: the hint, then the class.
+func healthReason(f targets.SSHFailure) string {
+	u := &targets.UnreachableError{Host: "b", Failure: f, Detail: "raw ssh text", Managed: true}
+	return "unreachable: " + u.Hint() + " (" + string(f) + ")"
+}
+
+// next_step follows the target's latest probe, if it's newer than the
+// target's last change.
+func TestManagedTarget_NextStepFromHealth(t *testing.T) {
+	base, token, store, _ := managedServer(t, testMasterKey)
+	ctx := context.Background()
+	_, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{
+		"name": "a", "kind": "remote", "host": "box.example", "user": "u", "generate_ssh_key": true,
+	})
+	id := decodeTarget(t, body).ID
+	if err := store.SetTargetHostKeys(ctx, id, testHostKeyLine); err != nil {
+		t.Fatal(err)
+	}
+	get := func() managedTargetJSON {
+		_, body := doJSON(t, "GET", base+"/api/v1/targets", token, nil)
+		var list struct{ Targets []json.RawMessage }
+		_ = json.Unmarshal([]byte(body), &list)
+		return decodeTarget(t, string(list.Targets[0]))
+	}
+	if got := get(); nextStep(got) != "test_connection" {
+		t.Errorf("pinned, never probed: next_step %s", nextStep(got))
+	}
+	for _, tc := range []struct {
+		health registry.TargetHealth
+		ready  bool
+		next   string
+	}{
+		{registry.TargetHealth{Error: healthReason(targets.SSHAuthFailed)}, false, "authorize_key"},
+		{registry.TargetHealth{Error: healthReason(targets.SSHHostKeyChanged)}, false, "pin_host_key"},
+		{registry.TargetHealth{Error: healthReason(targets.SSHProxyUnreachable)}, false, "test_connection"},
+		{registry.TargetHealth{Reachable: true, TmuxVersion: "tmux 3.5"}, true, "<null>"},
+	} {
+		h := tc.health
+		h.TargetID, h.ProbedAt, h.DiskFreeBytes = id, time.Now().Add(time.Second), -1
+		if err := store.SetTargetHealth(ctx, &h); err != nil {
+			t.Fatal(err)
+		}
+		if got := get(); got.Ready != tc.ready || nextStep(got) != tc.next {
+			t.Errorf("health %q: ready %v next_step %s, want %v %s", h.Error, got.Ready, nextStep(got), tc.ready, tc.next)
+		}
+	}
+	// A probe older than the target's last change says nothing about it.
+	h := registry.TargetHealth{TargetID: id, Reachable: true, TmuxVersion: "tmux 3.5", DiskFreeBytes: -1, ProbedAt: time.Now().Add(-time.Hour)}
+	if err := store.SetTargetHealth(ctx, &h); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(); got.Ready || nextStep(got) != "test_connection" {
+		t.Errorf("stale probe: ready %v next_step %s", got.Ready, nextStep(got))
+	}
+}
+
+// Replacing a target's generated key (rotating it, or leaving managed
+// mode) deletes the old one: nothing else can be using it. A key made on
+// purpose through /ssh-keys stays.
+func TestManagedTarget_ReplacedGeneratedKeyIsDeleted(t *testing.T) {
+	base, token, store, dropped := managedServer(t, testMasterKey)
+	ctx := context.Background()
+	_, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{
+		"name": "a", "kind": "remote", "host": "box.example", "user": "u", "generate_ssh_key": true,
+	})
+	created := decodeTarget(t, body)
+	first := created.SSHKey.ID
+	put := func(extra map[string]any) managedTargetJSON {
+		t.Helper()
+		req := map[string]any{"name": "a", "kind": "remote", "host": "box.example", "user": "u"}
+		for k, v := range extra {
+			req[k] = v
+		}
+		status, body := doJSON(t, "PUT", base+"/api/v1/targets/"+created.ID, token, req)
+		if status != http.StatusOK {
+			t.Fatalf("PUT %v: %d %s", extra, status, body)
+		}
+		return decodeTarget(t, body)
+	}
+	rotated := put(map[string]any{"generate_ssh_key": true})
+	if rotated.SSHKey == nil || rotated.SSHKey.ID == first {
+		t.Fatalf("rotate = %+v", rotated.SSHKey)
+	}
+	if _, err := store.GetSSHKey(ctx, first); err == nil {
+		t.Error("the replaced generated key is still stored")
+	}
+	if len(dropped.ids) != 1 || dropped.ids[0] != first {
+		t.Errorf("dropped = %v, want [%s]", dropped.ids, first)
+	}
+
+	_, body = doJSON(t, "POST", base+"/api/v1/ssh-keys", token, map[string]string{"name": "fleet"})
+	var fleet sshKeyJSON
+	_ = json.Unmarshal([]byte(body), &fleet)
+	put(map[string]any{"ssh_key_id": fleet.ID})
+	if _, err := store.GetSSHKey(ctx, rotated.SSHKey.ID); err == nil {
+		t.Error("the generated key replaced by a fleet key is still stored")
+	}
+	put(map[string]any{"ssh_key_id": ""})
+	if _, err := store.GetSSHKey(ctx, fleet.ID); err != nil {
+		t.Errorf("a key made through /ssh-keys was deleted when the target left it: %v", err)
+	}
+
+	// Deleting a target deletes the key made for it.
+	_, body = doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{
+		"name": "b", "kind": "remote", "host": "box.example", "user": "u", "generate_ssh_key": true,
+	})
+	b := decodeTarget(t, body)
+	if b.SSHKey == nil {
+		t.Fatalf("b = %s", body)
+	}
+	if k, _ := store.GetSSHKey(ctx, b.SSHKey.ID); k == nil || k.Origin != registry.SSHKeyOriginTarget {
+		t.Errorf("a key made by generate_ssh_key has origin %+v, want target", k)
+	}
+	if status, body := doJSON(t, "DELETE", base+"/api/v1/targets/"+b.ID, token, nil); status != http.StatusNoContent {
+		t.Fatalf("delete target: %d %s", status, body)
+	}
+	if _, err := store.GetSSHKey(ctx, b.SSHKey.ID); err == nil {
+		t.Error("the deleted target's own key is still stored")
+	}
+}
+
+// A host key scanned for a target's old address can't be pinned after
+// the address changes.
+func TestManagedTarget_UpdateForgetsTheScan(t *testing.T) {
+	scanned, _ := targets.ParseHostKeys(testHostKeyLine)
+	scan := func(ctx context.Context, tgt *registry.Target) ([]targets.HostKey, error) { return scanned, nil }
+	base, token, _, _ := managedServerWith(t, testMasterKey, func(s registry.Store) []api.Option {
+		return []api.Option{api.WithHostKeyPinning(scan, s)}
+	})
+	_, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{"name": "a", "kind": "remote", "host": "box.example", "user": "u"})
+	id := decodeTarget(t, body).ID
+	if status, body := doJSON(t, "POST", base+"/api/v1/targets/"+id+"/scan-host-key", token, nil); status != http.StatusOK {
+		t.Fatalf("scan: %d %s", status, body)
+	}
+	if status, body := doJSON(t, "PUT", base+"/api/v1/targets/"+id, token, map[string]any{"name": "a", "kind": "remote", "host": "other.example", "user": "u"}); status != http.StatusOK {
+		t.Fatalf("PUT: %d %s", status, body)
+	}
+	if status, body := doJSON(t, "POST", base+"/api/v1/targets/"+id+"/pin", token, map[string]string{"fingerprint": scanned[0].Fingerprint}); status != http.StatusConflict {
+		t.Errorf("pin of the old address's scan: %d %s, want 409", status, body)
 	}
 }

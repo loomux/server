@@ -219,6 +219,7 @@ func (a *App) Close() error {
 		<-a.proberDone
 	}
 	if a.sshAgents != nil {
+		targets.ResetManagedSSH(a.sshAgents)
 		a.sshAgents.Close()
 	}
 	return a.store.Close()

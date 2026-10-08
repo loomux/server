@@ -82,7 +82,7 @@ func TestManagedArgs(t *testing.T) {
 		"IdentitiesOnly": "yes", "PreferredAuthentications": "publickey", "PasswordAuthentication": "no",
 		"KbdInteractiveAuthentication": "no", "ForwardAgent": "no", "ClearAllForwardings": "yes",
 		"StrictHostKeyChecking": "yes", "GlobalKnownHostsFile": "/dev/null", "BatchMode": "yes",
-		"ProxyCommand": "exec '/usr/local/bin/loomuxd' " + RelayFlag + " '127.0.0.1:1055' %h %p",
+		"ProxyCommand": "'/usr/local/bin/loomuxd' " + RelayFlag + " '127.0.0.1:1055' %h %p",
 	} {
 		if v, ok := optionValue(got, name); !ok || v != want {
 			t.Errorf("-o %s = %q (set: %v), want %q", name, v, ok, want)
@@ -159,5 +159,90 @@ func TestManagedArgs_OwnControlPath(t *testing.T) {
 	}
 	if len(managed) > maxSocketPath {
 		t.Errorf("ControlPath %q is too long for a socket", managed)
+	}
+}
+
+// The public key files' directory gets the same checks as the agents':
+// a symlink planted there is refused (#294 review).
+func TestManaged_KeysDirMustBeOurs(t *testing.T) {
+	tgt := setupManagedArgs(t, "")
+	m := currentManaged()
+	base := t.TempDir()
+	elsewhere := filepath.Join(base, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "keys")
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	mm := *m
+	mm.KeysDir = link
+	if err := SetManagedSSH(&mm); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewExecutor(tgt); err == nil {
+		t.Error("NewExecutor wrote the public key into a symlinked directory")
+	}
+}
+
+// A long host name still makes a ControlPath ssh can create its
+// temporary socket beside (it adds ~17 bytes).
+func TestManaged_ControlPathBoundedForLongHosts(t *testing.T) {
+	tgt := setupManagedArgs(t, "")
+	tgt.Host = strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + ".example"
+	argv := recordingSSH(t)
+	e, err := NewExecutor(tgt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.RunOnce(context.Background(), "true"); err != nil {
+		t.Fatal(err)
+	}
+	cp, _ := optionValue(argv(), "ControlPath")
+	if len(cp)+17 > maxSocketPath {
+		t.Errorf("ControlPath %q (%d bytes) leaves ssh no room", cp, len(cp))
+	}
+}
+
+// Once a key's agent runs, building another executor for the target
+// doesn't load and decrypt the key again (#294 review).
+func TestManaged_KeyLoadedOnce(t *testing.T) {
+	tgt := setupManagedArgs(t, "")
+	m := currentManaged()
+	calls := 0
+	mm := *m
+	inner := m.Keys
+	mm.Keys = func(ctx context.Context, id string) (*registry.SSHKey, error) {
+		calls++
+		return inner(ctx, id)
+	}
+	if err := SetManagedSSH(&mm); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := NewExecutor(tgt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("key loaded %d times, want once", calls)
+	}
+	mm.Agents.Drop(tgt.SSHKeyRef)
+	if _, err := NewExecutor(tgt); err != nil || calls != 2 {
+		t.Errorf("after Drop: %v, %d loads; want the key loaded again", err, calls)
+	}
+}
+
+func TestResetManagedSSH(t *testing.T) {
+	setupManagedArgs(t, "")
+	m := currentManaged()
+	ResetManagedSSH(NewAgentPool(t.TempDir()))
+	if currentManaged() != m {
+		t.Error("another pool's reset cleared the config")
+	}
+	ResetManagedSSH(m.Agents)
+	if currentManaged() != nil {
+		t.Error("the owning pool's reset left the config in place")
 	}
 }

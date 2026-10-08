@@ -414,7 +414,8 @@ envelope: it classifies the failure with `error_class`.
     in `docs/design/target-onboarding.md`). `POST` generates an ed25519
     key and returns `{id, name, type, fingerprint, public_key, origin,
     created_at, used_by}` — `public_key` is the `authorized_keys` line to
-    add on a target, commented `loomux-<name>`. The private key is
+    add on a target, commented `loomux-<name>`; `origin` is `generated`,
+    `target` (made by a target's `generate_ssh_key`) or `imported`. The private key is
     encrypted at rest with `LOOMUX_MASTER_KEY` (`503` without it) and is
     never returned by any endpoint. `name` is letters, digits, `.`, `_`
     and `-`, starting with a letter or digit, at most 64 (`400`
@@ -460,7 +461,12 @@ envelope: it classifies the failure with `error_class`.
     `ssh_proxy`, `ready`, and `next_step` (`pin_host_key`,
     `authorize_key`, `test_connection`, or null when ready), judged from
     the latest probe newer than the target's last change. Create, update
-    and pin responses now also carry the target's `health`.
+    and pin responses now also carry the target's `health`. A key made by
+    `generate_ssh_key` has `origin: target` in `/ssh-keys` and is deleted
+    when its target is deleted or moves to another key; a host key scan
+    is forgotten when a target's host, port, key or proxy changes. A
+    health `error` for an unreachable target now ends with its class in
+    parentheses, e.g. `(auth_failed)`.
 
     Validation enforces the invariants the execution layer assumes but
     cannot check at registration time, so a target that could never be

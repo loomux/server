@@ -11,6 +11,13 @@
 - `POST /targets/{id}/test` returns `steps`: which of connect, host key,
   authentication and tmux failed, and why.
 
+### Changed
+
+- A target's health `error`, when it can't be reached, ends with the
+  failure's class, e.g. `(auth_failed)`.
+- A key made by a target's `generate_ssh_key` (origin `target`) is
+  deleted with its target or when the target moves to another key.
+
 ### Fixed
 
 - Creating or updating a target that names a missing SSH key says so

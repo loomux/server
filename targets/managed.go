@@ -95,6 +95,16 @@ func SetManagedSSH(m *ManagedSSH) error {
 	return nil
 }
 
+// ResetManagedSSH turns managed SSH off if it is the configuration using
+// agents: their owner is closing them.
+func ResetManagedSSH(agents *AgentPool) {
+	managedMu.Lock()
+	defer managedMu.Unlock()
+	if managed != nil && managed.Agents == agents {
+		managed = nil
+	}
+}
+
 func currentManaged() *ManagedSSH {
 	managedMu.RLock()
 	defer managedMu.RUnlock()
@@ -114,17 +124,7 @@ func managedOptions(t *registry.Target) ([]RemoteOption, error) {
 	if strings.TrimSpace(t.HostKeys) == "" {
 		return nil, &UnreachableError{Host: t.Host, Failure: SSHHostKeyUnknown, Detail: "no host key is pinned for this target", Managed: true}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), managedKeyTimeout)
-	defer cancel()
-	key, err := m.Keys(ctx, t.SSHKeyRef)
-	if err != nil {
-		return nil, fmt.Errorf("targets: load the target's SSH key: %w", err)
-	}
-	socket, err := m.Agents.Socket(key)
-	if err != nil {
-		return nil, err
-	}
-	pub, err := writePublicKey(m.KeysDir, key)
+	socket, pub, err := managedIdentity(m, t.SSHKeyRef)
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +146,31 @@ func managedOptions(t *registry.Target) ([]RemoteOption, error) {
 	}}, nil
 }
 
+// managedIdentity is key id's agent socket and public key file. The key
+// is only loaded and decrypted when its agent isn't running yet: an
+// executor is built for every operation's caller, often (#294 review).
+func managedIdentity(m *ManagedSSH, id string) (socket, pub string, err error) {
+	if socket, ok := m.Agents.Running(id); ok && sshKeyID.MatchString(id) {
+		pub = filepath.Join(m.KeysDir, id+".pub")
+		if _, err := os.Stat(pub); err == nil {
+			return socket, pub, nil
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), managedKeyTimeout)
+	defer cancel()
+	key, err := m.Keys(ctx, id)
+	if err != nil {
+		return "", "", fmt.Errorf("targets: load the target's SSH key: %w", err)
+	}
+	if socket, err = m.Agents.Socket(key); err != nil {
+		return "", "", err
+	}
+	if pub, err = writePublicKey(m.KeysDir, key); err != nil {
+		return "", "", err
+	}
+	return socket, pub, nil
+}
+
 // managedProxyArgs is the ProxyCommand for t, if it goes through the
 // server's proxy. The relay and proxy were vetted by SetManagedSSH, and
 // %h is t's host, which Target.Validate holds to a host name or address.
@@ -153,7 +178,9 @@ func managedProxyArgs(m *ManagedSSH, t *registry.Target) []string {
 	if m.Proxy == "" || t.SSHProxy == registry.SSHProxyNone {
 		return nil
 	}
-	return []string{"-o", "ProxyCommand=exec '" + m.Relay + "' " + RelayFlag + " '" + m.Proxy + "' %h %p"}
+	// No "exec" of our own: ssh runs the command as "exec <command>"
+	// under $SHELL already, and only zsh takes "exec exec" (#294 review).
+	return []string{"-o", "ProxyCommand='" + m.Relay + "' " + RelayFlag + " '" + m.Proxy + "' %h %p"}
 }
 
 // managedControlTag sets a managed target's ControlMaster apart from any
@@ -177,8 +204,8 @@ func writePublicKey(dir string, k *registry.SSHKey) (string, error) {
 	if !sshKeyID.MatchString(k.ID) {
 		return "", fmt.Errorf("targets: ssh key id %q can't name a file", k.ID)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("targets: keys dir: %w", err)
+	if err := ensurePrivateDir(dir, "keys dir"); err != nil {
+		return "", err
 	}
 	path := filepath.Join(dir, k.ID+".pub")
 	want := []byte(k.PublicKey + "\n")

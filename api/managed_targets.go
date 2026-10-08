@@ -148,6 +148,7 @@ func (s *Server) generateTargetKey(w http.ResponseWriter, ctx context.Context, t
 			writeError(w, http.StatusInternalServerError, "could not generate SSH key")
 			return nil, false
 		}
+		k.Origin = registry.SSHKeyOriginTarget
 		err = s.sshKeys.CreateSSHKey(ctx, k)
 		switch {
 		case err == nil:
@@ -170,6 +171,39 @@ func (s *Server) discardKey(k *registry.SSHKey) {
 	if k != nil {
 		_ = s.sshKeys.DeleteSSHKey(context.Background(), k.ID)
 	}
+}
+
+// releaseTargetKey deletes the key a target no longer uses, if it was
+// made for that target (generate_ssh_key): nothing else knows it. A key
+// made through /ssh-keys stays, as does one another target still uses
+// (the store refuses that delete). Best effort.
+func (s *Server) releaseTargetKey(ctx context.Context, keyID string) {
+	if keyID == "" || s.sshKeys == nil {
+		return
+	}
+	keys, err := s.sshKeys.ListSSHKeys(ctx)
+	if err != nil {
+		return
+	}
+	for _, k := range keys {
+		if k.ID == keyID && k.Origin == registry.SSHKeyOriginTarget {
+			if s.sshKeys.DeleteSSHKey(ctx, keyID) == nil && s.dropSSHKey != nil {
+				s.dropSSHKey(keyID)
+			}
+			return
+		}
+	}
+}
+
+// forgetScan drops a target's latest host key scan: after its address
+// or the way it's reached changes, that scan says nothing about it.
+func (s *Server) forgetScan(id string) {
+	if s.scans == nil {
+		return
+	}
+	s.scans.mu.Lock()
+	defer s.scans.mu.Unlock()
+	delete(s.scans.byTarget, id)
 }
 
 // writeTargetWriteError answers a failed CreateTarget or UpdateTarget.

@@ -1540,8 +1540,6 @@ type targetResponse struct {
 	PinnedHostKeys []hostKeyResponse `json:"pinned_host_keys"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`
-	// Health is the target's last health probe (LOOM-86); null when it
-	// has never been probed, and in create/update responses.
 	// SSHMode is "managed" for a target reached with a Loomux SSH key and
 	// no ssh_config (LOOM-138), "config" for one reached through the
 	// deployment's mounted SSH config.
@@ -1554,9 +1552,11 @@ type targetResponse struct {
 	// Ready says the target's latest probe, newer than its last change,
 	// reached it and ran tmux; NextStep, when not ready, is what to do:
 	// pin_host_key, authorize_key or test_connection.
-	Ready    bool                  `json:"ready"`
-	NextStep *string               `json:"next_step"`
-	Health   *targetHealthResponse `json:"health"`
+	Ready    bool    `json:"ready"`
+	NextStep *string `json:"next_step"`
+	// Health is the target's last health probe (LOOM-86); null when it
+	// has never been probed.
+	Health *targetHealthResponse `json:"health"`
 }
 
 // targetHealthResponse is a target's last health probe (LOOM-86).
@@ -1846,6 +1846,13 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 		writeTargetWriteError(w, err, "update")
 		return
 	}
+	if target.Host != existing.Host || target.SSHPort != existing.SSHPort ||
+		target.SSHKeyRef != existing.SSHKeyRef || target.SSHProxy != existing.SSHProxy {
+		s.forgetScan(id)
+	}
+	if target.SSHKeyRef != existing.SSHKeyRef {
+		s.releaseTargetKey(r.Context(), existing.SSHKeyRef)
+	}
 	// A managed target at a new address must have that machine's host
 	// key confirmed again (LOOM-138): its pin is dropped.
 	if target.Managed() && existing.HostKeys != "" && (target.Host != existing.Host || target.SSHPort != existing.SSHPort) {
@@ -1877,7 +1884,9 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 // conflict, not a 500: the store's foreign key is doing its job and the
 // operator needs to be told which it is.
 func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
-	if err := s.targets.DeleteTarget(r.Context(), r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	existing, _ := s.targets.GetTarget(r.Context(), id)
+	if err := s.targets.DeleteTarget(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, registry.ErrNotFound):
 			writeError(w, http.StatusNotFound, "no such target")
@@ -1887,6 +1896,10 @@ func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "could not delete target")
 		}
 		return
+	}
+	s.forgetScan(id)
+	if existing != nil {
+		s.releaseTargetKey(r.Context(), existing.SSHKeyRef)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

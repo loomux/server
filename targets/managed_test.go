@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -104,8 +105,28 @@ func TestManagedExecutor_Contract(t *testing.T) {
 	})
 }
 
+// proxyShells are the $SHELLs ssh runs the ProxyCommand under in the
+// tests: the container's sh, and fish (a user's login shell) if present.
+// zsh alone would hide a command only it accepts (#294 review).
+func proxyShells(t *testing.T) []string {
+	shells := []string{"/bin/sh"}
+	if fish, err := osexec.LookPath("fish"); err == nil {
+		shells = append(shells, fish)
+	}
+	return shells
+}
+
 // Through the server's SOCKS5 proxy, relayed by loomuxd itself.
 func TestManagedExecutor_ThroughSOCKS5(t *testing.T) {
+	for _, shell := range proxyShells(t) {
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			t.Setenv("SHELL", shell)
+			testThroughSOCKS5(t)
+		})
+	}
+}
+
+func testThroughSOCKS5(t *testing.T) {
 	socks := startSOCKS5(t)
 	s := setupManaged(t, socks.addr)
 	e := newManagedExecutor(t, s.target)
@@ -174,6 +195,15 @@ func TestManagedExecutor_NotConfigured(t *testing.T) {
 
 // A managed target's host key is scanned the same way it's reached.
 func TestScanHostKey_Managed(t *testing.T) {
+	for _, shell := range proxyShells(t) {
+		t.Run(filepath.Base(shell), func(t *testing.T) {
+			t.Setenv("SHELL", shell)
+			testScanHostKeyManaged(t)
+		})
+	}
+}
+
+func testScanHostKeyManaged(t *testing.T) {
 	socks := startSOCKS5(t)
 	s := setupManaged(t, socks.addr)
 	s.target.HostKeys = ""

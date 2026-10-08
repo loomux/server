@@ -288,8 +288,15 @@ What reaches the target:
   a tag of the key, proxy and pin, so a connection made through the SSH
   config, with another key, or under an earlier pin is never reused.
 
-Deleting a key (`DELETE /api/v1/ssh-keys/{id}`, refused while a target
-uses it) stops its agent. A lost `LOOMUX_MASTER_KEY` makes managed keys
+A key made by `generate_ssh_key` (origin `target`) belongs to its
+target: it is deleted when the target is deleted or moves to another
+key. Keys made through `POST /api/v1/ssh-keys` (origin `generated`)
+stay until deleted. Deleting a key (`DELETE /api/v1/ssh-keys/{id}`,
+refused while a target uses it) stops its agent.
+
+loomuxd's own path goes into the `ProxyCommand`, so it must be an
+absolute path of letters, digits and `/._+-` (the image's
+`/usr/local/bin/loomuxd` is); otherwise loomuxd refuses to start. A lost `LOOMUX_MASTER_KEY` makes managed keys
 unreadable: generate new ones and authorize them again.
 
 ## Follow-up: env-driven SSH options
