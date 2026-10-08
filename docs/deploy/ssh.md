@@ -299,6 +299,37 @@ absolute path of letters, digits and `/._+-` (the image's
 `/usr/local/bin/loomuxd` is); otherwise loomuxd refuses to start. A lost `LOOMUX_MASTER_KEY` makes managed keys
 unreadable: generate new ones and authorize them again.
 
+## Migrating a target off the SSH config (LOOM-138)
+
+A target registered before LOOM-138 is reached through the mounted SSH
+config (`ssh_mode: config`). `POST /api/v1/targets/{id}/migrate-ssh`
+moves it to managed mode without touching the machine:
+
+- It runs `ssh -G` for the target, inside the server, so it sees what
+  the mounted config does: the real `HostName` behind an alias, the port,
+  the user, the key file, and the proxy.
+- It imports that key file (origin `imported`), once, however many
+  targets use it. The file must be a regular, passphrase-free key directly
+  in `~/.ssh`.
+- It pins the host key: the target's existing pin if it has one, else the
+  entry in the `known_hosts` files ssh checks (a `HostKeyAlias` is
+  followed). The pin is rewritten for the address managed mode connects to.
+- The config's proxy must be `nc -X 5 -x ADDR %h %p` or
+  `socat - SOCKS5-CONNECT:ADDR:%h:%p`, with `ADDR` equal to
+  `LOOMUX_SSH_PROXY`, or there must be no proxy (`ssh_proxy: none`).
+  `ProxyJump` and other proxy commands aren't migrated.
+
+With `{"dry_run": true}` it returns the plan, with `problems` listing what
+stops it, and changes nothing. Without the dry run it applies the plan
+(`409` if there are problems), then tests the target. If the test fails,
+the target goes back to the SSH config exactly as it was, a key imported
+just for it is deleted, and the answer is `502` with the test's `steps`.
+While the test runs, dispatches to the target use the new settings.
+
+Once every target is managed and works, the mounted secret's key,
+`config` and `known_hosts` are no longer used. Retire them only then:
+in this deployment that's a theWyseKube change.
+
 ## Follow-up: env-driven SSH options
 
 Plumbing `WithIdentityFile` / `WithExtraSSHArgs` through

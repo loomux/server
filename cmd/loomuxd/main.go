@@ -136,6 +136,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithCredentials(loomux.Store()),
 		api.WithSSHKeys(loomux.Store()),
 		api.WithSSHKeyDropper(loomux.DropSSHKey),
+		api.WithSSHMigration(targets.ResolveSSHConfig),
 	}
 	if apiCfg.StaticDir != "" {
 		opts = append(opts, webOption(apiCfg))

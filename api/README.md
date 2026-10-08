@@ -422,6 +422,19 @@ envelope: it classifies the failure with `error_class`.
     otherwise; `409` if taken). The list (`ssh_keys`, a complete list) works
     without a master key; `used_by` holds the ids of the targets using
     each key, and deleting a key in use is `409`.
+  - `POST /api/v1/targets/{id}/migrate-ssh` `{dry_run}` — auth-gated
+    (LOOM-138, `WithSSHMigration`; `501` without it, without `/ssh-keys`,
+    or, to apply, without probing or pinning). Plans a config-mode remote
+    target (`400` otherwise) as a managed one from what the mounted SSH
+    config does for it (`docs/deploy/ssh.md`, "Migrating a target off the
+    SSH config"): `{target_id, dry_run, can_apply, problems, plan: {host,
+    ssh_port, user, ssh_proxy, key: {type, fingerprint, source_file,
+    existing_key_id}, host_keys}, applied, rolled_back, test, target}`.
+    A dry run changes nothing (`200`). Applying with problems is `409`.
+    A successful apply returns `200` with `test` and the managed `target`.
+    If the test fails, the target is put back as it was and the answer is
+    `502` with `test` and `rolled_back: true`. A config that can't be read
+    is `502`. The private key never appears.
   - `POST /api/v1/targets`, `GET /api/v1/targets`,
     `PUT /api/v1/targets/{id}`, `DELETE /api/v1/targets/{id}` —
     auth-gated target registration (LOOM-59). `registry.Store`'s target

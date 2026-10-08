@@ -221,6 +221,7 @@ type Server struct {
 	credentials        CredentialStore
 	sshKeys            SSHKeyStore
 	dropSSHKey         func(id string)
+	resolveSSHConfig   SSHConfigResolver
 	agentTypes         []string
 	health             HealthChecker
 	passwordHash       []byte
@@ -378,6 +379,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("POST /api/v1/targets/{id}/scan-host-key", s.requireAuth(s.handleScanHostKey))
 	mux.HandleFunc("POST /api/v1/targets/{id}/pin", s.requireAuth(s.handlePinHostKey))
 	mux.HandleFunc("DELETE /api/v1/targets/{id}/pin", s.requireAuth(s.handleUnpinHostKey))
+	mux.HandleFunc("POST /api/v1/targets/{id}/migrate-ssh", s.requireAuth(s.handleMigrateSSH))
 	mux.HandleFunc("GET /api/v1/credentials", s.requireAuth(s.handleListCredentials))
 	mux.HandleFunc("POST /api/v1/credentials", s.requireAuth(s.handleCreateCredential))
 	mux.HandleFunc("PUT /api/v1/credentials/{id}/value", s.requireAuth(s.handleSetCredentialValue))
