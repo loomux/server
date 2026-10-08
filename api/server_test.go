@@ -1579,6 +1579,28 @@ func TestStaticFileServing(t *testing.T) {
 		}
 	})
 
+	// LOOM-158: only a client-side route gets the shell; a missing file
+	// is a 404, so a stale chunk fails to load instead of arriving as
+	// HTML.
+	for _, path := range []string{"/assets/app-old.js", "/assets/style.css", "/assets/", "/assets/sub/", "/favicon.ico", "/conversations/x.map"} {
+		t.Run("missing file "+path+" is 404, not the shell", func(t *testing.T) {
+			resp, body := get(t, path)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", resp.StatusCode)
+			}
+			if strings.Contains(body, "spa shell") {
+				t.Errorf("body = %q, want no SPA shell", body)
+			}
+		})
+	}
+
+	t.Run("index.html by name is still the shell", func(t *testing.T) {
+		resp, body := get(t, "/index.html")
+		if resp.StatusCode != http.StatusOK || body != "<html>spa shell</html>" {
+			t.Fatalf("GET /index.html = %d %q, want 200 and the shell", resp.StatusCode, body)
+		}
+	})
+
 	t.Run("path traversal falls back to the SPA shell, never escapes the static dir", func(t *testing.T) {
 		resp, body := get(t, "/../../etc/passwd")
 		if resp.StatusCode != http.StatusOK {
@@ -1637,6 +1659,38 @@ func TestStaticFileServing_CacheHeaders(t *testing.T) {
 		resp.Body.Close()
 		if got := resp.Header.Get("Cache-Control"); got != want {
 			t.Errorf("GET %s Cache-Control = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// LOOM-175: the Authorization scheme is case-insensitive (RFC 9110
+// §11.1); a missing token, another scheme or no space still fail.
+func TestRequireAuth_BearerScheme(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+	cases := []struct {
+		header string
+		want   int
+	}{
+		{"Bearer " + token, http.StatusOK},
+		{"bearer " + token, http.StatusOK},
+		{"BEARER " + token, http.StatusOK},
+		{"bEaReR " + token, http.StatusOK},
+		{"Bearer ", http.StatusUnauthorized},
+		{"Bearer" + token, http.StatusUnauthorized},
+		{"Basic " + token, http.StatusUnauthorized},
+		{token, http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/sessions", nil)
+		req.Header.Set("Authorization", tc.header)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("Authorization %q = %d, want %d", strings.Replace(tc.header, token, "<token>", 1), resp.StatusCode, tc.want)
 		}
 	}
 }

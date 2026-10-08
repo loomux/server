@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -157,28 +158,38 @@ func runServer(ctx context.Context, loomux *app.App) {
 		}()
 	}
 
-	go func() {
-		<-ctx.Done()
-		// Dispatch jobs first (LOOM-80): they get the drain time to finish,
-		// the rest are marked interrupted, and a blocking request waiting
-		// on one gets its answer before the HTTP server stops.
+	// Conversation streams never go idle: end them as shutdown begins, or
+	// Shutdown waits out its whole grace for them (LOOM-147).
+	httpServer.RegisterOnShutdown(server.EndStreams)
+	var others []*http.Server
+	if metricsServer != nil {
+		others = append(others, metricsServer)
+	}
+	// Dispatch jobs drain first (LOOM-80): they get the drain time to
+	// finish, the rest are marked interrupted, and a blocking request
+	// waiting on one gets its answer before the HTTP server stops.
+	drain := func() {
 		if err := loomux.DrainDispatches(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdownCtx)
-		if metricsServer != nil {
-			_ = metricsServer.Shutdown(shutdownCtx)
-		}
-	}()
+	}
 
+	ln, err := net.Listen("tcp", apiCfg.Addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	fmt.Fprintf(os.Stderr, "loomuxd: listening on %s\n", apiCfg.Addr)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := serveHTTP(ctx, httpServer, ln, drain, shutdownGrace, others...); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
+
+// shutdownGrace is how long in-flight HTTP requests get to finish once
+// the dispatch drain is done. With the default drain (20 s) the whole
+// shutdown fits the 30 s Kubernetes gives a pod by default.
+const shutdownGrace = 5 * time.Second
 
 // webOption serves the web client from apiCfg.StaticDir, updatable in
 // place (LOOM-118) when a bundles directory is configured. A bundle

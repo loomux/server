@@ -226,8 +226,8 @@ dispatch audit trail forever), `LOOMUX_DISPATCH_MAX_DURATION` (2h: the
 ceiling on one dispatch job end to end; each agent turn has its own,
 tighter bounds inside it), `LOOMUX_DISPATCH_DRAIN` (20s: how long a
 shutdown lets in-flight dispatch jobs finish before leaving them for the
-next start to resume; keep it under the pod's termination grace period,
-30s by default), `LOOMUX_TMUX_SOCKET` (`loomux`: the tmux
+next start to resume; then other HTTP requests get 5s more, so keep the
+drain plus 5s under the pod's termination grace period, 30s by default), `LOOMUX_TMUX_SOCKET` (`loomux`: the tmux
 socket every session runs on; two instances driving the same targets,
 such as test and production, each need their own, or each one's orphan
 sweep reaps the other's sessions), `LOOMUX_LOCAL_TARGETS` (`off` in this
@@ -341,12 +341,17 @@ as sensitive anyway:
 `GET /api/v1/health` is the cheap, unauthenticated liveness/readiness probe.
 It pings the database and verifies the router model is configured, but it
 does **not** probe targets or the Tailscale sidecar. Use it for Kubernetes
-liveness and readiness.
+liveness and readiness. A database it can't reach makes it `unhealthy`; a
+router model that isn't configured, `degraded`; both answer `503`. Since
+it needs no session, a failed component's `error` is always the fixed
+`unavailable`; the reason is in `/api/v1/health/deep`.
 
 `GET /api/v1/health/deep` is authenticated and returns per-component detail:
 database, router model, every registered target (via a short `tmux -V`
 probe), and the sidecar SOCKS5 port. Use it for operational dashboards and
-for debugging "why can't Loomux reach target X?".
+for debugging "why can't Loomux reach target X?". The target probes and the
+sidecar dial run at once under one 10-second deadline; a target that hasn't
+answered by then is reported `unhealthy` with the error `timed out`.
 
 ```yaml
 livenessProbe:

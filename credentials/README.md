@@ -32,7 +32,9 @@ router) — nothing in this package does that composition.
 — per design spec §8, the storage interface covers both the registry
 tables and the credential vault as one abstraction, so this isn't a
 second storage mechanism. `registry/sqlite` encrypts values with
-AES-GCM before they touch the database and decrypts on read (the master
+AES-GCM, bound to the row's id as additional data so a ciphertext
+copied onto another row doesn't decrypt (LOOM-175), before they touch
+the database and decrypts on read (the master
 key is a `registry/sqlite.Option` — see `sqlite.WithMasterKey` /
 `sqlite.KeyFromEnv` — not a required parameter, since most callers never
 touch credentials).

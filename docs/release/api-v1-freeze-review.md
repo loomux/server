@@ -39,6 +39,7 @@ parameter and header), the handlers, and loomux/web's use of each field.
 | 17 | Unbounded lists | decide paging now | maybe | **decide before 1.0** |
 | 18 | Stream has no resume | add SSE `id:` later | no | later |
 | 19 | Admin-only routes once there are several users | reserve 403 now | no | document now |
+| 20 | "Not configured" is `404` for credentials, `501` elsewhere | `501` everywhere | web: check | **decide before 1.0** |
 
 The rest of this document is the detail behind each row.
 
@@ -277,6 +278,22 @@ change now, only the stated intent.
 
 Unauthenticated today, which is fine: `/health` (with item 5) and
 `/version`.
+
+### 20. "Not configured on this server": 404 or 501
+
+**Today.** A feature the server wasn't set up for answers differently by
+route. Every `/credentials` route answers `404 {"error": "credentials
+are not available on this server"}` without a vault master key, which a
+client can't tell from `404 no such credential`. Every other optional
+feature (task cancellation, the audit trail, host key pinning, target
+probing, SSH keys, workspace management) answers `501` ("… is not
+configured on this server"). Found in LOOM-175 (item 10) and left as it is: changing
+a status code isn't additive.
+**Proposal.** `501` for "this server doesn't have that feature" on every
+route, credentials included, so `404` only ever means "no such thing".
+**Breaking:** for a client that treats the credentials `404` as "no
+vault"; check loomux/web's credentials page before deciding.
+**Recommendation:** decide before 1.0; impossible after.
 
 ## E. Missing, but addable after 1.0 (not blockers)
 
