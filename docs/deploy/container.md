@@ -225,8 +225,8 @@ dispatch audit trail forever), `LOOMUX_DISPATCH_MAX_DURATION` (2h: the
 ceiling on one dispatch job end to end; each agent turn has its own,
 tighter bounds inside it), `LOOMUX_DISPATCH_DRAIN` (20s: how long a
 shutdown lets in-flight dispatch jobs finish before leaving them for the
-next start to resume; keep it under the pod's termination grace period,
-30s by default), `LOOMUX_TMUX_SOCKET` (`loomux`: the tmux
+next start to resume; then other HTTP requests get 5s more, so keep the
+drain plus 5s under the pod's termination grace period, 30s by default), `LOOMUX_TMUX_SOCKET` (`loomux`: the tmux
 socket every session runs on; two instances driving the same targets,
 such as test and production, each need their own, or each one's orphan
 sweep reaps the other's sessions), `LOOMUX_LOCAL_TARGETS` (`off` in this

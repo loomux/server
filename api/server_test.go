@@ -1579,6 +1579,28 @@ func TestStaticFileServing(t *testing.T) {
 		}
 	})
 
+	// LOOM-158: only a client-side route gets the shell; a missing file
+	// is a 404, so a stale chunk fails to load instead of arriving as
+	// HTML.
+	for _, path := range []string{"/assets/app-old.js", "/assets/style.css", "/assets/", "/assets/sub/", "/favicon.ico", "/conversations/x.map"} {
+		t.Run("missing file "+path+" is 404, not the shell", func(t *testing.T) {
+			resp, body := get(t, path)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", resp.StatusCode)
+			}
+			if strings.Contains(body, "spa shell") {
+				t.Errorf("body = %q, want no SPA shell", body)
+			}
+		})
+	}
+
+	t.Run("index.html by name is still the shell", func(t *testing.T) {
+		resp, body := get(t, "/index.html")
+		if resp.StatusCode != http.StatusOK || body != "<html>spa shell</html>" {
+			t.Fatalf("GET /index.html = %d %q, want 200 and the shell", resp.StatusCode, body)
+		}
+	})
+
 	t.Run("path traversal falls back to the SPA shell, never escapes the static dir", func(t *testing.T) {
 		resp, body := get(t, "/../../etc/passwd")
 		if resp.StatusCode != http.StatusOK {
