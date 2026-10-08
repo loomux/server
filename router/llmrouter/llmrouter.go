@@ -72,8 +72,13 @@ func WithMetrics(met *metrics.Metrics) Option {
 // with no agent_type — any use_workspace/provision_workspace decision that
 // names one fails validation.
 func New(cfg Config, agentTypes []string, opts ...Option) (*Model, error) {
-	if cfg.Primary.BaseURL == "" || cfg.Primary.APIKey == "" || cfg.Primary.Model == "" {
-		return nil, fmt.Errorf("%w: primary tier is incompletely configured", ErrConfigInvalid)
+	if err := cfg.Primary.Validate(); err != nil {
+		return nil, fmt.Errorf("primary tier is incompletely configured: %w", err)
+	}
+	if cfg.Escalation != nil {
+		if err := cfg.Escalation.Validate(); err != nil {
+			return nil, fmt.Errorf("escalation tier is incompletely configured: %w", err)
+		}
 	}
 
 	m := &Model{

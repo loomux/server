@@ -45,7 +45,11 @@ not engineering taste):
   session stays valid as long as it's used at least once within
   `SessionTTL` (default 30 days, `LOOMUX_SESSION_TTL` overridable,
   `time.ParseDuration` syntax) — `requireAuth` refreshes `LastUsedAt` on
-  every authenticated request. `POST /api/v1/logout` deletes the session
+  every authenticated request. However much it's used, a session also
+  ends `SessionMaxAge` after it was created (LOOM-175; default 90 days,
+  `LOOMUX_SESSION_MAX_AGE`, `0` for no limit), so a token that leaked
+  doesn't stay good for as long as it keeps being used; the device signs
+  in again. `POST /api/v1/logout` deletes the session
   row outright, for revoking a lost device immediately rather than
   waiting out the window. Logout and `DELETE /sessions/{id}` also end
   that session's open conversation streams at once (LOOM-144), and an
@@ -210,7 +214,8 @@ envelope: it classifies the failure with `error_class`.
 - `config.go` — `Config`, `LoadConfig()`: `LOOMUX_AUTH_PASSWORD_HASH`
   (required, validated as a real bcrypt hash), `LOOMUX_HTTP_ADDR`
   (optional, default `:8080`), `LOOMUX_SESSION_TTL` (optional, default 30
-  days), `LOOMUX_STATIC_DIR` (optional, default unset — static serving
+  days), `LOOMUX_SESSION_MAX_AGE` (optional, default 90 days, `0` for no
+  absolute limit), `LOOMUX_STATIC_DIR` (optional, default unset — static serving
   disabled).
 - `server.go` — `Server` (implements `http.Handler`), `NewServer`,
   `Dispatcher`/`SessionStore` (the narrow seams this package depends on —

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openai/openai-go/v3"
-
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/router"
 )
@@ -91,29 +89,31 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 		targetIDs[i] = t.ID
 	}
 
-	client := buildClient(tier)
-	messages := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage(m.systemPrompt()),
-		openai.UserMessage(decideUserPrompt(message, workspaces, targets, o)),
-	}
+	ex := newExchange(tier, m.systemPrompt(), decideUserPrompt(message, workspaces, targets, o),
+		decideTool(m.agentTypes, workspaceIDs, targetIDs, o.OpenTask != nil))
 	// A tool call that can't be used gets one more try on the same tier,
 	// told what was wrong (LOOM-107): a hallucinated id is usually fixed
 	// by saying so, and cheaper than escalating. Both attempts share the
 	// tier's timeout.
-	for attempt := 0; ; attempt++ {
-		decision, problem, err := m.decideOnce(ctx, client, tierName, tier, messages, workspaceIDs, targetIDs, o)
-		if err == nil && problem == nil {
-			decision.Model, decision.Tier = tier.Model, tierName
+	var decision router.Decision
+	err := m.converse(ctx, metrics.RouterOpDecide, tierName, ex, decideToolName, correctionPrompt, func(raw json.RawMessage) error {
+		var args decideArguments
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("unparseable tool call arguments: %w", err)
 		}
-		if err != nil || problem == nil {
-			return decision, err
+		d, problem := m.validateDecision(args, workspaceIDs, targetIDs)
+		if problem != nil {
+			return problem
 		}
-		if attempt > 0 || ctx.Err() != nil {
-			return router.Decision{}, problem
-		}
-		m.metrics.RecordRouterRetry(metrics.RouterOpDecide, tierName)
-		messages = append(messages, openai.UserMessage(correctionPrompt(problem)))
+		d.LeaveOpenTask = o.OpenTask != nil && args.LeaveOpenTask
+		d.Model, d.Tier = tier.Model, tierName
+		decision = d
+		return nil
+	})
+	if err != nil {
+		return router.Decision{}, err
 	}
+	return decision, nil
 }
 
 // correctionPrompt tells the model why its route_decision call was
@@ -121,55 +121,6 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 func correctionPrompt(problem error) string {
 	return "Your previous " + decideToolName + " call was rejected: " + problem.Error() +
 		". Call " + decideToolName + " again with a valid decision: use only the ids, agent types and values listed above."
-}
-
-// decideOnce makes one call. err is a failure to get any answer (the
-// provider unreachable, an HTTP error, a timeout: unavailableError);
-// problem is an answer that can't be used (no tool call, unparseable or
-// invalid arguments), which a corrective retry may fix.
-func (m *Model) decideOnce(ctx context.Context, client openai.Client, tierName string, tier Tier, messages []openai.ChatCompletionMessageParamUnion, workspaceIDs, targetIDs []string, o router.DispatchOptions) (decision router.Decision, problem, err error) {
-	start := time.Now()
-	resp, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model:    tier.Model,
-		Messages: messages,
-		Tools:    []openai.ChatCompletionToolUnionParam{buildDecideTool(m.agentTypes, workspaceIDs, targetIDs, o.OpenTask != nil)},
-		ToolChoice: openai.ToolChoiceOptionFunctionToolChoice(openai.ChatCompletionNamedToolChoiceFunctionParam{
-			Name: decideToolName,
-		}),
-	})
-	duration := time.Since(start)
-	if err != nil {
-		m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, metrics.OutcomeFailure, duration)
-		return router.Decision{}, nil, &unavailableError{fmt.Errorf("call failed: %w", err)}
-	}
-	if len(resp.Choices) == 0 {
-		m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, metrics.OutcomeFailure, duration)
-		return router.Decision{}, nil, &unavailableError{fmt.Errorf("no choices returned")}
-	}
-	if resp.Usage.TotalTokens > 0 {
-		m.metrics.RecordRouterTokens(tierName, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
-	}
-
-	toolCalls := resp.Choices[0].Message.ToolCalls
-	if len(toolCalls) == 0 {
-		m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, metrics.OutcomeFailure, duration)
-		return router.Decision{}, fmt.Errorf("model did not call %s", decideToolName), nil
-	}
-
-	var args decideArguments
-	if err := json.Unmarshal([]byte(toolCalls[0].Function.Arguments), &args); err != nil {
-		m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, metrics.OutcomeFailure, duration)
-		return router.Decision{}, fmt.Errorf("unparseable tool call arguments: %w", err), nil
-	}
-
-	decision, problem = m.validateDecision(args, workspaceIDs, targetIDs)
-	decision.LeaveOpenTask = problem == nil && o.OpenTask != nil && args.LeaveOpenTask
-	outcome := metrics.OutcomeSuccess
-	if problem != nil {
-		outcome = metrics.OutcomeFailure
-	}
-	m.metrics.RecordRouterCall(metrics.RouterOpDecide, tierName, outcome, duration)
-	return decision, problem, nil
 }
 
 // validateDecision converts parsed tool-call arguments into a

@@ -29,6 +29,9 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.SessionTTL != 30*24*time.Hour {
 		t.Errorf("SessionTTL = %v, want 30 days", cfg.SessionTTL)
 	}
+	if cfg.SessionMaxAge != 90*24*time.Hour {
+		t.Errorf("SessionMaxAge = %v, want 90 days", cfg.SessionMaxAge)
+	}
 	if len(cfg.PasswordHash) == 0 {
 		t.Error("PasswordHash is empty")
 	}
@@ -178,5 +181,24 @@ func TestLoadConfig_WebUpdatesMode(t *testing.T) {
 	t.Setenv("LOOMUX_WEB_UPDATES", "always")
 	if _, err := api.LoadConfig(); err == nil {
 		t.Error("an unknown mode was accepted")
+	}
+}
+
+// LOOM-175: LOOMUX_SESSION_MAX_AGE sets the absolute lifetime; 0 turns
+// it off; anything else unparseable or negative is refused.
+func TestLoadConfig_SessionMaxAge(t *testing.T) {
+	t.Setenv("LOOMUX_AUTH_PASSWORD_HASH", validPasswordHashEnv(t))
+	for raw, want := range map[string]time.Duration{"720h": 720 * time.Hour, "0": 0} {
+		t.Setenv("LOOMUX_SESSION_MAX_AGE", raw)
+		cfg, err := api.LoadConfig()
+		if err != nil || cfg.SessionMaxAge != want {
+			t.Errorf("LOOMUX_SESSION_MAX_AGE=%s: %v, %v; want %v", raw, cfg.SessionMaxAge, err, want)
+		}
+	}
+	for _, raw := range []string{"soon", "-1h"} {
+		t.Setenv("LOOMUX_SESSION_MAX_AGE", raw)
+		if _, err := api.LoadConfig(); err == nil {
+			t.Errorf("LOOMUX_SESSION_MAX_AGE=%s: want an error", raw)
+		}
 	}
 }
