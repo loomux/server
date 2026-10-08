@@ -703,6 +703,7 @@ POST /api/v1/targets status 503
 POST /api/v1/targets/{id}/migrate-ssh
 POST /api/v1/targets/{id}/migrate-ssh request - object
 POST /api/v1/targets/{id}/migrate-ssh request .dry_run boolean
+POST /api/v1/targets/{id}/migrate-ssh request .key_file string
 POST /api/v1/targets/{id}/migrate-ssh request-header Authorization
 POST /api/v1/targets/{id}/migrate-ssh response - object
 POST /api/v1/targets/{id}/migrate-ssh response .applied boolean

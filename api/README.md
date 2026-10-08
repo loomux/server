@@ -434,7 +434,11 @@ envelope: it classifies the failure with `error_class`.
     A successful apply returns `200` with `test` and the managed `target`.
     If the test fails, the target is put back as it was and the answer is
     `502` with `test` and `rolled_back: true`. A config that can't be read
-    is `502`. The private key never appears.
+    is `502`. The private key never appears. `key_file` (a file name in
+    `~/.ssh`) picks the key to import. Another migration running is
+    `409`; so is a failed test on a target edited meanwhile, left as
+    edited. These error answers carry the migrate body, with the reason in
+    `problems`, rather than `{error}`.
   - `POST /api/v1/targets`, `GET /api/v1/targets`,
     `PUT /api/v1/targets/{id}`, `DELETE /api/v1/targets/{id}` —
     auth-gated target registration (LOOM-59). `registry.Store`'s target

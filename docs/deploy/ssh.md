@@ -309,11 +309,13 @@ moves it to managed mode without touching the machine:
   the mounted config does: the real `HostName` behind an alias, the port,
   the user, the key file, and the proxy.
 - It imports that key file (origin `imported`), once, however many
-  targets use it. The file must be a regular, passphrase-free key directly
-  in `~/.ssh`.
+  targets use it: the first of the config's `IdentityFile`s that's a
+  regular (not symlinked), passphrase-free key directly in `~/.ssh`,
+  moving past ones that aren't, as ssh does. `"key_file": "id_ed25519"`
+  names the file instead.
 - It pins the host key: the target's existing pin if it has one, else the
   entry in the `known_hosts` files ssh checks (a `HostKeyAlias` is
-  followed). The pin is rewritten for the address managed mode connects to.
+  followed); never a key those files mark `@revoked`. The pin is rewritten for the address managed mode connects to.
 - The config's proxy must be `nc -X 5 -x ADDR %h %p` or
   `socat - SOCKS5-CONNECT:ADDR:%h:%p`, with `ADDR` equal to
   `LOOMUX_SSH_PROXY`, or there must be no proxy (`ssh_proxy: none`).
@@ -324,7 +326,10 @@ stops it, and changes nothing. Without the dry run it applies the plan
 (`409` if there are problems), then tests the target. If the test fails,
 the target goes back to the SSH config exactly as it was, a key imported
 just for it is deleted, and the answer is `502` with the test's `steps`.
-While the test runs, dispatches to the target use the new settings.
+While the test runs, dispatches to the target use the new settings. One
+migration runs at a time (`409` for another meanwhile). A target edited
+while its migration was testing is left as edited (`409`), and an
+answer that couldn't put the target back says so (`500`): check it.
 
 Once every target is managed and works, the mounted secret's key,
 `config` and `known_hosts` are no longer used. Retire them only then:

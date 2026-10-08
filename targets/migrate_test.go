@@ -56,7 +56,7 @@ var configTarget = &registry.Target{ID: "t1", Name: "wyzer", Kind: registry.Targ
 // target that connects the same way, with no config.
 func TestResolveSSHConfig_MigratesAWorkingTarget(t *testing.T) {
 	f := newSSHConfigFixture(t, func(f *sshConfigFixture) string { return f.hostBlock("") })
-	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget)
+	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestResolveSSHConfig_KeepsThePin(t *testing.T) {
 	}
 	pinned := *configTarget
 	pinned.HostKeys = f.server.KnownHostsLine()
-	plan, err := targets.ResolveSSHConfig(context.Background(), &pinned)
+	plan, err := targets.ResolveSSHConfig(context.Background(), &pinned, "")
 	if err != nil || len(plan.Problems) != 0 || !strings.HasSuffix(plan.HostKeys, f.server.HostKey) {
 		t.Fatalf("plan = %+v, %v", plan, err)
 	}
@@ -115,7 +115,7 @@ func TestResolveSSHConfig_HostKeyAlias(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.dir, "known_hosts"), []byte("wyzer-alias "+f.server.HostKey+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget)
+	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
 	if err != nil || len(plan.Problems) != 0 {
 		t.Fatalf("plan = %+v, %v", plan, err)
 	}
@@ -165,7 +165,7 @@ func TestResolveSSHConfig_Problems(t *testing.T) {
 				tc.prepare(f)
 			}
 			setupManaged(t, "127.0.0.1:1055") // the server's proxy
-			plan, err := targets.ResolveSSHConfig(context.Background(), configTarget)
+			plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -181,7 +181,7 @@ func TestResolveSSHConfig_KnownProxy(t *testing.T) {
 	for _, pc := range []string{"nc -X 5 -x 127.0.0.1:1055 %h %p", "/usr/bin/nc -X 5 -x 127.0.0.1:1055 %h %p", "socat - SOCKS5-CONNECT:127.0.0.1:1055:%h:%p"} {
 		newSSHConfigFixture(t, func(f *sshConfigFixture) string { return f.hostBlock("  ProxyCommand " + pc + "\n") })
 		setupManaged(t, "127.0.0.1:1055")
-		plan, err := targets.ResolveSSHConfig(context.Background(), configTarget)
+		plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
 		if err != nil || len(plan.Problems) != 0 || plan.SSHProxy != "" {
 			t.Errorf("%q: plan = %+v, %v", pc, plan, err)
 		}
@@ -194,8 +194,100 @@ func TestResolveSSHConfig_OnlyConfigModeRemotes(t *testing.T) {
 		{ID: "l", Name: "l", Kind: registry.TargetKindLocal},
 		{ID: "m", Name: "m", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHKeyRef: "k"},
 	} {
-		if _, err := targets.ResolveSSHConfig(context.Background(), tgt); err == nil {
+		if _, err := targets.ResolveSSHConfig(context.Background(), tgt, ""); err == nil {
 			t.Errorf("%+v accepted", tgt)
 		}
+	}
+}
+
+// Like ssh, migration moves past a key it can't use to the next one the
+// config lists (#301 review): an old passphrase-protected id_rsa doesn't
+// stop the id_ed25519 beside it.
+func TestResolveSSHConfig_SkipsUnusableKeys(t *testing.T) {
+	f := newSSHConfigFixture(t, func(f *sshConfigFixture) string {
+		return "Host wyzer\n  HostName " + f.server.Host + "\n  Port " + strconv.Itoa(f.server.Port) +
+			"\n  IdentityFile " + filepath.Join(f.dir, "id_rsa") + "\n  IdentityFile " + filepath.Join(f.dir, "id_ed25519") +
+			"\n  UserKnownHostsFile " + filepath.Join(f.dir, "known_hosts") + "\n"
+	})
+	if out, err := osexec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "secret", "-f", filepath.Join(f.dir, "id_rsa")).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v %s", err, out)
+	}
+	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
+	if err != nil || len(plan.Problems) != 0 || plan.KeyFile != filepath.Join(f.dir, "id_ed25519") {
+		t.Fatalf("plan = %+v, %v; want id_ed25519 picked", plan, err)
+	}
+	// The caller can name the file outright.
+	plan, err = targets.ResolveSSHConfig(context.Background(), configTarget, "id_rsa")
+	if err != nil || !strings.Contains(strings.Join(plan.Problems, ";"), "passphrase") {
+		t.Errorf("key_file id_rsa: %+v, %v", plan, err)
+	}
+	for _, bad := range []string{"../id_ed25519", "/etc/passwd", "sub/id", ".", ""} {
+		if bad == "" {
+			continue
+		}
+		plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, bad)
+		if err != nil || len(plan.Problems) == 0 || plan.Key != nil {
+			t.Errorf("key_file %q: %+v, %v; want refused", bad, plan, err)
+		}
+	}
+}
+
+// A symlink in ~/.ssh isn't followed, and an oversized file isn't read.
+func TestResolveSSHConfig_KeyFileMustBeARegularFile(t *testing.T) {
+	for name, prepare := range map[string]func(dir string){
+		"symlink": func(dir string) {
+			key := filepath.Join(dir, "id_ed25519")
+			real := filepath.Join(dir, "real_key")
+			os.Rename(key, real)
+			os.Symlink(real, key)
+		},
+		"oversized": func(dir string) {
+			os.WriteFile(filepath.Join(dir, "id_ed25519"), make([]byte, 64<<10), 0o600)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSSHConfigFixture(t, func(f *sshConfigFixture) string { return f.hostBlock("") })
+			prepare(f.dir)
+			plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
+			if err != nil || plan.Key != nil || len(plan.Problems) == 0 {
+				t.Errorf("plan = %+v, %v; want the key refused", plan, err)
+			}
+		})
+	}
+}
+
+// A key known_hosts revokes is never pinned (#301 review), however the
+// host's own line lists it.
+func TestResolveSSHConfig_RevokedHostKey(t *testing.T) {
+	f := newSSHConfigFixture(t, func(f *sshConfigFixture) string { return f.hostBlock("") })
+	kh := "@revoked * " + f.server.HostKey + "\n" + f.server.KnownHostsLine() + "\n"
+	if err := os.WriteFile(filepath.Join(f.dir, "known_hosts"), []byte(kh), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
+	if err != nil || plan.HostKeys != "" || !strings.Contains(strings.Join(plan.Problems, ";"), "host key") {
+		t.Errorf("plan = %+v, %v; want the revoked key not pinned", plan, err)
+	}
+}
+
+// Hashed known_hosts entries are found and re-pinned in the clear.
+func TestResolveSSHConfig_HashedKnownHosts(t *testing.T) {
+	f := newSSHConfigFixture(t, func(f *sshConfigFixture) string { return f.hostBlock("") })
+	if out, err := osexec.Command("ssh-keygen", "-H", "-f", filepath.Join(f.dir, "known_hosts")).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen -H: %v %s", err, out)
+	}
+	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
+	if err != nil || len(plan.Problems) != 0 || !strings.HasPrefix(plan.HostKeys, "[127.0.0.1]:") {
+		t.Errorf("plan = %+v, %v", plan, err)
+	}
+}
+
+// No ProxyCommand means no proxy, whatever LOOMUX_SSH_PROXY is.
+func TestResolveSSHConfig_NoProxyCommandWithServerProxy(t *testing.T) {
+	newSSHConfigFixture(t, func(f *sshConfigFixture) string { return f.hostBlock("") })
+	setupManaged(t, "127.0.0.1:1055")
+	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
+	if err != nil || len(plan.Problems) != 0 || plan.SSHProxy != registry.SSHProxyNone {
+		t.Errorf("plan = %+v, %v; want ssh_proxy none", plan, err)
 	}
 }

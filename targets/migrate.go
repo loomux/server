@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -75,9 +77,14 @@ var socksProxyCommands = []*regexp.Regexp{
 	regexp.MustCompile(`^(?:/usr/bin/)?socat - SOCKS5-CONNECT:(\S+):%h:%p$`),
 }
 
+// keyFileName is what a caller-chosen key file may be: a file name in
+// ~/.ssh, nothing else.
+var keyFileName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
+
 // ResolveSSHConfig reads what the SSH config does for t, a config-mode
-// remote target, and plans it as a managed one.
-func ResolveSSHConfig(ctx context.Context, t *registry.Target) (*SSHConfigPlan, error) {
+// remote target, and plans it as a managed one. keyFile, if not "", is
+// the file in ~/.ssh to import instead of the config's first usable one.
+func ResolveSSHConfig(ctx context.Context, t *registry.Target, keyFile string) (*SSHConfigPlan, error) {
 	if t.Kind != registry.TargetKindRemote || t.Managed() {
 		return nil, errors.New("targets: only a remote target reached through the SSH config can be migrated")
 	}
@@ -118,16 +125,29 @@ func ResolveSSHConfig(ctx context.Context, t *registry.Target) (*SSHConfigPlan, 
 	if dir, err := sshDir(); err == nil {
 		ssh, home = filepath.Clean(dir), filepath.Dir(filepath.Clean(dir))
 	}
-	plan.KeyFile, plan.Key, err = importIdentity(cfg["identityfile"], home, ssh)
-	if err != nil {
-		problem("%v", err)
+	identities := cfg["identityfile"]
+	if keyFile != "" {
+		if !keyFileName.MatchString(keyFile) || ssh == "" {
+			identities = nil
+			problem("key_file must be the name of a file in ~/.ssh, like id_ed25519")
+		} else {
+			identities = []string{filepath.Join(ssh, keyFile)}
+		}
+	}
+	if identities != nil || keyFile == "" {
+		plan.KeyFile, plan.Key, err = importIdentity(identities, home, ssh)
+		if err != nil {
+			problem("%v", err)
+		}
 	}
 
+	knownHostsFiles := knownHostsFilesOf(cfg, home)
+	revoked := revokedHostKeys(knownHostsFiles)
 	addr := knownhosts.Normalize(net.JoinHostPort(plan.Host, strconv.Itoa(plan.Port)))
 	if strings.TrimSpace(t.HostKeys) != "" {
-		plan.HostKeys, err = rekeyHostKeys(t.HostKeys, addr)
+		plan.HostKeys, err = rekeyHostKeys(t.HostKeys, addr, revoked)
 	} else {
-		plan.HostKeys, err = lookupKnownHosts(ctx, cfg, plan, home, addr)
+		plan.HostKeys, err = lookupKnownHosts(ctx, cfg, plan, knownHostsFiles, addr, revoked)
 	}
 	if err != nil {
 		problem("%v", err)
@@ -156,7 +176,8 @@ func sshConfigFor(ctx context.Context, t *registry.Target) (map[string][]string,
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("targets: read the SSH config: %v: %s", err, strings.TrimSpace(stderr.String()))
+		// Not ssh's stderr: it can quote the config's lines.
+		return nil, fmt.Errorf("targets: read the SSH config: ssh -G failed (%v)", err)
 	}
 	cfg := map[string][]string{}
 	sc := bufio.NewScanner(&out)
@@ -197,35 +218,62 @@ func expandHome(path, home string) string {
 	return path
 }
 
-// importIdentity imports the first of files that exists — the key ssh
-// would offer first. It must be a regular file directly in ~/.ssh, and
-// not passphrase-protected.
+// importIdentity imports the first of files that can be — the key ssh
+// would offer first, ssh too moving past one it can't use. Only a
+// regular, passphrase-free key file directly in ~/.ssh is read.
 func importIdentity(files []string, home, sshDir string) (string, *registry.SSHKey, error) {
+	var skipped []string
 	for _, f := range files {
 		path := filepath.Clean(expandHome(f, home))
-		fi, err := os.Lstat(path)
+		if sshDir == "" || filepath.Dir(path) != sshDir {
+			skipped = append(skipped, path+": not in "+sshDir+"; only keys there are imported")
+			continue
+		}
+		data, err := readKeyFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		switch {
-		case err != nil:
-			return path, nil, fmt.Errorf("the SSH config's key file %s can't be read: %v", path, err)
-		case sshDir == "" || filepath.Dir(path) != sshDir:
-			return path, nil, fmt.Errorf("the SSH config's key file %s isn't in %s; only keys there are imported", path, sshDir)
-		case !fi.Mode().IsRegular() || fi.Size() > maxKeyFileSize:
-			return path, nil, fmt.Errorf("the SSH config's key file %s isn't a regular key file", path)
-		}
-		data, err := os.ReadFile(path)
 		if err != nil {
-			return path, nil, fmt.Errorf("the SSH config's key file %s can't be read: %v", path, err)
+			skipped = append(skipped, path+": "+err.Error())
+			continue
 		}
 		key, err := importKey(data, filepath.Base(path))
 		if err != nil {
-			return path, nil, fmt.Errorf("the SSH config's key file %s: %v", path, err)
+			skipped = append(skipped, path+": "+err.Error())
+			continue
 		}
 		return path, key, nil
 	}
-	return "", nil, fmt.Errorf("none of the SSH config's key files exist (%s)", strings.Join(files, ", "))
+	if len(skipped) > 0 {
+		return "", nil, fmt.Errorf("no usable key file: %s", strings.Join(skipped, "; "))
+	}
+	return "", nil, fmt.Errorf("none of the key files exist (%s)", strings.Join(files, ", "))
+}
+
+// readKeyFile reads a key file without following a symlink, and only if
+// it is a regular file of at most maxKeyFileSize: checked on the open
+// file, so it can't be swapped between the check and the read.
+func readKeyFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		return nil, errors.New("it can't be opened as a regular file (a symlink?)")
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
+		return nil, errors.New("it isn't a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxKeyFileSize+1))
+	if err != nil {
+		return nil, errors.New("it can't be read")
+	}
+	if len(data) > maxKeyFileSize {
+		return nil, errors.New("it is too big to be a key")
+	}
+	return data, nil
 }
 
 // importKey turns a private key file's contents into a managed key, in
@@ -267,8 +315,9 @@ func importKey(data []byte, fileName string) (*registry.SSHKey, error) {
 }
 
 // rekeyHostKeys rewrites known_hosts lines (hashed, aliased or not) as
-// pins for addr, the address a managed target is checked against.
-func rekeyHostKeys(lines, addr string) (string, error) {
+// pins for addr, the address a managed target is checked against,
+// leaving out any key in revoked.
+func rekeyHostKeys(lines, addr string, revoked map[string]bool) (string, error) {
 	var out []string
 	for _, line := range strings.Split(lines, "\n") {
 		line = strings.TrimSpace(line)
@@ -279,7 +328,7 @@ func rekeyHostKeys(lines, addr string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("a known_hosts line for this target doesn't parse: %v", err)
 		}
-		if marker != "" { // @revoked or @cert-authority: not a plain host key
+		if marker != "" || revoked[string(key.Marshal())] { // not a plain, trusted host key
 			continue
 		}
 		out = append(out, knownhosts.Line([]string{addr}, key))
@@ -287,21 +336,48 @@ func rekeyHostKeys(lines, addr string) (string, error) {
 	return strings.Join(out, "\n"), nil
 }
 
+// knownHostsFilesOf are the known_hosts files ssh would check.
+func knownHostsFilesOf(cfg map[string][]string, home string) []string {
+	var files []string
+	for _, k := range []string{"userknownhostsfile", "globalknownhostsfile"} {
+		for _, f := range strings.Fields(first(cfg[k])) {
+			files = append(files, expandHome(f, home))
+		}
+	}
+	return files
+}
+
+// revokedHostKeys are the keys any of files marks @revoked, whatever
+// host pattern it gives: such a key is never pinned.
+func revokedHostKeys(files []string) map[string]bool {
+	revoked := map[string]bool{}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "@revoked") {
+				continue
+			}
+			if marker, _, key, _, _, err := ssh.ParseKnownHosts([]byte(line)); err == nil && marker == "revoked" {
+				revoked[string(key.Marshal())] = true
+			}
+		}
+	}
+	return revoked
+}
+
 // lookupKnownHosts finds the target's host keys in the known_hosts files
 // ssh would check, under the name it would look up: the HostKeyAlias if
 // one is set, else the host and (if not 22) port.
-func lookupKnownHosts(ctx context.Context, cfg map[string][]string, plan *SSHConfigPlan, home, addr string) (string, error) {
+func lookupKnownHosts(ctx context.Context, cfg map[string][]string, plan *SSHConfigPlan, files []string, addr string, revoked map[string]bool) (string, error) {
 	name := first(cfg["hostkeyalias"])
 	if name == "" || name == "none" {
 		name = knownhosts.Normalize(net.JoinHostPort(plan.Host, strconv.Itoa(plan.Port)))
 	}
-	var files []string
-	for _, k := range []string{"userknownhostsfile", "globalknownhostsfile"} {
-		files = append(files, strings.Fields(first(cfg[k]))...)
-	}
 	var found []string
 	for _, f := range files {
-		f = expandHome(f, home)
 		if _, err := os.Stat(f); err != nil {
 			continue
 		}
@@ -313,5 +389,5 @@ func lookupKnownHosts(ctx context.Context, cfg map[string][]string, plan *SSHCon
 		}
 		found = append(found, string(out))
 	}
-	return rekeyHostKeys(strings.Join(found, "\n"), addr)
+	return rekeyHostKeys(strings.Join(found, "\n"), addr, revoked)
 }

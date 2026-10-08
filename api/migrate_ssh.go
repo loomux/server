@@ -18,9 +18,9 @@ import (
 // only reports the plan; applying it tests the target, managed, and puts
 // it back as it was if that fails.
 
-// SSHConfigResolver plans a config-mode target as a managed one —
-// targets.ResolveSSHConfig.
-type SSHConfigResolver func(ctx context.Context, t *registry.Target) (*targets.SSHConfigPlan, error)
+// SSHConfigResolver plans a config-mode target as a managed one, with
+// the key file named, if any — targets.ResolveSSHConfig.
+type SSHConfigResolver func(ctx context.Context, t *registry.Target, keyFile string) (*targets.SSHConfigPlan, error)
 
 // WithSSHMigration enables POST /targets/{id}/migrate-ssh.
 func WithSSHMigration(resolve SSHConfigResolver) Option {
@@ -30,6 +30,9 @@ func WithSSHMigration(resolve SSHConfigResolver) Option {
 type migrateSSHRequest struct {
 	// DryRun reports the plan and changes nothing.
 	DryRun bool `json:"dry_run"`
+	// KeyFile, if set, is the file in ~/.ssh to import, instead of the
+	// first usable one the SSH config names.
+	KeyFile string `json:"key_file"`
 }
 
 type migrateSSHKeyResponse struct {
@@ -90,7 +93,7 @@ func (s *Server) handleMigrateSSH(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "only a remote target reached through the SSH config can be migrated")
 		return
 	}
-	plan, err := s.resolveSSHConfig(ctx, existing)
+	plan, err := s.resolveSSHConfig(ctx, existing, req.KeyFile)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "could not read the SSH config for this target: "+err.Error())
 		return
@@ -101,6 +104,9 @@ func (s *Server) handleMigrateSSH(w http.ResponseWriter, r *http.Request) {
 	keys, _ := targets.ParseHostKeys(plan.HostKeys)
 	resp.Plan.HostKeys = hostKeyResponses(keys)
 	existingKeyID := ""
+	if plan.Key == nil && plan.KeyFile != "" {
+		resp.Plan.Key = &migrateSSHKeyResponse{SourceFile: plan.KeyFile}
+	}
 	if plan.Key != nil {
 		if existingKeyID, err = s.keyWithFingerprint(ctx, plan.Key.Fingerprint); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list SSH keys")
@@ -128,6 +134,13 @@ func (s *Server) handleMigrateSSH(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "migrating needs host key pinning, which is not configured on this server")
 		return
 	}
+	// One migration at a time (#301 review): two of the same target would
+	// undo each other, and two sharing a key file would import it twice.
+	if !s.migrating.TryLock() {
+		writeError(w, http.StatusConflict, "another target is being migrated; try again when it's done")
+		return
+	}
+	defer s.migrating.Unlock()
 
 	// Import the key, unless a managed key already holds it.
 	keyID, imported := existingKeyID, (*registry.SSHKey)(nil)
@@ -150,50 +163,81 @@ func (s *Server) handleMigrateSSH(w http.ResponseWriter, r *http.Request) {
 		}
 		keyID = imported.ID
 	}
+	// discardImported removes a key imported for this migration alone;
+	// only once no target uses it (the store refuses otherwise).
+	discardImported := func() {
+		if imported != nil && s.sshKeys.DeleteSSHKey(context.Background(), imported.ID) == nil && s.dropSSHKey != nil {
+			s.dropSSHKey(imported.ID)
+		}
+	}
+	// restore puts the target back as it was, saying whether it could.
+	restore := func() bool {
+		bg := context.Background()
+		if s.targets.UpdateTarget(bg, existing) != nil || hk.SetTargetHostKeys(bg, existing.ID, existing.HostKeys) != nil {
+			return false
+		}
+		discardImported()
+		return true
+	}
+	problem := func(p string) { resp.Problems = append(resp.Problems, p) }
 
 	migrated := *existing
 	migrated.Host, migrated.SSHPort, migrated.User = plan.Host, plan.Port, plan.User
 	migrated.SSHKeyRef, migrated.SSHProxy = keyID, plan.SSHProxy
-	rollback := func() {
-		bg := context.Background()
-		_ = s.targets.UpdateTarget(bg, existing)
-		_ = hk.SetTargetHostKeys(bg, existing.ID, existing.HostKeys)
-		if imported != nil {
-			_ = s.sshKeys.DeleteSSHKey(bg, imported.ID)
-			if s.dropSSHKey != nil {
-				s.dropSSHKey(imported.ID)
-			}
-		}
-	}
 	if err := migrated.Validate(); err != nil {
-		rollback()
-		writeError(w, http.StatusConflict, "the planned target isn't valid: "+err.Error())
+		discardImported()
+		problem("the planned target isn't valid: " + err.Error())
+		writeJSON(w, http.StatusConflict, resp)
 		return
 	}
+	// The target is managed a moment before its new pin is in place; a
+	// dispatch in between fails its host key check, harmlessly.
 	if err := s.targets.UpdateTarget(ctx, &migrated); err != nil {
-		rollback()
+		discardImported()
 		writeTargetWriteError(w, err, "update")
 		return
 	}
 	if err := hk.SetTargetHostKeys(ctx, existing.ID, plan.HostKeys); err != nil {
-		rollback()
-		writeError(w, http.StatusInternalServerError, "could not pin the target's host key")
+		if !restore() {
+			problem("could not pin the host key, nor put the target back: check it")
+			writeJSON(w, http.StatusInternalServerError, resp)
+			return
+		}
+		problem("could not pin the host key; the target is back on the SSH config")
+		writeJSON(w, http.StatusInternalServerError, resp)
 		return
 	}
 	s.forgetScan(existing.ID)
-
-	h, _, err := s.targetProber.ProbeTarget(ctx, existing.ID)
-	if err != nil || h == nil {
-		rollback()
-		writeError(w, http.StatusInternalServerError, "could not test the migrated target; it is back on the SSH config")
+	after, err := s.targets.GetTarget(ctx, existing.ID)
+	if err != nil {
+		problem("could not read back the migrated target; check it")
+		writeJSON(w, http.StatusInternalServerError, resp)
 		return
 	}
-	test := newTestTargetResponse(h)
-	resp.Test = &test
-	if !test.Reachable || h.Error != "" {
-		rollback()
-		resp.RolledBack = true
-		writeJSON(w, http.StatusBadGateway, resp)
+
+	h, _, err := s.targetProber.ProbeTarget(ctx, existing.ID)
+	if err == nil && h != nil {
+		test := newTestTargetResponse(h)
+		resp.Test = &test
+	}
+	if err != nil || h == nil || !resp.Test.Reachable || h.Error != "" {
+		// Back as it was — unless someone changed it meanwhile: then their
+		// change stands, and they decide.
+		cur, gerr := s.targets.GetTarget(context.Background(), existing.ID)
+		switch {
+		case gerr != nil:
+			problem("the migrated target failed its test and could not be read back: check it")
+			writeJSON(w, http.StatusInternalServerError, resp)
+		case !cur.UpdatedAt.Equal(after.UpdatedAt):
+			problem("the migrated target failed its test, but was changed while it ran, so it was left as it is now")
+			writeJSON(w, http.StatusConflict, resp)
+		case !restore():
+			problem("the migrated target failed its test and could not be put back: check it")
+			writeJSON(w, http.StatusInternalServerError, resp)
+		default:
+			resp.RolledBack = true
+			writeJSON(w, http.StatusBadGateway, resp)
+		}
 		return
 	}
 	resp.Applied = true

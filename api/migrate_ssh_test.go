@@ -13,14 +13,19 @@ import (
 	"github.com/Loomux/server/targets"
 )
 
-// switchingProber reports the target healthy or not, as set.
+// switchingProber reports the target healthy or not, as set; during
+// runs, if set, while the probe is in progress.
 type switchingProber struct {
-	ok    bool
-	calls int
+	ok     bool
+	calls  int
+	during func(id string)
 }
 
 func (p *switchingProber) ProbeTarget(ctx context.Context, id string) (*registry.TargetHealth, []*registry.TargetAgent, error) {
 	p.calls++
+	if p.during != nil {
+		p.during(id)
+	}
 	h := &registry.TargetHealth{TargetID: id, ProbedAt: time.Now(), DiskFreeBytes: -1}
 	if p.ok {
 		h.Reachable, h.TmuxVersion = true, "tmux 3.5"
@@ -66,7 +71,8 @@ type migrateResponse struct {
 
 func migrateServer(t *testing.T, plan *targets.SSHConfigPlan, prober api.TargetProber) (base, token string, store registry.Store, targetID string) {
 	t.Helper()
-	resolve := func(context.Context, *registry.Target) (*targets.SSHConfigPlan, error) {
+	resolve := func(_ context.Context, _ *registry.Target, keyFile string) (*targets.SSHConfigPlan, error) {
+		lastKeyFile = keyFile
 		cp := *plan
 		if plan.Key != nil {
 			k := *plan.Key
@@ -80,6 +86,9 @@ func migrateServer(t *testing.T, plan *targets.SSHConfigPlan, prober api.TargetP
 	_, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{"name": "wyzer", "kind": "remote", "host": "wyzer", "user": "orski"})
 	return base, token, store, decodeTarget(t, body).ID
 }
+
+// lastKeyFile is the key_file the fake resolver was last given.
+var lastKeyFile string
 
 func migrate(t *testing.T, base, token, id string, dryRun bool) (int, migrateResponse, string) {
 	t.Helper()
@@ -196,5 +205,85 @@ func TestMigrateSSH_NotConfigured(t *testing.T) {
 	id := decodeTarget(t, body).ID
 	if status, _, _ := migrate(t, base, token, id, true); status != http.StatusNotImplemented {
 		t.Errorf("without WithSSHMigration: %d, want 501", status)
+	}
+}
+
+func TestMigrateSSH_PassesKeyFile(t *testing.T) {
+	base, token, _, id := migrateServer(t, migrationPlan(t), &switchingProber{ok: true})
+	if status, body := doJSON(t, "POST", base+"/api/v1/targets/"+id+"/migrate-ssh", token, map[string]any{"dry_run": true, "key_file": "id_rsa"}); status != http.StatusOK || lastKeyFile != "id_rsa" {
+		t.Errorf("key_file: %d %s, resolver got %q", status, body, lastKeyFile)
+	}
+}
+
+// One migration at a time (#301 review): a second one while the first is
+// testing is refused rather than racing it.
+func TestMigrateSSH_OneAtATime(t *testing.T) {
+	prober := &switchingProber{ok: true}
+	base, token, _, id := migrateServer(t, migrationPlan(t), prober)
+	_, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{"name": "other", "kind": "remote", "host": "other", "user": "orski"})
+	other := decodeTarget(t, body).ID
+	var second int
+	prober.during = func(probed string) {
+		if probed == id {
+			second, _, _ = migrate(t, base, token, other, false)
+		}
+	}
+	if status, _, body := migrate(t, base, token, id, false); status != http.StatusOK {
+		t.Fatalf("first: %d %s", status, body)
+	}
+	if second != http.StatusConflict {
+		t.Errorf("a migration during another: %d, want 409", second)
+	}
+}
+
+// A target someone changed while its migration was testing isn't put
+// back over their change (#301 review).
+func TestMigrateSSH_NoRollbackOverAnEdit(t *testing.T) {
+	prober := &switchingProber{ok: false}
+	base, token, store, id := migrateServer(t, migrationPlan(t), prober)
+	ctx := context.Background()
+	prober.during = func(id string) {
+		cur, _ := store.GetTarget(ctx, id)
+		cur.Name = "renamed-meanwhile"
+		if err := store.UpdateTarget(ctx, cur); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, out, body := migrate(t, base, token, id, false)
+	if status != http.StatusConflict || out.RolledBack || !strings.Contains(body, "changed") {
+		t.Errorf("edit during the test: %d %s", status, body)
+	}
+	if got, _ := store.GetTarget(ctx, id); got.Name != "renamed-meanwhile" || !got.Managed() {
+		t.Errorf("the edit was overwritten: %+v", got)
+	}
+}
+
+// A rollback keeps a key another migrated target already uses.
+func TestMigrateSSH_RollbackKeepsASharedKey(t *testing.T) {
+	plan := migrationPlan(t)
+	prober := &switchingProber{ok: true}
+	base, token, store, id := migrateServer(t, plan, prober)
+	if status, _, body := migrate(t, base, token, id, false); status != http.StatusOK {
+		t.Fatalf("first: %d %s", status, body)
+	}
+	_, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{"name": "w2", "kind": "remote", "host": "w2", "user": "orski"})
+	id2 := decodeTarget(t, body).ID
+	prober.ok = false
+	if status, out, body := migrate(t, base, token, id2, false); status != http.StatusBadGateway || !out.RolledBack {
+		t.Fatalf("second: %d %s", status, body)
+	}
+	if keys, _ := store.ListSSHKeys(context.Background()); len(keys) != 1 {
+		t.Errorf("%d keys after the second rolled back, want the shared one", len(keys))
+	}
+}
+
+// The key file stays in the plan when it couldn't be imported.
+func TestMigrateSSH_SourceFileWithoutKey(t *testing.T) {
+	plan := migrationPlan(t)
+	plan.Key, plan.Problems = nil, []string{"no usable key file: /home/loomux/.ssh/id_ed25519: it is passphrase-protected"}
+	base, token, _, id := migrateServer(t, plan, &switchingProber{ok: true})
+	_, out, body := migrate(t, base, token, id, true)
+	if out.Plan.Key.SourceFile != plan.KeyFile || out.CanApply {
+		t.Errorf("dry run = %s", body)
 	}
 }
