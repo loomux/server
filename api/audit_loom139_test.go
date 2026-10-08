@@ -213,7 +213,6 @@ func staticServer(t *testing.T) string {
 // update) must 404, not answer 200 with index.html: the browser then
 // fails with a MIME error instead of a clean chunk-load retry.
 func TestAudit_Static_MissingAssetIs404(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F19")
 	base := staticServer(t)
 	resp, err := http.Get(base + "/assets/app-old.js")
 	if err != nil {
@@ -250,7 +249,6 @@ func TestAudit_Static_SecurityHeaders(t *testing.T) {
 // Unknown paths under /api/v1/ answer plain text today; every other API
 // error is {error, code}.
 func TestAudit_UnknownAPIPath_IsJSONError(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F22")
 	srv, _, _ := newTestServer(t)
 	resp, err := http.Get(srv.URL + "/api/v1/nonexistent")
 	if err != nil {

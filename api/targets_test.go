@@ -551,9 +551,33 @@ func TestTargets_LocalTargetsOff(t *testing.T) {
 		t.Fatalf("change a target to local: %d, want 400", resp.StatusCode)
 	}
 
+	if got := localTargetsSetting(t, srv.URL, token); got != false {
+		t.Errorf("local_targets = %v with local targets off, want false", got)
+	}
+
 	on, _, _ := newTestServer(t)
 	onToken, _ := login(t, on.URL, testPassword)
 	if _, status := createTarget(t, on.URL, onToken, map[string]any{"name": "box", "kind": "local"}); status != http.StatusCreated {
 		t.Fatalf("create local target with the default (on): %d, want 201", status)
 	}
+	if got := localTargetsSetting(t, on.URL, onToken); got != true {
+		t.Errorf("local_targets = %v with the default (on), want true", got)
+	}
+}
+
+// localTargetsSetting reads GET /api/v1/targets' local_targets
+// (LOOM-183), failing if it's missing.
+func localTargetsSetting(t *testing.T, baseURL, token string) any {
+	t.Helper()
+	resp := authedRequest(t, http.MethodGet, baseURL+"/api/v1/targets", token, nil)
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	v, ok := body["local_targets"]
+	if !ok {
+		t.Fatalf("GET /api/v1/targets has no local_targets: %v", body)
+	}
+	return v
 }
