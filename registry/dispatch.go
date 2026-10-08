@@ -43,8 +43,9 @@ type Dispatch struct {
 	// IdempotencyKey is the client's Idempotency-Key, empty when none was
 	// sent. Unique across dispatches when set.
 	IdempotencyKey string
-	// RequestHash fingerprints (conversation, message, hint), so a reused
-	// key can be told apart from a retried request.
+	// RequestHash fingerprints (conversation, message, hint, confirmation)
+	// as the client sent them — the conversation empty for a new one —
+	// so a reused key can be told apart from a retried request.
 	RequestHash string
 	// ConfirmationID is set when the message answers an offer from its
 	// card (LOOM-123): it must still be the offer awaiting an answer, or

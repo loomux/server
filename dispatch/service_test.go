@@ -228,43 +228,51 @@ func TestIdempotencyKeyNewConversationThenNamedIsReused(t *testing.T) {
 	}
 }
 
+// Concurrent identical submits race on the key's unique index: the
+// losers get the winner's dispatch. With no conversation_id each submit
+// mints its own conversation id first, so the request hash must not
+// include it (LOOM-140).
 func TestConcurrentSameIdempotencyKeyRunsOnce(t *testing.T) {
-	var runs atomic.Int32
-	release := make(chan struct{})
-	svc := newService(t, newStore(t), func(context.Context, *registry.Dispatch) (string, error) {
-		runs.Add(1)
-		<-release
-		return "once", nil
-	})
-	req := dispatch.Request{ConversationID: "c", Message: "m", IdempotencyKey: "k-race"}
-	const n = 8
-	ids := make([]string, n)
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			d, err := svc.Submit(context.Background(), req)
-			errs[i] = err
-			if d != nil {
-				ids[i] = d.ID
+	for name, conversationID := range map[string]string{"named conversation": "c", "new conversation": ""} {
+		t.Run(name, func(t *testing.T) {
+			var runs atomic.Int32
+			release := make(chan struct{})
+			svc := newService(t, newStore(t), func(context.Context, *registry.Dispatch) (string, error) {
+				runs.Add(1)
+				<-release
+				return "once", nil
+			})
+			req := dispatch.Request{ConversationID: conversationID, Message: "m", IdempotencyKey: "k-race"}
+			const n = 8
+			ids := make([]string, n)
+			errs := make([]error, n)
+			var wg sync.WaitGroup
+			for i := range n {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					d, err := svc.Submit(context.Background(), req)
+					errs[i] = err
+					if d != nil {
+						ids[i] = d.ID
+					}
+				}()
 			}
-		}()
-	}
-	wg.Wait()
-	close(release)
-	for i := range n {
-		if errs[i] != nil {
-			t.Fatalf("Submit %d: %v", i, errs[i])
-		}
-		if ids[i] != ids[0] {
-			t.Fatalf("concurrent submits made different dispatches: %v", ids)
-		}
-	}
-	waitDone(t, svc, ids[0])
-	if runs.Load() != 1 {
-		t.Fatalf("run called %d times, want 1", runs.Load())
+			wg.Wait()
+			close(release)
+			for i := range n {
+				if errs[i] != nil {
+					t.Fatalf("Submit %d: %v", i, errs[i])
+				}
+				if ids[i] != ids[0] {
+					t.Fatalf("concurrent submits made different dispatches: %v", ids)
+				}
+			}
+			waitDone(t, svc, ids[0])
+			if runs.Load() != 1 {
+				t.Fatalf("run called %d times, want 1", runs.Load())
+			}
+		})
 	}
 }
 
