@@ -21,6 +21,10 @@ func TestInlineScriptHashes(t *testing.T) {
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("inlineScriptHashes = %v, want [%s] (the inline one only)", got, want)
 	}
+	crlf := inlineScriptHashes([]byte("<script>" + strings.ReplaceAll(snippet, "\n", "\r\n") + "</script>"))
+	if len(crlf) != 1 || crlf[0] != want {
+		t.Errorf("CRLF script hashed as %v, want %s (browsers hash it with LF)", crlf, want)
+	}
 	if got := inlineScriptHashes([]byte(`<script>unterminated`)); len(got) != 0 {
 		t.Errorf("unterminated script hashed: %v", got)
 	}

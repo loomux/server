@@ -20,8 +20,8 @@ func setCommonHeaders(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Options", "DENY")
 	// HSTS only means anything over HTTPS; behind the reverse proxy the
 	// request reaches loomuxd as plain HTTP, so trust the proxy's
-	// X-Forwarded-Proto for this one header (a client spoofing it on a
-	// plain-HTTP deployment only pins HTTPS for itself).
+	// X-Forwarded-Proto for this one header. Spoofing it is harmless:
+	// browsers ignore HSTS received over plain HTTP (RFC 6797).
 	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		h.Set("Strict-Transport-Security", "max-age=31536000")
 	}
@@ -68,7 +68,11 @@ func inlineScriptHashes(html []byte) []string {
 		}
 		end += tagEnd
 		if !bytes.Contains(lower[start:tagEnd], []byte("src=")) {
-			sum := sha256.Sum256(html[tagEnd+1 : end])
+			// Browsers hash the script text after the HTML parser has
+			// turned CRLF and CR into LF.
+			text := bytes.ReplaceAll(html[tagEnd+1:end], []byte("\r\n"), []byte("\n"))
+			text = bytes.ReplaceAll(text, []byte("\r"), []byte("\n"))
+			sum := sha256.Sum256(text)
 			hashes = append(hashes, "sha256-"+base64.StdEncoding.EncodeToString(sum[:]))
 		}
 		i = end
