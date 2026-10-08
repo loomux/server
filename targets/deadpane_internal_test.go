@@ -103,3 +103,73 @@ func TestPaneExitedReportsSignal(t *testing.T) {
 		t.Fatalf("exit = %+v after %d queries, want signal 15 at once", exit, queries)
 	}
 }
+
+// tmux can miss the SIGCHLD of a command that exits the instant its pane
+// starts, and then never records its status on its own (LOOM-181): the
+// wait asks the server to reap rather than only waiting for it.
+func TestPaneExitedAsksTmuxToReap(t *testing.T) {
+	old := deadPaneRecaptureDelay
+	deadPaneRecaptureDelay = time.Millisecond
+	t.Cleanup(func() { deadPaneRecaptureDelay = old })
+
+	reaped := false
+	run := func(ctx context.Context, args ...string) (string, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case args[0] == "run-shell":
+			if joined != "run-shell kill -CHLD #{pid}" {
+				t.Errorf("reap command = %q", joined)
+			}
+			reaped = true
+			return "", nil
+		case strings.Contains(joined, "pane_dead"):
+			if reaped {
+				return "1 127 \n", nil
+			}
+			return "1  \n", nil
+		}
+		return "sh: loomux-no-such-cli: not found\nPane is dead (status 127, Mon Oct  5 12:40:09 2026)\n", nil
+	}
+	exit, err := paneExited(context.Background(), run, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit == nil || exit.Status != 127 || exit.Output != "sh: loomux-no-such-cli: not found" {
+		t.Fatalf("exit = %+v, want status 127 once tmux was asked to reap", exit)
+	}
+}
+
+// Output tmux reads only after deadPaneOutput gave up on it is still
+// reported, when it arrives while the status is pending.
+func TestPaneExitedKeepsLateOutput(t *testing.T) {
+	oldDelay, oldRecaptures := deadPaneRecaptureDelay, deadPaneRecaptures
+	deadPaneRecaptureDelay, deadPaneRecaptures = time.Millisecond, 1
+	t.Cleanup(func() { deadPaneRecaptureDelay, deadPaneRecaptures = oldDelay, oldRecaptures })
+
+	captures, queries := 0, 0
+	run := func(ctx context.Context, args ...string) (string, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case args[0] == "run-shell":
+			return "", nil
+		case strings.Contains(joined, "pane_dead"):
+			queries++
+			if queries < 3 {
+				return "1  \n", nil
+			}
+			return "1 0 \n", nil
+		}
+		captures++
+		if captures < 4 {
+			return "\nPane is dead (status 0, Mon Oct  5 12:40:09 2026)\n", nil
+		}
+		return "late\nPane is dead (status 0, Mon Oct  5 12:40:09 2026)\n", nil
+	}
+	exit, err := paneExited(context.Background(), run, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit == nil || exit.Status != 0 || exit.Output != "late" {
+		t.Fatalf("exit = %+v, want status 0 and the late output", exit)
+	}
+}
