@@ -17,24 +17,22 @@ const streamGap = 400 * time.Millisecond
 
 // LOOM-137: a turn that starts and finishes before the stream's first
 // poll tick is still reported, with its terminal update: the baseline is
-// what existed at connect, not at the first tick.
+// what existed at connect, not at the first tick. The job is written
+// straight to the store, already finished, so the test doesn't depend on
+// how long a turn takes.
 func TestStream_QuickTurnAfterConnectIsReported(t *testing.T) {
-	srv, dispatcher, _ := newTestServer(t, api.WithStreamPollInterval(streamGap))
-	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) { return "quick", nil }
+	srv, _, store := newTestServer(t, api.WithStreamPollInterval(streamGap))
 	token, _ := login(t, srv.URL, testPassword)
 
 	r := openStream(t, srv.URL, token, "c-quick")
-	start := time.Now()
-	_, d := mustPostDispatch(t, srv.URL+"/api/v1/dispatch?wait=true", token,
-		map[string]string{"conversation_id": "c-quick", "message": "hi"}, nil)
-	if d.Status != "succeeded" {
-		t.Fatalf("dispatch = %+v, want it finished", d)
-	}
-	if time.Since(start) >= streamGap {
-		t.Skipf("the turn took %s, longer than the first poll interval: it doesn't exercise the race", time.Since(start))
+	now := time.Now().UTC()
+	if err := store.CreateDispatch(context.Background(), &registry.Dispatch{ID: "d-quick", ConversationID: "c-quick",
+		Message: "hi", Status: registry.DispatchStatusSucceeded, Reply: "quick", CreatedAt: now, StartedAt: &now,
+		FinishedAt: &now}, nil); err != nil {
+		t.Fatalf("CreateDispatch: %v", err)
 	}
 	u := readDispatchUpdate(t, r)
-	if u.DispatchID != d.DispatchID || u.Status != "succeeded" || u.Reply != "quick" {
+	if u.DispatchID != "d-quick" || u.Status != "succeeded" || u.Reply != "quick" {
 		t.Fatalf("dispatch_update = %+v, want the quick turn's terminal update", u)
 	}
 }

@@ -1118,8 +1118,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// finished" and its terminal update was never sent. Messages first:
 	// that baseline writes nothing; the dispatch one reports jobs already
 	// in flight, flushing only after its query.
+	// A baseline whose query fails comes back nil: it is tried once more
+	// now, and failing again is taken on the first poll tick as before,
+	// with that tick's narrower window.
 	messagesSeen := s.sendMessagesAdded(r.Context(), w, flusher, id, nil)
+	if messagesSeen == nil {
+		messagesSeen = s.sendMessagesAdded(r.Context(), w, flusher, id, nil)
+	}
 	dispatchSeen := s.sendDispatchUpdates(r.Context(), w, flusher, id, nil)
+	if dispatchSeen == nil {
+		dispatchSeen = s.sendDispatchUpdates(r.Context(), w, flusher, id, nil)
+	}
 	flusher.Flush()
 
 	poll := time.NewTicker(s.streamPollInterval)
