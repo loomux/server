@@ -17,7 +17,19 @@ func TestProbeFailureReason_SSHHint(t *testing.T) {
 		t.Errorf("probeFailureReason = %q", got)
 	}
 	other := &targets.UnreachableError{Host: "jet01", Failure: targets.SSHOther, Detail: "something odd"}
-	if got := probeFailureReason(other); got != "unreachable: could not connect to jet01: something odd" {
+	if got := probeFailureReason(other); got != "unreachable: could not connect to jet01: something odd (other)" {
 		t.Errorf("probeFailureReason(other) = %q", got)
+	}
+}
+
+// The failure's class ends the reason (#294 review), so what reads a
+// target's health — onboarding's next step, test's steps — can tell an
+// unauthorized key from a host key problem from no route at all.
+func TestProbeFailureReason_KeepsTheClass(t *testing.T) {
+	for _, f := range []targets.SSHFailure{targets.SSHAuthFailed, targets.SSHHostKeyChanged, targets.SSHHostKeyUnknown, targets.SSHProxyUnreachable} {
+		got := probeFailureReason(&targets.UnreachableError{Host: "jet01", Failure: f, Detail: "raw ssh text", Managed: true})
+		if !strings.HasSuffix(got, " ("+string(f)+")") || strings.Contains(got, "raw ssh text") {
+			t.Errorf("probeFailureReason(%s) = %q", f, got)
+		}
 	}
 }

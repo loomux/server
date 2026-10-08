@@ -402,7 +402,10 @@ envelope: it classifies the failure with `error_class`.
     then lists it. A pinned target is checked against its pin alone. Only
     remote targets (`400` for local). `test` returns `{target_id, reachable,
     tmux_version?, latency_ms, error?, host_key_problem}`. Targets also
-    take and show `ssh_port` (0: the SSH config's). Single user today;
+    take and show `ssh_port` (0: the SSH config's). `test` also returns
+    `steps` (LOOM-138): `connect`, `host_key`, `auth` and `tmux`, each
+    `{name, status: ok|failed|skipped, error?}`, the failed one carrying
+    the reason and what to do. Single user today;
     scanning and pinning must become admin-only if Loomux ever has
     several (see `docs/deploy/ssh.md`).
   - `GET /api/v1/ssh-keys`, `POST /api/v1/ssh-keys` `{name}`,
@@ -411,13 +414,33 @@ envelope: it classifies the failure with `error_class`.
     in `docs/design/target-onboarding.md`). `POST` generates an ed25519
     key and returns `{id, name, type, fingerprint, public_key, origin,
     created_at, used_by}` — `public_key` is the `authorized_keys` line to
-    add on a target, commented `loomux-<name>`. The private key is
+    add on a target, commented `loomux-<name>`; `origin` is `generated`,
+    `target` (made by a target's `generate_ssh_key`) or `imported`. The private key is
     encrypted at rest with `LOOMUX_MASTER_KEY` (`503` without it) and is
     never returned by any endpoint. `name` is letters, digits, `.`, `_`
     and `-`, starting with a letter or digit, at most 64 (`400`
     otherwise; `409` if taken). The list (`ssh_keys`, a complete list) works
     without a master key; `used_by` holds the ids of the targets using
     each key, and deleting a key in use is `409`.
+  - `POST /api/v1/targets/{id}/migrate-ssh` `{dry_run}` — auth-gated
+    (LOOM-138, `WithSSHMigration`; `501` without it, without `/ssh-keys`,
+    or, to apply, without probing or pinning). Plans a config-mode remote
+    target (`400` otherwise) as a managed one from what the mounted SSH
+    config does for it (`docs/deploy/ssh.md`, "Migrating a target off the
+    SSH config"): `{target_id, dry_run, can_apply, problems, plan: {host,
+    ssh_port, user, ssh_proxy, key: {type, fingerprint, source_file,
+    existing_key_id}, host_keys}, applied, rolled_back, test, target}`.
+    A dry run changes nothing (`200`). Applying with problems is `409`.
+    A successful apply returns `200` with `test` and the managed `target`.
+    If the test fails, the target is put back as it was and the answer is
+    `502` with `test` and `rolled_back: true`. A config that can't be read
+    is `502`. The private key never appears. `key_file` (a file name in
+    `~/.ssh`) picks the key to import. Another migration running is
+    `409` with the usual `{error}`. A failed test on a target edited
+    meanwhile is `409` too, the target left as edited; that one, and the
+    other answers about the plan or its outcome (`409` with problems,
+    `502`, a `500` from a failed rollback), carry the migrate body, with
+    the reason in `problems`.
   - `POST /api/v1/targets`, `GET /api/v1/targets`,
     `PUT /api/v1/targets/{id}`, `DELETE /api/v1/targets/{id}` —
     auth-gated target registration (LOOM-59). `registry.Store`'s target
@@ -440,9 +463,29 @@ envelope: it classifies the failure with `error_class`.
     id, and letting a caller choose one invites exactly the collisions
     and hand-minted ids this endpoint exists to replace, so it is
     generated here the way session ids already are. `ssh_key_ref` is not
-    part of the API (removed before 1.0, freeze review item 1: nothing
-    read it; SSH keys come from the mounted secret); a client that still
-    sends it has it ignored.
+    part of the API (removed before 1.0, freeze review item 1); a client
+    that still sends it has it ignored. A target's key is set with
+    `ssh_key_id` instead (below).
+
+    Managed targets (LOOM-138, `docs/deploy/ssh.md`): a body may carry
+    `ssh_key_id` (a key from `/ssh-keys`; `""` returns the target to the
+    SSH config), or `"generate_ssh_key": true` (a new key named after the
+    target; `501` without `/ssh-keys`, `503` without a master key; not
+    both, `400`), and `ssh_proxy` (`default` or `none`, managed targets
+    only). A managed target's `host` must be a host name or IP address
+    (`400` otherwise), and changing its `host` or `ssh_port` drops its
+    pin. An unknown `ssh_key_id` is `400` (`no such SSH key`). Every
+    target response adds `ssh_mode` (`managed` or `config`), `ssh_key`
+    (`{id, name, type, fingerprint, public_key}`, null in config mode),
+    `ssh_proxy`, `ready`, and `next_step` (`pin_host_key`,
+    `authorize_key`, `test_connection`, or null when ready), judged from
+    the latest probe newer than the target's last change. Create, update
+    and pin responses now also carry the target's `health`. A key made by
+    `generate_ssh_key` has `origin: target` in `/ssh-keys` and is deleted
+    when its target is deleted or moves to another key; a host key scan
+    is forgotten when a target's host, port, key or proxy changes. A
+    health `error` for an unreachable target now ends with its class in
+    parentheses, e.g. `(auth_failed)`.
 
     Validation enforces the invariants the execution layer assumes but
     cannot check at registration time, so a target that could never be

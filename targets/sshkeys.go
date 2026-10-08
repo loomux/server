@@ -96,27 +96,38 @@ type servedAgent struct {
 // (sun_path: 108 bytes on Linux, 104 on macOS and the BSDs).
 const maxSocketPath = 103
 
+// ensurePrivateDir makes dir a private directory of loomuxd's own:
+// created 0700 if missing; refused if it is a symlink, not a directory,
+// or owned by another user (who could swap what's in it); made 0700
+// otherwise.
+func ensurePrivateDir(dir, what string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("targets: %s: %w", what, err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("targets: %s: %w", what, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("targets: %s %s is not a directory", what, dir)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
+		return fmt.Errorf("targets: %s %s belongs to another user", what, dir)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("targets: %s: %w", what, err)
+	}
+	return nil
+}
+
 // ensureDir makes p.dir a private directory of loomuxd's own: created
 // 0700 if missing, refused if it is a symlink, not a directory or owned
 // by another user (who could swap a socket in it for an agent of their
 // own), made 0700 otherwise. The first time, sockets an earlier process
 // left there are removed: the dir belongs to one loomuxd process.
 func (p *AgentPool) ensureDir() error {
-	if err := os.MkdirAll(p.dir, 0o700); err != nil {
-		return fmt.Errorf("targets: agent dir: %w", err)
-	}
-	fi, err := os.Lstat(p.dir)
-	if err != nil {
-		return fmt.Errorf("targets: agent dir: %w", err)
-	}
-	if !fi.IsDir() {
-		return fmt.Errorf("targets: agent dir %s is not a directory", p.dir)
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Geteuid() {
-		return fmt.Errorf("targets: agent dir %s belongs to another user", p.dir)
-	}
-	if err := os.Chmod(p.dir, 0o700); err != nil {
-		return fmt.Errorf("targets: agent dir: %w", err)
+	if err := ensurePrivateDir(p.dir, "agent dir"); err != nil {
+		return err
 	}
 	if !p.swept {
 		old, _ := filepath.Glob(filepath.Join(p.dir, "*.sock"))
@@ -180,6 +191,17 @@ func (p *AgentPool) Socket(k *registry.SSHKey) (string, error) {
 	go a.serve(readOnlyAgent{keyring.(agent.ExtendedAgent)})
 	p.agents[k.ID] = a
 	return socket, nil
+}
+
+// Running returns the socket of key id's agent, if it's running.
+func (p *AgentPool) Running(id string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a, ok := p.agents[id]
+	if !ok {
+		return "", false
+	}
+	return a.socket, true
 }
 
 // Drop stops serving key id (deleted, or rotated away from).

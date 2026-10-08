@@ -77,15 +77,25 @@ DELETE /api/v1/targets/{id}/pin response .host string
 DELETE /api/v1/targets/{id}/pin response .id string
 DELETE /api/v1/targets/{id}/pin response .kind string
 DELETE /api/v1/targets/{id}/pin response .name string
+DELETE /api/v1/targets/{id}/pin response .next_step string nullable
 DELETE /api/v1/targets/{id}/pin response .permission_mode string
 DELETE /api/v1/targets/{id}/pin response .pinned_host_keys []object
 DELETE /api/v1/targets/{id}/pin response .pinned_host_keys[].fingerprint string
 DELETE /api/v1/targets/{id}/pin response .pinned_host_keys[].type string
 DELETE /api/v1/targets/{id}/pin response .purpose string
+DELETE /api/v1/targets/{id}/pin response .ready boolean
 DELETE /api/v1/targets/{id}/pin response .relay string
 DELETE /api/v1/targets/{id}/pin response .relay_effective string
 DELETE /api/v1/targets/{id}/pin response .require_confirmation boolean
+DELETE /api/v1/targets/{id}/pin response .ssh_key object nullable
+DELETE /api/v1/targets/{id}/pin response .ssh_key.fingerprint string
+DELETE /api/v1/targets/{id}/pin response .ssh_key.id string
+DELETE /api/v1/targets/{id}/pin response .ssh_key.name string
+DELETE /api/v1/targets/{id}/pin response .ssh_key.public_key string
+DELETE /api/v1/targets/{id}/pin response .ssh_key.type string
+DELETE /api/v1/targets/{id}/pin response .ssh_mode string
 DELETE /api/v1/targets/{id}/pin response .ssh_port number
+DELETE /api/v1/targets/{id}/pin response .ssh_proxy string
 DELETE /api/v1/targets/{id}/pin response .updated_at time
 DELETE /api/v1/targets/{id}/pin response .user string
 DELETE /api/v1/targets/{id}/pin response .workspace_root string
@@ -350,15 +360,25 @@ GET /api/v1/targets response .targets[].host string
 GET /api/v1/targets response .targets[].id string
 GET /api/v1/targets response .targets[].kind string
 GET /api/v1/targets response .targets[].name string
+GET /api/v1/targets response .targets[].next_step string nullable
 GET /api/v1/targets response .targets[].permission_mode string
 GET /api/v1/targets response .targets[].pinned_host_keys []object
 GET /api/v1/targets response .targets[].pinned_host_keys[].fingerprint string
 GET /api/v1/targets response .targets[].pinned_host_keys[].type string
 GET /api/v1/targets response .targets[].purpose string
+GET /api/v1/targets response .targets[].ready boolean
 GET /api/v1/targets response .targets[].relay string
 GET /api/v1/targets response .targets[].relay_effective string
 GET /api/v1/targets response .targets[].require_confirmation boolean
+GET /api/v1/targets response .targets[].ssh_key object nullable
+GET /api/v1/targets response .targets[].ssh_key.fingerprint string
+GET /api/v1/targets response .targets[].ssh_key.id string
+GET /api/v1/targets response .targets[].ssh_key.name string
+GET /api/v1/targets response .targets[].ssh_key.public_key string
+GET /api/v1/targets response .targets[].ssh_key.type string
+GET /api/v1/targets response .targets[].ssh_mode string
 GET /api/v1/targets response .targets[].ssh_port number
+GET /api/v1/targets response .targets[].ssh_proxy string
 GET /api/v1/targets response .targets[].updated_at time
 GET /api/v1/targets response .targets[].user string
 GET /api/v1/targets response .targets[].workspace_root string
@@ -617,6 +637,7 @@ POST /api/v1/targets request - object
 POST /api/v1/targets request .allow_provision boolean nullable
 POST /api/v1/targets request .allow_shell boolean nullable
 POST /api/v1/targets request .allowed_agent_types []string nullable
+POST /api/v1/targets request .generate_ssh_key boolean
 POST /api/v1/targets request .host string
 POST /api/v1/targets request .kind string
 POST /api/v1/targets request .name string
@@ -624,7 +645,9 @@ POST /api/v1/targets request .permission_mode string nullable
 POST /api/v1/targets request .purpose string nullable
 POST /api/v1/targets request .relay string nullable
 POST /api/v1/targets request .require_confirmation boolean nullable
+POST /api/v1/targets request .ssh_key_id string nullable
 POST /api/v1/targets request .ssh_port number nullable
+POST /api/v1/targets request .ssh_proxy string nullable
 POST /api/v1/targets request .user string
 POST /api/v1/targets request .workspace_root string nullable
 POST /api/v1/targets request-header Authorization
@@ -645,15 +668,25 @@ POST /api/v1/targets response .host string
 POST /api/v1/targets response .id string
 POST /api/v1/targets response .kind string
 POST /api/v1/targets response .name string
+POST /api/v1/targets response .next_step string nullable
 POST /api/v1/targets response .permission_mode string
 POST /api/v1/targets response .pinned_host_keys []object
 POST /api/v1/targets response .pinned_host_keys[].fingerprint string
 POST /api/v1/targets response .pinned_host_keys[].type string
 POST /api/v1/targets response .purpose string
+POST /api/v1/targets response .ready boolean
 POST /api/v1/targets response .relay string
 POST /api/v1/targets response .relay_effective string
 POST /api/v1/targets response .require_confirmation boolean
+POST /api/v1/targets response .ssh_key object nullable
+POST /api/v1/targets response .ssh_key.fingerprint string
+POST /api/v1/targets response .ssh_key.id string
+POST /api/v1/targets response .ssh_key.name string
+POST /api/v1/targets response .ssh_key.public_key string
+POST /api/v1/targets response .ssh_key.type string
+POST /api/v1/targets response .ssh_mode string
 POST /api/v1/targets response .ssh_port number
+POST /api/v1/targets response .ssh_proxy string
 POST /api/v1/targets response .updated_at time
 POST /api/v1/targets response .user string
 POST /api/v1/targets response .workspace_root string
@@ -661,9 +694,98 @@ POST /api/v1/targets response-header Content-Type
 POST /api/v1/targets status 201
 POST /api/v1/targets status 400
 POST /api/v1/targets status 401
+POST /api/v1/targets status 404
 POST /api/v1/targets status 409
 POST /api/v1/targets status 413
 POST /api/v1/targets status 500
+POST /api/v1/targets status 501
+POST /api/v1/targets status 503
+POST /api/v1/targets/{id}/migrate-ssh
+POST /api/v1/targets/{id}/migrate-ssh request - object
+POST /api/v1/targets/{id}/migrate-ssh request .dry_run boolean
+POST /api/v1/targets/{id}/migrate-ssh request .key_file string
+POST /api/v1/targets/{id}/migrate-ssh request-header Authorization
+POST /api/v1/targets/{id}/migrate-ssh response - object
+POST /api/v1/targets/{id}/migrate-ssh response .applied boolean
+POST /api/v1/targets/{id}/migrate-ssh response .can_apply boolean
+POST /api/v1/targets/{id}/migrate-ssh response .dry_run boolean
+POST /api/v1/targets/{id}/migrate-ssh response .plan object
+POST /api/v1/targets/{id}/migrate-ssh response .plan.host string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.host_keys []object
+POST /api/v1/targets/{id}/migrate-ssh response .plan.host_keys[].fingerprint string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.host_keys[].type string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key.existing_key_id string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key.fingerprint string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key.source_file string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.key.type string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.ssh_port number
+POST /api/v1/targets/{id}/migrate-ssh response .plan.ssh_proxy string
+POST /api/v1/targets/{id}/migrate-ssh response .plan.user string
+POST /api/v1/targets/{id}/migrate-ssh response .problems []string
+POST /api/v1/targets/{id}/migrate-ssh response .rolled_back boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.allow_provision boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.allow_shell boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.allowed_agent_types []string
+POST /api/v1/targets/{id}/migrate-ssh response .target.created_at time
+POST /api/v1/targets/{id}/migrate-ssh response .target.health object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.disk_free_bytes number nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.error string omitempty
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.last_probed_at time
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.latency_ms number
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.reachable boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.status string
+POST /api/v1/targets/{id}/migrate-ssh response .target.health.tmux_version string
+POST /api/v1/targets/{id}/migrate-ssh response .target.host string
+POST /api/v1/targets/{id}/migrate-ssh response .target.id string
+POST /api/v1/targets/{id}/migrate-ssh response .target.kind string
+POST /api/v1/targets/{id}/migrate-ssh response .target.name string
+POST /api/v1/targets/{id}/migrate-ssh response .target.next_step string nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.permission_mode string
+POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys []object
+POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys[].fingerprint string
+POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys[].type string
+POST /api/v1/targets/{id}/migrate-ssh response .target.purpose string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ready boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.relay string
+POST /api/v1/targets/{id}/migrate-ssh response .target.relay_effective string
+POST /api/v1/targets/{id}/migrate-ssh response .target.require_confirmation boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.fingerprint string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.id string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.name string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.public_key string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_key.type string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_mode string
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_port number
+POST /api/v1/targets/{id}/migrate-ssh response .target.ssh_proxy string
+POST /api/v1/targets/{id}/migrate-ssh response .target.updated_at time
+POST /api/v1/targets/{id}/migrate-ssh response .target.user string
+POST /api/v1/targets/{id}/migrate-ssh response .target.workspace_root string
+POST /api/v1/targets/{id}/migrate-ssh response .target_id string
+POST /api/v1/targets/{id}/migrate-ssh response .test object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .test.error string omitempty
+POST /api/v1/targets/{id}/migrate-ssh response .test.host_key_problem boolean
+POST /api/v1/targets/{id}/migrate-ssh response .test.latency_ms number
+POST /api/v1/targets/{id}/migrate-ssh response .test.reachable boolean
+POST /api/v1/targets/{id}/migrate-ssh response .test.steps []object
+POST /api/v1/targets/{id}/migrate-ssh response .test.steps[].error string omitempty
+POST /api/v1/targets/{id}/migrate-ssh response .test.steps[].name string
+POST /api/v1/targets/{id}/migrate-ssh response .test.steps[].status string
+POST /api/v1/targets/{id}/migrate-ssh response .test.target_id string
+POST /api/v1/targets/{id}/migrate-ssh response .test.tmux_version string omitempty
+POST /api/v1/targets/{id}/migrate-ssh response-header Content-Type
+POST /api/v1/targets/{id}/migrate-ssh status 200
+POST /api/v1/targets/{id}/migrate-ssh status 400
+POST /api/v1/targets/{id}/migrate-ssh status 401
+POST /api/v1/targets/{id}/migrate-ssh status 404
+POST /api/v1/targets/{id}/migrate-ssh status 409
+POST /api/v1/targets/{id}/migrate-ssh status 413
+POST /api/v1/targets/{id}/migrate-ssh status 500
+POST /api/v1/targets/{id}/migrate-ssh status 501
+POST /api/v1/targets/{id}/migrate-ssh status 502
+POST /api/v1/targets/{id}/migrate-ssh status 503
 POST /api/v1/targets/{id}/pin
 POST /api/v1/targets/{id}/pin request - object
 POST /api/v1/targets/{id}/pin request .fingerprint string
@@ -685,15 +807,25 @@ POST /api/v1/targets/{id}/pin response .host string
 POST /api/v1/targets/{id}/pin response .id string
 POST /api/v1/targets/{id}/pin response .kind string
 POST /api/v1/targets/{id}/pin response .name string
+POST /api/v1/targets/{id}/pin response .next_step string nullable
 POST /api/v1/targets/{id}/pin response .permission_mode string
 POST /api/v1/targets/{id}/pin response .pinned_host_keys []object
 POST /api/v1/targets/{id}/pin response .pinned_host_keys[].fingerprint string
 POST /api/v1/targets/{id}/pin response .pinned_host_keys[].type string
 POST /api/v1/targets/{id}/pin response .purpose string
+POST /api/v1/targets/{id}/pin response .ready boolean
 POST /api/v1/targets/{id}/pin response .relay string
 POST /api/v1/targets/{id}/pin response .relay_effective string
 POST /api/v1/targets/{id}/pin response .require_confirmation boolean
+POST /api/v1/targets/{id}/pin response .ssh_key object nullable
+POST /api/v1/targets/{id}/pin response .ssh_key.fingerprint string
+POST /api/v1/targets/{id}/pin response .ssh_key.id string
+POST /api/v1/targets/{id}/pin response .ssh_key.name string
+POST /api/v1/targets/{id}/pin response .ssh_key.public_key string
+POST /api/v1/targets/{id}/pin response .ssh_key.type string
+POST /api/v1/targets/{id}/pin response .ssh_mode string
 POST /api/v1/targets/{id}/pin response .ssh_port number
+POST /api/v1/targets/{id}/pin response .ssh_proxy string
 POST /api/v1/targets/{id}/pin response .updated_at time
 POST /api/v1/targets/{id}/pin response .user string
 POST /api/v1/targets/{id}/pin response .workspace_root string
@@ -756,6 +888,10 @@ POST /api/v1/targets/{id}/test response .error string omitempty
 POST /api/v1/targets/{id}/test response .host_key_problem boolean
 POST /api/v1/targets/{id}/test response .latency_ms number
 POST /api/v1/targets/{id}/test response .reachable boolean
+POST /api/v1/targets/{id}/test response .steps []object
+POST /api/v1/targets/{id}/test response .steps[].error string omitempty
+POST /api/v1/targets/{id}/test response .steps[].name string
+POST /api/v1/targets/{id}/test response .steps[].status string
 POST /api/v1/targets/{id}/test response .target_id string
 POST /api/v1/targets/{id}/test response .tmux_version string omitempty
 POST /api/v1/targets/{id}/test response-header Content-Type
@@ -879,6 +1015,7 @@ PUT /api/v1/targets/{id} request - object
 PUT /api/v1/targets/{id} request .allow_provision boolean nullable
 PUT /api/v1/targets/{id} request .allow_shell boolean nullable
 PUT /api/v1/targets/{id} request .allowed_agent_types []string nullable
+PUT /api/v1/targets/{id} request .generate_ssh_key boolean
 PUT /api/v1/targets/{id} request .host string
 PUT /api/v1/targets/{id} request .kind string
 PUT /api/v1/targets/{id} request .name string
@@ -886,7 +1023,9 @@ PUT /api/v1/targets/{id} request .permission_mode string nullable
 PUT /api/v1/targets/{id} request .purpose string nullable
 PUT /api/v1/targets/{id} request .relay string nullable
 PUT /api/v1/targets/{id} request .require_confirmation boolean nullable
+PUT /api/v1/targets/{id} request .ssh_key_id string nullable
 PUT /api/v1/targets/{id} request .ssh_port number nullable
+PUT /api/v1/targets/{id} request .ssh_proxy string nullable
 PUT /api/v1/targets/{id} request .user string
 PUT /api/v1/targets/{id} request .workspace_root string nullable
 PUT /api/v1/targets/{id} request-header Authorization
@@ -907,15 +1046,25 @@ PUT /api/v1/targets/{id} response .host string
 PUT /api/v1/targets/{id} response .id string
 PUT /api/v1/targets/{id} response .kind string
 PUT /api/v1/targets/{id} response .name string
+PUT /api/v1/targets/{id} response .next_step string nullable
 PUT /api/v1/targets/{id} response .permission_mode string
 PUT /api/v1/targets/{id} response .pinned_host_keys []object
 PUT /api/v1/targets/{id} response .pinned_host_keys[].fingerprint string
 PUT /api/v1/targets/{id} response .pinned_host_keys[].type string
 PUT /api/v1/targets/{id} response .purpose string
+PUT /api/v1/targets/{id} response .ready boolean
 PUT /api/v1/targets/{id} response .relay string
 PUT /api/v1/targets/{id} response .relay_effective string
 PUT /api/v1/targets/{id} response .require_confirmation boolean
+PUT /api/v1/targets/{id} response .ssh_key object nullable
+PUT /api/v1/targets/{id} response .ssh_key.fingerprint string
+PUT /api/v1/targets/{id} response .ssh_key.id string
+PUT /api/v1/targets/{id} response .ssh_key.name string
+PUT /api/v1/targets/{id} response .ssh_key.public_key string
+PUT /api/v1/targets/{id} response .ssh_key.type string
+PUT /api/v1/targets/{id} response .ssh_mode string
 PUT /api/v1/targets/{id} response .ssh_port number
+PUT /api/v1/targets/{id} response .ssh_proxy string
 PUT /api/v1/targets/{id} response .updated_at time
 PUT /api/v1/targets/{id} response .user string
 PUT /api/v1/targets/{id} response .workspace_root string
@@ -927,3 +1076,5 @@ PUT /api/v1/targets/{id} status 404
 PUT /api/v1/targets/{id} status 409
 PUT /api/v1/targets/{id} status 413
 PUT /api/v1/targets/{id} status 500
+PUT /api/v1/targets/{id} status 501
+PUT /api/v1/targets/{id} status 503

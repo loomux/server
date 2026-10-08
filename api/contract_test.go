@@ -86,6 +86,7 @@ var apiV1Bodies = map[string][]contractBody{
 	"GET /api/v1/ssh-keys":                    {{"response", listSSHKeysResponse{}}},
 	"POST /api/v1/ssh-keys":                   {{"request", createSSHKeyRequest{}}, {"response", sshKeyResponse{}}},
 	"DELETE /api/v1/ssh-keys/{id}":            {{"response", nil}},
+	"POST /api/v1/targets/{id}/migrate-ssh":   {{"request", migrateSSHRequest{}}, {"response", migrateSSHResponse{}}},
 	"GET /api/v1/health":                      {{"response", health.Result{}}},
 	"GET /api/v1/health/deep":                 {{"response", health.Result{}}},
 	"GET /api/v1/version":                     {{"response", versionResponse{}}},

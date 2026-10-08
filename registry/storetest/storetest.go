@@ -1922,6 +1922,13 @@ func testTargetSSH(t *testing.T, s registry.Store) {
 	if err := s.SetTargetHostKeys(ctx, "missing", line); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("SetTargetHostKeys on an unknown target = %v, want ErrNotFound", err)
 	}
+	got.SSHProxy = registry.SSHProxyNone
+	if err := s.UpdateTarget(ctx, got); err != nil {
+		t.Fatalf("UpdateTarget ssh_proxy: %v", err)
+	}
+	if got, _ = s.GetTarget(ctx, "t1"); got.SSHProxy != registry.SSHProxyNone {
+		t.Fatalf("SSHProxy = %q, want none", got.SSHProxy)
+	}
 }
 
 func newTestSSHKey(id, name string) *registry.SSHKey {
