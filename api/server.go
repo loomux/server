@@ -1750,7 +1750,7 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if target.Kind == registry.TargetKindLocal && !s.localTargets {
 		writeError(w, http.StatusBadRequest, "local targets are turned off on this server (LOOMUX_LOCAL_TARGETS=off): their agents would run as the server's own user, with access to its database and keys; register the machine as a remote target instead")
-		return nil, false
+		return nil, false, false
 	}
 	if s.agentTypes != nil {
 		for _, a := range target.Policy.AllowedAgentTypes {
