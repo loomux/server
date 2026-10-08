@@ -226,7 +226,9 @@ type Server struct {
 	sessionTTL         time.Duration
 	loginThrottle      *loginThrottle
 	loginDevices       *loginDevices
+	streams            sessionStreams
 	streamPollInterval time.Duration
+	streamHeartbeat    time.Duration
 	staticDir          string
 	web                WebBundles
 	static             http.HandlerFunc
@@ -253,6 +255,12 @@ func WithLoginBackoff(base, max time.Duration) Option {
 // tests, so they don't wait a full production-length interval per event.
 func WithStreamPollInterval(d time.Duration) Option {
 	return func(s *Server) { s.streamPollInterval = d }
+}
+
+// WithStreamHeartbeat overrides the stream's heartbeat interval, which is
+// also how often an open stream re-checks its session. For tests.
+func WithStreamHeartbeat(d time.Duration) Option {
+	return func(s *Server) { s.streamHeartbeat = d }
 }
 
 // WithStaticDir configures Server to serve a built single-page-app from
@@ -319,6 +327,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 		sessionTTL:         defaultSessionTTL,
 		loginThrottle:      newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
 		streamPollInterval: defaultStreamPollInterval,
+		streamHeartbeat:    streamHeartbeatInterval,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -492,6 +501,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not revoke session")
 		return
 	}
+	s.streams.end(sess.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -570,6 +580,7 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not revoke session")
 		return
 	}
+	s.streams.end(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1145,6 +1156,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	// The stream ends with its session: at once on logout or revoke, and
+	// at the next heartbeat if it expired (LOOM-144).
+	sess := sessionFromContext(r.Context())
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	defer s.streams.add(sess.ID, cancel)()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -1161,19 +1178,19 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// A baseline whose query fails comes back nil: it is tried once more
 	// now, and failing again is taken on the first poll tick as before,
 	// with that tick's narrower window.
-	messagesSeen := s.sendMessagesAdded(r.Context(), w, flusher, id, nil)
+	messagesSeen := s.sendMessagesAdded(ctx, w, flusher, id, nil)
 	if messagesSeen == nil {
-		messagesSeen = s.sendMessagesAdded(r.Context(), w, flusher, id, nil)
+		messagesSeen = s.sendMessagesAdded(ctx, w, flusher, id, nil)
 	}
-	dispatchSeen := s.sendDispatchUpdates(r.Context(), w, flusher, id, nil)
+	dispatchSeen := s.sendDispatchUpdates(ctx, w, flusher, id, nil)
 	if dispatchSeen == nil {
-		dispatchSeen = s.sendDispatchUpdates(r.Context(), w, flusher, id, nil)
+		dispatchSeen = s.sendDispatchUpdates(ctx, w, flusher, id, nil)
 	}
 	flusher.Flush()
 
 	poll := time.NewTicker(s.streamPollInterval)
 	defer poll.Stop()
-	heartbeat := time.NewTicker(streamHeartbeatInterval)
+	heartbeat := time.NewTicker(s.streamHeartbeat)
 	defer heartbeat.Stop()
 
 	var lastSent *taskUpdateEvent
@@ -1184,15 +1201,18 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	// (LOOM-121).
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case <-heartbeat.C:
+			if !s.sessionStillValid(ctx, sess) {
+				return
+			}
 			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		case <-poll.C:
-			dispatchSeen = s.sendDispatchUpdates(r.Context(), w, flusher, id, dispatchSeen)
-			messagesSeen = s.sendMessagesAdded(r.Context(), w, flusher, id, messagesSeen)
-			ev, err := s.latestConversationTaskEvent(r.Context(), id)
+			dispatchSeen = s.sendDispatchUpdates(ctx, w, flusher, id, dispatchSeen)
+			messagesSeen = s.sendMessagesAdded(ctx, w, flusher, id, messagesSeen)
+			ev, err := s.latestConversationTaskEvent(ctx, id)
 			if err != nil || ev == nil {
 				continue
 			}

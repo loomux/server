@@ -132,7 +132,6 @@ func TestAudit_Dispatch_RejectsOversizedMessageUpFront(t *testing.T) {
 // Revoking a session (or logging out) must also end the event streams it
 // opened; today requireAuth only runs at connect.
 func TestAudit_Stream_StopsAfterSessionRevoked(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F05")
 	srv, _, store := newTestServer(t, api.WithStreamPollInterval(10*time.Millisecond))
 	ctx := context.Background()
 	token, _ := login(t, srv.URL, testPassword)
