@@ -1,10 +1,13 @@
 package router_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -295,5 +298,66 @@ func TestDispatch_TargetSnapshotCarriesHealthProblem(t *testing.T) {
 	got := h.model.LastDecideTargets
 	if len(got) != 1 || !strings.Contains(got[0].Problem, "no answer") || !strings.Contains(got[0].Problem, "checked 0s ago") {
 		t.Errorf("snapshot = %+v, want the target's problem", got)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe to log into from any goroutine.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// A target deleted while the periodic sweep runs, whether during its own
+// probe or before its turn, is skipped quietly (LOOM-174): no ERROR or
+// WARN saying it wasn't found.
+func TestProbeAllTargets_TargetDeletedMidSweepIsQuiet(t *testing.T) {
+	var logs syncBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	h := newAvailabilityHarnessOpts(t, nil, router.WithLogger(logger))
+	ctx := context.Background()
+	other := &registry.Target{ID: uuid.NewString(), Name: "jet02", Kind: registry.TargetKindLocal}
+	if err := h.store.CreateTarget(ctx, other); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	deleted := false
+	h.exec.runOnce = func(command string) (string, error) {
+		if !deleted {
+			// The first probe's target goes mid-probe, the other before
+			// its turn.
+			deleted = true
+			for _, id := range []string{h.target.ID, other.ID} {
+				if err := h.store.DeleteTarget(ctx, id); err != nil {
+					t.Errorf("DeleteTarget: %v", err)
+				}
+			}
+		}
+		return router.HealthProbeTmuxPrefix + "tmux 3.4\n" + router.HealthProbeDiskPrefix + "99999999\n", nil
+	}
+
+	h.r.ProbeAllTargets(ctx)
+
+	out := logs.String()
+	if !deleted {
+		t.Fatal("no target was probed")
+	}
+	for _, level := range []string{"level=ERROR", "level=WARN"} {
+		if strings.Contains(out, level) {
+			t.Errorf("the sweep logged %s for a deleted target:\n%s", level, out)
+		}
+	}
+	if n := strings.Count(out, "target health probe skipped: target deleted"); n != 2 {
+		t.Errorf("%d skips logged, want 2 (one per deleted target):\n%s", n, out)
 	}
 }

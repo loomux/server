@@ -115,7 +115,9 @@ func (r *Router) ProbeTarget(ctx context.Context, targetID string) (*registry.Ta
 		agents, err = r.RefreshTargetAgents(agentCtx, targetID)
 		cancel()
 		if err != nil {
-			r.logger.Warn("target agent probe failed", "target_id", targetID, "error", err)
+			if !r.targetGone(ctx, targetID) {
+				r.logger.Warn("target agent probe failed", "target_id", targetID, "error", err)
+			}
 			agents = []*registry.TargetAgent{}
 		}
 	}
@@ -123,7 +125,9 @@ func (r *Router) ProbeTarget(ctx context.Context, targetID string) (*registry.Ta
 }
 
 // ProbeAllTargets probes every registered target in turn (LOOM-86): the
-// periodic health check.
+// periodic health check. A target deleted while the sweep runs, before
+// or during its probe, is skipped quietly (LOOM-174): that is someone
+// removing it, not a failure.
 func (r *Router) ProbeAllTargets(ctx context.Context) {
 	list, err := r.store.ListTargets(ctx)
 	if err != nil {
@@ -135,9 +139,20 @@ func (r *Router) ProbeAllTargets(ctx context.Context) {
 			return
 		}
 		if _, _, err := r.ProbeTarget(ctx, t.ID); err != nil {
+			if r.targetGone(ctx, t.ID) {
+				r.logger.Debug("target health probe skipped: target deleted", "target_id", t.ID)
+				continue
+			}
 			r.logger.Error("target health probe failed", "target_id", t.ID, "error", err)
 		}
 	}
+}
+
+// targetGone reports whether targetID has been deleted: a probe that
+// failed because of that has nothing to report.
+func (r *Router) targetGone(ctx context.Context, targetID string) bool {
+	_, err := r.store.GetTarget(context.WithoutCancel(ctx), targetID)
+	return errors.Is(err, registry.ErrNotFound)
 }
 
 // probeHealth runs the health probe on target and records the result,
