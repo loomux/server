@@ -64,7 +64,7 @@ func (d *loginDevices) throttle(token string) *loginThrottle {
 	if token == "" {
 		return nil
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(token)
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
 	if err != nil || len(raw) != deviceIDLen+deviceMACLen {
 		return nil
 	}

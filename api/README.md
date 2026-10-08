@@ -75,7 +75,10 @@ not engineering taste):
     the password hash: stateless, unforgeable, void once the password
     changes); a login that sends it back is throttled on that device's
     own backoff (`device.go`). Strangers' failures still drive the
-    global one.
+    global one, so a browser that has never logged in (or lost its
+    token) can still be held at the global backoff. Anyone holding the
+    password hash could mint device tokens, but could equally crack the
+    hash offline.
 - **API version mismatch handling is real but URL-only** (LOOM-10): any
   `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
   bare `/api/` root — gets a structured 404 naming `api.APIVersion`

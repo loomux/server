@@ -442,11 +442,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "too many failed login attempts, try again later")
 		return
 	}
+	verdict := false
+	defer func() {
+		if !verdict { // a panic mid-check must not hold the throttle
+			throttle.release()
+		}
+	}()
 	if err := checkPassword(s.passwordHash, req.Password); err != nil {
+		verdict = true
 		throttle.recordFailure()
 		writeError(w, http.StatusUnauthorized, "invalid password")
 		return
 	}
+	verdict = true
 	throttle.recordSuccess()
 
 	token, tokenHash, err := newToken()

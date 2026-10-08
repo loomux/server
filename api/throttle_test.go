@@ -108,8 +108,10 @@ func TestLoginDevices_TokenBoundToPasswordHash(t *testing.T) {
 	if newLoginDevices([]byte("hash-2"), time.Second, time.Minute).throttle(tok) != nil {
 		t.Fatal("a token survived a password change")
 	}
+	// Flip a bit mid-MAC: the last character's low bits are base64
+	// padding, and a flip there could decode to the same bytes.
 	flipped := []byte(tok)
-	flipped[len(flipped)-1] ^= 1
+	flipped[len(flipped)-5] ^= 1
 	for _, bad := range []string{"", "x", string(flipped), tok + "A"} {
 		if d.throttle(bad) != nil {
 			t.Errorf("token %q was accepted", bad)

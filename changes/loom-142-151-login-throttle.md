@@ -1,6 +1,6 @@
 ### Added
 
-- `POST /api/v1/login` returns a `device` token and accepts it back as an optional `device` field (LOOM-151). A login from a browser that has logged in before is throttled on its own backoff, so failed attempts by anyone else can no longer keep the owner locked out. The token is void once the password changes.
+- `POST /api/v1/login` returns a `device` token and accepts it back as an optional `device` field (LOOM-151). A login from a browser that has logged in before is throttled on its own backoff, so failed attempts by anyone else can no longer keep the owner locked out. The token is void once the password changes; a browser without one still shares the global backoff.
 
 ### Security
 
