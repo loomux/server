@@ -70,7 +70,20 @@ not engineering taste):
   would have worked. Still no audit log of failed attempts (no logging
   convention in this repo to hook into yet), and state resets on
   restart (in-memory only) — acceptable since the confirmed deployment
-  has no attacker-triggerable restart path.
+  has no attacker-triggerable restart path. Two refinements:
+  - An attempt is *admitted* before its password is checked
+    (LOOM-142): while one is being checked, others get `429` too, so
+    attempts sent together can't all slip past the backoff at once.
+  - **Known devices** (LOOM-151): a global counter alone let anyone
+    keep the owner out by failing once per backoff window. A successful
+    login returns a `device` token (a random id plus an HMAC keyed from
+    the password hash: stateless, unforgeable, void once the password
+    changes); a login that sends it back is throttled on that device's
+    own backoff (`device.go`). Strangers' failures still drive the
+    global one, so a browser that has never logged in (or lost its
+    token) can still be held at the global backoff. Anyone holding the
+    password hash could mint device tokens, but could equally crack the
+    hash offline.
 - **API version mismatch handling is real but URL-only** (LOOM-10): any
   `/api/...` path outside `/api/v1/` — a future `/api/v2/`, a typo, the
   bare `/api/` root — gets a structured 404 naming `api.APIVersion`
@@ -170,6 +183,8 @@ envelope: it classifies the failure with `error_class`.
 - `auth.go` — `HashPassword` (bcrypt, used by `loomuxd -hash-password`
   and by callers configuring `LOOMUX_AUTH_PASSWORD_HASH`), `checkPassword`,
   token generation/hashing (`newToken`, `hashToken`).
+- `device.go` — `loginDevices`: per-device login backoff for browsers
+  that logged in before (LOOM-151; see Design above).
 - `throttle.go` — `loginThrottle`: the global exponential-backoff counter
   behind `/login` (see Design above for why global/backoff, not
   per-IP/lockout).
@@ -186,7 +201,8 @@ envelope: it classifies the failure with `error_class`.
   `requireAuth` middleware, `APIVersion`, `WithStaticDir` (opt-in static
   SPA serving with `index.html` fallback, LOOM-33 — see Design above),
   and the handlers:
-  - `POST /api/v1/login` — `{password}` → `{token}`
+  - `POST /api/v1/login` — `{password, device?}` → `{token, device}`
+    (`device`: see Known devices above; send it back on the next login)
   - `POST /api/v1/logout` — auth-gated, revokes the presented token
   - `GET /api/v1/sessions` — auth-gated (LOOM-47), every active session
     (every device/client currently holding a valid, unexpired Bearer
