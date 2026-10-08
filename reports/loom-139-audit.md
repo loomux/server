@@ -44,7 +44,7 @@ Severity reflects a single-user, self-hosted tool behind a reverse proxy. "Test"
 
 ### High
 
-#### F01 — An idempotent retry of a new conversation's first message fails with 422 and leaves an orphan turn
+#### F01 — An idempotent retry of a new conversation's first message fails with 422 and leaves an orphan turn (LOOM-140)
 - **Where:** `dispatch/service.go:193-211`. `Submit` assigns `req.ConversationID = uuid.NewString()` before `requestHash(req)`, so a retry with the same `Idempotency-Key` hashes differently and gets `ErrKeyReused`.
 - **Effect:**
   - The design says to reuse the key on a network retry (`docs/design/async-dispatch-design.md:197`). A retry of a new conversation's first message gets **422 `idempotency_conflict`**.
@@ -54,7 +54,7 @@ Severity reflects a single-user, self-hosted tool behind a reverse proxy. "Test"
 - **Fix:** hash the request before defaulting the conversation id, and return the stored row's id on a match.
 - **Test:** `api/audit_loom139_test.go`.
 
-#### F02 — Agents on a *local* target inherit all of loomuxd's secrets
+#### F02 — Agents on a *local* target inherit all of loomuxd's secrets (LOOM-141)
 - **Where:** `targets/local.go:21-22, 41, 140` set no `cmd.Env`, and `deploy/entrypoint.sh:68` execs loomuxd with the full environment.
 - **What leaks:** the first `tmux -L loomux new-session` starts the tmux server with loomuxd's env, so every local pane sees `LOOMUX_MASTER_KEY`, the router API keys, `LOOMUX_NTFY_TOKEN`, `LOOMUX_WEB_RELEASES_TOKEN` and the password hash.
 - **Effect:** an agent in auto mode (or one prompt-injected by a repo) can run `env`. As the same uid, it can then read the SQLite DB, decrypt every vault value in every scope, read `~/.ssh` (a pivot to every remote target), or write itself a session row.

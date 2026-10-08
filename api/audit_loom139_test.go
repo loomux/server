@@ -89,7 +89,7 @@ func TestAudit_Dispatch_RejectsMalformedConversationID(t *testing.T) {
 // return the original dispatch (design: "uuid per submit, reused on
 // network retry"), not 422.
 func TestAudit_Dispatch_IdempotentRetryOfNewConversation(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F01 (reports/loom-139-audit.md)")
+	skipUntilFixed(t, "LOOM-140 (LOOM-139 finding F01, reports/loom-139-audit.md)")
 	srv, dispatcher, _ := newTestServer(t)
 	dispatcher.DispatchFunc = func(ctx context.Context, c, m, h string) (string, error) { return "once", nil }
 	token, _ := login(t, srv.URL, testPassword)
