@@ -277,29 +277,59 @@ type dispatchUpdateEvent struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// dispatchCursor is what a stream knows of its conversation's jobs:
+// each one's last reported state, and the newest read, after which the
+// next poll reads new jobs (LOOM-145). Jobs not finished yet are reread
+// by id, since only they can still change.
+type dispatchCursor struct {
+	seen map[string]dispatchUpdateEvent
+	last string
+}
+
 // sendDispatchUpdates writes a dispatch_update for every job of the
 // conversation that changed since seen, and returns the updated seen. A
 // nil seen is the baseline, taken at connect (LOOM-137): finished jobs
 // are only recorded, jobs still in flight are reported.
 func (s *Server) sendDispatchUpdates(ctx context.Context, w http.ResponseWriter, flusher http.Flusher,
-	conversationID string, seen map[string]dispatchUpdateEvent) map[string]dispatchUpdateEvent {
-	dispatches, err := s.dispatcher.ListByConversation(ctx, conversationID)
-	if err != nil {
-		return seen
+	conversationID string, cur *dispatchCursor) *dispatchCursor {
+	var dispatches []*registry.Dispatch
+	var err error
+	unfinished := map[string]bool{}
+	if s.streamQ != nil {
+		after := ""
+		var also []string
+		if cur != nil {
+			after = cur.last
+			for id, ev := range cur.seen {
+				if !registry.DispatchStatus(ev.Status).Terminal() {
+					also = append(also, id)
+					unfinished[id] = true
+				}
+			}
+		}
+		dispatches, err = s.streamQ.ListDispatchesAfter(ctx, conversationID, after, also)
+	} else {
+		dispatches, err = s.dispatcher.ListByConversation(ctx, conversationID)
 	}
-	first := seen == nil
+	if err != nil {
+		return cur
+	}
+	first := cur == nil
 	if first {
-		seen = make(map[string]dispatchUpdateEvent, len(dispatches))
+		cur = &dispatchCursor{seen: make(map[string]dispatchUpdateEvent, len(dispatches))}
 	}
 	for _, d := range dispatches {
+		if !unfinished[d.ID] {
+			cur.last = d.ID // a reread job is older than the cursor
+		}
 		ev := dispatchUpdateEvent{
 			DispatchID: d.ID, Status: string(d.Status), Reply: d.Reply,
 			Error: d.Error, ErrorClass: string(d.ErrorClass), UpdatedAt: d.UpdatedAt,
 		}
-		if prev, ok := seen[d.ID]; ok && prev.Status == ev.Status && prev.UpdatedAt.Equal(ev.UpdatedAt) {
+		if prev, ok := cur.seen[d.ID]; ok && prev.Status == ev.Status && prev.UpdatedAt.Equal(ev.UpdatedAt) {
 			continue
 		}
-		seen[d.ID] = ev
+		cur.seen[d.ID] = ev
 		if first && d.Status.Terminal() {
 			continue
 		}
@@ -310,5 +340,5 @@ func (s *Server) sendDispatchUpdates(ctx context.Context, w http.ResponseWriter,
 		fmt.Fprintf(w, "event: dispatch_update\ndata: %s\n\n", data)
 		flusher.Flush()
 	}
-	return seen
+	return cur
 }
