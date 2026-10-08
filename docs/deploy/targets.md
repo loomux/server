@@ -50,3 +50,21 @@ target's own agent config (`~/.claude.json`, `~/.claude/settings.json`,
   `0700` and refuses if another user owns it. A configured
   `LOOMUX_MARKER_DIR` is used as-is on every target, so it must be
   writable only by the target user.
+
+## Local targets
+
+A target of kind `local` runs its agents on the loomuxd machine itself,
+**as loomuxd's own user**. Treat it as fully trusted: whatever such an
+agent runs can read loomuxd's database (and with it every vault
+credential, since the master key is in loomuxd's environment), its SSH
+keys, and loomuxd's own process environment. Loomux hands local
+processes only an allow-listed environment (`PATH`, `HOME`, `TERM`, the
+locale and a few more; never `LOOMUX_*`), but that only keeps secrets out
+of casual reach: a process of the same user can still read them.
+
+So local targets are off in the container image
+(`LOOMUX_LOCAL_TARGETS=off`): registering one is refused with a `400`,
+and an existing one fails to run with a plain message. Register the
+machine you want agents on as a remote target instead. A bare `loomuxd`
+binary leaves them on (`LOOMUX_LOCAL_TARGETS=on`), for a single-box
+setup where the person running loomuxd is the person whose agents run.

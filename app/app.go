@@ -360,6 +360,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// launchAgent tells the launched process the path, completion.Detector
 	// watches it. Empty means each target's per-user default, which both
 	// resolve the same way (completion.ResolveMarkerDir).
+	targets.SetLocalTargets(!cfg.LocalTargetsOff)
 	if cfg.TmuxSocket != "" {
 		if err := targets.SetTmuxSocket(cfg.TmuxSocket); err != nil {
 			return nil, fmt.Errorf("app: %w", err)
