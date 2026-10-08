@@ -22,7 +22,11 @@ machines agents run on over SSH. It's single-user: one password.
   API key, model name), plus optionally a second, escalation one. See
   the router section of [`container.md`](container.md#configuration).
 - **HTTPS in front.** `loomuxd` speaks plain HTTP; put a reverse proxy or
-  ingress that terminates TLS in front of it.
+  ingress that terminates TLS in front of it, and have it set
+  `X-Forwarded-Proto: https` (Traefik, nginx and Caddy do by default):
+  `loomuxd` sends `Strict-Transport-Security` only then. It sets its own
+  `Content-Security-Policy`, `X-Frame-Options` and related headers; the
+  proxy shouldn't override them.
 - Optional: an [ntfy](https://ntfy.sh) server and topic for
   notifications; Prometheus for metrics.
 
