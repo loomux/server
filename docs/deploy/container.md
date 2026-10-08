@@ -169,8 +169,9 @@ sessions, the credential vault) and must be a PersistentVolume. Everything
 else in the image is disposable.
 
 `/tmp` must be writable: `targets/remote.go` puts its SSH ControlMaster
-sockets under `${TMPDIR}/loomux/ssh-cm` (`os.MkdirAll(..., 0700)`), and
-multiplexing fails without it. An `emptyDir` is fine — the sockets are not
+sockets under `${TMPDIR}/loomux/ssh-cm` (both levels created or made 0700,
+and refused if a symlink or another user's: LOOM-166), and multiplexing
+fails without it. An `emptyDir` is fine — the sockets are not
 worth persisting.
 
 `$HOME/.ssh` must be writable as well, for the same reason `/tmp` is: the
