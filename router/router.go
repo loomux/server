@@ -443,7 +443,7 @@ func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, mess
 		// whatever hooks its own config declares — without the user
 		// confirming it (LOOM-90 re-review).
 		if spec := decision.NewWorkspace; spec.Kind == ProvisionGitClone && !cloneConfirmed &&
-			!strings.Contains(message, spec.GitRemote) {
+			!namesRemote(message, spec.GitRemote) {
 			m.action = "clone_confirmation_requested"
 			reply, err := r.askToClone(ctx, log, conversationID, message, decision, start)
 			if err != nil {
