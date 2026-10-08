@@ -6,7 +6,9 @@ package api_test
 // fix removes the skip.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -32,7 +34,6 @@ func skipUntilFixed(t *testing.T, issue string) {
 // records its failure, so a burst gets one guess each instead of one per
 // backoff window.
 func TestAudit_LoginThrottle_ConcurrentGuessesShareOneWindow(t *testing.T) {
-	skipUntilFixed(t, "LOOM-139 finding F03")
 	srv, _, _ := newTestServer(t, api.WithLoginBackoff(time.Hour, time.Hour))
 
 	const n = 20
@@ -239,5 +240,53 @@ func TestAudit_UnknownAPIPath_IsJSONError(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusNotFound || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
 		t.Fatalf("GET /api/v1/nonexistent = %d %q %q, want a 404 {error, code}", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
+}
+
+func loginWith(t *testing.T, baseURL string, body map[string]string) (status int, token, device string) {
+	t.Helper()
+	resp, err := http.Post(baseURL+"/api/v1/login", "application/json", bytes.NewReader(mustJSON(t, body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct{ Token, Device string }
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out.Token, out.Device
+}
+
+// A stranger failing at /login over and over must not keep the owner out
+// of a browser that has logged in before (LOOM-151): its device token
+// puts it on its own backoff.
+func TestLogin_KnownDeviceNotLockedOutByStrangers(t *testing.T) {
+	srv, _, _ := newTestServer(t, api.WithLoginBackoff(time.Hour, time.Hour))
+
+	status, _, device := loginWith(t, srv.URL, map[string]string{"password": testPassword})
+	if status != http.StatusOK || device == "" {
+		t.Fatalf("first login = %d, device %q; want 200 and a device token", status, device)
+	}
+	if status, _, _ := loginWith(t, srv.URL, map[string]string{"password": "stranger-guess"}); status != http.StatusUnauthorized {
+		t.Fatalf("stranger's guess = %d, want 401", status)
+	}
+	if status, _, _ := loginWith(t, srv.URL, map[string]string{"password": testPassword}); status != http.StatusTooManyRequests {
+		t.Fatalf("login without a device after the stranger's failure = %d, want 429 (global backoff)", status)
+	}
+	if status, _, _ := loginWith(t, srv.URL, map[string]string{"password": testPassword, "device": "forged"}); status != http.StatusTooManyRequests {
+		t.Fatalf("login with a forged device = %d, want 429 (global backoff)", status)
+	}
+	status, token, again := loginWith(t, srv.URL, map[string]string{"password": testPassword, "device": device})
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("owner's login from a known device = %d, want 200", status)
+	}
+	if again != device {
+		t.Errorf("known device came back as %q, want the same token", again)
+	}
+
+	// The device's own failures still back off, on its own counter.
+	if status, _, _ := loginWith(t, srv.URL, map[string]string{"password": "typo", "device": device}); status != http.StatusUnauthorized {
+		t.Fatalf("typo from the device = %d, want 401", status)
+	}
+	if status, _, _ := loginWith(t, srv.URL, map[string]string{"password": testPassword, "device": device}); status != http.StatusTooManyRequests {
+		t.Fatalf("device login inside its own backoff = %d, want 429", status)
 	}
 }
