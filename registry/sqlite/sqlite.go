@@ -83,6 +83,12 @@ func Open(path string, opts ...Option) (*Store, error) {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.masterKey != nil {
+		if err := s.resealCredentials(context.Background()); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return s, nil
 }
 
@@ -905,14 +911,14 @@ func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) er
 	c.CreatedAt = now
 	c.UpdatedAt = now
 
-	ciphertext, err := encrypt(s.masterKey, c.Value)
+	ciphertext, err := seal(s.masterKey, []byte(c.Value), credentialAAD(c.ID))
 	if err != nil {
 		return fmt.Errorf("sqlite: encrypt credential: %w", err)
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO credentials (id, name, workspace_id, agent_type, ciphertext, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO credentials (id, name, workspace_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
 		c.ID, c.Name, nullIfEmpty(c.WorkspaceID), c.AgentType, ciphertext, c.CreatedAt, c.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
@@ -928,7 +934,60 @@ func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) er
 }
 
 const credentialColumns = `
-	id, name, workspace_id, agent_type, ciphertext, created_at, updated_at`
+	id, name, workspace_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at`
+
+// credentialAAD is the additional data a credential's value is sealed
+// with (LOOM-175): its row id, so the ciphertext opens only on that row.
+func credentialAAD(id string) []byte { return []byte("credential:" + id) }
+
+// resealCredentials re-seals, bound to their row ids, the credentials
+// sealed before LOOM-175 without any additional data. Open runs it when
+// it has the master key; it's a no-op once every row is sealed to its
+// id. A row the key doesn't open (the wrong key) is left as it is: it
+// can't be read either way, and the right key re-seals it at a later
+// Open.
+func (s *Store) resealCredentials(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: reseal credentials: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id, ciphertext FROM credentials WHERE sealed_to_id = 0`)
+	if err != nil {
+		return fmt.Errorf("sqlite: reseal credentials: %w", err)
+	}
+	resealed := map[string][]byte{}
+	for rows.Next() {
+		var id string
+		var ciphertext []byte
+		if err := rows.Scan(&id, &ciphertext); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: reseal credentials: %w", err)
+		}
+		plaintext, err := open(s.masterKey, ciphertext, nil)
+		if err != nil {
+			continue
+		}
+		if resealed[id], err = seal(s.masterKey, plaintext, credentialAAD(id)); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: reseal credential %q: %w", id, err)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite: reseal credentials: %w", err)
+	}
+	for id, ciphertext := range resealed {
+		if _, err := tx.ExecContext(ctx, `UPDATE credentials SET ciphertext = ?, sealed_to_id = 1 WHERE id = ? AND sealed_to_id = 0`,
+			ciphertext, id); err != nil {
+			return fmt.Errorf("sqlite: reseal credential %q: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: reseal credentials: %w", err)
+	}
+	return nil
+}
 
 func (s *Store) GetCredential(ctx context.Context, id string) (*registry.Credential, error) {
 	if s.masterKey == nil {
@@ -1003,11 +1062,11 @@ func (s *Store) SetCredentialValue(ctx context.Context, id, value string) error 
 	if s.masterKey == nil {
 		return fmt.Errorf("sqlite: no master key configured (see WithMasterKey); cannot set credential")
 	}
-	ciphertext, err := encrypt(s.masterKey, value)
+	ciphertext, err := seal(s.masterKey, []byte(value), credentialAAD(id))
 	if err != nil {
 		return fmt.Errorf("sqlite: encrypt credential: %w", err)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE credentials SET ciphertext = ?, updated_at = ? WHERE id = ?`,
+	res, err := s.db.ExecContext(ctx, `UPDATE credentials SET ciphertext = ?, sealed_to_id = 1, updated_at = ? WHERE id = ?`,
 		ciphertext, time.Now().UTC(), id)
 	if err != nil {
 		return fmt.Errorf("sqlite: set credential value: %w", err)
@@ -1019,15 +1078,22 @@ func scanCredential(row rowScanner, key []byte) (*registry.Credential, error) {
 	var c registry.Credential
 	var workspaceID sql.NullString
 	var ciphertext []byte
-	if err := row.Scan(&c.ID, &c.Name, &workspaceID, &c.AgentType, &ciphertext, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	var sealedToID bool
+	if err := row.Scan(&c.ID, &c.Name, &workspaceID, &c.AgentType, &ciphertext, &sealedToID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 	c.WorkspaceID = workspaceID.String
-	plaintext, err := decrypt(key, ciphertext)
+	if !sealedToID {
+		// Open re-seals every row its key opens, so one still unbound
+		// was sealed under another key, or written behind the store's
+		// back: not read without its binding (LOOM-175).
+		return nil, fmt.Errorf("decrypt credential %q: not sealed to its row (written under another master key?)", c.ID)
+	}
+	plaintext, err := open(key, ciphertext, credentialAAD(c.ID))
 	if err != nil {
 		return nil, fmt.Errorf("decrypt credential %q: %w", c.ID, err)
 	}
-	c.Value = plaintext
+	c.Value = string(plaintext)
 	return &c, nil
 }
 
