@@ -1,0 +1,156 @@
+# Builds, tests, scans and publishes ghcr.io/loomux/agent, the image that
+# runs inside a machine a plugin makes (LOOM-178, deploy/agent/). The
+# first-party plugin images join this workflow with their own jobs when
+# they exist (docs/design/target-providers.md §11, PR 4/5).
+#
+# Two jobs. agent-image builds the image, logs in over ssh and scans
+# it, with read-only permissions, on every change. publish runs only on
+# a push to main (tags :main and :sha-<short>) or a release tag (v*, as
+# the server's: tag :<version>), and pushes the very image the first
+# job tested, handed over as an artifact, so the digest that is
+# published and attested is the one that passed. A pull request never
+# pushes. Every published image carries a GitHub build-provenance
+# attestation, which the host can verify (LOOM-118's verifier) once
+# plugin artifacts are installed from outside the image.
+#
+# Actions are pinned by commit, with the release in a comment: the
+# publish job holds packages:write and id-token:write.
+name: plugins
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "deploy/agent/**"
+      - ".github/workflows/plugins.yml"
+  pull_request:
+    paths:
+      - "deploy/agent/**"
+      - ".github/workflows/plugins.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/loomux/agent
+
+jobs:
+  agent-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy/agent
+          load: true
+          tags: ${{ env.IMAGE }}:test
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A green build says nothing about whether sshd starts as a
+      # non-root user or the CLIs run: log in over ssh the way Loomux
+      # does, with a generated key and a pinned host key.
+      - name: Smoke test
+        run: bash deploy/agent/smoke.sh "${IMAGE}:test"
+
+      - name: Scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:test
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Save the tested image for publish
+        if: github.event_name != 'pull_request'
+        run: docker save "${IMAGE}:test" | zstd -T0 -o agent-image.tar.zst
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name != 'pull_request'
+        with:
+          name: agent-image
+          path: agent-image.tar.zst
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: agent-image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: agent-image
+
+      - name: Load the tested image
+        run: zstd -d -c agent-image.tar.zst | docker load
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same local image under every tag: one digest, which each
+      # push reports and which must agree.
+      - name: Push
+        id: push
+        env:
+          TAGS: ${{ needs.agent-image.outputs.tags }}
+        run: |
+          set -euo pipefail
+          digest=""
+          for tag in ${TAGS}; do
+            docker tag "${IMAGE}:test" "${tag}"
+            d="$(docker push "${tag}" | sed -n 's/.*digest: \(sha256:[0-9a-f]*\).*/\1/p' | tail -n 1)"
+            [ -n "${d}" ] || { echo "no digest reported for ${tag}" >&2; exit 1; }
+            if [ -n "${digest}" ] && [ "${digest}" != "${d}" ]; then
+              echo "digests differ: ${digest} vs ${d} for ${tag}" >&2; exit 1
+            fi
+            digest="${d}"
+          done
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        env:
+          TAGS: ${{ needs.agent-image.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "Published ${IMAGE}@${DIGEST} as:"
+            printf '%s\n' "${TAGS}" | sed 's/^/- /'
+          } >> "${GITHUB_STEP_SUMMARY}"

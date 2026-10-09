@@ -385,6 +385,11 @@ That document also covers the SOCKS5 `ProxyCommand` reaching targets
 through a userspace-mode Tailscale sidecar — which is what `nc`/`socat` in
 this image are for.
 
+The machines a target-provider plugin makes run a different image,
+`ghcr.io/loomux/agent` (`deploy/agent/`), which holds tmux, sshd and the
+agent CLIs and nothing of Loomux's: see
+[`agent-image.md`](agent-image.md).
+
 ## Verifying a build
 
 A green `go build` is not evidence. Check the image itself:

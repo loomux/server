@@ -1,0 +1,43 @@
+# sshd inside an agent machine (LOOM-178, docs/design/target-providers.md
+# §3). Runs as the agent user, not root: no privileged port, the one
+# account it can log in, and nothing Loomux doesn't need.
+Port 2222
+ListenAddress 0.0.0.0
+ListenAddress ::
+HostKey /run/loomux/ssh/host_ed25519
+PidFile /run/loomux/sshd.pid
+
+# Only the Loomux key gets in; its authorized_keys line is written by
+# the entrypoint from the plugin's mount.
+AuthorizedKeysFile /run/loomux/ssh/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+PermitRootLogin no
+AllowUsers agent
+# StrictModes checks that no other user could have written authorized_keys
+# or its parent directories. There is no other user: sshd, the entrypoint
+# that writes the file and every agent process are uid 10002, and the
+# parent is a tmpfs the plugin mounts (a Kubernetes emptyDir is root-owned
+# and world-writable, which the check would refuse). The entrypoint still
+# sets 0700/0600.
+StrictModes no
+
+# Loomux needs a pty for tmux and nothing else.
+AllowTcpForwarding no
+AllowAgentForwarding no
+AllowStreamLocalForwarding no
+X11Forwarding no
+PermitUserEnvironment no
+PermitTunnel no
+
+# A half-dead connection is noticed, and ssh's own ControlMaster keeps
+# several sessions on one connection (the host allows 6).
+ClientAliveInterval 30
+ClientAliveCountMax 3
+MaxSessions 10
+UseDNS no
+
+# The pod log is the only place a failed login is visible.
+LogLevel VERBOSE
