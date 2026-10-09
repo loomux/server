@@ -28,6 +28,11 @@ var migrationsFS embed.FS
 type Store struct {
 	db        *sql.DB
 	masterKey []byte // nil unless WithMasterKey was passed to Open
+	// retentionBatch is how many rows a retention delete removes per
+	// transaction (deleteInBatches); a test lowers it, and sees each
+	// chunk's count through afterRetentionChunk when that is set.
+	retentionBatch      int
+	afterRetentionChunk func(table string, deleted int)
 }
 
 // Open opens (creating if necessary) a SQLite database at path and applies
@@ -80,7 +85,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: run migrations: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, retentionBatch: defaultRetentionBatch}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -1235,7 +1240,7 @@ func (s *Store) ListSessions(ctx context.Context) ([]*registry.Session, error) {
 }
 
 func (s *Store) TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_used_at = ? WHERE id = ?`, lastUsedAt, id)
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_used_at = ? WHERE id = ?`, lastUsedAt.UTC(), id)
 	if err != nil {
 		return fmt.Errorf("sqlite: touch session: %w", err)
 	}
@@ -1248,6 +1253,56 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 		return fmt.Errorf("sqlite: delete session: %w", err)
 	}
 	return requireRowAffected(res, "session", id)
+}
+
+func (s *Store) DeleteSessionsExpiredBefore(ctx context.Context, lastUsedBefore, createdBefore time.Time) (int, error) {
+	where, args := `last_used_at < ?`, []any{lastUsedBefore.UTC()}
+	if !createdBefore.IsZero() {
+		where += ` OR created_at < ?`
+		args = append(args, createdBefore.UTC())
+	}
+	n, err := s.deleteInBatches(ctx, "sessions", where, args...)
+	if err != nil {
+		return n, fmt.Errorf("sqlite: delete expired sessions: %w", err)
+	}
+	return n, nil
+}
+
+// defaultRetentionBatch is how many rows a retention delete removes per
+// transaction (LOOM-193): small enough that the write lock is held
+// briefly, so requests and dispatches writing meanwhile wait for one
+// chunk, not for months of history (a dispatch's delete also clears its
+// messages' dispatch_id).
+const defaultRetentionBatch = 500
+
+// deleteInBatches deletes table's rows matching where (with args), at
+// most s.retentionBatch per statement, each its own transaction, until a
+// chunk comes back short. It checks ctx between chunks, and returns how
+// many rows it deleted, including when it stops on an error.
+func (s *Store) deleteInBatches(ctx context.Context, table, where string, args ...any) (int, error) {
+	query := `DELETE FROM ` + table + ` WHERE rowid IN (SELECT rowid FROM ` + table + ` WHERE ` + where + ` LIMIT ?)`
+	args = append(args, s.retentionBatch)
+	total := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		res, err := s.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += int(n)
+		if s.afterRetentionChunk != nil {
+			s.afterRetentionChunk(table, int(n))
+		}
+		if int(n) < s.retentionBatch {
+			return total, nil
+		}
+	}
 }
 
 func scanSession(row rowScanner) (*registry.Session, error) {

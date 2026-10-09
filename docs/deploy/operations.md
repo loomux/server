@@ -86,7 +86,14 @@ the tag in a manifest works the same way.
 - **Disk:** the database grows with conversations and per-turn
   transcripts; transcripts older than `LOOMUX_TURN_RETENTION` (30 days
   by default) are deleted, and dispatch audit events older than
-  `LOOMUX_EVENT_RETENTION` (90 days).
+  `LOOMUX_EVENT_RETENTION` (90 days). An hourly retention sweep
+  (LOOM-193) deletes sessions 7 days after they expired
+  (`LOOMUX_SESSION_RETENTION`), finished dispatches 90 days after they
+  finished (`LOOMUX_DISPATCH_RETENTION`) and answered or expired
+  confirmations after 30 days (`LOOMUX_CONFIRMATION_RETENTION`); `0`
+  keeps them. Messages are kept. It deletes 500 rows per transaction,
+  so other writes wait for a chunk at most. Each sweep logs `retention sweep` with
+  the counts it deleted (at info when it deleted any, else debug).
 - **After the fact:** `GET /api/v1/conversations/{id}/events` is the
   conversation's audit trail (LOOM-110): each routing decision with the
   router model and tier that made it, every command and provisioning run

@@ -87,3 +87,12 @@ func (s *Store) ExpirePendingConfirmations(ctx context.Context) (int, error) {
 	n, _ := res.RowsAffected()
 	return int(n), nil
 }
+
+func (s *Store) DeleteConfirmationsResolvedBefore(ctx context.Context, cutoff time.Time) (int, error) {
+	n, err := s.deleteInBatches(ctx, "confirmations",
+		`status != 'pending' AND COALESCE(resolved_at, expires_at) < ?`, cutoff.UTC())
+	if err != nil {
+		return n, fmt.Errorf("sqlite: delete confirmations: %w", err)
+	}
+	return n, nil
+}

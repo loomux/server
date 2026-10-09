@@ -90,6 +90,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("DispatchTransitionCompareAndSet", func(t *testing.T) { testDispatchTransitionCompareAndSet(t, newStore(t)) })
 	t.Run("DispatchListByStatus", func(t *testing.T) { testDispatchListByStatus(t, newStore(t)) })
 	t.Run("DispatchNotFound", func(t *testing.T) { testDispatchNotFound(t, newStore(t)) })
+	t.Run("DeleteDispatchesFinishedBefore", func(t *testing.T) { testDeleteDispatchesFinishedBefore(t, newStore(t)) })
+	t.Run("DeleteConfirmationsResolvedBefore", func(t *testing.T) { testDeleteConfirmationsResolvedBefore(t, newStore(t)) })
 
 	t.Run("Credential", func(t *testing.T) { testCredentialCRUD(t, newStore(t)) })
 	t.Run("CredentialNotFound", func(t *testing.T) { testCredentialNotFound(t, newStore(t)) })
@@ -110,6 +112,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("SessionTouchUpdatesLastUsedAt", func(t *testing.T) { testSessionTouchUpdatesLastUsedAt(t, newStore(t)) })
 	t.Run("SessionListOrderedByLastUsedDescending", func(t *testing.T) { testSessionListOrderedByLastUsedDescending(t, newStore(t)) })
 	t.Run("SessionListEmpty", func(t *testing.T) { testSessionListEmpty(t, newStore(t)) })
+	t.Run("DeleteSessionsExpiredBefore", func(t *testing.T) { testDeleteSessionsExpiredBefore(t, newStore(t)) })
 }
 
 // createTestWorkspace is a fixture: task tests need a valid workspace to
@@ -2130,4 +2133,111 @@ func taskIDs(tasks []*registry.Task) []string {
 func RunWithoutMasterKey(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("PluginSecretsNeedMasterKey", func(t *testing.T) { testPluginSecretsNeedMasterKey(t, newStore(t)) })
 	t.Run("EnvironmentNeedsMasterKey", func(t *testing.T) { testEnvironmentNeedsMasterKey(t, newStore(t)) })
+}
+
+// LOOM-193: finished dispatches go once they finished before the cutoff;
+// a running one never does, and the messages of a deleted one stay,
+// no longer naming it.
+func testDeleteDispatchesFinishedBefore(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	finish := func(id string, status registry.DispatchStatus) {
+		t.Helper()
+		d := newTestDispatch(id, "conv-"+id)
+		msg := &registry.Message{ID: "m-" + id, ConversationID: d.ConversationID, Role: registry.MessageRoleUser, Content: "hi"}
+		if err := s.CreateDispatch(ctx, d, msg); err != nil {
+			t.Fatalf("CreateDispatch %s: %v", id, err)
+		}
+		now := time.Now().UTC()
+		d.Status, d.StartedAt = registry.DispatchStatusRunning, &now
+		if err := s.TransitionDispatch(ctx, d, registry.DispatchStatusQueued); err != nil {
+			t.Fatal(err)
+		}
+		if status == registry.DispatchStatusRunning {
+			return
+		}
+		d.Status, d.FinishedAt = status, &now
+		if err := s.TransitionDispatch(ctx, d, registry.DispatchStatusRunning); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish("d-ok", registry.DispatchStatusSucceeded)
+	finish("d-failed", registry.DispatchStatusFailed)
+	finish("d-interrupted", registry.DispatchStatusInterrupted)
+	finish("d-running", registry.DispatchStatusRunning)
+
+	if n, err := s.DeleteDispatchesFinishedBefore(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Fatalf("DeleteDispatchesFinishedBefore (an hour ago) = %d, %v; want 0", n, err)
+	}
+	if n, err := s.DeleteDispatchesFinishedBefore(ctx, time.Now().Add(time.Second)); err != nil || n != 3 {
+		t.Fatalf("DeleteDispatchesFinishedBefore (now) = %d, %v; want 3", n, err)
+	}
+	if _, err := s.GetDispatch(ctx, "d-ok"); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("finished dispatch after delete: %v; want ErrNotFound", err)
+	}
+	if d, err := s.GetDispatch(ctx, "d-running"); err != nil || d.Status != registry.DispatchStatusRunning {
+		t.Errorf("running dispatch = %+v, %v; want it kept", d, err)
+	}
+	msgs, err := s.ListMessagesByConversation(ctx, "conv-d-ok")
+	if err != nil || len(msgs) != 1 || msgs[0].DispatchID != "" {
+		t.Errorf("messages of a deleted dispatch = %+v, %v; want the message kept without its dispatch", msgs, err)
+	}
+}
+
+// LOOM-193: answered and expired confirmations go once resolved before
+// the cutoff; a pending one never does.
+func testDeleteConfirmationsResolvedBefore(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	exp := time.Now().Add(-time.Minute).UTC() // past its expiry, but still pending
+	for _, id := range []string{"c-approved", "c-denied", "c-pending"} {
+		if err := s.CreateConfirmation(ctx, &registry.Confirmation{ID: id, ConversationID: "conv", Kind: registry.ConfirmationPolicy, ExpiresAt: exp}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ResolveConfirmation(ctx, "c-approved", registry.ConfirmationApproved); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveConfirmation(ctx, "c-denied", registry.ConfirmationDenied); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.DeleteConfirmationsResolvedBefore(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Fatalf("DeleteConfirmationsResolvedBefore (an hour ago) = %d, %v; want 0", n, err)
+	}
+	if n, err := s.DeleteConfirmationsResolvedBefore(ctx, time.Now().Add(time.Second)); err != nil || n != 2 {
+		t.Fatalf("DeleteConfirmationsResolvedBefore (now) = %d, %v; want 2", n, err)
+	}
+	list, err := s.ListConfirmationsByConversation(ctx, "conv")
+	if err != nil || len(list) != 1 || list[0].ID != "c-pending" {
+		t.Fatalf("confirmations left = %+v, %v; want only c-pending", list, err)
+	}
+	if n, err := s.ExpirePendingConfirmations(ctx); err != nil || n != 1 {
+		t.Fatalf("ExpirePendingConfirmations = %d, %v", n, err)
+	}
+	if n, err := s.DeleteConfirmationsResolvedBefore(ctx, time.Now().Add(time.Second)); err != nil || n != 1 {
+		t.Fatalf("DeleteConfirmationsResolvedBefore (expired) = %d, %v; want 1", n, err)
+	}
+}
+
+// LOOM-193: a session goes once last used before lastUsedBefore, or
+// created before createdBefore when that is set.
+func testDeleteSessionsExpiredBefore(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for id, lastUsed := range map[string]time.Time{"s-idle": now.Add(-40 * 24 * time.Hour), "s-recent": now.Add(-time.Hour)} {
+		if err := s.CreateSession(ctx, &registry.Session{ID: id, TokenHash: "hash-" + id, LastUsedAt: lastUsed}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := s.DeleteSessionsExpiredBefore(ctx, now.Add(-37*24*time.Hour), time.Time{}); err != nil || n != 1 {
+		t.Fatalf("DeleteSessionsExpiredBefore (last used) = %d, %v; want 1", n, err)
+	}
+	if n, err := s.DeleteSessionsExpiredBefore(ctx, now.Add(-37*24*time.Hour), now.Add(-time.Hour)); err != nil || n != 0 {
+		t.Fatalf("DeleteSessionsExpiredBefore (created an hour ago) = %d, %v; want 0", n, err)
+	}
+	list, err := s.ListSessions(ctx)
+	if err != nil || len(list) != 1 || list[0].ID != "s-recent" {
+		t.Fatalf("sessions left = %+v, %v; want s-recent", list, err)
+	}
+	if n, err := s.DeleteSessionsExpiredBefore(ctx, now.Add(-37*24*time.Hour), time.Now().Add(time.Second)); err != nil || n != 1 {
+		t.Fatalf("DeleteSessionsExpiredBefore (created) = %d, %v; want 1", n, err)
+	}
 }

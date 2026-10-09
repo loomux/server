@@ -20,6 +20,7 @@ import (
 	"github.com/Loomux/server/dispatch"
 	"github.com/Loomux/server/internal/health"
 	"github.com/Loomux/server/internal/metrics"
+	"github.com/Loomux/server/internal/retention"
 	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/plugins"
@@ -68,6 +69,12 @@ type App struct {
 	// bg holds the goroutines Close waits for before closing the store
 	// (LOOM-163).
 	bg *background
+	// bgCtx is the background work's context, cancelled by Close.
+	bgCtx context.Context
+	// retention and logger configure StartRetention's sweep (LOOM-193).
+	retention     retention.Config
+	logger        *slog.Logger
+	retentionOnce sync.Once
 }
 
 // RouterSettings serves /api/v1/settings/router (LOOM-185): the router
@@ -234,6 +241,23 @@ func (a *App) Machines() *providers.Manager {
 	return a.machines
 }
 
+// StartRetention starts the retention sweep (LOOM-193): every
+// retentionSweepInterval, and once now, it deletes sessions expired
+// longer than Config.SessionRetention, dispatches finished longer than
+// Config.DispatchRetention and confirmations resolved longer than
+// Config.ConfirmationRetention. Messages are kept. sessionTTL and
+// sessionMaxAge are the session lifetime the client API enforces (its
+// sliding window and absolute lifetime, 0 for none), which say when a
+// session expired. Close stops it; only the first call starts it.
+func (a *App) StartRetention(sessionTTL, sessionMaxAge time.Duration) {
+	a.retentionOnce.Do(func() {
+		cfg := a.retention
+		cfg.SessionTTL, cfg.SessionMaxAge = sessionTTL, sessionMaxAge
+		sweeper := retention.New(a.store, cfg, retention.WithMetrics(a.metrics), retention.WithLogger(a.logger))
+		a.bg.Go(func() { sweeper.Run(a.bgCtx, retentionSweepInterval) })
+	})
+}
+
 // Close stops the background idle reaper (LOOM-16) and releases the
 // store's resources (its DB connection).
 func (a *App) Close() error {
@@ -340,6 +364,10 @@ const reconcileTimeout = 2 * time.Minute
 // dispatchSweepInterval is how often dispatches left unfinished with no
 // job are swept (LOOM-146).
 const dispatchSweepInterval = time.Minute
+
+// retentionSweepInterval is how often StartRetention's sweep runs
+// (LOOM-193): retention is counted in days, so hourly is plenty.
+const retentionSweepInterval = time.Hour
 
 // runDispatchSweep runs dispatches.SweepOrphans every interval until ctx
 // is done.
@@ -721,12 +749,19 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		reaperDone:       reaperDone,
 		proberDone:       proberDone,
 		bg:               bg,
+		bgCtx:            reaperCtx,
 		sweepDone:        sweepDone,
-		metrics:          met,
-		healthChecker:    healthChecker,
-		plugins:          pluginManager,
-		machines:         machines,
-		sshAgents:        sshAgents,
+		retention: retention.Config{
+			Sessions:      cfg.SessionRetention,
+			Dispatches:    cfg.DispatchRetention,
+			Confirmations: cfg.ConfirmationRetention,
+		},
+		logger:        cfg.Logger,
+		metrics:       met,
+		healthChecker: healthChecker,
+		plugins:       pluginManager,
+		machines:      machines,
+		sshAgents:     sshAgents,
 	}, nil
 }
 

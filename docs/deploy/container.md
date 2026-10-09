@@ -224,7 +224,12 @@ defaults for three of them.
 `LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
 `LOOMUX_TARGET_PROBE_INTERVAL` (5m), `LOOMUX_TURN_RETENTION` (720h; `0` keeps
 per-turn transcripts forever), `LOOMUX_EVENT_RETENTION` (2160h; `0` keeps the
-dispatch audit trail forever), `LOOMUX_DISPATCH_MAX_DURATION` (2h: the
+dispatch audit trail forever), `LOOMUX_SESSION_RETENTION` (168h: how long
+a session's row is kept after it expired; `0` keeps them),
+`LOOMUX_DISPATCH_RETENTION` (2160h after a dispatch finished; never a queued
+or running one; its messages stay), `LOOMUX_CONFIRMATION_RETENTION` (720h
+after an offer was answered or expired; never a pending one); messages are
+kept, `LOOMUX_DISPATCH_MAX_DURATION` (2h: the
 ceiling on one dispatch job end to end; each agent turn has its own,
 tighter bounds inside it), `LOOMUX_DISPATCH_DRAIN` (20s: how long a
 shutdown lets in-flight dispatch jobs finish before leaving them for the
@@ -330,6 +335,9 @@ or message content. Key series:
 | `loomux_target_op_seconds` | `kind`, `op` | Target operation latency |
 | `loomux_target_op_errors_total` | `kind`, `op`, `reason` | Failed target operations; an unreachable target's `reason` is `unreachable_<class>`, e.g. `unreachable_host_key_changed`, `unreachable_auth_failed`, `unreachable_proxy_unreachable` (LOOM-85) |
 | `loomux_reaper_tasks_reaped_total` | — | Idle sessions torn down |
+| `loomux_retention_deleted_total` | `table` | Rows the hourly retention sweep deleted: `sessions`, `dispatches`, `confirmations` (LOOM-193) |
+| `loomux_retention_errors_total` | `table` | Retention deletes that failed |
+| `loomux_retention_last_sweep_timestamp_seconds` | — | When the retention sweep last ran |
 
 **What the logs contain.** Chat message bodies, direct answers and relayed
 agent output are never logged (only a message's length). But treat the log

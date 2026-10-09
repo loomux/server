@@ -133,6 +133,14 @@ type Store interface {
 	// from; otherwise ErrDispatchStateChanged (ErrNotFound if no such
 	// dispatch). It stamps d.UpdatedAt.
 	TransitionDispatch(ctx context.Context, d *Dispatch, from DispatchStatus) error
+	// DeleteDispatchesFinishedBefore deletes the finished dispatches
+	// (succeeded, failed, interrupted) that finished before cutoff
+	// (retention, LOOM-193), returning how many it deleted. A queued or
+	// running dispatch is never deleted; the messages of a deleted one
+	// are kept, no longer naming it. Like every retention delete it
+	// works in batches, and on an error still returns how many it
+	// deleted before it.
+	DeleteDispatchesFinishedBefore(ctx context.Context, cutoff time.Time) (int, error)
 
 	// CreateConfirmation, ResolveConfirmation,
 	// ListConfirmationsByConversation and ExpirePendingConfirmations
@@ -147,6 +155,11 @@ type Store interface {
 	// expired, returning how many: at startup, since a restart forgets
 	// the offers themselves.
 	ExpirePendingConfirmations(ctx context.Context) (int, error)
+	// DeleteConfirmationsResolvedBefore deletes the resolved
+	// confirmations (approved, denied, expired) resolved before cutoff
+	// (retention, LOOM-193), returning how many it deleted. A pending
+	// one is never deleted.
+	DeleteConfirmationsResolvedBefore(ctx context.Context, cutoff time.Time) (int, error)
 
 	// SetTargetHostKeys pins (or, with "", unpins) a target's host keys
 	// (LOOM-114); ErrNotFound if there's no such target.
@@ -226,6 +239,12 @@ type Store interface {
 	ListSessions(ctx context.Context) ([]*Session, error)
 	TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error
 	DeleteSession(ctx context.Context, id string) error
+	// DeleteSessionsExpiredBefore deletes the sessions last used before
+	// lastUsedBefore, or created before createdBefore unless that is
+	// zero (retention, LOOM-193): a caller passes "expired a while ago"
+	// under the sliding window and the absolute lifetime. It returns
+	// how many it deleted.
+	DeleteSessionsExpiredBefore(ctx context.Context, lastUsedBefore, createdBefore time.Time) (int, error)
 
 	// CreatePlugin, GetPlugin, ListPlugins, UpdatePlugin, SetPluginConfig
 	// and DeletePlugin keep the installed plugins (LOOM-178). CreatePlugin

@@ -105,6 +105,16 @@ type Config struct {
 	PluginBundleDir string
 	PluginDir       string
 	PluginSocketDir string
+	// SessionRetention is how long a session row is kept after it
+	// expired, DispatchRetention how long a dispatch is kept after it
+	// finished, and ConfirmationRetention how long a confirmation is kept
+	// after it was answered or expired (LOOM-193); zero keeps them.
+	// LoadConfig defaults them to defaultSessionRetention,
+	// defaultDispatchRetention and defaultConfirmationRetention. Messages
+	// are kept.
+	SessionRetention      time.Duration
+	DispatchRetention     time.Duration
+	ConfirmationRetention time.Duration
 }
 
 // NotifyConfig configures turn notifications (LOOM-102).
@@ -148,6 +158,9 @@ const (
 	envPluginBundleDir     = "LOOMUX_PLUGIN_BUNDLE_DIR"
 	envPluginDir           = "LOOMUX_PLUGIN_DIR"
 	envPluginSocketDir     = "LOOMUX_PLUGIN_SOCKET_DIR"
+	envSessionRetention    = "LOOMUX_SESSION_RETENTION"
+	envDispatchRetention   = "LOOMUX_DISPATCH_RETENTION"
+	envConfirmRetention    = "LOOMUX_CONFIRMATION_RETENTION"
 
 	defaultDBPath = "loomux.db"
 
@@ -169,6 +182,15 @@ const (
 	// defaultEventRetention keeps 90 days of the dispatch audit trail:
 	// small rows, read after the fact.
 	defaultEventRetention = 90 * 24 * time.Hour
+	// defaultSessionRetention keeps an expired session's row a week, for
+	// reading the database after an incident; it can't sign in anyway.
+	defaultSessionRetention = 7 * 24 * time.Hour
+	// defaultDispatchRetention keeps finished dispatches as long as the
+	// audit trail they're the subject of; their messages stay.
+	defaultDispatchRetention = 90 * 24 * time.Hour
+	// defaultConfirmationRetention keeps an answered offer a month; the
+	// audit trail records it for longer.
+	defaultConfirmationRetention = 30 * 24 * time.Hour
 )
 
 // LoadConfig reads Config from the environment, failing fast on
@@ -255,6 +277,19 @@ func LoadConfig() (Config, error) {
 		eventRetention = d
 	}
 
+	sessionRetention, err := retentionFromEnv(envSessionRetention, defaultSessionRetention)
+	if err != nil {
+		return Config{}, err
+	}
+	dispatchRetention, err := retentionFromEnv(envDispatchRetention, defaultDispatchRetention)
+	if err != nil {
+		return Config{}, err
+	}
+	confirmRetention, err := retentionFromEnv(envConfirmRetention, defaultConfirmationRetention)
+	if err != nil {
+		return Config{}, err
+	}
+
 	var logLevel slog.Level
 	if raw := os.Getenv(envLogLevel); raw != "" {
 		if err := logLevel.UnmarshalText([]byte(raw)); err != nil {
@@ -296,28 +331,46 @@ func LoadConfig() (Config, error) {
 	}
 
 	return Config{
-		Notify:              notifyCfg,
-		LocalTargetsOff:     localTargetsOff,
-		AgentProfiles:       agentProfiles,
-		DBPath:              dbPath,
-		MarkerDir:           os.Getenv(envMarkerDir),
-		TmuxSocket:          tmuxSocket,
-		MasterKey:           masterKey,
-		SSHProxy:            sshProxy,
-		Router:              routerCfg,
-		ReapIdleThreshold:   reapIdleThreshold,
-		ReapInterval:        reapInterval,
-		TargetProbeInterval: targetProbeInterval,
-		DispatchMaxDuration: dispatchMaxDuration,
-		DispatchDrain:       dispatchDrain,
-		TurnRetention:       turnRetention,
-		EventRetention:      eventRetention,
-		PluginBundleDir:     os.Getenv(envPluginBundleDir),
-		PluginDir:           os.Getenv(envPluginDir),
-		PluginSocketDir:     os.Getenv(envPluginSocketDir),
+		Notify:                notifyCfg,
+		LocalTargetsOff:       localTargetsOff,
+		AgentProfiles:         agentProfiles,
+		DBPath:                dbPath,
+		MarkerDir:             os.Getenv(envMarkerDir),
+		TmuxSocket:            tmuxSocket,
+		MasterKey:             masterKey,
+		SSHProxy:              sshProxy,
+		Router:                routerCfg,
+		ReapIdleThreshold:     reapIdleThreshold,
+		ReapInterval:          reapInterval,
+		TargetProbeInterval:   targetProbeInterval,
+		DispatchMaxDuration:   dispatchMaxDuration,
+		DispatchDrain:         dispatchDrain,
+		TurnRetention:         turnRetention,
+		EventRetention:        eventRetention,
+		SessionRetention:      sessionRetention,
+		DispatchRetention:     dispatchRetention,
+		ConfirmationRetention: confirmRetention,
+		PluginBundleDir:       os.Getenv(envPluginBundleDir),
+		PluginDir:             os.Getenv(envPluginDir),
+		PluginSocketDir:       os.Getenv(envPluginSocketDir),
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil
+}
+
+// retentionFromEnv reads a retention duration from the environment
+// variable name (LOOM-193): unset is def, 0 keeps rows forever, and
+// anything else must be a non-negative Go duration.
+func retentionFromEnv(name string, def time.Duration) (time.Duration, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("app: %s is not a valid duration (0 keeps rows): %q", name, raw)
+	}
+	return d, nil
 }
 
 // parseSSHProxy reads LOOMUX_SSH_PROXY: socks5://host:port, no
