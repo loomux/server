@@ -1,0 +1,111 @@
+# Builds, tests, scans and publishes ghcr.io/loomux/agent, the image that
+# runs inside a machine a plugin makes (LOOM-178, deploy/agent/). The
+# first-party plugin images join this workflow with their own jobs when
+# they exist (docs/design/target-providers.md §11, PR 4/5).
+#
+# A pull request builds and tests the image and never pushes. A push to
+# main publishes it as :main and :sha-<short>; a release tag (v*, as the
+# server's) as :<version>. Every published image carries a GitHub
+# build-provenance attestation, which the host can verify (LOOM-118's
+# verifier) once plugin artifacts are installed from outside the image.
+name: plugins
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "deploy/agent/**"
+      - ".github/workflows/plugins.yml"
+  pull_request:
+    paths:
+      - "deploy/agent/**"
+      - ".github/workflows/plugins.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/loomux/agent
+
+jobs:
+  agent-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/agent
+          load: true
+          tags: ${{ env.IMAGE }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A green build says nothing about whether sshd starts as a
+      # non-root user or the CLIs run: log in over ssh the way Loomux
+      # does, with a generated key and a pinned host key.
+      - name: Smoke test
+        run: bash deploy/agent/smoke.sh "${IMAGE}:test"
+
+      - name: Scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE }}:test
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Image tags
+        id: meta
+        if: github.event_name != 'pull_request'
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        id: push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/agent
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      - name: Attest
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "Published ${IMAGE} (${{ steps.push.outputs.digest }}) as:" >> "$GITHUB_STEP_SUMMARY"
+          echo '${{ steps.meta.outputs.tags }}' | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
