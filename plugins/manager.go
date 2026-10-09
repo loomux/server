@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -118,8 +119,8 @@ type Manager struct {
 	mu        sync.Mutex // guards the maps below
 	instances map[string]*Instance
 	checks    map[string]protocol.CheckResult
-	secrets   map[string]map[string]string // the plugin's configured secrets, for redaction
-	locks     map[string]*sync.Mutex       // the lifecycle lock per plugin id
+	secrets   map[string][]string    // every secret value configured in this process, for redaction
+	locks     map[string]*sync.Mutex // the lifecycle lock per plugin id
 }
 
 // NewManager makes a Manager over store and catalog. host is what every
@@ -134,7 +135,7 @@ func NewManager(store registry.Store, catalog *Catalog, host protocol.HostInfo, 
 	return &Manager{
 		store: store, catalog: catalog, host: host, logger: logger, met: met,
 		instances: map[string]*Instance{}, checks: map[string]protocol.CheckResult{},
-		secrets: map[string]map[string]string{}, locks: map[string]*sync.Mutex{},
+		secrets: map[string][]string{}, locks: map[string]*sync.Mutex{},
 	}
 }
 
@@ -726,8 +727,11 @@ func (m *Manager) problemsReason(id string, problems []protocol.Problem) string 
 	return strings.Join(reasons, "; ")
 }
 
-// fail records p as error with reason and stops its instance.
+// fail records p as error with reason and stops its instance. The
+// reason is redacted here, whoever built it, so no caller can relay a
+// plugin's text unscrubbed.
 func (m *Manager) fail(ctx context.Context, p *registry.Plugin, reason string, problems []protocol.Problem) error {
+	reason = m.redact(p.ID, reason)
 	m.stopInstance(ctx, p.ID)
 	if err := m.setStatus(ctx, p, registry.PluginStatusError, reason); err != nil {
 		return err
@@ -769,25 +773,49 @@ func (m *Manager) machines(ctx context.Context, id string) (int, error) {
 	return m.MachineCounter(ctx, id)
 }
 
+// maxScrubValues bounds the values kept for redaction per plugin.
+const maxScrubValues = 64
+
 // setSecrets records the plugin's current secret values, which redact
-// scrubs from anything the plugin produces.
+// scrubs from anything the plugin produces. Values replaced earlier in
+// this process are kept too: a running instance may still echo the one
+// it was configured with before the change.
 func (m *Manager) setSecrets(id string, secrets map[string]string) {
-	copied := make(map[string]string, len(secrets))
-	for k, v := range secrets {
-		copied[k] = v
-	}
 	m.mu.Lock()
-	m.secrets[id] = copied
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	values := make([]string, 0, len(secrets)+len(m.secrets[id]))
+	seen := map[string]bool{}
+	add := func(v string) {
+		if v == "" || seen[v] || len(values) >= maxScrubValues {
+			return
+		}
+		seen[v] = true
+		values = append(values, v)
+	}
+	for _, v := range secrets {
+		add(v)
+	}
+	for _, v := range m.secrets[id] {
+		add(v)
+	}
+	m.secrets[id] = values
 }
 
-// redact scrubs the plugin's configured secret values from text it
-// produced, before the text is stored, shown or logged.
+// redact scrubs the plugin's configured secret values (current and
+// recently replaced) from text it produced, before the text is stored,
+// shown or logged.
 func (m *Manager) redact(id, text string) string {
 	m.mu.Lock()
-	secrets := m.secrets[id]
+	values := m.secrets[id]
 	m.mu.Unlock()
-	return credentials.RedactValues(text, secrets)
+	if len(values) == 0 {
+		return text
+	}
+	byIndex := make(map[string]string, len(values))
+	for i, v := range values {
+		byIndex[strconv.Itoa(i)] = v
+	}
+	return credentials.RedactValues(text, byIndex)
 }
 
 func (m *Manager) redactProblems(id string, problems []protocol.Problem) []protocol.Problem {

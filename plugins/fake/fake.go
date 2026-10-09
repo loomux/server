@@ -35,8 +35,11 @@ const (
 	ModeExitAfterConfigure = "exit_after_configure"
 	// ModeLeakToken makes the plugin misbehave the way the host must
 	// guard against: its check's message and its stderr carry the
-	// configured token.
+	// configured token (and the one before it, after a change).
 	ModeLeakToken = "leak_token"
+	// ModeRejectConfigure makes Configure fail with an error that
+	// repeats the token: a plugin that validates badly.
+	ModeRejectConfigure = "reject_configure"
 )
 
 // Problem codes the fake reports.
@@ -58,12 +61,13 @@ type Plugin struct {
 	Exit   func(code int)
 	Stderr func(line string)
 
-	mu       sync.Mutex
-	mode     string
-	token    string
-	greeting string
-	host     protocol.HostInfo
-	shutdown bool
+	mu        sync.Mutex
+	mode      string
+	token     string
+	prevToken string
+	greeting  string
+	host      protocol.HostInfo
+	shutdown  bool
 }
 
 // New returns a fake in mode ok.
@@ -86,7 +90,9 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	if m, ok := cp.Config["mode"].(string); ok && m != "" {
 		p.mode = m
 	}
-	p.token, _ = cp.Config["token"].(string)
+	if t, _ := cp.Config["token"].(string); t != p.token {
+		p.prevToken, p.token = p.token, t
+	}
 	if g, ok := cp.Config["greeting"].(string); ok {
 		p.greeting = g
 	}
@@ -103,13 +109,15 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 		}()
 	case ModeLeakToken:
 		p.Stderr("configured with token " + p.token)
+	case ModeRejectConfigure:
+		return fmt.Errorf("fake: rejected token %s", p.token)
 	}
 	return nil
 }
 
 func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 	p.mu.Lock()
-	mode, token := p.mode, p.token
+	mode, token, prev := p.mode, p.token, p.prevToken
 	p.mu.Unlock()
 	switch mode {
 	case ModeCrashOnCheck:
@@ -133,10 +141,14 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		})
 	}
 	if mode == ModeLeakToken && token != "" {
+		msg := "invalid token: " + token
+		if prev != "" {
+			msg += " (was " + prev + ")"
+		}
 		res.OK = false
 		res.Problems = append(res.Problems, protocol.Problem{
 			Code: ProblemTokenLeaked, Severity: protocol.SeverityError,
-			Message: "invalid token: " + token,
+			Message: msg,
 		})
 		p.Stderr("check failed for token " + token)
 	}

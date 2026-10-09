@@ -229,3 +229,54 @@ func TestManagerCheckDuringRestartLeavesRow(t *testing.T) {
 		t.Errorf("row after a check during a restart = %s %q", row.Status, row.StatusReason)
 	}
 }
+
+// Leftover from #343's re-review: fail() redacts for every caller, so a
+// reconfigure the plugin rejects with the token in its error never puts
+// it in status_reason.
+func TestManagerSetConfigFailureIsRedacted(t *testing.T) {
+	const token = "tok-RejectedSecretValue-0987654321"
+	m, store, _ := newManager(t)
+	v := install(t, m, "picky", map[string]any{"token": token})
+	got, err := m.SetConfig(context.Background(), v.ID, map[string]any{"mode": fake.ModeRejectConfigure})
+	var cf *plugins.CheckFailedError
+	if !errors.As(err, &cf) {
+		t.Fatalf("want *CheckFailedError, got %v", err)
+	}
+	if strings.Contains(cf.Reason, token) || !strings.Contains(cf.Reason, "[redacted]") {
+		t.Errorf("reason = %q", cf.Reason)
+	}
+	row, _ := store.GetPlugin(context.Background(), v.ID)
+	if strings.Contains(row.StatusReason, token) || strings.Contains(got.StatusReason, token) {
+		t.Errorf("status_reason carries the token: %q", row.StatusReason)
+	}
+}
+
+// Leftover: a secret replaced while the instance runs is still scrubbed
+// when the plugin echoes the old value.
+func TestManagerReplacedSecretStillScrubbed(t *testing.T) {
+	const old, replacement = "tok-OldSecretValue-1111111111", "tok-NewSecretValue-2222222222"
+	m, store, _ := newManager(t)
+	v := install(t, m, "swap", map[string]any{"token": old})
+	got, err := m.SetConfig(context.Background(), v.ID, map[string]any{"mode": fake.ModeLeakToken, "token": replacement})
+	var cf *plugins.CheckFailedError
+	if !errors.As(err, &cf) {
+		t.Fatalf("want *CheckFailedError, got %v", err)
+	}
+	for _, text := range []string{cf.Reason, got.StatusReason} {
+		if strings.Contains(text, old) || strings.Contains(text, replacement) {
+			t.Errorf("a secret survived redaction: %q", text)
+		}
+	}
+	for _, p := range cf.Problems {
+		if strings.Contains(p.Message, old) || strings.Contains(p.Message, replacement) {
+			t.Errorf("a problem carries a secret: %q", p.Message)
+		}
+	}
+	row, _ := store.GetPlugin(context.Background(), v.ID)
+	if strings.Contains(row.StatusReason, old) || strings.Contains(row.StatusReason, replacement) {
+		t.Errorf("row carries a secret: %q", row.StatusReason)
+	}
+	if !strings.Contains(cf.Reason, "(was [redacted])") {
+		t.Errorf("the old value should be redacted in place: %q", cf.Reason)
+	}
+}
