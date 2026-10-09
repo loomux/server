@@ -85,6 +85,16 @@ func TestRedactValues_UnicodeWhitespace(t *testing.T) {
 	}
 }
 
+// A system secret (LOOM-185) goes through the same pass: wrapped across
+// a line, it is still redacted whole.
+func TestRedactValues_SplitSystemSecret(t *testing.T) {
+	credentials.AddSystemSecret("sk-ant-loom157-SYSTEMKEY0123")
+	got := credentials.RedactValues("key sk-ant-loom157-SYS\nTEMKEY0123 end", nil)
+	if got != "key [redacted] end" {
+		t.Fatalf("RedactValues = %q", got)
+	}
+}
+
 func TestRedactAll(t *testing.T) {
 	store := fakeLister{creds: []*registry.Credential{
 		{ID: "a", Value: "ghp_secret1"}, {ID: "b", WorkspaceID: "ws", Value: "tok-ws-only"},
