@@ -186,8 +186,14 @@ func TestSocketInstanceReconnects(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if s := i.Status(); s.State != plugins.StateRestarting {
-		t.Errorf("status while disconnected = %+v", s)
+	// The call fails as soon as the connection drops; the supervisor
+	// notices a moment later.
+	deadline = time.Now().Add(5 * time.Second)
+	for i.Status().State != plugins.StateRestarting {
+		if time.Now().After(deadline) {
+			t.Fatalf("status while disconnected = %+v", i.Status())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	stop2 := serveFakeSocket(t, path)
