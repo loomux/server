@@ -25,6 +25,9 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("PluginDuplicateLabel", func(t *testing.T) { testPluginDuplicateLabel(t, newStore(t)) })
 	t.Run("PluginConfigRoundTrip", func(t *testing.T) { testPluginConfigRoundTrip(t, newStore(t)) })
 	t.Run("Settings", func(t *testing.T) { testSettings(t, newStore(t)) })
+	t.Run("Environment", func(t *testing.T) { testEnvironmentCRUD(t, newStore(t)) })
+	t.Run("EnvironmentPluginRestrict", func(t *testing.T) { testEnvironmentPluginRestrict(t, newStore(t)) })
+	t.Run("CredentialTargetScope", func(t *testing.T) { testCredentialTargetScope(t, newStore(t)) })
 	t.Run("Target", func(t *testing.T) { testTargetCRUD(t, newStore(t)) })
 	t.Run("TargetNotFound", func(t *testing.T) { testTargetNotFound(t, newStore(t)) })
 	t.Run("TargetDuplicateName", func(t *testing.T) { testTargetDuplicateName(t, newStore(t)) })
@@ -2126,4 +2129,5 @@ func taskIDs(tasks []*registry.Task) []string {
 // isn't).
 func RunWithoutMasterKey(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("PluginSecretsNeedMasterKey", func(t *testing.T) { testPluginSecretsNeedMasterKey(t, newStore(t)) })
+	t.Run("EnvironmentNeedsMasterKey", func(t *testing.T) { testEnvironmentNeedsMasterKey(t, newStore(t)) })
 }

@@ -202,6 +202,9 @@ func (s *Store) SetPluginConfig(ctx context.Context, id string, config map[strin
 
 func (s *Store) DeletePlugin(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM plugins WHERE id = ?`, id)
+	if isForeignKeyConstraintErr(err) {
+		return fmt.Errorf("%w: plugin %q still owns environments", registry.ErrConflict, id)
+	}
 	if err != nil {
 		return fmt.Errorf("sqlite: delete plugin: %w", err)
 	}

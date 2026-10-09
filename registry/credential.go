@@ -16,6 +16,10 @@ type Credential struct {
 	// AgentType scopes this credential to one agent-type; empty means
 	// not agent-type-scoped.
 	AgentType string
+	// TargetID scopes this credential to one target (LOOM-178: a machine
+	// a plugin made, whose agents all need the same token); empty means
+	// not target-scoped.
+	TargetID string
 	// Value is plaintext at this domain-type level; a Store
 	// implementation is responsible for encrypting it at rest and
 	// decrypting on read.
