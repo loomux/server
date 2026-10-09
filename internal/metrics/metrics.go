@@ -65,6 +65,9 @@ type Metrics struct {
 	// EnvironmentsByStatus counts the machines plugins made, by plugin
 	// name and status (LOOM-178).
 	EnvironmentsByStatus *prometheus.GaugeVec
+	RetentionDeleted     *prometheus.CounterVec
+	RetentionErrors      *prometheus.CounterVec
+	RetentionLastSweep   prometheus.Gauge
 }
 
 // NewMetrics creates a Metrics bundle and registers its collectors with
@@ -148,6 +151,18 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "loomux_environments",
 			Help: "Machines plugins made, by plugin and status.",
 		}, []string{"plugin", "status"}),
+		RetentionDeleted: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "loomux_retention_deleted_total",
+			Help: "Total rows the retention sweep deleted, by table.",
+		}, []string{"table"}),
+		RetentionErrors: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "loomux_retention_errors_total",
+			Help: "Total retention sweep deletes that failed, by table.",
+		}, []string{"table"}),
+		RetentionLastSweep: factory.NewGauge(prometheus.GaugeOpts{
+			Name: "loomux_retention_last_sweep_timestamp_seconds",
+			Help: "Unix time the retention sweep last finished.",
+		}),
 	}
 }
 
@@ -349,6 +364,27 @@ func (m *Metrics) RecordReaperTask() {
 		return
 	}
 	m.ReaperTasksReaped.Inc()
+}
+
+// RecordRetention records one retention delete on table (LOOM-193):
+// the rows it deleted, and a failure when err is non-nil (a batched
+// delete can fail after deleting some).
+func (m *Metrics) RecordRetention(table string, deleted int, err error) {
+	if m == nil {
+		return
+	}
+	m.RetentionDeleted.WithLabelValues(table).Add(float64(deleted))
+	if err != nil {
+		m.RetentionErrors.WithLabelValues(table).Inc()
+	}
+}
+
+// SetRetentionSweep records when the retention sweep last finished.
+func (m *Metrics) SetRetentionSweep(t time.Time) {
+	if m == nil {
+		return
+	}
+	m.RetentionLastSweep.Set(float64(t.Unix()))
 }
 
 // TargetOpErrorReason maps common target errors to a stable reason label.

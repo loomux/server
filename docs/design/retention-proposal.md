@@ -1,8 +1,13 @@
 # Retention defaults: proposal (LOOM-175 item 8)
 
-**Status:** proposal for the user to decide (2026-10-08). Nothing here
-changes behaviour. The absolute session lifetime that shipped with it
-(`LOOMUX_SESSION_MAX_AGE`, 90 days) is the only part implemented.
+**Status:** implemented (LOOM-193, 2026-10-09) for sessions, dispatches
+and confirmations, with the defaults below, by a retention sweep of its
+own (`internal/retention`, hourly) rather than the reaper: a session's
+expiry depends on the API's lifetime settings, so the server starts the
+sweep once it has read them. Messages are kept and have no setting. A
+deleted dispatch's messages stay, their `dispatch_id` set to NULL. The
+absolute session lifetime (`LOOMUX_SESSION_MAX_AGE`, 90 days) shipped
+with LOOM-175.
 
 The database grows with use, and some of what it keeps is sensitive
 (what was asked, what agents answered, which commands ran). Two tables

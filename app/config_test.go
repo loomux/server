@@ -226,6 +226,40 @@ func TestLoadConfig_EventRetention(t *testing.T) {
 	}
 }
 
+// LOOM-193: sessions, dispatches and confirmations are kept 7, 90 and
+// 30 days by default; each setting takes a duration, 0 keeps the rows,
+// and a negative or malformed one is a startup error.
+func TestLoadConfig_RowRetention(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		def  time.Duration
+		read func(Config) time.Duration
+	}{
+		{"LOOMUX_SESSION_RETENTION", 7 * 24 * time.Hour, func(c Config) time.Duration { return c.SessionRetention }},
+		{"LOOMUX_DISPATCH_RETENTION", 90 * 24 * time.Hour, func(c Config) time.Duration { return c.DispatchRetention }},
+		{"LOOMUX_CONFIRMATION_RETENTION", 30 * 24 * time.Hour, func(c Config) time.Duration { return c.ConfirmationRetention }},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			setRouterEnv(t)
+			if cfg, err := LoadConfig(); err != nil || tc.read(cfg) != tc.def {
+				t.Fatalf("default = %v, %v; want %v", tc.read(cfg), err, tc.def)
+			}
+			for raw, want := range map[string]time.Duration{"0": 0, "48h": 48 * time.Hour} {
+				t.Setenv(tc.env, raw)
+				if cfg, err := LoadConfig(); err != nil || tc.read(cfg) != want {
+					t.Errorf("%s=%s: %v, %v; want %v", tc.env, raw, tc.read(cfg), err, want)
+				}
+			}
+			for _, raw := range []string{"-1h", "7d", "soon"} {
+				t.Setenv(tc.env, raw)
+				if _, err := LoadConfig(); err == nil {
+					t.Errorf("%s=%s was accepted", tc.env, raw)
+				}
+			}
+		})
+	}
+}
+
 // A negative dispatch ceiling or drain is a startup error, like the
 // retention durations beside them (#256 review).
 func TestLoadConfig_DispatchDurationsNotNegative(t *testing.T) {

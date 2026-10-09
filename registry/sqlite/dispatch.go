@@ -178,3 +178,14 @@ func scanDispatch(row rowScanner) (*registry.Dispatch, error) {
 	d.ErrorClass = registry.ErrorClass(errorClass)
 	return &d, nil
 }
+
+func (s *Store) DeleteDispatchesFinishedBefore(ctx context.Context, cutoff time.Time) (int, error) {
+	// finished_at is set on every move to a finished status; updated_at
+	// stands in for a row from before it was.
+	n, err := s.deleteInBatches(ctx, "dispatches",
+		`status IN ('succeeded', 'failed', 'interrupted') AND COALESCE(finished_at, updated_at) < ?`, cutoff.UTC())
+	if err != nil {
+		return n, fmt.Errorf("sqlite: delete dispatches: %w", err)
+	}
+	return n, nil
+}
