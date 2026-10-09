@@ -17,7 +17,7 @@
     "required": ["namespace", "storage_class", "agent_image"],
     "properties": {
       "namespace": {"type": "string", "default": "loomux-agents", "description": "where machines are made; must exist, with the plugin's Role and the headless Service"},
-      "storage_class": {"type": "string", "default": "ceph-rbd-sc", "description": "the StorageClass of a persistent machine's data volume"},
+      "storage_class": {"type": "string", "default": "ceph-rbd-sc-delete", "description": "the StorageClass of a persistent machine's data volume: a Delete-reclaim class (a Retain class leaves volumes behind after destroy, and a quota may allow none of it)"},
       "subdomain": {"type": "string", "default": "loomux-agents", "description": "the headless Service that names machines: lx-<id>.<subdomain>.<namespace>.svc.cluster.local"},
       "agent_image": {"type": "string", "x-format": "image-reference", "default": "ghcr.io/loomux/agent:main", "description": "the image machines run; pin it by digest in production"},
       "kubeconfig": {"type": "string", "x-secret": true, "x-format": "kubeconfig", "description": "leave empty in-cluster (the mounted ServiceAccount is used)"},

@@ -193,7 +193,7 @@ can say so instead of breaking them.
     "type": "object", "required": ["namespace", "storage_class", "agent_image"],
     "properties": {
       "namespace":     {"type": "string", "default": "loomux-agents", "description": "where machines are made; must exist, with the plugin's Role"},
-      "storage_class": {"type": "string", "default": "ceph-rbd-sc"},
+      "storage_class": {"type": "string", "default": "ceph-rbd-sc-delete", "description": "a Delete-reclaim class: a Retain class leaves volumes behind, and the quota allows none of it"},
       "subdomain":     {"type": "string", "default": "loomux-agents", "description": "the headless Service that names machines"},
       "agent_image":   {"type": "string", "x-format": "image-reference"},
       "kubeconfig":    {"type": "string", "x-secret": true, "x-format": "kubeconfig", "description": "leave empty in-cluster (the mounted ServiceAccount is used)"},
@@ -761,9 +761,9 @@ hint.
 **RBAC it needs** (the plugin's ServiceAccount, in the agents namespace only): `pods` (create, get, list,
 watch, delete), `pods/log` (get), `persistentvolumeclaims` (create, get, list, delete), `secrets` (create,
 get, list, update, delete; update carries a recreate's new spec), `events` (list), `services` (get: `check`
-warns when the headless Service is missing). The `permissions` in its manifest say exactly this, and CI runs
-the plugin with a kubeconfig made from that Role (`deploy/test/kind/`), so a verb it needs and the Role
-lacks fails the integration test.
+warns when the headless Service is missing, or when it can't tell). theWyseKube's manifests (its PR #25)
+grant exactly this, and so does the kind Role CI runs the plugin under (`deploy/test/kind/`), so a verb it
+needs and the Role lacks fails the integration test.
 
 ## 9. The Docker plugin (LOOM-180)
 

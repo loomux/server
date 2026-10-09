@@ -131,6 +131,9 @@ func TestManifest(t *testing.T) {
 	if !s.Properties["kubeconfig"].Secret || s.Properties["agent_image"].Format != "image-reference" {
 		t.Error("kubeconfig must be x-secret and agent_image an image-reference")
 	}
+	if s.Properties["storage_class"].Default != "ceph-rbd-sc-delete" {
+		t.Errorf("storage_class default = %v, want the Delete-reclaim class (a Retain class is refused by the quota)", s.Properties["storage_class"].Default)
+	}
 	if cfg := s.ApplyDefaults(map[string]any{}); cfg["namespace"] != "loomux-agents" || cfg["max_environments"] != 5.0 && cfg["max_environments"] != 5 {
 		t.Errorf("defaults = %v", cfg)
 	}
@@ -269,8 +272,14 @@ func TestPodSpecIsRestricted(t *testing.T) {
 
 	eph := sp
 	eph.Persistent = false
-	if v := podFor(eph, size, cfg, testInstance).Spec.Volumes[0]; v.PersistentVolumeClaim != nil || v.EmptyDir == nil || v.EmptyDir.SizeLimit.String() != "10Gi" {
+	ephPod := podFor(eph, size, cfg, testInstance)
+	if v := ephPod.Spec.Volumes[0]; v.PersistentVolumeClaim != nil || v.EmptyDir == nil || v.EmptyDir.SizeLimit.String() != "10Gi" {
 		t.Errorf("an ephemeral machine's data volume = %+v", v)
+	}
+	// The disk-backed emptyDirs count against ephemeral-storage: the
+	// limit must cover the data volume, /tmp and headroom.
+	if got := ephPod.Spec.Containers[0].Resources.Limits.StorageEphemeral().String(); got != "12Gi" {
+		t.Errorf("an ephemeral machine's ephemeral-storage limit = %s, want 12Gi", got)
 	}
 }
 
@@ -338,7 +347,9 @@ func markRunning(t *testing.T, cs *fake.Clientset, name string) {
 	}
 	pod.Status.Phase = corev1.PodRunning
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "agent", Ready: true, RestartCount: 2, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}, ImageID: "ghcr.io/loomux/agent@sha256:deadbeef"}}
-	if _, err := cs.CoreV1().Pods(testNS).Update(ctx, pod, metav1.UpdateOptions{}); err != nil {
+	// Through the tracker, not the clientset: the test isn't the plugin,
+	// and the verb audit must see the plugin's calls only.
+	if err := cs.Tracker().Update(corev1.SchemeGroupVersion.WithResource("pods"), pod, testNS); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -449,8 +460,25 @@ func TestLifecycle(t *testing.T) {
 	if pod.Spec.Containers[0].Resources.Requests.Cpu().String() != "2" || pod.Spec.Containers[0].Image != "ghcr.io/loomux/agent@sha256:1234" {
 		t.Errorf("pod after recreate = %+v", pod.Spec.Containers[0])
 	}
-	if got, _ := p.GetTarget(ctx, "abc123"); got.Size != "medium" {
-		t.Errorf("the record didn't follow the recreate: %+v", got)
+	if got, _ := p.GetTarget(ctx, "abc123"); got.Size != "medium" || !got.CreatedAt.Equal(first.CreatedAt) {
+		t.Errorf("the record didn't follow the recreate (or lost its creation time): %+v vs %v", got, first.CreatedAt)
+	}
+	// Every verb the plugin used is one the Role grants (design §8,
+	// deploy/test/kind/10-rbac.yaml).
+	granted := map[string]map[string]bool{
+		"pods": {"create": true, "get": true, "list": true, "watch": true, "delete": true}, "pods/log": {"get": true},
+		"persistentvolumeclaims": {"create": true, "get": true, "list": true, "delete": true},
+		"secrets":                {"create": true, "get": true, "list": true, "update": true, "delete": true},
+		"events":                 {"list": true}, "services": {"get": true},
+	}
+	for _, a := range cs.Actions() {
+		res, verb := a.GetResource().Resource, a.GetVerb()
+		if sub := a.GetSubresource(); sub != "" {
+			res += "/" + sub
+		}
+		if !granted[res][verb] {
+			t.Errorf("the plugin used %s %s, which the Role doesn't grant", verb, res)
+		}
 	}
 	eph := re
 	eph.Persistent = false
@@ -662,6 +690,18 @@ func TestCheck(t *testing.T) {
 		}
 		if info, _ := p.DescribeTargets(ctx); len(info.EgressOptions) != 1 {
 			t.Errorf("egress options while pending = %v", info.EgressOptions)
+		}
+	})
+	t.Run("service forbidden", func(t *testing.T) {
+		cs := fake.NewClientset()
+		cs.PrependReactor("get", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "services"}, "loomux-agents", errors.New("no"))
+		})
+		canaryExits(cs, exitBlocked)
+		p := configured(t, cs, nil)
+		res, _ := p.Check(ctx)
+		if pr := problem(res, ProblemServiceMissing); pr == nil || !strings.Contains(pr.Message, "services get") {
+			t.Fatalf("a forbidden Service read must be reported, not read as present: %+v", res)
 		}
 	})
 	t.Run("forbidden", func(t *testing.T) {

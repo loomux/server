@@ -197,10 +197,18 @@ func podFor(spec protocol.EnvironmentSpec, size protocol.Size, cfg Config, insta
 		image = cfg.AgentImage
 	}
 	data := corev1.Volume{Name: "data"}
+	// The kubelet counts every disk-backed emptyDir and the writable
+	// layer against the container's ephemeral-storage limit: /tmp (1Gi)
+	// always, and the data volume of an ephemeral machine (a PVC
+	// doesn't count). 1Gi of headroom on top, or the machine would be
+	// evicted at a fraction of its own disk.
+	ephemeral := resource.MustParse("2Gi")
 	if spec.Persistent {
 		data.PersistentVolumeClaim = &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvcName(spec.ID)}
 	} else {
 		data.EmptyDir = &corev1.EmptyDirVolumeSource{SizeLimit: ptr(resource.MustParse(size.Disk))}
+		ephemeral = resource.MustParse(size.Disk)
+		ephemeral.Add(resource.MustParse("2Gi"))
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -227,7 +235,7 @@ func podFor(spec protocol.EnvironmentSpec, size protocol.Size, cfg Config, insta
 					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(size.CPU), corev1.ResourceMemory: resource.MustParse(size.Memory)},
 					Limits: corev1.ResourceList{
 						corev1.ResourceCPU: resource.MustParse(size.CPU), corev1.ResourceMemory: resource.MustParse(size.Memory),
-						corev1.ResourceEphemeralStorage: resource.MustParse("2Gi"),
+						corev1.ResourceEphemeralStorage: ephemeral,
 					},
 				},
 				SecurityContext: containerSecurity(),

@@ -308,9 +308,13 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	}
 	size, _ := cfg.size(spec.Size)
 	instance := sec.Labels[protocol.LabelInstance]
-	fresh := secretFor(spec, instance, p.Now())
+	// The record follows the new spec (secrets update, which the Role
+	// grants); the creation time stays.
+	fresh := secretFor(spec, instance, createdFrom(sec, p.Now()))
 	sec.Labels, sec.Data = fresh.Labels, fresh.Data
-	sec.Annotations[annotationName], sec.Annotations[annotationSpec] = fresh.Annotations[annotationName], fresh.Annotations[annotationSpec]
+	for k, v := range fresh.Annotations {
+		sec.Annotations[k] = v
+	}
 	if sec, err = client.CoreV1().Secrets(cfg.Namespace).Update(ctx, sec, metav1.UpdateOptions{}); err != nil {
 		return protocol.Environment{}, unavailable(err)
 	}

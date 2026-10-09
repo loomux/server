@@ -25,11 +25,20 @@ go build ./cmd/loomux-plugin-kubernetes
 
 ## Configuration
 
-`plugin.json`'s schema: `namespace`, `storage_class`, `subdomain`,
+`plugin.json`'s schema: `namespace`, `storage_class` (default
+`ceph-rbd-sc-delete`, a Delete-reclaim class; a Retain class leaves
+volumes behind after destroy and the quota allows none of it), `subdomain`,
 `agent_image` (pin it by digest in production), `kubeconfig` (secret,
 empty in-cluster), `sizes` (`{name: {cpu, memory, disk}}`; small/medium/
 large by default), `max_environments`, `require_network_policy`,
 `timezone`.
+
+The Role it runs under grants exactly design §8's verbs (pods c/g/l/w/d,
+pods/log get, PVCs c/g/l/d, secrets c/g/l/u/d, events list, services
+get), rule for rule what theWyseKube's manifests grant; a unit test
+checks every verb the plugin uses is among them. An ephemeral machine's
+`ephemeral-storage` limit covers its data emptyDir, `/tmp` and headroom,
+since the kubelet counts disk-backed emptyDirs against it.
 
 ## What it makes per machine
 

@@ -44,7 +44,8 @@ const (
 	// namespace: the Role or RoleBinding is missing.
 	ProblemForbidden = "forbidden"
 	// ProblemServiceMissing (warning): no headless Service of the
-	// configured subdomain, so machine names won't resolve.
+	// configured subdomain, so machine names won't resolve; or the
+	// credential can't read Services to tell.
 	ProblemServiceMissing = "service_missing"
 	// ProblemNetworkPolicyNotEnforced (warning; error when required): a
 	// confined canary pod reached the API server or the internet.
@@ -161,10 +162,16 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		})
 		return res, nil
 	}
-	if _, err := client.CoreV1().Services(cfg.Namespace).Get(ctx, cfg.Subdomain, metav1.GetOptions{}); kerrors.IsNotFound(err) {
+	switch _, err := client.CoreV1().Services(cfg.Namespace).Get(ctx, cfg.Subdomain, metav1.GetOptions{}); {
+	case kerrors.IsNotFound(err):
 		res.Problems = append(res.Problems, protocol.Problem{
 			Code: ProblemServiceMissing, Severity: protocol.SeverityWarning,
 			Message: fmt.Sprintf("no headless Service %q in namespace %s: machine names won't resolve", cfg.Subdomain, cfg.Namespace),
+		})
+	case kerrors.IsForbidden(err):
+		res.Problems = append(res.Problems, protocol.Problem{
+			Code: ProblemServiceMissing, Severity: protocol.SeverityWarning,
+			Message: fmt.Sprintf("can't read Service %q in namespace %s (the Role lacks services get): whether machine names resolve is unknown", cfg.Subdomain, cfg.Namespace),
 		})
 	}
 	state, detail := p.enforcement(ctx, cfg, client, p.CanaryWait)
