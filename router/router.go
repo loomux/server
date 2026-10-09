@@ -1275,7 +1275,7 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	}
 
 	taskID := uuid.NewString()
-	secrets, err := r.creds.Resolve(ctx, workspaceID, agentType)
+	secrets, err := r.resolveSecrets(ctx, workspaceID, agentType)
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
 	}
@@ -1636,4 +1636,15 @@ func checkMessageSize(agentMessage string) error {
 		"router: dispatch: the message is %d KiB with its context, over the %d KiB Loomux sends to an agent. "+
 			"Put the long part in a file in the workspace and ask the agent to read it",
 		(len(agentMessage)+1023)/1024, targets.MaxPasteBytes>>10)}
+}
+
+// resolveSecrets is the vault's Resolve for a workspace: with the
+// workspace's target, so target-scoped credentials (LOOM-178) apply. A
+// workspace that can't be read resolves with no target.
+func (r *Router) resolveSecrets(ctx context.Context, workspaceID, agentType string) (map[string]string, error) {
+	targetID := ""
+	if ws, err := r.store.GetWorkspace(ctx, workspaceID); err == nil {
+		targetID = ws.TargetID
+	}
+	return r.creds.Resolve(ctx, workspaceID, targetID, agentType)
 }

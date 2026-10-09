@@ -55,7 +55,7 @@ func TestResolve_GlobalOnly(t *testing.T) {
 	createCredential(t, store, "GLOBAL_TOKEN", "", "", "global-value")
 
 	r := credentials.NewResolver(store)
-	got, err := r.Resolve(context.Background(), ws.ID, "claude-code")
+	got, err := r.Resolve(context.Background(), ws.ID, "", "claude-code")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestResolve_WorkspaceOverridesGlobal(t *testing.T) {
 	createCredential(t, store, "TOKEN", ws.ID, "", "workspace-value")
 
 	r := credentials.NewResolver(store)
-	got, err := r.Resolve(context.Background(), ws.ID, "claude-code")
+	got, err := r.Resolve(context.Background(), ws.ID, "", "claude-code")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestResolve_AgentTypeOverridesGlobal(t *testing.T) {
 
 	r := credentials.NewResolver(store)
 
-	got, err := r.Resolve(context.Background(), ws.ID, "claude-code")
+	got, err := r.Resolve(context.Background(), ws.ID, "", "claude-code")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestResolve_AgentTypeOverridesGlobal(t *testing.T) {
 		t.Fatalf("Resolve(claude-code)[TOKEN] = %q, want %q", got["TOKEN"], "agent-value")
 	}
 
-	got, err = r.Resolve(context.Background(), ws.ID, "codex")
+	got, err = r.Resolve(context.Background(), ws.ID, "", "codex")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestResolve_MostSpecificWins(t *testing.T) {
 	createCredential(t, store, "TOKEN", ws.ID, "claude-code", "workspace-and-agent")
 
 	r := credentials.NewResolver(store)
-	got, err := r.Resolve(context.Background(), ws.ID, "claude-code")
+	got, err := r.Resolve(context.Background(), ws.ID, "", "claude-code")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestResolve_WorkspaceBeatsAgentTypeAtEqualSpecificity(t *testing.T) {
 	createCredential(t, store, "TOKEN", "", "claude-code", "agent-only")
 
 	r := credentials.NewResolver(store)
-	got, err := r.Resolve(context.Background(), ws.ID, "claude-code")
+	got, err := r.Resolve(context.Background(), ws.ID, "", "claude-code")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestResolve_ExcludesOtherWorkspaceAndOtherAgentType(t *testing.T) {
 	createCredential(t, store, "OTHER_AGENT_TOKEN", "", "some-other-agent", "should-not-appear")
 
 	r := credentials.NewResolver(store)
-	got, err := r.Resolve(context.Background(), ws.ID, "claude-code")
+	got, err := r.Resolve(context.Background(), ws.ID, "", "claude-code")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestResolve_MultipleNamesAllIncluded(t *testing.T) {
 	createCredential(t, store, "TOKEN_B", "", "", "value-b")
 
 	r := credentials.NewResolver(store)
-	got, err := r.Resolve(context.Background(), ws.ID, "claude-code")
+	got, err := r.Resolve(context.Background(), ws.ID, "", "claude-code")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -191,4 +191,59 @@ func createFixtureWorkspace2(t *testing.T, store registry.Store) *registry.Works
 		t.Fatalf("fixture CreateWorkspace: %v", err)
 	}
 	return ws
+}
+
+// LOOM-178: a credential scoped to a target applies to every workspace
+// on it and to no other target; a workspace-scoped one outranks it.
+func TestResolve_TargetScope(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	wsTarget := &registry.Target{ID: uuid.NewString(), Name: "scope-target", Kind: registry.TargetKindLocal}
+	if err := store.CreateTarget(ctx, wsTarget); err != nil {
+		t.Fatal(err)
+	}
+	ws := &registry.Workspace{ID: uuid.NewString(), Name: "scope-ws", Path: "/scope", TargetID: wsTarget.ID, Status: registry.WorkspaceStatusIdle}
+	if err := store.CreateWorkspace(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	other := &registry.Target{ID: "t-other", Name: "other", Kind: registry.TargetKindRemote, Host: "other.example", User: "u"}
+	if err := store.CreateTarget(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	mustCreate := func(c *registry.Credential) {
+		t.Helper()
+		if err := store.CreateCredential(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustCreate(&registry.Credential{ID: "c-global", Name: "TOKEN", Value: "global"})
+	mustCreate(&registry.Credential{ID: "c-agent", Name: "TOKEN", AgentType: "claude-code", Value: "agent"})
+	mustCreate(&registry.Credential{ID: "c-target", Name: "TOKEN", TargetID: ws.TargetID, Value: "target"})
+	mustCreate(&registry.Credential{ID: "c-target-agent", Name: "TOKEN", TargetID: ws.TargetID, AgentType: "claude-code", Value: "target+agent"})
+	mustCreate(&registry.Credential{ID: "c-other-target", Name: "ONLY_ELSEWHERE", TargetID: other.ID, Value: "elsewhere"})
+
+	r := credentials.NewResolver(store)
+	got, err := r.Resolve(ctx, ws.ID, ws.TargetID, "claude-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["TOKEN"] != "target+agent" {
+		t.Errorf("target+agent should win over target, agent and global: got %q", got["TOKEN"])
+	}
+	if _, ok := got["ONLY_ELSEWHERE"]; ok {
+		t.Error("a credential scoped to another target must not apply")
+	}
+	got, _ = r.Resolve(ctx, ws.ID, ws.TargetID, "codex")
+	if got["TOKEN"] != "target" {
+		t.Errorf("target-only should win over global for another agent: got %q", got["TOKEN"])
+	}
+	got, _ = r.Resolve(ctx, "", "", "claude-code")
+	if got["TOKEN"] != "agent" {
+		t.Errorf("with no target, the agent-type one applies: got %q", got["TOKEN"])
+	}
+	mustCreate(&registry.Credential{ID: "c-ws", Name: "TOKEN", WorkspaceID: ws.ID, Value: "workspace"})
+	got, _ = r.Resolve(ctx, ws.ID, ws.TargetID, "claude-code")
+	if got["TOKEN"] != "workspace" {
+		t.Errorf("workspace-only should outrank target+agent: got %q", got["TOKEN"])
+	}
 }
