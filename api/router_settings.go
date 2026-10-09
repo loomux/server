@@ -20,6 +20,8 @@ type RouterSettings interface {
 	Set(ctx context.Context, tier string, u llmrouter.TierUpdate, actor string) (llmrouter.TierView, error)
 	Clear(ctx context.Context, tier, actor string) error
 	Test(ctx context.Context, tier string) (llmrouter.TestResult, error)
+	// Models lists the models the tier's provider offers (LOOM-191).
+	Models(ctx context.Context, tier string, req llmrouter.ModelsRequest) (llmrouter.ModelsResult, error)
 	Changes(ctx context.Context, limit int) ([]*registry.RouterSettingsChange, error)
 }
 
@@ -210,6 +212,67 @@ func (s *Server) handleTestRouterTier(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "this tier is not configured")
 	default:
 		writeError(w, http.StatusInternalServerError, "could not test the router tier")
+	}
+}
+
+// listRouterModelsRequest: everything optional. Empty means the tier's
+// own provider and base URL with its saved key; listing anywhere else
+// needs api_key, which is used for this call and not stored.
+type listRouterModelsRequest struct {
+	Provider string `json:"provider"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+}
+
+type routerModelResponse struct {
+	ID string `json:"id"`
+	// Name is the provider's display name, when it has one.
+	Name string `json:"name,omitempty"`
+}
+
+// listRouterModelsResponse: like the test call, a failure is its status
+// and class alone, never the provider's body.
+type listRouterModelsResponse struct {
+	OK         bool                  `json:"ok"`
+	Models     []routerModelResponse `json:"models"`
+	Status     int                   `json:"status,omitempty"`
+	ErrorClass string                `json:"error_class,omitempty"`
+	Error      string                `json:"error,omitempty"`
+	// Cached says the list is from a call made in the last few minutes.
+	Cached bool `json:"cached"`
+}
+
+// handleListRouterModels: POST /api/v1/settings/router/{tier}/models
+// lists the models the tier's provider offers, for the model picker
+// (LOOM-191). POST, not GET, because a key being entered travels in the
+// body, never in a URL. 200 whether or not the provider answered.
+func (s *Server) handleListRouterModels(w http.ResponseWriter, r *http.Request) {
+	if !s.routerSettingsEnabled(w) {
+		return
+	}
+	var req listRouterModelsRequest
+	if r.ContentLength != 0 && !readJSON(w, r, &req) {
+		return
+	}
+	res, err := s.routerSettings.Models(r.Context(), r.PathValue("tier"),
+		llmrouter.ModelsRequest{Provider: req.Provider, BaseURL: req.BaseURL, APIKey: req.APIKey})
+	var invalid *llmrouter.InvalidSettingError
+	switch {
+	case err == nil:
+		out := listRouterModelsResponse{OK: res.OK, Models: make([]routerModelResponse, 0, len(res.Models)),
+			Status: res.Status, ErrorClass: res.ErrorClass, Error: res.Error, Cached: res.Cached}
+		for _, m := range res.Models {
+			out.Models = append(out.Models, routerModelResponse{ID: m.ID, Name: m.Name})
+		}
+		writeJSON(w, http.StatusOK, out)
+	case errors.Is(err, llmrouter.ErrUnknownTier):
+		writeError(w, http.StatusNotFound, "no such router tier (primary or escalation)")
+	case errors.Is(err, llmrouter.ErrTierNotConfigured):
+		writeError(w, http.StatusNotFound, "this tier is not configured; enter an API key to list models")
+	case errors.As(err, &invalid):
+		writeError(w, http.StatusBadRequest, invalid.Reason)
+	default:
+		writeError(w, http.StatusInternalServerError, "could not list models")
 	}
 }
 

@@ -498,7 +498,8 @@ plain ssh form.
     each key, and deleting a key in use is `409`.
   - `GET /api/v1/settings/router`, `PUT|DELETE
     /api/v1/settings/router/{tier}`, `POST
-    /api/v1/settings/router/{tier}/test`, `GET
+    /api/v1/settings/router/{tier}/test`, `POST
+    /api/v1/settings/router/{tier}/models`, `GET
     /api/v1/settings/router/audit?limit=N` — auth-gated router model
     settings (LOOM-185, `WithRouterSettings`; 404 without it; design in
     `docs/design/router-settings.md`). `{tier}` is `primary` or
@@ -512,7 +513,12 @@ plain ssh form.
     (http only to loopback), optional for `anthropic`; `503` without a
     master key. `test` makes one one-token call: `{ok, status?,
     error_class?, error?, model, source, duration_ms}`, a failure
-    described by its HTTP status and class, never the provider's body. `audit` lists
+    described by its HTTP status and class, never the provider's body.
+    `models` (LOOM-191) `{provider?, base_url?, api_key?}` lists the
+    provider's models `{ok, models: [{id, name?}], status?, error_class?,
+    error?, cached}`, with the tier's key for its own endpoint or the
+    given `api_key` (used once, never stored or returned) for another;
+    cached five minutes. `audit` lists
     `{id, tier, action, fields, actor, created_at}`, newest first.
   - `POST /api/v1/targets/{id}/migrate-ssh` `{dry_run}` — auth-gated
     (LOOM-138, `WithSSHMigration`; `501` without it, without `/ssh-keys`,

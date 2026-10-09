@@ -143,6 +143,9 @@ type Settings struct {
 	// stored tiers that didn't decrypt.
 	stored     map[string]*registry.RouterTier
 	unreadable map[string]bool
+
+	// models caches recent model listings (LOOM-191).
+	models modelsCache
 }
 
 // SettingsOption configures Settings.
@@ -310,14 +313,10 @@ func validateUpdate(u *TierUpdate) error {
 	if len(u.Model) > maxModelLen || strings.IndexFunc(u.Model, unicode.IsControl) >= 0 {
 		return &InvalidSettingError{"model must be at most 200 characters, without control characters"}
 	}
-	if u.APIKey != "" && len(u.APIKey) < minAPIKeyLen {
-		return &InvalidSettingError{"api_key is too short (at least 8 characters)"}
-	}
-	if len(u.APIKey) > maxAPIKeyLen {
-		return &InvalidSettingError{"api_key is too long (at most 4 KiB)"}
-	}
-	if strings.IndexFunc(u.APIKey, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
-		return &InvalidSettingError{"api_key can't contain whitespace or control characters"}
+	if u.APIKey != "" {
+		if reason := checkAPIKey(u.APIKey); reason != "" {
+			return &InvalidSettingError{reason}
+		}
 	}
 	return nil
 }
