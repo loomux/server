@@ -107,10 +107,14 @@ func Main(p Plugin) {
 func run(p Plugin, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	return runWithContext(ctx, p, args, stdin, stdout, stderr)
+	return RunContext(ctx, p, args, stdin, stdout, stderr)
 }
 
-func runWithContext(ctx context.Context, p Plugin, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+// RunContext is Main without the process: it serves p on stdin/stdout,
+// or on the socket args name with --listen, until the exchange ends or
+// ctx is done, and returns the exit code Main would exit with. Tests of
+// the host use it to serve a plugin in-process.
+func RunContext(ctx context.Context, p Plugin, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("plugin", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	listen := fs.String("listen", "", "serve on this unix socket instead of stdio (the sidecar form)")
