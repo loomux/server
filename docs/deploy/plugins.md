@@ -12,7 +12,7 @@ you register the hosts you already use. Design and threat model:
 
 | Setting | Image default | What is there |
 |---|---|---|
-| `LOOMUX_PLUGIN_BUNDLE_DIR` | `/usr/local/lib/loomux/plugins` | first-party plugins shipped in the image, one directory each with `plugin.json` and `loomux-plugin-<name>`. Trusted as the image is. (None yet: the Kubernetes and Docker plugins follow.) |
+| `LOOMUX_PLUGIN_BUNDLE_DIR` | `/usr/local/lib/loomux/plugins` | first-party plugins shipped in the image, one directory each with `plugin.json` and `loomux-plugin-<name>`. Trusted as the image is. The Kubernetes plugin (`plugins/kubernetes/README.md`) is bundled; the Docker plugin follows. |
 | `LOOMUX_PLUGIN_DIR` | `plugins/` beside the database | plugins you put there yourself, same layout. Shown as **unsigned** until signed first-party assets exist; installing one means trusting it with the permissions its manifest declares |
 | `LOOMUX_PLUGIN_SOCKET_DIR` | `/run/loomux/plugins` | sockets served by sidecar containers (`loomux-plugin-<name> --listen /run/loomux/plugins/<name>.sock`). The recommended form on Kubernetes: the plugin container alone holds the cluster credential |
 
