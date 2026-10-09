@@ -1,0 +1,28 @@
+{
+  "name": "kubernetes",
+  "title": "Kubernetes",
+  "version": "0.4.0",
+  "protocol": "loomux-plugin/1",
+  "vendor": "Loomux",
+  "homepage": "https://github.com/Loomux/server/tree/main/plugins/kubernetes",
+  "description": "Creates a pod per machine in one namespace of the cluster Loomux runs in.",
+  "min_host_version": "0.4.0",
+  "capabilities": ["targets.create", "targets.stop_start", "targets.persistent", "targets.ephemeral"],
+  "permissions": [
+    {"scope": "kubernetes", "detail": "create, get, list, watch and delete Pods, PersistentVolumeClaims and Secrets in one namespace"}
+  ],
+  "host_requests": [],
+  "config_schema": {
+    "type": "object",
+    "required": ["namespace", "agent_image"],
+    "properties": {
+      "namespace": {"type": "string", "default": "loomux-agents", "description": "where machines are made"},
+      "agent_image": {"type": "string", "x-format": "image-reference"},
+      "kubeconfig": {"type": "string", "x-secret": true, "x-format": "kubeconfig"},
+      "egress": {"type": "string", "enum": ["internet", "none"], "default": "internet"},
+      "max_environments": {"type": "integer", "minimum": 1, "default": 5},
+      "require_network_policy": {"type": "boolean", "default": false},
+      "sizes": {"type": "object", "additionalProperties": {"type": "object", "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}, "disk": {"type": "string"}}}}
+    }
+  }
+}
