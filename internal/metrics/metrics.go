@@ -57,6 +57,11 @@ type Metrics struct {
 	TargetOpDuration   *prometheus.HistogramVec
 	TargetOpErrors     *prometheus.CounterVec
 	ReaperTasksReaped  prometheus.Counter
+	// PluginsByStatus and PluginCalls instrument the plugin system
+	// (LOOM-178): installed plugin instances by plugin and status, and
+	// calls to plugins by plugin, method and outcome.
+	PluginsByStatus *prometheus.GaugeVec
+	PluginCalls     *prometheus.CounterVec
 }
 
 // NewMetrics creates a Metrics bundle and registers its collectors with
@@ -128,6 +133,14 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "loomux_reaper_tasks_reaped_total",
 			Help: "Total idle tasks reaped.",
 		}),
+		PluginsByStatus: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loomux_plugins",
+			Help: "Installed plugin instances by plugin and status.",
+		}, []string{"plugin", "status"}),
+		PluginCalls: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "loomux_plugin_calls_total",
+			Help: "Calls to plugins by plugin, method and outcome.",
+		}, []string{"plugin", "method", "outcome"}),
 	}
 }
 

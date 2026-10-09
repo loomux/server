@@ -241,6 +241,7 @@ type Server struct {
 	credentials      CredentialStore
 	sshKeys          SSHKeyStore
 	routerSettings   RouterSettings
+	plugins          Plugins
 	dropSSHKey       func(id string)
 	resolveSSHConfig SSHConfigResolver
 	// migrating is held while a migrate-ssh is applied (LOOM-138).
@@ -435,6 +436,16 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/ssh-keys", s.requireAuth(s.handleListSSHKeys))
 	mux.HandleFunc("POST /api/v1/ssh-keys", s.requireAuth(s.handleCreateSSHKey))
 	mux.HandleFunc("DELETE /api/v1/ssh-keys/{id}", s.requireAuth(s.handleDeleteSSHKey))
+	mux.HandleFunc("GET /api/v1/plugins/available", s.requireAuth(s.handleListAvailablePlugins))
+	mux.HandleFunc("GET /api/v1/plugins", s.requireAuth(s.handleListPlugins))
+	mux.HandleFunc("POST /api/v1/plugins", s.requireAuth(s.handleInstallPlugin))
+	mux.HandleFunc("GET /api/v1/plugins/{id}", s.requireAuth(s.handleGetPlugin))
+	mux.HandleFunc("PUT /api/v1/plugins/{id}/config", s.requireAuth(s.handleSetPluginConfig))
+	mux.HandleFunc("POST /api/v1/plugins/{id}/enable", s.requireAuth(s.handleEnablePlugin))
+	mux.HandleFunc("POST /api/v1/plugins/{id}/disable", s.requireAuth(s.handleDisablePlugin))
+	mux.HandleFunc("POST /api/v1/plugins/{id}/upgrade", s.requireAuth(s.handleUpgradePlugin))
+	mux.HandleFunc("POST /api/v1/plugins/{id}/check", s.requireAuth(s.handleCheckPlugin))
+	mux.HandleFunc("DELETE /api/v1/plugins/{id}", s.requireAuth(s.handleUninstallPlugin))
 	mux.HandleFunc("GET /api/v1/settings/router", s.requireAuth(s.handleGetRouterSettings))
 	mux.HandleFunc("GET /api/v1/settings/router/audit", s.requireAuth(s.handleListRouterSettingsChanges))
 	mux.HandleFunc("PUT /api/v1/settings/router/{tier}", s.requireAuth(s.handleSetRouterTier))

@@ -68,8 +68,8 @@ RUN apk add --no-cache \
 # uid the way a pure-Go image could.
 RUN addgroup -g 10001 loomux \
  && adduser -D -u 10001 -G loomux -h /home/loomux loomux \
- && mkdir -p /var/lib/loomux /srv/loomux/web \
- && chown -R loomux:loomux /home/loomux /var/lib/loomux /srv/loomux \
+ && mkdir -p /var/lib/loomux /srv/loomux/web /usr/local/lib/loomux/plugins /run/loomux/plugins \
+ && chown -R loomux:loomux /home/loomux /var/lib/loomux /srv/loomux /usr/local/lib/loomux /run/loomux \
  && chmod 0700 /home/loomux \
  && chgrp -R 0 /home/loomux /var/lib/loomux \
  && chmod -R g=u /home/loomux /var/lib/loomux
@@ -103,8 +103,13 @@ COPY --chown=loomux:loomux ${WEB_DIST}/ /srv/loomux/web/
 # LOOMUX_LOCAL_TARGETS=off (LOOM-141): an agent on a local target would
 # run as loomuxd's own user inside this container, able to read its
 # database, vault key and SSH keys. Register machines as remote targets.
+# Plugins (LOOM-178): first-party plugins are bundled under
+# LOOMUX_PLUGIN_BUNDLE_DIR (none yet); a sidecar container serves its
+# socket in LOOMUX_PLUGIN_SOCKET_DIR (an emptyDir shared with it).
 ENV HOME=/home/loomux \
     LOOMUX_LOCAL_TARGETS=off \
+    LOOMUX_PLUGIN_BUNDLE_DIR=/usr/local/lib/loomux/plugins \
+    LOOMUX_PLUGIN_SOCKET_DIR=/run/loomux/plugins \
     LOOMUX_STATIC_DIR=/srv/loomux/web \
     LOOMUX_DB_PATH=/var/lib/loomux/loomux.db \
     LOOMUX_HTTP_ADDR=:8080

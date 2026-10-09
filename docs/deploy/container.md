@@ -238,6 +238,10 @@ see [targets.md](targets.md#local-targets)), `LOOMUX_SSH_PROXY`
 (`socks5://host:port`, e.g. `socks5://127.0.0.1:1055` for a userspace
 Tailscale sidecar: the proxy targets with a Loomux-managed SSH key are
 reached through, relayed by loomuxd itself; see `docs/deploy/ssh.md`),
+`LOOMUX_PLUGIN_BUNDLE_DIR` (`/usr/local/lib/loomux/plugins` in this image),
+`LOOMUX_PLUGIN_DIR` (`plugins/` beside the database) and
+`LOOMUX_PLUGIN_SOCKET_DIR` (`/run/loomux/plugins` in this image): where
+plugins are found (LOOM-178, see [plugins.md](plugins.md)),
 `LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
 provisioning and dispatch — see below), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a

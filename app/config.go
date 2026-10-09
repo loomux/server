@@ -97,6 +97,14 @@ type Config struct {
 	// (LOOM-110); zero keeps it. LoadConfig defaults it to
 	// defaultEventRetention.
 	EventRetention time.Duration
+	// PluginBundleDir, PluginDir and PluginSocketDir are where plugins
+	// are found (LOOM-178, docs/design/target-providers.md §1.8): the
+	// image's bundled plugins, the operator's, and sidecars' sockets.
+	// An empty PluginDir means plugins/ beside the database; the other
+	// two empty mean nothing is looked for there.
+	PluginBundleDir string
+	PluginDir       string
+	PluginSocketDir string
 }
 
 // NotifyConfig configures turn notifications (LOOM-102).
@@ -137,6 +145,9 @@ const (
 	envPublicURL           = "LOOMUX_PUBLIC_URL"
 	envTurnRetention       = "LOOMUX_TURN_RETENTION"
 	envEventRetention      = "LOOMUX_EVENT_RETENTION"
+	envPluginBundleDir     = "LOOMUX_PLUGIN_BUNDLE_DIR"
+	envPluginDir           = "LOOMUX_PLUGIN_DIR"
+	envPluginSocketDir     = "LOOMUX_PLUGIN_SOCKET_DIR"
 
 	defaultDBPath = "loomux.db"
 
@@ -301,6 +312,9 @@ func LoadConfig() (Config, error) {
 		DispatchDrain:       dispatchDrain,
 		TurnRetention:       turnRetention,
 		EventRetention:      eventRetention,
+		PluginBundleDir:     os.Getenv(envPluginBundleDir),
+		PluginDir:           os.Getenv(envPluginDir),
+		PluginSocketDir:     os.Getenv(envPluginSocketDir),
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil

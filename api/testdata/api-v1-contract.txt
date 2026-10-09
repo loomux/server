@@ -32,6 +32,17 @@ DELETE /api/v1/credentials/{id} status 204
 DELETE /api/v1/credentials/{id} status 401
 DELETE /api/v1/credentials/{id} status 404
 DELETE /api/v1/credentials/{id} status 500
+DELETE /api/v1/plugins/{id}
+DELETE /api/v1/plugins/{id} query targets
+DELETE /api/v1/plugins/{id} request-header Authorization
+DELETE /api/v1/plugins/{id} response - none
+DELETE /api/v1/plugins/{id} response-header Content-Type
+DELETE /api/v1/plugins/{id} status 204
+DELETE /api/v1/plugins/{id} status 400
+DELETE /api/v1/plugins/{id} status 401
+DELETE /api/v1/plugins/{id} status 404
+DELETE /api/v1/plugins/{id} status 409
+DELETE /api/v1/plugins/{id} status 500
 DELETE /api/v1/sessions/{id}
 DELETE /api/v1/sessions/{id} request-header Authorization
 DELETE /api/v1/sessions/{id} response - none
@@ -319,6 +330,106 @@ GET /api/v1/health/deep status 200
 GET /api/v1/health/deep status 401
 GET /api/v1/health/deep status 500
 GET /api/v1/health/deep status 503
+GET /api/v1/plugins
+GET /api/v1/plugins request-header Authorization
+GET /api/v1/plugins response - object
+GET /api/v1/plugins response .plugins []object
+GET /api/v1/plugins response .plugins[].available_version string
+GET /api/v1/plugins response .plugins[].capabilities []string
+GET /api/v1/plugins response .plugins[].check object nullable
+GET /api/v1/plugins response .plugins[].check.ok boolean
+GET /api/v1/plugins response .plugins[].check.problems []object
+GET /api/v1/plugins response .plugins[].check.problems[].code string
+GET /api/v1/plugins response .plugins[].check.problems[].message string
+GET /api/v1/plugins response .plugins[].check.problems[].severity string
+GET /api/v1/plugins response .plugins[].config {}any
+GET /api/v1/plugins response .plugins[].enabled boolean
+GET /api/v1/plugins response .plugins[].id string
+GET /api/v1/plugins response .plugins[].installed_at time
+GET /api/v1/plugins response .plugins[].instance string
+GET /api/v1/plugins response .plugins[].instance_reason string
+GET /api/v1/plugins response .plugins[].label string
+GET /api/v1/plugins response .plugins[].machines number
+GET /api/v1/plugins response .plugins[].name string
+GET /api/v1/plugins response .plugins[].path string
+GET /api/v1/plugins response .plugins[].protocol string
+GET /api/v1/plugins response .plugins[].secrets_unreadable boolean
+GET /api/v1/plugins response .plugins[].source string
+GET /api/v1/plugins response .plugins[].status string
+GET /api/v1/plugins response .plugins[].status_reason string
+GET /api/v1/plugins response .plugins[].trust string
+GET /api/v1/plugins response .plugins[].updated_at time
+GET /api/v1/plugins response .plugins[].version string
+GET /api/v1/plugins response-header Content-Type
+GET /api/v1/plugins status 200
+GET /api/v1/plugins status 401
+GET /api/v1/plugins status 404
+GET /api/v1/plugins status 500
+GET /api/v1/plugins/available
+GET /api/v1/plugins/available request-header Authorization
+GET /api/v1/plugins/available response - object
+GET /api/v1/plugins/available response .plugins []object
+GET /api/v1/plugins/available response .plugins[].capabilities []string
+GET /api/v1/plugins/available response .plugins[].config_schema any
+GET /api/v1/plugins/available response .plugins[].description string
+GET /api/v1/plugins/available response .plugins[].homepage string
+GET /api/v1/plugins/available response .plugins[].installed []string
+GET /api/v1/plugins/available response .plugins[].isolation string
+GET /api/v1/plugins/available response .plugins[].min_host_version string
+GET /api/v1/plugins/available response .plugins[].name string
+GET /api/v1/plugins/available response .plugins[].path string
+GET /api/v1/plugins/available response .plugins[].permissions []object
+GET /api/v1/plugins/available response .plugins[].permissions[].detail string
+GET /api/v1/plugins/available response .plugins[].permissions[].scope string
+GET /api/v1/plugins/available response .plugins[].protocol string
+GET /api/v1/plugins/available response .plugins[].source string
+GET /api/v1/plugins/available response .plugins[].title string
+GET /api/v1/plugins/available response .plugins[].trust string
+GET /api/v1/plugins/available response .plugins[].vendor string
+GET /api/v1/plugins/available response .plugins[].version string
+GET /api/v1/plugins/available response-header Content-Type
+GET /api/v1/plugins/available status 200
+GET /api/v1/plugins/available status 401
+GET /api/v1/plugins/available status 404
+GET /api/v1/plugins/available status 500
+GET /api/v1/plugins/{id}
+GET /api/v1/plugins/{id} request-header Authorization
+GET /api/v1/plugins/{id} response - object
+GET /api/v1/plugins/{id} response .available_version string
+GET /api/v1/plugins/{id} response .capabilities []string
+GET /api/v1/plugins/{id} response .check object nullable
+GET /api/v1/plugins/{id} response .check.ok boolean
+GET /api/v1/plugins/{id} response .check.problems []object
+GET /api/v1/plugins/{id} response .check.problems[].code string
+GET /api/v1/plugins/{id} response .check.problems[].message string
+GET /api/v1/plugins/{id} response .check.problems[].severity string
+GET /api/v1/plugins/{id} response .config {}any
+GET /api/v1/plugins/{id} response .enabled boolean
+GET /api/v1/plugins/{id} response .id string
+GET /api/v1/plugins/{id} response .installed_at time
+GET /api/v1/plugins/{id} response .instance string
+GET /api/v1/plugins/{id} response .instance_reason string
+GET /api/v1/plugins/{id} response .label string
+GET /api/v1/plugins/{id} response .machines number
+GET /api/v1/plugins/{id} response .name string
+GET /api/v1/plugins/{id} response .path string
+GET /api/v1/plugins/{id} response .protocol string
+GET /api/v1/plugins/{id} response .secrets_unreadable boolean
+GET /api/v1/plugins/{id} response .source string
+GET /api/v1/plugins/{id} response .status string
+GET /api/v1/plugins/{id} response .status_reason string
+GET /api/v1/plugins/{id} response .trust string
+GET /api/v1/plugins/{id} response .updated_at time
+GET /api/v1/plugins/{id} response .version string
+GET /api/v1/plugins/{id} response-header Content-Type
+GET /api/v1/plugins/{id} status 200
+GET /api/v1/plugins/{id} status 400
+GET /api/v1/plugins/{id} status 401
+GET /api/v1/plugins/{id} status 404
+GET /api/v1/plugins/{id} status 409
+GET /api/v1/plugins/{id} status 422
+GET /api/v1/plugins/{id} status 500
+GET /api/v1/plugins/{id} status 503
 GET /api/v1/sessions
 GET /api/v1/sessions request-header Authorization
 GET /api/v1/sessions response - object
@@ -656,6 +767,202 @@ POST /api/v1/logout response-header Content-Type
 POST /api/v1/logout status 204
 POST /api/v1/logout status 401
 POST /api/v1/logout status 500
+POST /api/v1/plugins
+POST /api/v1/plugins request - object
+POST /api/v1/plugins request .config {}any
+POST /api/v1/plugins request .label string
+POST /api/v1/plugins request .plugin string
+POST /api/v1/plugins request .source string
+POST /api/v1/plugins request-header Authorization
+POST /api/v1/plugins response - object
+POST /api/v1/plugins response .available_version string
+POST /api/v1/plugins response .capabilities []string
+POST /api/v1/plugins response .check object nullable
+POST /api/v1/plugins response .check.ok boolean
+POST /api/v1/plugins response .check.problems []object
+POST /api/v1/plugins response .check.problems[].code string
+POST /api/v1/plugins response .check.problems[].message string
+POST /api/v1/plugins response .check.problems[].severity string
+POST /api/v1/plugins response .config {}any
+POST /api/v1/plugins response .enabled boolean
+POST /api/v1/plugins response .id string
+POST /api/v1/plugins response .installed_at time
+POST /api/v1/plugins response .instance string
+POST /api/v1/plugins response .instance_reason string
+POST /api/v1/plugins response .label string
+POST /api/v1/plugins response .machines number
+POST /api/v1/plugins response .name string
+POST /api/v1/plugins response .path string
+POST /api/v1/plugins response .protocol string
+POST /api/v1/plugins response .secrets_unreadable boolean
+POST /api/v1/plugins response .source string
+POST /api/v1/plugins response .status string
+POST /api/v1/plugins response .status_reason string
+POST /api/v1/plugins response .trust string
+POST /api/v1/plugins response .updated_at time
+POST /api/v1/plugins response .version string
+POST /api/v1/plugins response-header Content-Type
+POST /api/v1/plugins status 201
+POST /api/v1/plugins status 400
+POST /api/v1/plugins status 401
+POST /api/v1/plugins status 404
+POST /api/v1/plugins status 409
+POST /api/v1/plugins status 413
+POST /api/v1/plugins status 422
+POST /api/v1/plugins status 500
+POST /api/v1/plugins status 503
+POST /api/v1/plugins/{id}/check
+POST /api/v1/plugins/{id}/check request-header Authorization
+POST /api/v1/plugins/{id}/check response - object
+POST /api/v1/plugins/{id}/check response .available_version string
+POST /api/v1/plugins/{id}/check response .capabilities []string
+POST /api/v1/plugins/{id}/check response .check object nullable
+POST /api/v1/plugins/{id}/check response .check.ok boolean
+POST /api/v1/plugins/{id}/check response .check.problems []object
+POST /api/v1/plugins/{id}/check response .check.problems[].code string
+POST /api/v1/plugins/{id}/check response .check.problems[].message string
+POST /api/v1/plugins/{id}/check response .check.problems[].severity string
+POST /api/v1/plugins/{id}/check response .config {}any
+POST /api/v1/plugins/{id}/check response .enabled boolean
+POST /api/v1/plugins/{id}/check response .id string
+POST /api/v1/plugins/{id}/check response .installed_at time
+POST /api/v1/plugins/{id}/check response .instance string
+POST /api/v1/plugins/{id}/check response .instance_reason string
+POST /api/v1/plugins/{id}/check response .label string
+POST /api/v1/plugins/{id}/check response .machines number
+POST /api/v1/plugins/{id}/check response .name string
+POST /api/v1/plugins/{id}/check response .path string
+POST /api/v1/plugins/{id}/check response .protocol string
+POST /api/v1/plugins/{id}/check response .secrets_unreadable boolean
+POST /api/v1/plugins/{id}/check response .source string
+POST /api/v1/plugins/{id}/check response .status string
+POST /api/v1/plugins/{id}/check response .status_reason string
+POST /api/v1/plugins/{id}/check response .trust string
+POST /api/v1/plugins/{id}/check response .updated_at time
+POST /api/v1/plugins/{id}/check response .version string
+POST /api/v1/plugins/{id}/check response-header Content-Type
+POST /api/v1/plugins/{id}/check status 200
+POST /api/v1/plugins/{id}/check status 400
+POST /api/v1/plugins/{id}/check status 401
+POST /api/v1/plugins/{id}/check status 404
+POST /api/v1/plugins/{id}/check status 409
+POST /api/v1/plugins/{id}/check status 422
+POST /api/v1/plugins/{id}/check status 500
+POST /api/v1/plugins/{id}/check status 503
+POST /api/v1/plugins/{id}/disable
+POST /api/v1/plugins/{id}/disable request-header Authorization
+POST /api/v1/plugins/{id}/disable response - object
+POST /api/v1/plugins/{id}/disable response .available_version string
+POST /api/v1/plugins/{id}/disable response .capabilities []string
+POST /api/v1/plugins/{id}/disable response .check object nullable
+POST /api/v1/plugins/{id}/disable response .check.ok boolean
+POST /api/v1/plugins/{id}/disable response .check.problems []object
+POST /api/v1/plugins/{id}/disable response .check.problems[].code string
+POST /api/v1/plugins/{id}/disable response .check.problems[].message string
+POST /api/v1/plugins/{id}/disable response .check.problems[].severity string
+POST /api/v1/plugins/{id}/disable response .config {}any
+POST /api/v1/plugins/{id}/disable response .enabled boolean
+POST /api/v1/plugins/{id}/disable response .id string
+POST /api/v1/plugins/{id}/disable response .installed_at time
+POST /api/v1/plugins/{id}/disable response .instance string
+POST /api/v1/plugins/{id}/disable response .instance_reason string
+POST /api/v1/plugins/{id}/disable response .label string
+POST /api/v1/plugins/{id}/disable response .machines number
+POST /api/v1/plugins/{id}/disable response .name string
+POST /api/v1/plugins/{id}/disable response .path string
+POST /api/v1/plugins/{id}/disable response .protocol string
+POST /api/v1/plugins/{id}/disable response .secrets_unreadable boolean
+POST /api/v1/plugins/{id}/disable response .source string
+POST /api/v1/plugins/{id}/disable response .status string
+POST /api/v1/plugins/{id}/disable response .status_reason string
+POST /api/v1/plugins/{id}/disable response .trust string
+POST /api/v1/plugins/{id}/disable response .updated_at time
+POST /api/v1/plugins/{id}/disable response .version string
+POST /api/v1/plugins/{id}/disable response-header Content-Type
+POST /api/v1/plugins/{id}/disable status 200
+POST /api/v1/plugins/{id}/disable status 400
+POST /api/v1/plugins/{id}/disable status 401
+POST /api/v1/plugins/{id}/disable status 404
+POST /api/v1/plugins/{id}/disable status 409
+POST /api/v1/plugins/{id}/disable status 422
+POST /api/v1/plugins/{id}/disable status 500
+POST /api/v1/plugins/{id}/disable status 503
+POST /api/v1/plugins/{id}/enable
+POST /api/v1/plugins/{id}/enable request-header Authorization
+POST /api/v1/plugins/{id}/enable response - object
+POST /api/v1/plugins/{id}/enable response .available_version string
+POST /api/v1/plugins/{id}/enable response .capabilities []string
+POST /api/v1/plugins/{id}/enable response .check object nullable
+POST /api/v1/plugins/{id}/enable response .check.ok boolean
+POST /api/v1/plugins/{id}/enable response .check.problems []object
+POST /api/v1/plugins/{id}/enable response .check.problems[].code string
+POST /api/v1/plugins/{id}/enable response .check.problems[].message string
+POST /api/v1/plugins/{id}/enable response .check.problems[].severity string
+POST /api/v1/plugins/{id}/enable response .config {}any
+POST /api/v1/plugins/{id}/enable response .enabled boolean
+POST /api/v1/plugins/{id}/enable response .id string
+POST /api/v1/plugins/{id}/enable response .installed_at time
+POST /api/v1/plugins/{id}/enable response .instance string
+POST /api/v1/plugins/{id}/enable response .instance_reason string
+POST /api/v1/plugins/{id}/enable response .label string
+POST /api/v1/plugins/{id}/enable response .machines number
+POST /api/v1/plugins/{id}/enable response .name string
+POST /api/v1/plugins/{id}/enable response .path string
+POST /api/v1/plugins/{id}/enable response .protocol string
+POST /api/v1/plugins/{id}/enable response .secrets_unreadable boolean
+POST /api/v1/plugins/{id}/enable response .source string
+POST /api/v1/plugins/{id}/enable response .status string
+POST /api/v1/plugins/{id}/enable response .status_reason string
+POST /api/v1/plugins/{id}/enable response .trust string
+POST /api/v1/plugins/{id}/enable response .updated_at time
+POST /api/v1/plugins/{id}/enable response .version string
+POST /api/v1/plugins/{id}/enable response-header Content-Type
+POST /api/v1/plugins/{id}/enable status 200
+POST /api/v1/plugins/{id}/enable status 400
+POST /api/v1/plugins/{id}/enable status 401
+POST /api/v1/plugins/{id}/enable status 404
+POST /api/v1/plugins/{id}/enable status 409
+POST /api/v1/plugins/{id}/enable status 422
+POST /api/v1/plugins/{id}/enable status 500
+POST /api/v1/plugins/{id}/enable status 503
+POST /api/v1/plugins/{id}/upgrade
+POST /api/v1/plugins/{id}/upgrade request-header Authorization
+POST /api/v1/plugins/{id}/upgrade response - object
+POST /api/v1/plugins/{id}/upgrade response .available_version string
+POST /api/v1/plugins/{id}/upgrade response .capabilities []string
+POST /api/v1/plugins/{id}/upgrade response .check object nullable
+POST /api/v1/plugins/{id}/upgrade response .check.ok boolean
+POST /api/v1/plugins/{id}/upgrade response .check.problems []object
+POST /api/v1/plugins/{id}/upgrade response .check.problems[].code string
+POST /api/v1/plugins/{id}/upgrade response .check.problems[].message string
+POST /api/v1/plugins/{id}/upgrade response .check.problems[].severity string
+POST /api/v1/plugins/{id}/upgrade response .config {}any
+POST /api/v1/plugins/{id}/upgrade response .enabled boolean
+POST /api/v1/plugins/{id}/upgrade response .id string
+POST /api/v1/plugins/{id}/upgrade response .installed_at time
+POST /api/v1/plugins/{id}/upgrade response .instance string
+POST /api/v1/plugins/{id}/upgrade response .instance_reason string
+POST /api/v1/plugins/{id}/upgrade response .label string
+POST /api/v1/plugins/{id}/upgrade response .machines number
+POST /api/v1/plugins/{id}/upgrade response .name string
+POST /api/v1/plugins/{id}/upgrade response .path string
+POST /api/v1/plugins/{id}/upgrade response .protocol string
+POST /api/v1/plugins/{id}/upgrade response .secrets_unreadable boolean
+POST /api/v1/plugins/{id}/upgrade response .source string
+POST /api/v1/plugins/{id}/upgrade response .status string
+POST /api/v1/plugins/{id}/upgrade response .status_reason string
+POST /api/v1/plugins/{id}/upgrade response .trust string
+POST /api/v1/plugins/{id}/upgrade response .updated_at time
+POST /api/v1/plugins/{id}/upgrade response .version string
+POST /api/v1/plugins/{id}/upgrade response-header Content-Type
+POST /api/v1/plugins/{id}/upgrade status 200
+POST /api/v1/plugins/{id}/upgrade status 400
+POST /api/v1/plugins/{id}/upgrade status 401
+POST /api/v1/plugins/{id}/upgrade status 404
+POST /api/v1/plugins/{id}/upgrade status 409
+POST /api/v1/plugins/{id}/upgrade status 422
+POST /api/v1/plugins/{id}/upgrade status 500
+POST /api/v1/plugins/{id}/upgrade status 503
 POST /api/v1/settings/router/{tier}/test
 POST /api/v1/settings/router/{tier}/test request-header Authorization
 POST /api/v1/settings/router/{tier}/test response - object
@@ -1071,6 +1378,47 @@ PUT /api/v1/credentials/{id}/value status 401
 PUT /api/v1/credentials/{id}/value status 404
 PUT /api/v1/credentials/{id}/value status 413
 PUT /api/v1/credentials/{id}/value status 500
+PUT /api/v1/plugins/{id}/config
+PUT /api/v1/plugins/{id}/config request - object
+PUT /api/v1/plugins/{id}/config request .config {}any
+PUT /api/v1/plugins/{id}/config request-header Authorization
+PUT /api/v1/plugins/{id}/config response - object
+PUT /api/v1/plugins/{id}/config response .available_version string
+PUT /api/v1/plugins/{id}/config response .capabilities []string
+PUT /api/v1/plugins/{id}/config response .check object nullable
+PUT /api/v1/plugins/{id}/config response .check.ok boolean
+PUT /api/v1/plugins/{id}/config response .check.problems []object
+PUT /api/v1/plugins/{id}/config response .check.problems[].code string
+PUT /api/v1/plugins/{id}/config response .check.problems[].message string
+PUT /api/v1/plugins/{id}/config response .check.problems[].severity string
+PUT /api/v1/plugins/{id}/config response .config {}any
+PUT /api/v1/plugins/{id}/config response .enabled boolean
+PUT /api/v1/plugins/{id}/config response .id string
+PUT /api/v1/plugins/{id}/config response .installed_at time
+PUT /api/v1/plugins/{id}/config response .instance string
+PUT /api/v1/plugins/{id}/config response .instance_reason string
+PUT /api/v1/plugins/{id}/config response .label string
+PUT /api/v1/plugins/{id}/config response .machines number
+PUT /api/v1/plugins/{id}/config response .name string
+PUT /api/v1/plugins/{id}/config response .path string
+PUT /api/v1/plugins/{id}/config response .protocol string
+PUT /api/v1/plugins/{id}/config response .secrets_unreadable boolean
+PUT /api/v1/plugins/{id}/config response .source string
+PUT /api/v1/plugins/{id}/config response .status string
+PUT /api/v1/plugins/{id}/config response .status_reason string
+PUT /api/v1/plugins/{id}/config response .trust string
+PUT /api/v1/plugins/{id}/config response .updated_at time
+PUT /api/v1/plugins/{id}/config response .version string
+PUT /api/v1/plugins/{id}/config response-header Content-Type
+PUT /api/v1/plugins/{id}/config status 200
+PUT /api/v1/plugins/{id}/config status 400
+PUT /api/v1/plugins/{id}/config status 401
+PUT /api/v1/plugins/{id}/config status 404
+PUT /api/v1/plugins/{id}/config status 409
+PUT /api/v1/plugins/{id}/config status 413
+PUT /api/v1/plugins/{id}/config status 422
+PUT /api/v1/plugins/{id}/config status 500
+PUT /api/v1/plugins/{id}/config status 503
 PUT /api/v1/settings/router/{tier}
 PUT /api/v1/settings/router/{tier} request - object
 PUT /api/v1/settings/router/{tier} request .api_key string

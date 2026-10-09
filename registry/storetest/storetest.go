@@ -21,6 +21,10 @@ import (
 // empty Store for each call; the caller is responsible for its cleanup
 // (e.g. via t.Cleanup).
 func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
+	t.Run("Plugin", func(t *testing.T) { testPluginCRUD(t, newStore(t)) })
+	t.Run("PluginDuplicateLabel", func(t *testing.T) { testPluginDuplicateLabel(t, newStore(t)) })
+	t.Run("PluginConfigRoundTrip", func(t *testing.T) { testPluginConfigRoundTrip(t, newStore(t)) })
+	t.Run("Settings", func(t *testing.T) { testSettings(t, newStore(t)) })
 	t.Run("Target", func(t *testing.T) { testTargetCRUD(t, newStore(t)) })
 	t.Run("TargetNotFound", func(t *testing.T) { testTargetNotFound(t, newStore(t)) })
 	t.Run("TargetDuplicateName", func(t *testing.T) { testTargetDuplicateName(t, newStore(t)) })
@@ -2115,4 +2119,11 @@ func taskIDs(tasks []*registry.Task) []string {
 		ids = append(ids, t.ID)
 	}
 	return ids
+}
+
+// RunWithoutMasterKey runs the cases that need a store opened with no
+// master key (LOOM-178: plugin secrets are refused, plain configuration
+// isn't).
+func RunWithoutMasterKey(t *testing.T, newStore func(t *testing.T) registry.Store) {
+	t.Run("PluginSecretsNeedMasterKey", func(t *testing.T) { testPluginSecretsNeedMasterKey(t, newStore(t)) })
 }

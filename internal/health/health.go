@@ -51,6 +51,14 @@ type Checker struct {
 	newExecutor orchestrator.ExecutorFactory
 	routerCfg   llmrouter.Config
 	sidecarAddr string
+	// plugins, when set, reports the plugin system (LOOM-178) as the
+	// "plugins" component of Deep.
+	plugins func(ctx context.Context) ComponentResult
+}
+
+// WithPlugins adds the plugin system's report to Deep (LOOM-178).
+func (c *Checker) WithPlugins(report func(ctx context.Context) ComponentResult) {
+	c.plugins = report
 }
 
 // NewChecker constructs a Checker. sidecarAddr is the SOCKS5 proxy address
@@ -167,6 +175,16 @@ func (c *Checker) Deep(ctx context.Context) Result {
 		// works, so the overall status is degraded rather than fully
 		// unhealthy.
 		res.Status = StatusDegraded
+	}
+
+	if c.plugins != nil {
+		p := c.plugins(ctx)
+		res.Components["plugins"] = p
+		if p.Status != StatusHealthy && res.Status == StatusHealthy {
+			// A plugin that isn't running only takes its own machines'
+			// lifecycle with it; dispatch to them still works.
+			res.Status = StatusDegraded
+		}
 	}
 
 	return res

@@ -227,5 +227,30 @@ type Store interface {
 	TouchSession(ctx context.Context, id string, lastUsedAt time.Time) error
 	DeleteSession(ctx context.Context, id string) error
 
+	// CreatePlugin, GetPlugin, ListPlugins, UpdatePlugin, SetPluginConfig
+	// and DeletePlugin keep the installed plugins (LOOM-178). CreatePlugin
+	// stamps InstalledAt/UpdatedAt and encrypts Secrets at rest
+	// (ErrNoMasterKey if there are any and no master key); a duplicate
+	// label is ErrConflict. GetPlugin decrypts Secrets (a row that doesn't
+	// decrypt comes back with Secrets nil and ErrNoMasterKey, or the
+	// decryption error, joined). ListPlugins returns every plugin ordered by
+	// label, decrypting nothing. UpdatePlugin writes status, reason,
+	// enabled, version, protocol, capabilities, path and trust, never the
+	// configuration; SetPluginConfig replaces the configuration and the
+	// secrets (nil or empty secrets store none). Unknown ids are
+	// ErrNotFound.
+	CreatePlugin(ctx context.Context, p *Plugin) error
+	GetPlugin(ctx context.Context, id string) (*Plugin, error)
+	ListPlugins(ctx context.Context) ([]*Plugin, error)
+	UpdatePlugin(ctx context.Context, p *Plugin) error
+	SetPluginConfig(ctx context.Context, id string, config map[string]any, secrets map[string]string) error
+	DeletePlugin(ctx context.Context, id string) error
+
+	// GetSetting and SetSetting keep server-wide settings by key
+	// (LOOM-178: the instance id). GetSetting is ErrNotFound for a key
+	// never set; SetSetting creates or overwrites.
+	GetSetting(ctx context.Context, key string) (string, error)
+	SetSetting(ctx context.Context, key, value string) error
+
 	Close() error
 }
