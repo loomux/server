@@ -91,6 +91,10 @@ func RedactValues(text string, secrets map[string]string) string {
 		case len(v.stripped) < minSplitRedactLen:
 			text = strings.ReplaceAll(text, v.exact, "[redacted]")
 		case !split:
+			// The exact value too: stripSpace turns invalid UTF-8 into
+			// U+FFFD, so the stripped form alone misses a value holding
+			// raw invalid bytes.
+			text = strings.ReplaceAll(text, v.exact, "[redacted]")
 			text = strings.ReplaceAll(text, v.stripped, "[redacted]")
 		case strings.Contains(strippedText, v.stripped):
 			text = splitPattern(v.stripped).ReplaceAllLiteralString(text, "[redacted]")

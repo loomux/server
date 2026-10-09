@@ -3,6 +3,7 @@ package credentials_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Loomux/server/credentials"
@@ -92,6 +93,17 @@ func TestRedactValues_SplitSystemSecret(t *testing.T) {
 	got := credentials.RedactValues("key sk-ant-loom157-SYS\nTEMKEY0123 end", nil)
 	if got != "key [redacted] end" {
 		t.Fatalf("RedactValues = %q", got)
+	}
+}
+
+// A value holding raw invalid UTF-8 is still redacted verbatim, with or
+// without whitespace in the text (#319 re-review).
+func TestRedactValues_InvalidUTF8Value(t *testing.T) {
+	secrets := map[string]string{"raw": "tok\xffen-ABCDEF123456"}
+	for _, in := range []string{"x=tok\xffen-ABCDEF123456;", "x = tok\xffen-ABCDEF123456 ;"} {
+		if got := credentials.RedactValues(in, secrets); strings.Contains(got, "ABCDEF") {
+			t.Errorf("RedactValues(%q) = %q, want the value redacted", in, got)
+		}
 	}
 }
 
