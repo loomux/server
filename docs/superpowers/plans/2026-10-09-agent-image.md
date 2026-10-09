@@ -38,10 +38,12 @@ actions/attest-build-provenance.
 
 ### Task 1: Image, config, entrypoint, smoke script
 - [x] Write `deploy/agent/Dockerfile`, `sshd_config`, `entrypoint.sh` (executable), `smoke.sh`.
-- [ ] `docker build -t loomux-agent:dev deploy/agent && bash deploy/agent/smoke.sh loomux-agent:dev` → `smoke ok`.
-- [ ] Commit `LOOM-178: the agent image`.
+- [x] `docker build -t loomux-agent:dev deploy/agent && bash deploy/agent/smoke.sh loomux-agent:dev` → `smoke ok`.
+- [x] Commit `LOOM-178: the agent image`.
 
 ### Task 2: Workflow and docs
 - [x] `.github/workflows/plugins.yml`, `docs/deploy/agent-image.md`, `changes/loom-178-agent-image.md`;
   `docs/deploy/container.md` gets a pointer.
-- [ ] `sh deploy/changelog.sh check`; push; PR "LOOM-178: the agent image (PR 3)"; CI's `plugins` job green.
+- [x] `sh deploy/changelog.sh check`; push; PR #345.
+- [ ] Review round 1: actions pinned by commit (trivy's tag was wrong), a separate publish job pushing the
+  tested image from an artifact, outputs via `env:`, base image by digest; CI's `agent-image` job green.

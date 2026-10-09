@@ -11,7 +11,10 @@
 # the target's key) are mounted at /etc/loomux/ssh-src by the plugin and
 # copied into a private directory by the entrypoint.
 
-FROM node:22-bookworm-slim
+# Pinned by digest as well as tag: a base-image change is an image
+# change, reviewed as a PR (the tag says what it is, the digest what it
+# was when reviewed).
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 
 # Pinned exactly, above the floors in agents/README.md (claude 2.1.0,
 # codex 0.150.0): a version change is an image change, reviewed as a PR.

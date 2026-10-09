@@ -79,13 +79,19 @@ plugin would (read-only, tmpfs, no capabilities, the two files mounted
 read-only), logs in over ssh with a generated key and a pinned host key,
 starts and kills a tmux session on Loomux's socket, and checks a
 stranger's key is refused. `.github/workflows/plugins.yml` runs it on
-every change, scans the image with trivy (critical, fixable), and on
-`main` publishes `:main` and `:sha-<short>`, on a release tag
-`:<version>`, each with a GitHub build-provenance attestation.
+every change and scans the image with trivy (critical, fixable), with
+read-only permissions. On `main` a second job publishes `:main` and
+`:sha-<short>`, on a release tag `:<version>`: it pushes the very image
+the first job tested (handed over as an artifact), so the published and
+attested digest is the one that passed, each with a GitHub
+build-provenance attestation. A pull request never pushes. The actions
+are pinned by commit.
 
 ## Changing a version
 
 Edit the `ARG`s in the Dockerfile in a PR; the workflow builds and
 smoke-tests the result. Keep every pin at or above the floors in
 `agents/README.md`, which are the oldest releases on which a real turn
-was verified to write its completion marker.
+was verified to write its completion marker. The base image is pinned
+by digest as well as tag (`docker pull node:22-bookworm-slim` prints
+the current one); bump it the same way.
