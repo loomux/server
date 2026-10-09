@@ -35,8 +35,13 @@ import (
 // The kubeconfig is the plugin ServiceAccount's (deploy/test/kind), so
 // the Role's verbs are exactly what the plugin gets. kubectl (for a
 // port-forward, with its own admin kubeconfig) and ssh make the ssh
-// login part run; without them it is skipped. LOOMUX_KIND_ENFORCED=1
-// says a policy engine is installed and the check must report it.
+// login part run; without them it is skipped.
+//
+// kind's kindnet enforces NetworkPolicy (it bundles
+// kube-network-policies), so with deploy/test/kind's policies applied
+// the check must say enforced: a confined canary reaches nothing.
+// LOOMUX_KIND_ENFORCED=0 says the cluster has no policy engine (another
+// CNI) and the check must say so instead.
 func TestKind(t *testing.T) {
 	kcPath := os.Getenv("LOOMUX_KIND_KUBECONFIG")
 	if kcPath == "" {
@@ -125,12 +130,12 @@ func endToEnd(t *testing.T, launch plugintest.Launch, o plugintest.Options) {
 			t.Errorf("check reports %s", code)
 		}
 	}
-	if os.Getenv("LOOMUX_KIND_ENFORCED") == "1" {
-		if hasProblem(res, "network_policy_not_enforced") {
-			t.Error("a policy engine is installed but the check says not enforced")
+	if os.Getenv("LOOMUX_KIND_ENFORCED") == "0" {
+		if !hasProblem(res, "network_policy_not_enforced") {
+			t.Error("the cluster has no policy engine; the check should say so")
 		}
-	} else if !hasProblem(res, "network_policy_not_enforced") {
-		t.Error("kind enforces no NetworkPolicy; the check should say so")
+	} else if hasProblem(res, "network_policy_not_enforced") {
+		t.Error("kind enforces the applied NetworkPolicies; the check says not enforced")
 	}
 
 	// Keys, as the host makes them: the machine's host key, pinned
@@ -214,18 +219,26 @@ func waitStatus(t *testing.T, call func(string, any, any) error, id, want string
 	t.Helper()
 	deadline := time.Now().Add(within)
 	var env protocol.Environment
+	last := ""
 	for {
 		if err := call(protocol.MethodTargetsGet, protocol.IDParams{ID: id}, &env); err != nil {
 			t.Fatalf("get: %v", err)
 		}
+		if cur := env.Status + " " + env.Reason; cur != last {
+			t.Logf("%s: %s", id, cur)
+			last = cur
+		}
 		if env.Status == want {
 			return env
 		}
+		// The health has the cluster's last word about it.
+		var health protocol.EnvironmentHealth
+		_ = call(protocol.MethodTargetsHealth, protocol.IDParams{ID: id}, &health)
 		if env.Status == protocol.EnvError && want != protocol.EnvError {
-			t.Fatalf("machine failed: %s", env.Reason)
+			t.Fatalf("machine failed: %s (health: %s)", env.Reason, health.Reason)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("machine is %s (%s), never %s within %s", env.Status, env.Reason, want, within)
+			t.Fatalf("machine is %s (%s), never %s within %s (health: %s %s)", env.Status, env.Reason, want, within, health.Status, health.Reason)
 		}
 		time.Sleep(2 * time.Second)
 	}

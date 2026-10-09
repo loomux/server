@@ -551,6 +551,7 @@ func TestCreateRefusesBadSpecs(t *testing.T) {
 	cases := map[string]func(s *protocol.EnvironmentSpec){
 		"id":      func(s *protocol.EnvironmentSpec) { s.ID = "Bad_ID" },
 		"id-long": func(s *protocol.EnvironmentSpec) { s.ID = strings.Repeat("a", 41) },
+		"id-dash": func(s *protocol.EnvironmentSpec) { s.ID = "ends-with-" },
 		"size":    func(s *protocol.EnvironmentSpec) { s.Size = "huge" },
 		"egress":  func(s *protocol.EnvironmentSpec) { s.Egress = "lan" },
 		"no-key":  func(s *protocol.EnvironmentSpec) { s.SSH.AuthorizedKey = "" },
@@ -624,6 +625,22 @@ func TestCheck(t *testing.T) {
 			t.Fatalf("check = %+v", res)
 		}
 	})
+	t.Run("no network", func(t *testing.T) {
+		cs := fake.NewClientset()
+		canaryExits(cs, exitNoNetwork)
+		p := configured(t, cs, nil)
+		res, _ := p.Check(ctx)
+		pr := problem(res, ProblemNetworkCheckFailed)
+		if !res.OK || pr == nil || pr.Severity != protocol.SeverityWarning || !strings.Contains(pr.Message, "kube-dns") {
+			t.Fatalf("check = %+v", res)
+		}
+		if problem(res, ProblemNetworkPolicyNotEnforced) != nil {
+			t.Error("nothing reachable must not read as enforced or as not enforced")
+		}
+		if info, _ := p.DescribeTargets(ctx); len(info.EgressOptions) != 1 {
+			t.Errorf("egress options with no verdict = %v", info.EgressOptions)
+		}
+	})
 	t.Run("canary refused", func(t *testing.T) {
 		cs := fake.NewClientset()
 		cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -668,7 +685,7 @@ func TestCheck(t *testing.T) {
 
 func TestCanaryScript(t *testing.T) {
 	s := canaryScript("10.96.0.1:443")
-	for _, want := range []string{"probe 10.96.0.1 443 && exit 10", "probe kubernetes.default.svc.cluster.local 443 && exit 10", "probe 1.1.1.1 443 && exit 11", "exit 0"} {
+	for _, want := range []string{"probe 10.96.0.1 443 && exit 10", "probe kubernetes.default.svc.cluster.local 443 && exit 10", "probe 1.1.1.1 443 && exit 11", `probe "$dns" 53 || exit 12`, "exit 0"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q:\n%s", want, s)
 		}

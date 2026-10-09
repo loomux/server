@@ -47,11 +47,15 @@ func (s enforcementState) String() string {
 	return "unknown"
 }
 
-// Canary exit codes.
+// Canary exit codes. The control is kube-dns, which §10's policy (c)
+// allows a confined pod: when even that is unreachable, nothing is
+// known about enforcement (pod networking is broken, or the DNS policy
+// is missing) and "enforced" must not be claimed.
 const (
 	exitBlocked      = 0
 	exitAPIReachable = 10
 	exitNetReachable = 11
+	exitNoNetwork    = 12
 )
 
 // netcheck is one run of the canary and its verdict.
@@ -136,6 +140,8 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 				return enforcementNotEnforced, "a confined pod reached the API server"
 			case exitNetReachable:
 				return enforcementNotEnforced, "a confined pod reached the internet"
+			case exitNoNetwork:
+				return enforcementFailed, "a confined pod couldn't reach kube-dns either: pod networking is broken, or the DNS policy of the agents namespace is missing"
 			default:
 				return enforcementFailed, fmt.Sprintf("the canary exited %d: %s", code, reason)
 			}
@@ -168,6 +174,10 @@ func canaryExit(pod *corev1.Pod) (code int, reason string, done bool) {
 
 // canaryScript probes the API server (by the client's address and by
 // its cluster name) and the internet; the first that answers decides.
+// When neither does, kube-dns (the pod's resolver) is the control: a
+// confined pod may reach it, so reaching it says the pod has a network
+// and the policies hold (exit 0), and not reaching it says nothing can
+// be concluded (exit 12).
 func canaryScript(apiHost string) string {
 	script := "probe() { timeout 3 bash -c \"exec 3<>/dev/tcp/$1/$2\" 2>/dev/null; }\n"
 	if h, port, err := net.SplitHostPort(apiHost); err == nil && h != "" {
@@ -175,6 +185,8 @@ func canaryScript(apiHost string) string {
 	}
 	script += "probe kubernetes.default.svc.cluster.local 443 && exit 10\n"
 	script += "probe 1.1.1.1 443 && exit 11\n"
+	script += "dns=$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf)\n"
+	script += "[ -n \"$dns\" ] && probe \"$dns\" 53 || exit 12\n"
 	script += "exit 0\n"
 	return script
 }

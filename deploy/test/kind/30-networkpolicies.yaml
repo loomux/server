@@ -1,7 +1,8 @@
 # The policies of design §10 item 6. They do nothing until a policy
-# engine enforces them (kind's default CNI doesn't; theWyseKube's
-# Flannel doesn't either), which is why the plugin tests enforcement
-# with a canary instead of assuming it.
+# engine enforces them: kind's kindnet does (it bundles
+# kube-network-policies), so the integration test expects "enforced";
+# theWyseKube's Flannel doesn't, which is why the plugin tests
+# enforcement with a canary instead of assuming it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

@@ -48,12 +48,15 @@ All labelled `app.kubernetes.io/managed-by=loomux-plugin-kubernetes`,
 
 `plugin.check` runs a canary pod from the agent image, labelled as a
 confined (`egress: none`) agent, which tries the API server and the
-internet. Exit 0: enforced, and `egress: none` is offered. 10 or 11:
+internet, then kube-dns as the control (the one thing a confined pod
+may reach). Exit 0: enforced, and `egress: none` is offered. 10 or 11:
 not enforced; `network_policy_not_enforced` is reported (an error with
 `require_network_policy`, which then refuses machines) and only
-`egress: internet` is offered. A canary still running after 15 s (the
-image pulling) answers `network_policy_check_pending`; the next check
-has the verdict.
+`egress: internet` is offered. 12: not even kube-dns answered, so pod
+networking is broken or the DNS policy is missing;
+`network_policy_check_failed`, and no verdict is claimed. A canary
+still running after 15 s (the image pulling) answers
+`network_policy_check_pending`; the next check has the verdict.
 
 ## Tests
 

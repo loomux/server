@@ -36,7 +36,9 @@ const (
 )
 
 var (
-	idPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+	// idPattern: lx-<id> must be a DNS label, so an id starts and ends
+	// alphanumeric.
+	idPattern    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 	labelPattern = regexp.MustCompile(`^(([A-Za-z0-9][-A-Za-z0-9_.]{0,61})?[A-Za-z0-9])?$`)
 )
 
@@ -72,7 +74,7 @@ func cleanText(s string) string {
 // the authority.
 func validateSpec(spec protocol.EnvironmentSpec, cfg Config, host protocol.HostInfo) error {
 	if !idPattern.MatchString(spec.ID) {
-		return invalidParams("id must be lower-case letters, digits and dashes, at most 40")
+		return invalidParams("id must be lower-case letters, digits and dashes, at most 40, not ending in a dash")
 	}
 	if !labelPattern.MatchString(spec.TargetID) {
 		return invalidParams("target_id isn't a label value")

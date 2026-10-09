@@ -156,7 +156,9 @@ jobs:
 
       - name: What the cluster holds afterwards
         if: always()
-        run: kubectl -n loomux-agents get pods,pvc,secrets -o wide || true
+        run: |
+          kubectl -n loomux-agents get pods,pvc,secrets -o wide || true
+          kubectl -n loomux-agents get events --sort-by=.lastTimestamp | tail -n 40 || true
 
       - name: Build the plugin image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
