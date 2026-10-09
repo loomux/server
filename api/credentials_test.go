@@ -122,3 +122,29 @@ func TestCredentials_RequireAuth(t *testing.T) {
 		}
 	}
 }
+
+// LOOM-178: a credential scoped to a workspace and a target must name the
+// workspace's own target; one on another target could never apply.
+func TestCredentials_WorkspaceOnAnotherTarget(t *testing.T) {
+	base, token, vault := credentialServer(t)
+	ctx := context.Background()
+	onA := &registry.Target{ID: "t-a", Name: "host-a", Kind: registry.TargetKindRemote, Host: "a.example", User: "me"}
+	onB := &registry.Target{ID: "t-b", Name: "host-b", Kind: registry.TargetKindRemote, Host: "b.example", User: "me"}
+	for _, tg := range []*registry.Target{onA, onB} {
+		if err := vault.CreateTarget(ctx, tg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := &registry.Workspace{ID: "ws-a", Name: "on-a", Path: "/w/on-a", TargetID: onA.ID, Status: registry.WorkspaceStatusIdle}
+	if err := vault.CreateWorkspace(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	status, body := doJSON(t, "POST", base+"/api/v1/credentials", token, map[string]any{"name": "TOKEN", "value": "v", "workspace_id": ws.ID, "target_id": onB.ID})
+	if status != http.StatusBadRequest || !strings.Contains(body, "another target") {
+		t.Fatalf("workspace on another target: %d %s", status, body)
+	}
+	status, body = doJSON(t, "POST", base+"/api/v1/credentials", token, map[string]any{"name": "TOKEN", "value": "v", "workspace_id": ws.ID, "target_id": onA.ID})
+	if status != http.StatusCreated {
+		t.Fatalf("workspace on its own target: %d %s", status, body)
+	}
+}

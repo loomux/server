@@ -51,6 +51,16 @@ target's own agent config (`~/.claude.json`, `~/.claude/settings.json`,
   `LOOMUX_MARKER_DIR` is used as-is on every target, so it must be
   writable only by the target user.
 
+## Machines a plugin makes
+
+A target with a `plugin` object was made by an installed plugin
+(`plugins.md`). It is a managed remote target like any other, so this
+checklist applies to its image rather than to a host you prepare: the
+agent image carries tmux and the agent CLIs, the workspace root is
+`/data/work`, and the folder trust and sign-in live on the machine's
+data volume. What you can't do: change its host, user, port, key or
+proxy, scan or pin its host key, or migrate it; the plugin owns those.
+
 ## Local targets
 
 A target of kind `local` runs its agents on the loomuxd machine itself,

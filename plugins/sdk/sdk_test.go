@@ -87,10 +87,15 @@ func TestServePluginMethods(t *testing.T) {
 		}
 	}
 
-	err = c.Call(ctx, "targets.create", map[string]any{}, nil)
+	err = c.Call(ctx, "notify.send", map[string]any{}, nil)
 	var rpcErr *rpc.Error
 	if !errors.As(err, &rpcErr) || rpcErr.Code != rpc.CodeMethodNotFound {
 		t.Errorf("undeclared group: %v", err)
+	}
+	// The fake implements TargetProvider, so targets.* is served.
+	var info protocol.TargetsInfo
+	if err := c.Call(ctx, protocol.MethodTargetsDescribe, nil, &info); err != nil || info.Port != 2222 {
+		t.Errorf("targets.describe: %+v, %v", info, err)
 	}
 	err = c.Call(ctx, protocol.MethodConfigure, "not an object", nil)
 	if !errors.As(err, &rpcErr) || rpcErr.Code != rpc.CodeInvalidParams {

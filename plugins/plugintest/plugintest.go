@@ -43,6 +43,7 @@ func Run(t *testing.T, launch Launch, o Options) {
 	t.Run("UndeclaredCapabilityRefused", func(t *testing.T) { testUndeclared(t, launch, o) })
 	t.Run("LargeParamsDontHang", func(t *testing.T) { testLargeParams(t, launch, o) })
 	t.Run("Shutdown", func(t *testing.T) { testShutdown(t, launch, o) })
+	RunTargets(t, launch, o)
 }
 
 func call(t *testing.T, conn *rpc.Conn, o Options, method string, params, result any) error {

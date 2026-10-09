@@ -73,10 +73,13 @@ DELETE /api/v1/targets/{id} request-header Authorization
 DELETE /api/v1/targets/{id} response - none
 DELETE /api/v1/targets/{id} response-header Content-Type
 DELETE /api/v1/targets/{id} status 204
+DELETE /api/v1/targets/{id} status 400
 DELETE /api/v1/targets/{id} status 401
 DELETE /api/v1/targets/{id} status 404
 DELETE /api/v1/targets/{id} status 409
 DELETE /api/v1/targets/{id} status 500
+DELETE /api/v1/targets/{id} status 502
+DELETE /api/v1/targets/{id} status 503
 DELETE /api/v1/targets/{id}/pin
 DELETE /api/v1/targets/{id}/pin request-header Authorization
 DELETE /api/v1/targets/{id}/pin response - object
@@ -101,6 +104,24 @@ DELETE /api/v1/targets/{id}/pin response .permission_mode string
 DELETE /api/v1/targets/{id}/pin response .pinned_host_keys []object
 DELETE /api/v1/targets/{id}/pin response .pinned_host_keys[].fingerprint string
 DELETE /api/v1/targets/{id}/pin response .pinned_host_keys[].type string
+DELETE /api/v1/targets/{id}/pin response .plugin object nullable
+DELETE /api/v1/targets/{id}/pin response .plugin.created_at time
+DELETE /api/v1/targets/{id}/pin response .plugin.egress string
+DELETE /api/v1/targets/{id}/pin response .plugin.environment_id string
+DELETE /api/v1/targets/{id}/pin response .plugin.id string
+DELETE /api/v1/targets/{id}/pin response .plugin.image string
+DELETE /api/v1/targets/{id}/pin response .plugin.image_digest string
+DELETE /api/v1/targets/{id}/pin response .plugin.label string
+DELETE /api/v1/targets/{id}/pin response .plugin.name string
+DELETE /api/v1/targets/{id}/pin response .plugin.persistent boolean
+DELETE /api/v1/targets/{id}/pin response .plugin.size string
+DELETE /api/v1/targets/{id}/pin response .plugin.status string
+DELETE /api/v1/targets/{id}/pin response .plugin.status_reason string
+DELETE /api/v1/targets/{id}/pin response .plugin.update_available boolean
+DELETE /api/v1/targets/{id}/pin response .plugin.version string
+DELETE /api/v1/targets/{id}/pin response .plugin.warnings []object
+DELETE /api/v1/targets/{id}/pin response .plugin.warnings[].code string
+DELETE /api/v1/targets/{id}/pin response .plugin.warnings[].message string
 DELETE /api/v1/targets/{id}/pin response .purpose string
 DELETE /api/v1/targets/{id}/pin response .ready boolean
 DELETE /api/v1/targets/{id}/pin response .relay string
@@ -123,6 +144,7 @@ DELETE /api/v1/targets/{id}/pin status 200
 DELETE /api/v1/targets/{id}/pin status 400
 DELETE /api/v1/targets/{id}/pin status 401
 DELETE /api/v1/targets/{id}/pin status 404
+DELETE /api/v1/targets/{id}/pin status 409
 DELETE /api/v1/targets/{id}/pin status 500
 DELETE /api/v1/targets/{id}/pin status 501
 DELETE /api/v1/workspaces/{id}
@@ -282,6 +304,7 @@ GET /api/v1/credentials response .credentials[].agent_type string omitempty
 GET /api/v1/credentials response .credentials[].created_at time
 GET /api/v1/credentials response .credentials[].id string
 GET /api/v1/credentials response .credentials[].name string
+GET /api/v1/credentials response .credentials[].target_id string omitempty
 GET /api/v1/credentials response .credentials[].updated_at time
 GET /api/v1/credentials response .credentials[].workspace_id string omitempty
 GET /api/v1/credentials response-header Content-Type
@@ -522,6 +545,24 @@ GET /api/v1/targets response .targets[].permission_mode string
 GET /api/v1/targets response .targets[].pinned_host_keys []object
 GET /api/v1/targets response .targets[].pinned_host_keys[].fingerprint string
 GET /api/v1/targets response .targets[].pinned_host_keys[].type string
+GET /api/v1/targets response .targets[].plugin object nullable
+GET /api/v1/targets response .targets[].plugin.created_at time
+GET /api/v1/targets response .targets[].plugin.egress string
+GET /api/v1/targets response .targets[].plugin.environment_id string
+GET /api/v1/targets response .targets[].plugin.id string
+GET /api/v1/targets response .targets[].plugin.image string
+GET /api/v1/targets response .targets[].plugin.image_digest string
+GET /api/v1/targets response .targets[].plugin.label string
+GET /api/v1/targets response .targets[].plugin.name string
+GET /api/v1/targets response .targets[].plugin.persistent boolean
+GET /api/v1/targets response .targets[].plugin.size string
+GET /api/v1/targets response .targets[].plugin.status string
+GET /api/v1/targets response .targets[].plugin.status_reason string
+GET /api/v1/targets response .targets[].plugin.update_available boolean
+GET /api/v1/targets response .targets[].plugin.version string
+GET /api/v1/targets response .targets[].plugin.warnings []object
+GET /api/v1/targets response .targets[].plugin.warnings[].code string
+GET /api/v1/targets response .targets[].plugin.warnings[].message string
 GET /api/v1/targets response .targets[].purpose string
 GET /api/v1/targets response .targets[].ready boolean
 GET /api/v1/targets response .targets[].relay string
@@ -543,6 +584,70 @@ GET /api/v1/targets response-header Content-Type
 GET /api/v1/targets status 200
 GET /api/v1/targets status 401
 GET /api/v1/targets status 500
+GET /api/v1/targets/{id}
+GET /api/v1/targets/{id} request-header Authorization
+GET /api/v1/targets/{id} response - object
+GET /api/v1/targets/{id} response .allow_provision boolean
+GET /api/v1/targets/{id} response .allow_shell boolean
+GET /api/v1/targets/{id} response .allowed_agent_types []string
+GET /api/v1/targets/{id} response .created_at time
+GET /api/v1/targets/{id} response .health object nullable
+GET /api/v1/targets/{id} response .health.disk_free_bytes number nullable
+GET /api/v1/targets/{id} response .health.error string omitempty
+GET /api/v1/targets/{id} response .health.last_probed_at time
+GET /api/v1/targets/{id} response .health.latency_ms number
+GET /api/v1/targets/{id} response .health.reachable boolean
+GET /api/v1/targets/{id} response .health.status string
+GET /api/v1/targets/{id} response .health.tmux_version string
+GET /api/v1/targets/{id} response .host string
+GET /api/v1/targets/{id} response .id string
+GET /api/v1/targets/{id} response .kind string
+GET /api/v1/targets/{id} response .name string
+GET /api/v1/targets/{id} response .next_step string nullable
+GET /api/v1/targets/{id} response .permission_mode string
+GET /api/v1/targets/{id} response .pinned_host_keys []object
+GET /api/v1/targets/{id} response .pinned_host_keys[].fingerprint string
+GET /api/v1/targets/{id} response .pinned_host_keys[].type string
+GET /api/v1/targets/{id} response .plugin object nullable
+GET /api/v1/targets/{id} response .plugin.created_at time
+GET /api/v1/targets/{id} response .plugin.egress string
+GET /api/v1/targets/{id} response .plugin.environment_id string
+GET /api/v1/targets/{id} response .plugin.id string
+GET /api/v1/targets/{id} response .plugin.image string
+GET /api/v1/targets/{id} response .plugin.image_digest string
+GET /api/v1/targets/{id} response .plugin.label string
+GET /api/v1/targets/{id} response .plugin.name string
+GET /api/v1/targets/{id} response .plugin.persistent boolean
+GET /api/v1/targets/{id} response .plugin.size string
+GET /api/v1/targets/{id} response .plugin.status string
+GET /api/v1/targets/{id} response .plugin.status_reason string
+GET /api/v1/targets/{id} response .plugin.update_available boolean
+GET /api/v1/targets/{id} response .plugin.version string
+GET /api/v1/targets/{id} response .plugin.warnings []object
+GET /api/v1/targets/{id} response .plugin.warnings[].code string
+GET /api/v1/targets/{id} response .plugin.warnings[].message string
+GET /api/v1/targets/{id} response .purpose string
+GET /api/v1/targets/{id} response .ready boolean
+GET /api/v1/targets/{id} response .relay string
+GET /api/v1/targets/{id} response .relay_effective string
+GET /api/v1/targets/{id} response .require_confirmation boolean
+GET /api/v1/targets/{id} response .ssh_key object nullable
+GET /api/v1/targets/{id} response .ssh_key.fingerprint string
+GET /api/v1/targets/{id} response .ssh_key.id string
+GET /api/v1/targets/{id} response .ssh_key.name string
+GET /api/v1/targets/{id} response .ssh_key.public_key string
+GET /api/v1/targets/{id} response .ssh_key.type string
+GET /api/v1/targets/{id} response .ssh_mode string
+GET /api/v1/targets/{id} response .ssh_port number
+GET /api/v1/targets/{id} response .ssh_proxy string
+GET /api/v1/targets/{id} response .updated_at time
+GET /api/v1/targets/{id} response .user string
+GET /api/v1/targets/{id} response .workspace_root string
+GET /api/v1/targets/{id} response-header Content-Type
+GET /api/v1/targets/{id} status 200
+GET /api/v1/targets/{id} status 401
+GET /api/v1/targets/{id} status 404
+GET /api/v1/targets/{id} status 500
 GET /api/v1/targets/{id}/agents
 GET /api/v1/targets/{id}/agents request-header Authorization
 GET /api/v1/targets/{id}/agents response - object
@@ -562,6 +667,9 @@ GET /api/v1/tasks/{id}/attach-info
 GET /api/v1/tasks/{id}/attach-info request-header Authorization
 GET /api/v1/tasks/{id}/attach-info response - object
 GET /api/v1/tasks/{id}/attach-info response .attach_command string
+GET /api/v1/tasks/{id}/attach-info response .attach_commands []object
+GET /api/v1/tasks/{id}/attach-info response .attach_commands[].command string
+GET /api/v1/tasks/{id}/attach-info response .attach_commands[].via string
 GET /api/v1/tasks/{id}/attach-info response .target object
 GET /api/v1/tasks/{id}/attach-info response .target.host string
 GET /api/v1/tasks/{id}/attach-info response .target.id string
@@ -679,6 +787,7 @@ POST /api/v1/credentials
 POST /api/v1/credentials request - object
 POST /api/v1/credentials request .agent_type string
 POST /api/v1/credentials request .name string
+POST /api/v1/credentials request .target_id string
 POST /api/v1/credentials request .value string
 POST /api/v1/credentials request .workspace_id string
 POST /api/v1/credentials request-header Authorization
@@ -687,6 +796,7 @@ POST /api/v1/credentials response .agent_type string omitempty
 POST /api/v1/credentials response .created_at time
 POST /api/v1/credentials response .id string
 POST /api/v1/credentials response .name string
+POST /api/v1/credentials response .target_id string omitempty
 POST /api/v1/credentials response .updated_at time
 POST /api/v1/credentials response .workspace_id string omitempty
 POST /api/v1/credentials response-header Content-Type
@@ -1010,6 +1120,11 @@ POST /api/v1/targets request .host string
 POST /api/v1/targets request .kind string
 POST /api/v1/targets request .name string
 POST /api/v1/targets request .permission_mode string nullable
+POST /api/v1/targets request .plugin object nullable
+POST /api/v1/targets request .plugin.egress string
+POST /api/v1/targets request .plugin.id string
+POST /api/v1/targets request .plugin.persistent boolean nullable
+POST /api/v1/targets request .plugin.size string
 POST /api/v1/targets request .purpose string nullable
 POST /api/v1/targets request .relay string nullable
 POST /api/v1/targets request .require_confirmation boolean nullable
@@ -1041,6 +1156,24 @@ POST /api/v1/targets response .permission_mode string
 POST /api/v1/targets response .pinned_host_keys []object
 POST /api/v1/targets response .pinned_host_keys[].fingerprint string
 POST /api/v1/targets response .pinned_host_keys[].type string
+POST /api/v1/targets response .plugin object nullable
+POST /api/v1/targets response .plugin.created_at time
+POST /api/v1/targets response .plugin.egress string
+POST /api/v1/targets response .plugin.environment_id string
+POST /api/v1/targets response .plugin.id string
+POST /api/v1/targets response .plugin.image string
+POST /api/v1/targets response .plugin.image_digest string
+POST /api/v1/targets response .plugin.label string
+POST /api/v1/targets response .plugin.name string
+POST /api/v1/targets response .plugin.persistent boolean
+POST /api/v1/targets response .plugin.size string
+POST /api/v1/targets response .plugin.status string
+POST /api/v1/targets response .plugin.status_reason string
+POST /api/v1/targets response .plugin.update_available boolean
+POST /api/v1/targets response .plugin.version string
+POST /api/v1/targets response .plugin.warnings []object
+POST /api/v1/targets response .plugin.warnings[].code string
+POST /api/v1/targets response .plugin.warnings[].message string
 POST /api/v1/targets response .purpose string
 POST /api/v1/targets response .ready boolean
 POST /api/v1/targets response .relay string
@@ -1067,6 +1200,7 @@ POST /api/v1/targets status 409
 POST /api/v1/targets status 413
 POST /api/v1/targets status 500
 POST /api/v1/targets status 501
+POST /api/v1/targets status 502
 POST /api/v1/targets status 503
 POST /api/v1/targets/{id}/migrate-ssh
 POST /api/v1/targets/{id}/migrate-ssh request - object
@@ -1114,6 +1248,24 @@ POST /api/v1/targets/{id}/migrate-ssh response .target.permission_mode string
 POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys []object
 POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys[].fingerprint string
 POST /api/v1/targets/{id}/migrate-ssh response .target.pinned_host_keys[].type string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.created_at time
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.egress string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.environment_id string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.id string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.image string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.image_digest string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.label string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.name string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.persistent boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.size string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.status string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.status_reason string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.update_available boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.version string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.warnings []object
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.warnings[].code string
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.warnings[].message string
 POST /api/v1/targets/{id}/migrate-ssh response .target.purpose string
 POST /api/v1/targets/{id}/migrate-ssh response .target.ready boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target.relay string
@@ -1180,6 +1332,24 @@ POST /api/v1/targets/{id}/pin response .permission_mode string
 POST /api/v1/targets/{id}/pin response .pinned_host_keys []object
 POST /api/v1/targets/{id}/pin response .pinned_host_keys[].fingerprint string
 POST /api/v1/targets/{id}/pin response .pinned_host_keys[].type string
+POST /api/v1/targets/{id}/pin response .plugin object nullable
+POST /api/v1/targets/{id}/pin response .plugin.created_at time
+POST /api/v1/targets/{id}/pin response .plugin.egress string
+POST /api/v1/targets/{id}/pin response .plugin.environment_id string
+POST /api/v1/targets/{id}/pin response .plugin.id string
+POST /api/v1/targets/{id}/pin response .plugin.image string
+POST /api/v1/targets/{id}/pin response .plugin.image_digest string
+POST /api/v1/targets/{id}/pin response .plugin.label string
+POST /api/v1/targets/{id}/pin response .plugin.name string
+POST /api/v1/targets/{id}/pin response .plugin.persistent boolean
+POST /api/v1/targets/{id}/pin response .plugin.size string
+POST /api/v1/targets/{id}/pin response .plugin.status string
+POST /api/v1/targets/{id}/pin response .plugin.status_reason string
+POST /api/v1/targets/{id}/pin response .plugin.update_available boolean
+POST /api/v1/targets/{id}/pin response .plugin.version string
+POST /api/v1/targets/{id}/pin response .plugin.warnings []object
+POST /api/v1/targets/{id}/pin response .plugin.warnings[].code string
+POST /api/v1/targets/{id}/pin response .plugin.warnings[].message string
 POST /api/v1/targets/{id}/pin response .purpose string
 POST /api/v1/targets/{id}/pin response .ready boolean
 POST /api/v1/targets/{id}/pin response .relay string
@@ -1230,6 +1400,77 @@ POST /api/v1/targets/{id}/probe status 401
 POST /api/v1/targets/{id}/probe status 404
 POST /api/v1/targets/{id}/probe status 500
 POST /api/v1/targets/{id}/probe status 501
+POST /api/v1/targets/{id}/recreate
+POST /api/v1/targets/{id}/recreate request - object
+POST /api/v1/targets/{id}/recreate request .size string
+POST /api/v1/targets/{id}/recreate request-header Authorization
+POST /api/v1/targets/{id}/recreate response - object
+POST /api/v1/targets/{id}/recreate response .allow_provision boolean
+POST /api/v1/targets/{id}/recreate response .allow_shell boolean
+POST /api/v1/targets/{id}/recreate response .allowed_agent_types []string
+POST /api/v1/targets/{id}/recreate response .created_at time
+POST /api/v1/targets/{id}/recreate response .health object nullable
+POST /api/v1/targets/{id}/recreate response .health.disk_free_bytes number nullable
+POST /api/v1/targets/{id}/recreate response .health.error string omitempty
+POST /api/v1/targets/{id}/recreate response .health.last_probed_at time
+POST /api/v1/targets/{id}/recreate response .health.latency_ms number
+POST /api/v1/targets/{id}/recreate response .health.reachable boolean
+POST /api/v1/targets/{id}/recreate response .health.status string
+POST /api/v1/targets/{id}/recreate response .health.tmux_version string
+POST /api/v1/targets/{id}/recreate response .host string
+POST /api/v1/targets/{id}/recreate response .id string
+POST /api/v1/targets/{id}/recreate response .kind string
+POST /api/v1/targets/{id}/recreate response .name string
+POST /api/v1/targets/{id}/recreate response .next_step string nullable
+POST /api/v1/targets/{id}/recreate response .permission_mode string
+POST /api/v1/targets/{id}/recreate response .pinned_host_keys []object
+POST /api/v1/targets/{id}/recreate response .pinned_host_keys[].fingerprint string
+POST /api/v1/targets/{id}/recreate response .pinned_host_keys[].type string
+POST /api/v1/targets/{id}/recreate response .plugin object nullable
+POST /api/v1/targets/{id}/recreate response .plugin.created_at time
+POST /api/v1/targets/{id}/recreate response .plugin.egress string
+POST /api/v1/targets/{id}/recreate response .plugin.environment_id string
+POST /api/v1/targets/{id}/recreate response .plugin.id string
+POST /api/v1/targets/{id}/recreate response .plugin.image string
+POST /api/v1/targets/{id}/recreate response .plugin.image_digest string
+POST /api/v1/targets/{id}/recreate response .plugin.label string
+POST /api/v1/targets/{id}/recreate response .plugin.name string
+POST /api/v1/targets/{id}/recreate response .plugin.persistent boolean
+POST /api/v1/targets/{id}/recreate response .plugin.size string
+POST /api/v1/targets/{id}/recreate response .plugin.status string
+POST /api/v1/targets/{id}/recreate response .plugin.status_reason string
+POST /api/v1/targets/{id}/recreate response .plugin.update_available boolean
+POST /api/v1/targets/{id}/recreate response .plugin.version string
+POST /api/v1/targets/{id}/recreate response .plugin.warnings []object
+POST /api/v1/targets/{id}/recreate response .plugin.warnings[].code string
+POST /api/v1/targets/{id}/recreate response .plugin.warnings[].message string
+POST /api/v1/targets/{id}/recreate response .purpose string
+POST /api/v1/targets/{id}/recreate response .ready boolean
+POST /api/v1/targets/{id}/recreate response .relay string
+POST /api/v1/targets/{id}/recreate response .relay_effective string
+POST /api/v1/targets/{id}/recreate response .require_confirmation boolean
+POST /api/v1/targets/{id}/recreate response .ssh_key object nullable
+POST /api/v1/targets/{id}/recreate response .ssh_key.fingerprint string
+POST /api/v1/targets/{id}/recreate response .ssh_key.id string
+POST /api/v1/targets/{id}/recreate response .ssh_key.name string
+POST /api/v1/targets/{id}/recreate response .ssh_key.public_key string
+POST /api/v1/targets/{id}/recreate response .ssh_key.type string
+POST /api/v1/targets/{id}/recreate response .ssh_mode string
+POST /api/v1/targets/{id}/recreate response .ssh_port number
+POST /api/v1/targets/{id}/recreate response .ssh_proxy string
+POST /api/v1/targets/{id}/recreate response .updated_at time
+POST /api/v1/targets/{id}/recreate response .user string
+POST /api/v1/targets/{id}/recreate response .workspace_root string
+POST /api/v1/targets/{id}/recreate response-header Content-Type
+POST /api/v1/targets/{id}/recreate status 202
+POST /api/v1/targets/{id}/recreate status 400
+POST /api/v1/targets/{id}/recreate status 401
+POST /api/v1/targets/{id}/recreate status 404
+POST /api/v1/targets/{id}/recreate status 409
+POST /api/v1/targets/{id}/recreate status 413
+POST /api/v1/targets/{id}/recreate status 500
+POST /api/v1/targets/{id}/recreate status 502
+POST /api/v1/targets/{id}/recreate status 503
 POST /api/v1/targets/{id}/scan-host-key
 POST /api/v1/targets/{id}/scan-host-key request-header Authorization
 POST /api/v1/targets/{id}/scan-host-key response - object
@@ -1246,9 +1487,146 @@ POST /api/v1/targets/{id}/scan-host-key status 200
 POST /api/v1/targets/{id}/scan-host-key status 400
 POST /api/v1/targets/{id}/scan-host-key status 401
 POST /api/v1/targets/{id}/scan-host-key status 404
+POST /api/v1/targets/{id}/scan-host-key status 409
 POST /api/v1/targets/{id}/scan-host-key status 500
 POST /api/v1/targets/{id}/scan-host-key status 501
 POST /api/v1/targets/{id}/scan-host-key status 502
+POST /api/v1/targets/{id}/start
+POST /api/v1/targets/{id}/start request-header Authorization
+POST /api/v1/targets/{id}/start response - object
+POST /api/v1/targets/{id}/start response .allow_provision boolean
+POST /api/v1/targets/{id}/start response .allow_shell boolean
+POST /api/v1/targets/{id}/start response .allowed_agent_types []string
+POST /api/v1/targets/{id}/start response .created_at time
+POST /api/v1/targets/{id}/start response .health object nullable
+POST /api/v1/targets/{id}/start response .health.disk_free_bytes number nullable
+POST /api/v1/targets/{id}/start response .health.error string omitempty
+POST /api/v1/targets/{id}/start response .health.last_probed_at time
+POST /api/v1/targets/{id}/start response .health.latency_ms number
+POST /api/v1/targets/{id}/start response .health.reachable boolean
+POST /api/v1/targets/{id}/start response .health.status string
+POST /api/v1/targets/{id}/start response .health.tmux_version string
+POST /api/v1/targets/{id}/start response .host string
+POST /api/v1/targets/{id}/start response .id string
+POST /api/v1/targets/{id}/start response .kind string
+POST /api/v1/targets/{id}/start response .name string
+POST /api/v1/targets/{id}/start response .next_step string nullable
+POST /api/v1/targets/{id}/start response .permission_mode string
+POST /api/v1/targets/{id}/start response .pinned_host_keys []object
+POST /api/v1/targets/{id}/start response .pinned_host_keys[].fingerprint string
+POST /api/v1/targets/{id}/start response .pinned_host_keys[].type string
+POST /api/v1/targets/{id}/start response .plugin object nullable
+POST /api/v1/targets/{id}/start response .plugin.created_at time
+POST /api/v1/targets/{id}/start response .plugin.egress string
+POST /api/v1/targets/{id}/start response .plugin.environment_id string
+POST /api/v1/targets/{id}/start response .plugin.id string
+POST /api/v1/targets/{id}/start response .plugin.image string
+POST /api/v1/targets/{id}/start response .plugin.image_digest string
+POST /api/v1/targets/{id}/start response .plugin.label string
+POST /api/v1/targets/{id}/start response .plugin.name string
+POST /api/v1/targets/{id}/start response .plugin.persistent boolean
+POST /api/v1/targets/{id}/start response .plugin.size string
+POST /api/v1/targets/{id}/start response .plugin.status string
+POST /api/v1/targets/{id}/start response .plugin.status_reason string
+POST /api/v1/targets/{id}/start response .plugin.update_available boolean
+POST /api/v1/targets/{id}/start response .plugin.version string
+POST /api/v1/targets/{id}/start response .plugin.warnings []object
+POST /api/v1/targets/{id}/start response .plugin.warnings[].code string
+POST /api/v1/targets/{id}/start response .plugin.warnings[].message string
+POST /api/v1/targets/{id}/start response .purpose string
+POST /api/v1/targets/{id}/start response .ready boolean
+POST /api/v1/targets/{id}/start response .relay string
+POST /api/v1/targets/{id}/start response .relay_effective string
+POST /api/v1/targets/{id}/start response .require_confirmation boolean
+POST /api/v1/targets/{id}/start response .ssh_key object nullable
+POST /api/v1/targets/{id}/start response .ssh_key.fingerprint string
+POST /api/v1/targets/{id}/start response .ssh_key.id string
+POST /api/v1/targets/{id}/start response .ssh_key.name string
+POST /api/v1/targets/{id}/start response .ssh_key.public_key string
+POST /api/v1/targets/{id}/start response .ssh_key.type string
+POST /api/v1/targets/{id}/start response .ssh_mode string
+POST /api/v1/targets/{id}/start response .ssh_port number
+POST /api/v1/targets/{id}/start response .ssh_proxy string
+POST /api/v1/targets/{id}/start response .updated_at time
+POST /api/v1/targets/{id}/start response .user string
+POST /api/v1/targets/{id}/start response .workspace_root string
+POST /api/v1/targets/{id}/start response-header Content-Type
+POST /api/v1/targets/{id}/start status 202
+POST /api/v1/targets/{id}/start status 400
+POST /api/v1/targets/{id}/start status 401
+POST /api/v1/targets/{id}/start status 404
+POST /api/v1/targets/{id}/start status 409
+POST /api/v1/targets/{id}/start status 500
+POST /api/v1/targets/{id}/start status 502
+POST /api/v1/targets/{id}/start status 503
+POST /api/v1/targets/{id}/stop
+POST /api/v1/targets/{id}/stop request-header Authorization
+POST /api/v1/targets/{id}/stop response - object
+POST /api/v1/targets/{id}/stop response .allow_provision boolean
+POST /api/v1/targets/{id}/stop response .allow_shell boolean
+POST /api/v1/targets/{id}/stop response .allowed_agent_types []string
+POST /api/v1/targets/{id}/stop response .created_at time
+POST /api/v1/targets/{id}/stop response .health object nullable
+POST /api/v1/targets/{id}/stop response .health.disk_free_bytes number nullable
+POST /api/v1/targets/{id}/stop response .health.error string omitempty
+POST /api/v1/targets/{id}/stop response .health.last_probed_at time
+POST /api/v1/targets/{id}/stop response .health.latency_ms number
+POST /api/v1/targets/{id}/stop response .health.reachable boolean
+POST /api/v1/targets/{id}/stop response .health.status string
+POST /api/v1/targets/{id}/stop response .health.tmux_version string
+POST /api/v1/targets/{id}/stop response .host string
+POST /api/v1/targets/{id}/stop response .id string
+POST /api/v1/targets/{id}/stop response .kind string
+POST /api/v1/targets/{id}/stop response .name string
+POST /api/v1/targets/{id}/stop response .next_step string nullable
+POST /api/v1/targets/{id}/stop response .permission_mode string
+POST /api/v1/targets/{id}/stop response .pinned_host_keys []object
+POST /api/v1/targets/{id}/stop response .pinned_host_keys[].fingerprint string
+POST /api/v1/targets/{id}/stop response .pinned_host_keys[].type string
+POST /api/v1/targets/{id}/stop response .plugin object nullable
+POST /api/v1/targets/{id}/stop response .plugin.created_at time
+POST /api/v1/targets/{id}/stop response .plugin.egress string
+POST /api/v1/targets/{id}/stop response .plugin.environment_id string
+POST /api/v1/targets/{id}/stop response .plugin.id string
+POST /api/v1/targets/{id}/stop response .plugin.image string
+POST /api/v1/targets/{id}/stop response .plugin.image_digest string
+POST /api/v1/targets/{id}/stop response .plugin.label string
+POST /api/v1/targets/{id}/stop response .plugin.name string
+POST /api/v1/targets/{id}/stop response .plugin.persistent boolean
+POST /api/v1/targets/{id}/stop response .plugin.size string
+POST /api/v1/targets/{id}/stop response .plugin.status string
+POST /api/v1/targets/{id}/stop response .plugin.status_reason string
+POST /api/v1/targets/{id}/stop response .plugin.update_available boolean
+POST /api/v1/targets/{id}/stop response .plugin.version string
+POST /api/v1/targets/{id}/stop response .plugin.warnings []object
+POST /api/v1/targets/{id}/stop response .plugin.warnings[].code string
+POST /api/v1/targets/{id}/stop response .plugin.warnings[].message string
+POST /api/v1/targets/{id}/stop response .purpose string
+POST /api/v1/targets/{id}/stop response .ready boolean
+POST /api/v1/targets/{id}/stop response .relay string
+POST /api/v1/targets/{id}/stop response .relay_effective string
+POST /api/v1/targets/{id}/stop response .require_confirmation boolean
+POST /api/v1/targets/{id}/stop response .ssh_key object nullable
+POST /api/v1/targets/{id}/stop response .ssh_key.fingerprint string
+POST /api/v1/targets/{id}/stop response .ssh_key.id string
+POST /api/v1/targets/{id}/stop response .ssh_key.name string
+POST /api/v1/targets/{id}/stop response .ssh_key.public_key string
+POST /api/v1/targets/{id}/stop response .ssh_key.type string
+POST /api/v1/targets/{id}/stop response .ssh_mode string
+POST /api/v1/targets/{id}/stop response .ssh_port number
+POST /api/v1/targets/{id}/stop response .ssh_proxy string
+POST /api/v1/targets/{id}/stop response .updated_at time
+POST /api/v1/targets/{id}/stop response .user string
+POST /api/v1/targets/{id}/stop response .workspace_root string
+POST /api/v1/targets/{id}/stop response-header Content-Type
+POST /api/v1/targets/{id}/stop status 202
+POST /api/v1/targets/{id}/stop status 400
+POST /api/v1/targets/{id}/stop status 401
+POST /api/v1/targets/{id}/stop status 404
+POST /api/v1/targets/{id}/stop status 409
+POST /api/v1/targets/{id}/stop status 500
+POST /api/v1/targets/{id}/stop status 502
+POST /api/v1/targets/{id}/stop status 503
 POST /api/v1/targets/{id}/test
 POST /api/v1/targets/{id}/test request-header Authorization
 POST /api/v1/targets/{id}/test response - object
@@ -1455,6 +1833,11 @@ PUT /api/v1/targets/{id} request .host string
 PUT /api/v1/targets/{id} request .kind string
 PUT /api/v1/targets/{id} request .name string
 PUT /api/v1/targets/{id} request .permission_mode string nullable
+PUT /api/v1/targets/{id} request .plugin object nullable
+PUT /api/v1/targets/{id} request .plugin.egress string
+PUT /api/v1/targets/{id} request .plugin.id string
+PUT /api/v1/targets/{id} request .plugin.persistent boolean nullable
+PUT /api/v1/targets/{id} request .plugin.size string
 PUT /api/v1/targets/{id} request .purpose string nullable
 PUT /api/v1/targets/{id} request .relay string nullable
 PUT /api/v1/targets/{id} request .require_confirmation boolean nullable
@@ -1486,6 +1869,24 @@ PUT /api/v1/targets/{id} response .permission_mode string
 PUT /api/v1/targets/{id} response .pinned_host_keys []object
 PUT /api/v1/targets/{id} response .pinned_host_keys[].fingerprint string
 PUT /api/v1/targets/{id} response .pinned_host_keys[].type string
+PUT /api/v1/targets/{id} response .plugin object nullable
+PUT /api/v1/targets/{id} response .plugin.created_at time
+PUT /api/v1/targets/{id} response .plugin.egress string
+PUT /api/v1/targets/{id} response .plugin.environment_id string
+PUT /api/v1/targets/{id} response .plugin.id string
+PUT /api/v1/targets/{id} response .plugin.image string
+PUT /api/v1/targets/{id} response .plugin.image_digest string
+PUT /api/v1/targets/{id} response .plugin.label string
+PUT /api/v1/targets/{id} response .plugin.name string
+PUT /api/v1/targets/{id} response .plugin.persistent boolean
+PUT /api/v1/targets/{id} response .plugin.size string
+PUT /api/v1/targets/{id} response .plugin.status string
+PUT /api/v1/targets/{id} response .plugin.status_reason string
+PUT /api/v1/targets/{id} response .plugin.update_available boolean
+PUT /api/v1/targets/{id} response .plugin.version string
+PUT /api/v1/targets/{id} response .plugin.warnings []object
+PUT /api/v1/targets/{id} response .plugin.warnings[].code string
+PUT /api/v1/targets/{id} response .plugin.warnings[].message string
 PUT /api/v1/targets/{id} response .purpose string
 PUT /api/v1/targets/{id} response .ready boolean
 PUT /api/v1/targets/{id} response .relay string

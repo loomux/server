@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -114,12 +115,15 @@ type Manager struct {
 	// InstanceOptions, if set, adjusts every instance's options before
 	// it starts (tests shorten the supervisor's timings).
 	InstanceOptions func(*InstanceOptions)
+	// OnNotify, if set, receives every plugin's notifications with the
+	// plugin instance's id.
+	OnNotify func(pluginID, method string, params json.RawMessage)
 
 	mu        sync.Mutex // guards the maps below
 	instances map[string]*Instance
 	checks    map[string]protocol.CheckResult
-	secrets   map[string]map[string]string // the plugin's configured secrets, for redaction
-	locks     map[string]*sync.Mutex       // the lifecycle lock per plugin id
+	secrets   map[string][]string    // every secret value configured in this process, for redaction
+	locks     map[string]*sync.Mutex // the lifecycle lock per plugin id
 }
 
 // NewManager makes a Manager over store and catalog. host is what every
@@ -134,7 +138,7 @@ func NewManager(store registry.Store, catalog *Catalog, host protocol.HostInfo, 
 	return &Manager{
 		store: store, catalog: catalog, host: host, logger: logger, met: met,
 		instances: map[string]*Instance{}, checks: map[string]protocol.CheckResult{},
-		secrets: map[string]map[string]string{}, locks: map[string]*sync.Mutex{},
+		secrets: map[string][]string{}, locks: map[string]*sync.Mutex{},
 	}
 }
 
@@ -593,6 +597,66 @@ func (m *Manager) Health(ctx context.Context) HealthReport {
 	return report
 }
 
+// ErrCapabilityMissing is a call of a method the plugin's manifest
+// doesn't declare the capability for.
+type CapabilityMissingError struct{ Method, Capability string }
+
+func (e *CapabilityMissingError) Error() string {
+	return "plugins: the plugin doesn't declare " + e.Capability + ", which " + e.Method + " needs"
+}
+
+// Call sends method to the plugin instance id, refusing a method whose
+// capability the installed manifest doesn't declare, and ErrUnavailable
+// while the instance isn't running. Errors a plugin answers with come
+// back as *rpc.Error, their text redacted.
+func (m *Manager) Call(ctx context.Context, id, method string, params, result any) error {
+	if cap := protocol.RequiredCapability(method); cap != "" {
+		caps, err := m.Capabilities(ctx, id)
+		if err != nil {
+			return err
+		}
+		declared := false
+		for _, c := range caps {
+			if c == cap {
+				declared = true
+			}
+		}
+		if !declared {
+			return &CapabilityMissingError{Method: method, Capability: cap}
+		}
+	}
+	inst := m.instance(id)
+	if inst == nil {
+		return ErrUnavailable
+	}
+	err := inst.Call(ctx, method, params, result)
+	var rpcErr *rpc.Error
+	if errors.As(err, &rpcErr) {
+		return &rpc.Error{Code: rpcErr.Code, Message: m.redact(id, rpcErr.Message)}
+	}
+	return err
+}
+
+// Capabilities are the installed manifest's, for plugin id.
+func (m *Manager) Capabilities(ctx context.Context, id string) ([]string, error) {
+	rows, err := m.store.ListPlugins(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range rows {
+		if p.ID == id {
+			return append([]string{}, p.Capabilities...), nil
+		}
+	}
+	return nil, fmt.Errorf("%w: plugin %q", registry.ErrNotFound, id)
+}
+
+// Running reports whether plugin id's instance is running.
+func (m *Manager) Running(id string) bool {
+	inst := m.instance(id)
+	return inst != nil && inst.Status().State == StateRunning
+}
+
 // Close stops every running plugin.
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
@@ -641,6 +705,9 @@ func (m *Manager) startInstance(ctx context.Context, p *registry.Plugin, manifes
 		OnCall:  m.onCall(p.Name),
 		Redact:  func(s string) string { return m.redact(id, s) },
 		OnState: m.onState(id),
+	}
+	if m.OnNotify != nil {
+		opts.OnNotify = func(method string, params json.RawMessage) { m.OnNotify(id, method, params) }
 	}
 	if m.InstanceOptions != nil {
 		m.InstanceOptions(&opts)
@@ -726,8 +793,11 @@ func (m *Manager) problemsReason(id string, problems []protocol.Problem) string 
 	return strings.Join(reasons, "; ")
 }
 
-// fail records p as error with reason and stops its instance.
+// fail records p as error with reason and stops its instance. The
+// reason is redacted here, whoever built it, so no caller can relay a
+// plugin's text unscrubbed.
 func (m *Manager) fail(ctx context.Context, p *registry.Plugin, reason string, problems []protocol.Problem) error {
+	reason = m.redact(p.ID, reason)
 	m.stopInstance(ctx, p.ID)
 	if err := m.setStatus(ctx, p, registry.PluginStatusError, reason); err != nil {
 		return err
@@ -769,25 +839,49 @@ func (m *Manager) machines(ctx context.Context, id string) (int, error) {
 	return m.MachineCounter(ctx, id)
 }
 
+// maxScrubValues bounds the values kept for redaction per plugin.
+const maxScrubValues = 64
+
 // setSecrets records the plugin's current secret values, which redact
-// scrubs from anything the plugin produces.
+// scrubs from anything the plugin produces. Values replaced earlier in
+// this process are kept too: a running instance may still echo the one
+// it was configured with before the change.
 func (m *Manager) setSecrets(id string, secrets map[string]string) {
-	copied := make(map[string]string, len(secrets))
-	for k, v := range secrets {
-		copied[k] = v
-	}
 	m.mu.Lock()
-	m.secrets[id] = copied
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	values := make([]string, 0, len(secrets)+len(m.secrets[id]))
+	seen := map[string]bool{}
+	add := func(v string) {
+		if v == "" || seen[v] || len(values) >= maxScrubValues {
+			return
+		}
+		seen[v] = true
+		values = append(values, v)
+	}
+	for _, v := range secrets {
+		add(v)
+	}
+	for _, v := range m.secrets[id] {
+		add(v)
+	}
+	m.secrets[id] = values
 }
 
-// redact scrubs the plugin's configured secret values from text it
-// produced, before the text is stored, shown or logged.
+// redact scrubs the plugin's configured secret values (current and
+// recently replaced) from text it produced, before the text is stored,
+// shown or logged.
 func (m *Manager) redact(id, text string) string {
 	m.mu.Lock()
-	secrets := m.secrets[id]
+	values := m.secrets[id]
 	m.mu.Unlock()
-	return credentials.RedactValues(text, secrets)
+	if len(values) == 0 {
+		return text
+	}
+	byIndex := make(map[string]string, len(values))
+	for i, v := range values {
+		byIndex[strconv.Itoa(i)] = v
+	}
+	return credentials.RedactValues(text, byIndex)
 }
 
 func (m *Manager) redactProblems(id string, problems []protocol.Problem) []protocol.Problem {

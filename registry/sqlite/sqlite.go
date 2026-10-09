@@ -915,17 +915,31 @@ func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) er
 	if err != nil {
 		return fmt.Errorf("sqlite: encrypt credential: %w", err)
 	}
+	if c.WorkspaceID != "" && c.TargetID != "" {
+		// Both scopes: the workspace lives on one target, and a credential
+		// for it on another could never apply.
+		var wsTarget sql.NullString
+		err := s.db.QueryRowContext(ctx, `SELECT target_id FROM workspaces WHERE id = ?`, c.WorkspaceID).Scan(&wsTarget)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// The insert's foreign key reports it.
+		case err != nil:
+			return fmt.Errorf("sqlite: create credential: %w", err)
+		case wsTarget.String != c.TargetID:
+			return fmt.Errorf("%w: workspace %q is on another target than %q", registry.ErrConflict, c.WorkspaceID, c.TargetID)
+		}
+	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO credentials (id, name, workspace_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-		c.ID, c.Name, nullIfEmpty(c.WorkspaceID), c.AgentType, ciphertext, c.CreatedAt, c.UpdatedAt,
+		INSERT INTO credentials (id, name, workspace_id, target_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		c.ID, c.Name, nullIfEmpty(c.WorkspaceID), nullIfEmpty(c.TargetID), c.AgentType, ciphertext, c.CreatedAt, c.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: credential %q already exists at this scope", registry.ErrConflict, c.Name)
 	}
 	if isForeignKeyConstraintErr(err) {
-		return fmt.Errorf("%w: workspace %q does not exist", registry.ErrConflict, c.WorkspaceID)
+		return fmt.Errorf("%w: workspace %q or target %q does not exist", registry.ErrConflict, c.WorkspaceID, c.TargetID)
 	}
 	if err != nil {
 		return fmt.Errorf("sqlite: create credential: %w", err)
@@ -934,7 +948,7 @@ func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) er
 }
 
 const credentialColumns = `
-	id, name, workspace_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at`
+	id, name, workspace_id, target_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at`
 
 // credentialAAD is the additional data a credential's value is sealed
 // with (LOOM-175): its row id, so the ciphertext opens only on that row.
@@ -1037,7 +1051,7 @@ func (s *Store) DeleteCredential(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListCredentialInfo(ctx context.Context) ([]*registry.Credential, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, workspace_id, agent_type, created_at, updated_at FROM credentials ORDER BY name, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, workspace_id, target_id, agent_type, created_at, updated_at FROM credentials ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list credential info: %w", err)
 	}
@@ -1045,11 +1059,11 @@ func (s *Store) ListCredentialInfo(ctx context.Context) ([]*registry.Credential,
 	out := []*registry.Credential{}
 	for rows.Next() {
 		var c registry.Credential
-		var workspaceID sql.NullString
-		if err := rows.Scan(&c.ID, &c.Name, &workspaceID, &c.AgentType, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		var workspaceID, targetID sql.NullString
+		if err := rows.Scan(&c.ID, &c.Name, &workspaceID, &targetID, &c.AgentType, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("sqlite: list credential info: %w", err)
 		}
-		c.WorkspaceID = workspaceID.String
+		c.WorkspaceID, c.TargetID = workspaceID.String, targetID.String
 		out = append(out, &c)
 	}
 	if err := rows.Err(); err != nil {
@@ -1076,13 +1090,13 @@ func (s *Store) SetCredentialValue(ctx context.Context, id, value string) error 
 
 func scanCredential(row rowScanner, key []byte) (*registry.Credential, error) {
 	var c registry.Credential
-	var workspaceID sql.NullString
+	var workspaceID, targetID sql.NullString
 	var ciphertext []byte
 	var sealedToID bool
-	if err := row.Scan(&c.ID, &c.Name, &workspaceID, &c.AgentType, &ciphertext, &sealedToID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	if err := row.Scan(&c.ID, &c.Name, &workspaceID, &targetID, &c.AgentType, &ciphertext, &sealedToID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
-	c.WorkspaceID = workspaceID.String
+	c.WorkspaceID, c.TargetID = workspaceID.String, targetID.String
 	if !sealedToID {
 		// Open re-seals every row its key opens, so one still unbound
 		// was sealed under another key, or written behind the store's

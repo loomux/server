@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -40,11 +41,33 @@ type Plugin interface {
 	Shutdown(ctx context.Context) error
 }
 
-// Handler returns the rpc.Handler that serves p's plugin.* methods.
-// Methods of other groups answer method_not_found unless extra serves
-// them (nil for none): a later capability adds its own group that way.
+// TargetProvider is what a plugin implements to make machines on demand
+// (the targets.* group, docs/design/target-providers.md §1.3). Its
+// manifest must declare targets.create (and the other targets.*
+// capabilities it supports); the host never calls what isn't declared.
+// Every method is idempotent on its id and safe to repeat after a crash.
+type TargetProvider interface {
+	DescribeTargets(ctx context.Context) (protocol.TargetsInfo, error)
+	CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec) (protocol.Environment, error)
+	GetTarget(ctx context.Context, id string) (protocol.Environment, error)
+	ListTargets(ctx context.Context) ([]protocol.Environment, error)
+	StartTarget(ctx context.Context, id string) error
+	StopTarget(ctx context.Context, id string) error
+	RecreateTarget(ctx context.Context, id string, spec protocol.EnvironmentSpec) (protocol.Environment, error)
+	DestroyTarget(ctx context.Context, id string) error
+	TargetHealth(ctx context.Context, id string) (protocol.EnvironmentHealth, error)
+	TargetAttachCommands(ctx context.Context, id, session string) ([]protocol.AttachCommand, error)
+}
+
+// Handler returns the rpc.Handler that serves p's plugin.* methods, and
+// targets.* when p implements TargetProvider. Methods of other groups
+// answer method_not_found unless extra serves them (nil for none).
 func Handler(p Plugin, extra rpc.Handler) rpc.Handler {
+	targets, _ := p.(TargetProvider)
 	return func(ctx context.Context, method string, params json.RawMessage) (any, *rpc.Error) {
+		if targets != nil && strings.HasPrefix(method, "targets.") {
+			return targetsHandler(ctx, targets, method, params)
+		}
 		switch method {
 		case protocol.MethodDescribe:
 			m, err := p.Describe(ctx)
@@ -171,4 +194,115 @@ func serveSocket(ctx context.Context, p Plugin, path string, stderr io.Writer) e
 			}
 		}()
 	}
+}
+
+// targetsHandler serves the targets.* group.
+func targetsHandler(ctx context.Context, t TargetProvider, method string, params json.RawMessage) (any, *rpc.Error) {
+	decode := func(v any) *rpc.Error {
+		if len(params) == 0 {
+			return &rpc.Error{Code: rpc.CodeInvalidParams, Message: method + ": parameters are required"}
+		}
+		if err := json.Unmarshal(params, v); err != nil {
+			return &rpc.Error{Code: rpc.CodeInvalidParams, Message: method + ": " + err.Error()}
+		}
+		return nil
+	}
+	switch method {
+	case protocol.MethodTargetsDescribe:
+		info, err := t.DescribeTargets(ctx)
+		if err != nil {
+			return nil, toRPC(err)
+		}
+		if info.Sizes == nil {
+			info.Sizes = []protocol.Size{}
+		}
+		if info.EgressOptions == nil {
+			info.EgressOptions = []string{}
+		}
+		return info, nil
+	case protocol.MethodTargetsCreate:
+		var spec protocol.EnvironmentSpec
+		if e := decode(&spec); e != nil {
+			return nil, e
+		}
+		if spec.ID == "" {
+			return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: "targets.create: id is required"}
+		}
+		env, err := t.CreateTarget(ctx, spec)
+		if err != nil {
+			return nil, toRPC(err)
+		}
+		return env, nil
+	case protocol.MethodTargetsGet, protocol.MethodTargetsStart, protocol.MethodTargetsStop, protocol.MethodTargetsDestroy, protocol.MethodTargetsHealth:
+		var p protocol.IDParams
+		if e := decode(&p); e != nil {
+			return nil, e
+		}
+		if p.ID == "" {
+			return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: method + ": id is required"}
+		}
+		switch method {
+		case protocol.MethodTargetsGet:
+			env, err := t.GetTarget(ctx, p.ID)
+			if err != nil {
+				return nil, toRPC(err)
+			}
+			return env, nil
+		case protocol.MethodTargetsStart:
+			if err := t.StartTarget(ctx, p.ID); err != nil {
+				return nil, toRPC(err)
+			}
+		case protocol.MethodTargetsStop:
+			if err := t.StopTarget(ctx, p.ID); err != nil {
+				return nil, toRPC(err)
+			}
+		case protocol.MethodTargetsDestroy:
+			if err := t.DestroyTarget(ctx, p.ID); err != nil {
+				return nil, toRPC(err)
+			}
+		case protocol.MethodTargetsHealth:
+			h, err := t.TargetHealth(ctx, p.ID)
+			if err != nil {
+				return nil, toRPC(err)
+			}
+			return h, nil
+		}
+		return struct{}{}, nil
+	case protocol.MethodTargetsList:
+		envs, err := t.ListTargets(ctx)
+		if err != nil {
+			return nil, toRPC(err)
+		}
+		if envs == nil {
+			envs = []protocol.Environment{}
+		}
+		return protocol.ListResult{Environments: envs}, nil
+	case protocol.MethodTargetsRecreate:
+		var p protocol.RecreateParams
+		if e := decode(&p); e != nil {
+			return nil, e
+		}
+		if p.ID == "" {
+			return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: "targets.recreate: id is required"}
+		}
+		env, err := t.RecreateTarget(ctx, p.ID, p.Spec)
+		if err != nil {
+			return nil, toRPC(err)
+		}
+		return env, nil
+	case protocol.MethodTargetsAttachCommands:
+		var p protocol.AttachParams
+		if e := decode(&p); e != nil {
+			return nil, e
+		}
+		cmds, err := t.TargetAttachCommands(ctx, p.ID, p.Session)
+		if err != nil {
+			return nil, toRPC(err)
+		}
+		if cmds == nil {
+			cmds = []protocol.AttachCommand{}
+		}
+		return protocol.AttachResult{Commands: cmds}, nil
+	}
+	return nil, &rpc.Error{Code: rpc.CodeMethodNotFound, Message: "no method " + method}
 }

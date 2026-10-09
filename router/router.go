@@ -36,8 +36,12 @@ const NoTargetsReply = "There's no machine to run that on yet: Loomux has no reg
 // detection (via the orchestrator it wraps), and credential vault into
 // the dispatch pipeline (design spec §2, §6).
 type Router struct {
-	store registry.Store
-	orch  *orchestrator.Orchestrator
+	// machineInfo and machineStarter are the machines plugins made
+	// (LOOM-178); nil without any.
+	machineInfo    MachineInfo
+	machineStarter MachineStarter
+	store          registry.Store
+	orch           *orchestrator.Orchestrator
 	// newExecutor is needed independently of orch: CapturePane isn't
 	// exposed through Orchestrator's public API, so Router builds its
 	// own executor the same way Orchestrator does internally.
@@ -104,6 +108,27 @@ func WithCommandTimeout(d time.Duration) Option {
 func WithMetrics(m *metrics.Metrics) Option {
 	return func(r *Router) {
 		r.metrics = m
+	}
+}
+
+// MachineInfo describes a target a plugin made (LOOM-178): the plugin's
+// name, whether the machine is ephemeral, its status; ok false for a
+// registered host.
+type MachineInfo func(ctx context.Context, targetID string) (createdBy string, ephemeral bool, status string, ok bool)
+
+// MachineStarter makes sure a target's machine is running before it is
+// used (LOOM-178): it starts a stopped one and waits for it. For a
+// registered host, or a machine already running, it returns nil; an
+// error is why the machine can't be used, in plain words.
+type MachineStarter func(ctx context.Context, targetID string) error
+
+// WithMachines tells the router about machines plugins made (LOOM-178):
+// how to describe them to the routing model, and how to start one
+// before dispatching to it.
+func WithMachines(info MachineInfo, start MachineStarter) Option {
+	return func(r *Router) {
+		r.machineInfo = info
+		r.machineStarter = start
 	}
 }
 
@@ -1275,7 +1300,7 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	}
 
 	taskID := uuid.NewString()
-	secrets, err := r.creds.Resolve(ctx, workspaceID, agentType)
+	secrets, err := r.resolveSecrets(ctx, workspaceID, agentType)
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
 	}
@@ -1557,6 +1582,11 @@ func (r *Router) snapshotTargets(ctx context.Context, targets []*registry.Target
 			Problem:       problem,
 			Policy:        t.Policy,
 		}
+		if r.machineInfo != nil {
+			if createdBy, ephemeral, status, ok := r.machineInfo(ctx, t.ID); ok {
+				out[i].CreatedBy, out[i].Ephemeral, out[i].MachineStatus = createdBy, ephemeral, status
+			}
+		}
 	}
 	return out, nil
 }
@@ -1636,4 +1666,15 @@ func checkMessageSize(agentMessage string) error {
 		"router: dispatch: the message is %d KiB with its context, over the %d KiB Loomux sends to an agent. "+
 			"Put the long part in a file in the workspace and ask the agent to read it",
 		(len(agentMessage)+1023)/1024, targets.MaxPasteBytes>>10)}
+}
+
+// resolveSecrets is the vault's Resolve for a workspace: with the
+// workspace's target, so target-scoped credentials (LOOM-178) apply. A
+// workspace that can't be read resolves with no target.
+func (r *Router) resolveSecrets(ctx context.Context, workspaceID, agentType string) (map[string]string, error) {
+	targetID := ""
+	if ws, err := r.store.GetWorkspace(ctx, workspaceID); err == nil {
+		targetID = ws.TargetID
+	}
+	return r.creds.Resolve(ctx, workspaceID, targetID, agentType)
 }

@@ -242,6 +242,7 @@ type Server struct {
 	sshKeys          SSHKeyStore
 	routerSettings   RouterSettings
 	plugins          Plugins
+	machines         Machines
 	dropSSHKey       func(id string)
 	resolveSSHConfig SSHConfigResolver
 	// migrating is held while a migrate-ssh is applied (LOOM-138).
@@ -420,6 +421,10 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("POST /api/v1/tasks/{id}/cancel", s.requireAuth(s.handleCancelTask))
 	mux.HandleFunc("POST /api/v1/targets", s.requireAuth(s.handleCreateTarget))
 	mux.HandleFunc("GET /api/v1/targets", s.requireAuth(s.handleListTargets))
+	mux.HandleFunc("GET /api/v1/targets/{id}", s.requireAuth(s.handleGetTarget))
+	mux.HandleFunc("POST /api/v1/targets/{id}/start", s.requireAuth(s.handleStartTarget))
+	mux.HandleFunc("POST /api/v1/targets/{id}/stop", s.requireAuth(s.handleStopTarget))
+	mux.HandleFunc("POST /api/v1/targets/{id}/recreate", s.requireAuth(s.handleRecreateTarget))
 	mux.HandleFunc("PUT /api/v1/targets/{id}", s.requireAuth(s.handleUpdateTarget))
 	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
@@ -1153,6 +1158,10 @@ type attachInfoResponse struct {
 	TmuxSocket    string           `json:"tmux_socket"`
 	AttachCommand string           `json:"attach_command"`
 	Target        attachTargetInfo `json:"target"`
+	// AttachCommands are the ways a person attaches from their own
+	// machine (LOOM-178): a plugin's (kubectl, docker) for a machine it
+	// made, and the plain ssh form for every remote target.
+	AttachCommands []attachCommandResponse `json:"attach_commands"`
 }
 
 // handleAttachInfo resolves a task down to the target+session a human
@@ -1190,10 +1199,11 @@ func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, attachInfoResponse{
-		TaskID:        task.ID,
-		TmuxSession:   task.TmuxSession,
-		TmuxSocket:    targets.TmuxSocket,
-		AttachCommand: targets.AttachCommand(task.TmuxSession),
+		TaskID:         task.ID,
+		TmuxSession:    task.TmuxSession,
+		TmuxSocket:     targets.TmuxSocket,
+		AttachCommand:  targets.AttachCommand(task.TmuxSession),
+		AttachCommands: s.attachCommandsFor(r.Context(), target, task.TmuxSession),
 		Target: attachTargetInfo{
 			ID:   target.ID,
 			Name: target.Name,
@@ -1695,6 +1705,9 @@ type targetResponse struct {
 	// Health is the target's last health probe (LOOM-86); null when it
 	// has never been probed.
 	Health *targetHealthResponse `json:"health"`
+	// Plugin is the machine a plugin made (LOOM-178); null for a
+	// registered host.
+	Plugin *targetPluginResponse `json:"plugin"`
 }
 
 // targetHealthResponse is a target's last health probe (LOOM-86).
@@ -1784,6 +1797,11 @@ type targetRequest struct {
 	// SSHProxy is "default" or "none" (managed targets only); optional
 	// the same way.
 	SSHProxy *string `json:"ssh_proxy"`
+	// Plugin asks a plugin for the machine (LOOM-178): then kind must be
+	// remote (or omitted) and host, user, ssh_port, ssh_key_id,
+	// generate_ssh_key, ssh_proxy and workspace_root must be absent;
+	// the plugin sets them. Create only.
+	Plugin *targetPluginRequest `json:"plugin"`
 }
 
 // sshMode is targetResponse.SSHMode.
@@ -1816,10 +1834,30 @@ type listTargetsResponse struct {
 // the one validation path every entry point shares (LOOM-65). It writes
 // the error response itself and reports whether the caller should
 // continue.
-func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.Target) (target *registry.Target, generateKey, ok bool) {
+func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, base *registry.Target) (target *registry.Target, generateKey bool, plugin *targetPluginRequest, ok bool) {
 	var req targetRequest
 	if !readJSON(w, r, &req) {
-		return nil, false, false
+		return nil, false, nil, false
+	}
+	if req.Plugin != nil {
+		if base != nil {
+			writeError(w, http.StatusBadRequest, "plugin can only be given when creating a target")
+			return nil, false, nil, false
+		}
+		for field, given := range map[string]bool{
+			"host": req.Host != "", "user": req.User != "", "ssh_port": req.SSHPort != nil, "ssh_key_id": req.SSHKeyID != nil,
+			"generate_ssh_key": req.GenerateSSHKey, "ssh_proxy": req.SSHProxy != nil, "workspace_root": req.WorkspaceRoot != nil,
+		} {
+			if given {
+				writeError(w, http.StatusBadRequest, field+": the plugin sets it; leave it out when creating a machine")
+				return nil, false, nil, false
+			}
+		}
+		if req.Kind != "" && req.Kind != string(registry.TargetKindRemote) {
+			writeError(w, http.StatusBadRequest, "kind must be remote (or omitted) for a machine a plugin makes")
+			return nil, false, nil, false
+		}
+		req.Kind = string(registry.TargetKindRemote)
 	}
 	target = &registry.Target{
 		Name: strings.TrimSpace(req.Name),
@@ -1840,7 +1878,7 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if req.SSHKeyID != nil && req.GenerateSSHKey {
 		writeError(w, http.StatusBadRequest, "give ssh_key_id or generate_ssh_key, not both")
-		return nil, false, false
+		return nil, false, nil, false
 	}
 	if req.SSHKeyID != nil {
 		target.SSHKeyRef = *req.SSHKeyID
@@ -1887,24 +1925,30 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 		// for 1.x. The store keeps its spelling.
 		target.PermissionMode = strings.ReplaceAll(*req.PermissionMode, "_", "-")
 	}
-	if err := target.Validate(); err != nil {
+	if req.Plugin != nil {
+		// The plugin fills the connection; only the name is checked here.
+		if strings.TrimSpace(target.Name) == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return nil, false, nil, false
+		}
+	} else if err := target.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return nil, false, false
+		return nil, false, nil, false
 	}
 	if target.Kind == registry.TargetKindLocal && !s.localTargets {
 		writeError(w, http.StatusBadRequest, "local targets are turned off on this server (LOOMUX_LOCAL_TARGETS=off): their agents would run as the server's own user, with access to its database and keys; register the machine as a remote target instead")
-		return nil, false, false
+		return nil, false, nil, false
 	}
 	if s.agentTypes != nil {
 		for _, a := range target.Policy.AllowedAgentTypes {
 			if !slices.Contains(s.agentTypes, a) {
 				writeError(w, http.StatusBadRequest, fmt.Sprintf("allowed_agent_types: unknown agent type %q (known: %s)",
 					a, strings.Join(s.agentTypes, ", ")))
-				return nil, false, false
+				return nil, false, nil, false
 			}
 		}
 	}
-	return target, req.GenerateSSHKey, true
+	return target, req.GenerateSSHKey, req.Plugin, true
 }
 
 // handleCreateTarget registers an execution target. The id is minted
@@ -1913,8 +1957,12 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 // invites collisions and the hand-minted ids this endpoint exists to
 // replace.
 func (s *Server) handleCreateTarget(w http.ResponseWriter, r *http.Request) {
-	target, generateKey, ok := s.decodeTargetRequest(w, r, nil)
+	target, generateKey, pluginReq, ok := s.decodeTargetRequest(w, r, nil)
 	if !ok {
+		return
+	}
+	if pluginReq != nil {
+		s.createMachine(w, r, target, pluginReq)
 		return
 	}
 	target.ID = uuid.NewString()
@@ -1972,8 +2020,14 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not fetch target")
 		return
 	}
-	target, generateKey, ok := s.decodeTargetRequest(w, r, existing)
+	target, generateKey, _, ok := s.decodeTargetRequest(w, r, existing)
 	if !ok {
+		return
+	}
+	if s.machines != nil && s.machines.IsMachine(r.Context(), id) &&
+		(target.Host != existing.Host || target.User != existing.User || target.SSHPort != existing.SSHPort ||
+			target.SSHKeyRef != existing.SSHKeyRef || target.SSHProxy != existing.SSHProxy || target.WorkspaceRoot != existing.WorkspaceRoot || generateKey) {
+		writeError(w, http.StatusBadRequest, "this target is a machine a plugin made: its host, user, port, key, proxy and workspace root are the plugin's; change its name, permission mode and policy only")
 		return
 	}
 	target.ID = id
@@ -2029,6 +2083,10 @@ func (s *Server) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	existing, _ := s.targets.GetTarget(r.Context(), id)
+	if s.machines != nil && existing != nil && s.machines.IsMachine(r.Context(), id) {
+		s.deleteMachine(w, r, id)
+		return
+	}
 	if err := s.targets.DeleteTarget(r.Context(), id); err != nil {
 		switch {
 		case errors.Is(err, registry.ErrNotFound):
