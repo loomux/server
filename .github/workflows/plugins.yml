@@ -135,15 +135,17 @@ jobs:
           tags: loomux-agent:test
           cache-from: type=gha
 
+      # kind itself, not helm/kind-action: the repository allows only
+      # actions from loomux, GitHub or verified creators, and go install
+      # verifies the module through the Go checksum database.
       - name: Bring up kind
-        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
-        with:
-          cluster_name: loomux
-          wait: 120s
+        run: |
+          go install sigs.k8s.io/kind@v0.33.0
+          "$(go env GOPATH)/bin/kind" create cluster --name loomux --wait 120s
 
       - name: Load the agent image and apply the manifests
         run: |
-          kind load docker-image loomux-agent:test --name loomux
+          "$(go env GOPATH)/bin/kind" load docker-image loomux-agent:test --name loomux
           kubectl apply -f deploy/test/kind/
           sh deploy/test/kind/kubeconfig-for-sa.sh > "${RUNNER_TEMP}/plugin.kubeconfig"
 
