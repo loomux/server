@@ -62,6 +62,30 @@ Whatever a plugin writes (its stderr, an error message, a check
 problem) is scrubbed of the plugin's own secret settings before Loomux
 stores, shows or logs it.
 
+## Machines a plugin makes
+
+A plugin that declares `targets.create` offers **Create a machine** on
+the Machines page (and `POST /api/v1/targets` with a `plugin` object).
+Loomux generates the target's SSH key and the machine's host key, pins
+the host key before the machine exists, and registers the machine as an
+ordinary managed remote target (user `agent`, workspace root
+`/data/work`). The machine comes up in the background; the target shows
+`plugin.status` (`creating`, `starting`, `running`, `stopped`, `error`,
+`lost`, `detached`) next to the usual health. Stop keeps a persistent
+machine's data and frees its compute; start brings it back at the same
+address; recreate applies the plugin's configured image; deleting the
+target destroys the machine, its data, its workspaces and the
+credentials scoped to it. A dispatch to a stopped machine starts it
+first. Loomux reconciles with the plugin on the probe interval: a
+machine left creating by a restart is resumed, a persistent one the
+plugin lost is made again, an ephemeral one is marked lost and its
+workspaces archived, and machines the plugin has that Loomux doesn't
+know are destroyed after a day.
+
+Credentials for the agents on a machine go in the vault scoped to the
+target (`target_id`); a one-time interactive sign-in kept in the
+machine's home works too, where the plugin keeps the data.
+
 ## Writing a plugin
 
 Implement `plugins/sdk.Plugin` and call `sdk.Main`; ship `plugin.json`

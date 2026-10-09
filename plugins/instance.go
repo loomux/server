@@ -3,6 +3,7 @@ package plugins
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -79,6 +80,8 @@ type InstanceOptions struct {
 	// OnState, if set, is told of every state change, outside the
 	// instance's lock; it must not block on a Stop of this instance.
 	OnState func(i *Instance, st InstanceStatus)
+	// OnNotify, if set, receives the plugin's notifications.
+	OnNotify func(method string, params json.RawMessage)
 
 	CallTimeout       time.Duration
 	StopTimeout       time.Duration
@@ -225,7 +228,7 @@ func (i *Instance) connect(ctx context.Context) error {
 	var err error
 	switch i.opts.Source {
 	case registry.PluginSourceSocket:
-		conn, err = DialSocket(ctx, i.opts.Path)
+		conn, err = dialSocket(ctx, i.opts.Path, i.opts.OnNotify)
 		if err != nil {
 			return fmt.Errorf("plugins: %s: connect: %w", i.opts.Label, err)
 		}
@@ -282,7 +285,7 @@ func (i *Instance) spawn() (*rpc.Conn, error) {
 	i.mu.Lock()
 	i.cmd, i.exited = cmd, exited
 	i.mu.Unlock()
-	return rpc.NewConn(stdout, stdin, nil), nil
+	return rpc.NewConn(stdout, stdin, i.opts.OnNotify), nil
 }
 
 // cleanEnv is the environment a plugin subprocess gets: what a program

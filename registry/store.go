@@ -246,6 +246,26 @@ type Store interface {
 	SetPluginConfig(ctx context.Context, id string, config map[string]any, secrets map[string]string) error
 	DeletePlugin(ctx context.Context, id string) error
 
+	// CreateEnvironment, GetEnvironment, GetEnvironmentByTarget,
+	// ListEnvironments, ListEnvironmentsByPlugin, UpdateEnvironment and
+	// DeleteEnvironment keep the machines plugins made (LOOM-178,
+	// docs/design/target-providers.md §1.7). CreateEnvironment stamps
+	// CreatedAt/UpdatedAt and encrypts HostPrivateKey at rest
+	// (ErrNoMasterKey without a key); its target must exist and have no
+	// environment yet (ErrConflict). GetEnvironment decrypts the key;
+	// the list methods never do. UpdateEnvironment writes status, reason,
+	// plugin id and version, image and digest. Unknown ids are
+	// ErrNotFound; GetEnvironmentByTarget is ErrNotFound for a target
+	// with none. A target with an environment can't be deleted
+	// (ErrConflict), nor a plugin that environments still name.
+	CreateEnvironment(ctx context.Context, e *Environment) error
+	GetEnvironment(ctx context.Context, id string) (*Environment, error)
+	GetEnvironmentByTarget(ctx context.Context, targetID string) (*Environment, error)
+	ListEnvironments(ctx context.Context) ([]*Environment, error)
+	ListEnvironmentsByPlugin(ctx context.Context, pluginID string) ([]*Environment, error)
+	UpdateEnvironment(ctx context.Context, e *Environment) error
+	DeleteEnvironment(ctx context.Context, id string) error
+
 	// GetSetting and SetSetting keep server-wide settings by key
 	// (LOOM-178: the instance id). GetSetting is ErrNotFound for a key
 	// never set; SetSetting creates or overwrites.

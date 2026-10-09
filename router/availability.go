@@ -309,7 +309,7 @@ func boundOutput(output string, maxLines, maxBytes int) string {
 // chat or the logs. Values too short to be a meaningful secret are left
 // alone rather than mangling ordinary text.
 func (r *Router) redactSecrets(ctx context.Context, workspaceID, agentType, text string) string {
-	secrets, err := r.creds.Resolve(ctx, workspaceID, agentType)
+	secrets, err := r.resolveSecrets(ctx, workspaceID, agentType)
 	if err != nil {
 		// Can't tell what to scrub: say so rather than risk a leak.
 		return "[output withheld: credentials could not be resolved to redact it]"

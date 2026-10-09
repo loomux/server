@@ -32,30 +32,36 @@ func NewResolver(store registry.Store) *Resolver {
 // specificity ranks how targeted a credential's scope is. Higher wins.
 type specificity int
 
+// The scope levels, least specific first. A workspace is more concrete
+// than a target (a workspace lives on one target), a target than an
+// agent type; within a level, having the agent type too wins.
 const (
 	specGlobal specificity = iota
 	specAgentTypeOnly
+	specTargetOnly
+	specTargetAndAgentType
 	specWorkspaceOnly
 	specWorkspaceAndAgentType
 )
 
-// Resolve returns the decrypted secrets applicable to workspaceID +
-// agentType (name -> value), applying this precedence — most specific
-// wins:
+// Resolve returns the decrypted secrets applicable to workspaceID,
+// targetID (the workspace's target) and agentType (name -> value),
+// applying this precedence — most specific wins:
 //
 //  1. workspace AND agent-type both match
 //  2. workspace matches, agent-type unscoped
-//  3. agent-type matches, workspace unscoped
-//  4. fully global (neither scoped)
+//  3. target AND agent-type both match (LOOM-178)
+//  4. target matches, agent-type unscoped
+//  5. agent-type matches, workspace and target unscoped
+//  6. fully global (nothing scoped)
 //
-// When two candidates for the same name are equally specific at level 2
-// vs. 3 (one workspace-only, one agent-type-only), the workspace-scoped
-// one wins — an arbitrary but deterministic tie-break: a workspace is a
-// more concrete unit than an agent-type category. A further tie-break
-// (genuine duplicates at the exact same scope, possible since SQLite's
-// UNIQUE constraint can't dedupe two NULL-workspace_id rows) goes to
-// whichever was updated most recently.
-func (r *Resolver) Resolve(ctx context.Context, workspaceID, agentType string) (map[string]string, error) {
+// A credential scoped to another workspace or target never applies. A
+// workspace-scoped credential outranks a target-scoped one even without
+// the agent type (a workspace is a more concrete unit), and both outrank
+// an agent-type-only one. A tie at the exact same scope (possible since
+// SQLite's UNIQUE constraint can't dedupe two NULL-workspace_id rows)
+// goes to whichever was updated most recently.
+func (r *Resolver) Resolve(ctx context.Context, workspaceID, targetID, agentType string) (map[string]string, error) {
 	all, err := r.store.ListCredentials(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: resolve: %w", err)
@@ -66,6 +72,9 @@ func (r *Resolver) Resolve(ctx context.Context, workspaceID, agentType string) (
 
 	for _, c := range all {
 		if c.WorkspaceID != "" && c.WorkspaceID != workspaceID {
+			continue
+		}
+		if c.TargetID != "" && c.TargetID != targetID {
 			continue
 		}
 		if c.AgentType != "" && c.AgentType != agentType {
@@ -103,6 +112,10 @@ func scopeSpecificity(c *registry.Credential) specificity {
 		return specWorkspaceAndAgentType
 	case c.WorkspaceID != "":
 		return specWorkspaceOnly
+	case c.TargetID != "" && c.AgentType != "":
+		return specTargetAndAgentType
+	case c.TargetID != "":
+		return specTargetOnly
 	case c.AgentType != "":
 		return specAgentTypeOnly
 	default:

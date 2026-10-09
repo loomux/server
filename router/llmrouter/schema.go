@@ -379,6 +379,16 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 	}
 	for _, t := range targets {
 		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n  agents: %s\n", t.ID, t.Name, t.Kind, renderAgents(t.Agents, t.AgentVersions))
+		if t.CreatedBy != "" {
+			note := "a machine Loomux created with the " + t.CreatedBy + " plugin; only its own workspaces are there"
+			if t.Ephemeral {
+				note += "; ephemeral: its files go when it is destroyed"
+			}
+			fmt.Fprintf(&b, "  created by plugin: %s\n", note)
+			if t.MachineStatus == "stopped" {
+				b.WriteString("  stopped: it will be started when used\n")
+			}
+		}
 		if t.Problem != "" {
 			fmt.Fprintf(&b, "  unusable right now: %s\n", t.Problem)
 		}

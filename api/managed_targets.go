@@ -76,6 +76,7 @@ func (s *Server) targetResponses(ctx context.Context, ts []*registry.Target) ([]
 		resp.Ready, resp.NextStep = onboardingState(t, h)
 		out = append(out, resp)
 	}
+	s.decorateMachines(ctx, out)
 	return out, nil
 }
 

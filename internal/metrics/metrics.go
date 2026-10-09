@@ -62,6 +62,9 @@ type Metrics struct {
 	// calls to plugins by plugin, method and outcome.
 	PluginsByStatus *prometheus.GaugeVec
 	PluginCalls     *prometheus.CounterVec
+	// EnvironmentsByStatus counts the machines plugins made, by plugin
+	// name and status (LOOM-178).
+	EnvironmentsByStatus *prometheus.GaugeVec
 }
 
 // NewMetrics creates a Metrics bundle and registers its collectors with
@@ -141,6 +144,10 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "loomux_plugin_calls_total",
 			Help: "Calls to plugins by plugin, method and outcome.",
 		}, []string{"plugin", "method", "outcome"}),
+		EnvironmentsByStatus: factory.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loomux_environments",
+			Help: "Machines plugins made, by plugin and status.",
+		}, []string{"plugin", "status"}),
 	}
 }
 
