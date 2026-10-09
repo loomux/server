@@ -1,0 +1,19 @@
+{
+  "name": "fake",
+  "title": "Fake",
+  "version": "0.1.0",
+  "protocol": "loomux-plugin/1",
+  "vendor": "Loomux",
+  "description": "A test plugin: no infrastructure, scripted behaviour.",
+  "capabilities": [],
+  "permissions": [],
+  "host_requests": [],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "mode": {"type": "string", "enum": ["ok", "crash_on_check", "hang_on_check", "exit_after_configure"], "default": "ok", "description": "what the plugin does, for tests"},
+      "token": {"type": "string", "x-secret": true, "description": "a secret the plugin only reports as set or not"},
+      "greeting": {"type": "string", "default": "hi"}
+    }
+  }
+}
