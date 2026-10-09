@@ -37,11 +37,12 @@ import (
 // port-forward, with its own admin kubeconfig) and ssh make the ssh
 // login part run; without them it is skipped.
 //
-// kind's kindnet enforces NetworkPolicy (it bundles
-// kube-network-policies), so with deploy/test/kind's policies applied
-// the check must say enforced: a confined canary reaches nothing.
-// LOOMUX_KIND_ENFORCED=0 says the cluster has no policy engine (another
-// CNI) and the check must say so instead.
+// Plain kind enforces no NetworkPolicy (CI's run proved it: a confined
+// canary reached the API server), so the check must report
+// network_policy_not_enforced. LOOMUX_KIND_ENFORCED=1 says a policy
+// engine (kube-network-policies) was installed into the cluster and
+// the check must say enforced instead: the canary reaches kube-dns
+// only.
 func TestKind(t *testing.T) {
 	kcPath := os.Getenv("LOOMUX_KIND_KUBECONFIG")
 	if kcPath == "" {
@@ -130,12 +131,12 @@ func endToEnd(t *testing.T, launch plugintest.Launch, o plugintest.Options) {
 			t.Errorf("check reports %s", code)
 		}
 	}
-	if os.Getenv("LOOMUX_KIND_ENFORCED") == "0" {
-		if !hasProblem(res, "network_policy_not_enforced") {
-			t.Error("the cluster has no policy engine; the check should say so")
+	if os.Getenv("LOOMUX_KIND_ENFORCED") == "1" {
+		if hasProblem(res, "network_policy_not_enforced") {
+			t.Error("a policy engine is installed; the check says not enforced")
 		}
-	} else if hasProblem(res, "network_policy_not_enforced") {
-		t.Error("kind enforces the applied NetworkPolicies; the check says not enforced")
+	} else if !hasProblem(res, "network_policy_not_enforced") {
+		t.Error("plain kind enforces no NetworkPolicy; the check should say so")
 	}
 
 	// Keys, as the host makes them: the machine's host key, pinned
