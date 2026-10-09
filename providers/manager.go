@@ -979,3 +979,79 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	m.jobs.Wait()
 }
+
+// MachineView is what the API shows of a machine: its environment, the
+// plugin that owns it, whether the plugin's configured image differs
+// from what runs, and the plugin's current warnings.
+type MachineView struct {
+	Environment     registry.Environment
+	PluginLabel     string
+	UpdateAvailable bool
+	Warnings        []protocol.Problem
+}
+
+// View is the machine behind targetID; ErrNotMachine for a registered
+// host.
+func (m *Manager) View(ctx context.Context, targetID string) (*MachineView, error) {
+	env, err := m.Get(ctx, targetID)
+	if err != nil {
+		return nil, err
+	}
+	views, err := m.pluginViews(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return m.view(ctx, env, views), nil
+}
+
+// Views is every machine, by target id, for the targets list.
+func (m *Manager) Views(ctx context.Context) (map[string]*MachineView, error) {
+	envs, err := m.store.ListEnvironments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	views, err := m.pluginViews(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*MachineView, len(envs))
+	for _, env := range envs {
+		out[env.TargetID] = m.view(ctx, env, views)
+	}
+	return out, nil
+}
+
+func (m *Manager) pluginViews(ctx context.Context) (map[string]*plugins.View, error) {
+	list, err := m.plugins.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*plugins.View, len(list))
+	for _, v := range list {
+		out[v.ID] = v
+	}
+	return out, nil
+}
+
+func (m *Manager) view(ctx context.Context, env *registry.Environment, views map[string]*plugins.View) *MachineView {
+	mv := &MachineView{Environment: *env}
+	mv.Environment.HostPrivateKey = nil
+	v := views[env.PluginID]
+	if v == nil {
+		return mv
+	}
+	mv.PluginLabel = v.Label
+	if v.Check != nil {
+		for _, p := range v.Check.Problems {
+			if p.Severity == protocol.SeverityWarning {
+				mv.Warnings = append(mv.Warnings, p)
+			}
+		}
+	}
+	if v.Instance.State == plugins.StateRunning && (env.Status == registry.EnvironmentRunning || env.Status == registry.EnvironmentStopped) {
+		if info, err := m.Info(ctx, env.PluginID); err == nil && info.Image != "" && info.Image != env.Image {
+			mv.UpdateAvailable = true
+		}
+	}
+	return mv
+}

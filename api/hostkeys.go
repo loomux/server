@@ -127,6 +127,9 @@ type scanHostKeyResponse struct {
 // machine's own (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub, run
 // there) before pinning it.
 func (s *Server) handleScanHostKey(w http.ResponseWriter, r *http.Request) {
+	if s.refuseIfMachine(w, r) {
+		return
+	}
 	t, ok := s.remoteTarget(w, r)
 	if !ok {
 		return
@@ -158,6 +161,9 @@ type pinHostKeyRequest struct {
 // target's latest scan: from then on the target is checked against it
 // alone, ahead of the mounted known_hosts.
 func (s *Server) handlePinHostKey(w http.ResponseWriter, r *http.Request) {
+	if s.refuseIfMachine(w, r) {
+		return
+	}
 	t, ok := s.remoteTarget(w, r)
 	if !ok {
 		return
@@ -210,6 +216,9 @@ func (s *Server) handlePinHostKey(w http.ResponseWriter, r *http.Request) {
 // handleUnpinHostKey removes the target's pin: it is checked against the
 // mounted known_hosts again.
 func (s *Server) handleUnpinHostKey(w http.ResponseWriter, r *http.Request) {
+	if s.refuseIfMachine(w, r) {
+		return
+	}
 	t, ok := s.remoteTarget(w, r)
 	if !ok {
 		return

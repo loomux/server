@@ -48,12 +48,13 @@ type credentialResponse struct {
 	Name        string    `json:"name"`
 	WorkspaceID string    `json:"workspace_id,omitempty"`
 	AgentType   string    `json:"agent_type,omitempty"`
+	TargetID    string    `json:"target_id,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func newCredentialResponse(c *registry.Credential) credentialResponse {
-	return credentialResponse{ID: c.ID, Name: c.Name, WorkspaceID: c.WorkspaceID, AgentType: c.AgentType, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
+	return credentialResponse{ID: c.ID, Name: c.Name, WorkspaceID: c.WorkspaceID, AgentType: c.AgentType, TargetID: c.TargetID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
 }
 
 type listCredentialsResponse struct {
@@ -65,6 +66,9 @@ type createCredentialRequest struct {
 	Value       string `json:"value"`
 	WorkspaceID string `json:"workspace_id"`
 	AgentType   string `json:"agent_type"`
+	// TargetID scopes the credential to one target (LOOM-178): every
+	// agent on that machine gets it.
+	TargetID string `json:"target_id"`
 }
 
 type setCredentialValueRequest struct {
@@ -140,11 +144,11 @@ func (s *Server) handleCreateCredential(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	c := &registry.Credential{ID: uuid.NewString(), Name: req.Name, WorkspaceID: req.WorkspaceID, AgentType: req.AgentType, Value: req.Value}
+	c := &registry.Credential{ID: uuid.NewString(), Name: req.Name, WorkspaceID: req.WorkspaceID, AgentType: req.AgentType, TargetID: req.TargetID, Value: req.Value}
 	if err := s.credentials.CreateCredential(r.Context(), c); err != nil {
 		switch {
-		case errors.Is(err, registry.ErrConflict) && req.WorkspaceID != "" && strings.Contains(err.Error(), "does not exist"):
-			writeError(w, http.StatusBadRequest, "no such workspace")
+		case errors.Is(err, registry.ErrConflict) && (req.WorkspaceID != "" || req.TargetID != "") && strings.Contains(err.Error(), "does not exist"):
+			writeError(w, http.StatusBadRequest, "no such workspace or target")
 		case errors.Is(err, registry.ErrConflict):
 			writeError(w, http.StatusConflict, "a credential with that name already exists at this scope; set its value instead")
 		default:

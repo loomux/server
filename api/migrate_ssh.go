@@ -71,6 +71,9 @@ type migrateSSHResponse struct {
 
 // handleMigrateSSH: POST /api/v1/targets/{id}/migrate-ssh {dry_run}.
 func (s *Server) handleMigrateSSH(w http.ResponseWriter, r *http.Request) {
+	if s.refuseIfMachine(w, r) {
+		return
+	}
 	if s.resolveSSHConfig == nil || s.sshKeys == nil {
 		writeError(w, http.StatusNotImplemented, "migrating targets to Loomux SSH keys is not configured on this server")
 		return
