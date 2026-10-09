@@ -918,9 +918,10 @@ root (no `go.work` is committed: the root's tooling stays in module mode), and C
   conformance suite against the plugin binary with a kubeconfig, then a `//go:build k8sintegration` host test
   creates a machine end to end: environment `running`, port-forward 2222, connect through the real
   managed-mode `RemoteExecutor` (AgentPool, pinned host key with the forwarded `[127.0.0.1]:port` host), run
-  `tmux -V` and the `test` steps, `stop`/`start`/`destroy`, assert nothing is left. plain kind enforces no NetworkPolicy (CI's canary reached the API server on 2026-10-09), so the job asserts
-  the enforcement check reports `not enforced` there, and with kube-network-policies installed into the
-  cluster (`LOOMUX_KIND_ENFORCED=1`) `enforced`; every exit code is also pinned by unit tests.
+  `tmux -V` and the `test` steps, `stop`/`start`/`destroy`, assert nothing is left. plain kind enforces no NetworkPolicy (CI's canary reached the API server on 2026-10-09, and still did with
+  kube-network-policies installed into kind), so the job asserts the enforcement check reports `not enforced`
+  there; every exit code is pinned by unit tests, and the `enforced` verdict is observed on TEST, where the
+  engine runs (the test takes `LOOMUX_KIND_ENFORCED=1` for a cluster that enforces).
 - **Docker plugin.** Unit tests against an `httptest` Engine API; an integration test on the GitHub runner's
   own docker over the unix socket (create, archive upload, ssh in via the published port on `127.0.0.1`,
   tmux, destroy) running the conformance suite. The ssh dial-stdio transport is exercised against
