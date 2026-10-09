@@ -17,7 +17,9 @@
   `00030_credentials_target_scope`.
 - Credentials may be scoped to a target (`target_id` on
   `POST /api/v1/credentials`): every agent on that machine gets them,
-  below a workspace-scoped credential and above an agent-type one.
+  below a workspace-scoped credential and above an agent-type one. They
+  go with the target when it is deleted; a workspace-scoped credential
+  may name only the workspace's own target.
 - Attach-info lists `attach_commands`: a plugin's ways in (kubectl,
   docker) for a machine it made, and the plain ssh form for every
   remote target.

@@ -915,6 +915,20 @@ func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) er
 	if err != nil {
 		return fmt.Errorf("sqlite: encrypt credential: %w", err)
 	}
+	if c.WorkspaceID != "" && c.TargetID != "" {
+		// Both scopes: the workspace lives on one target, and a credential
+		// for it on another could never apply.
+		var wsTarget sql.NullString
+		err := s.db.QueryRowContext(ctx, `SELECT target_id FROM workspaces WHERE id = ?`, c.WorkspaceID).Scan(&wsTarget)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// The insert's foreign key reports it.
+		case err != nil:
+			return fmt.Errorf("sqlite: create credential: %w", err)
+		case wsTarget.String != c.TargetID:
+			return fmt.Errorf("%w: workspace %q is on another target than %q", registry.ErrConflict, c.WorkspaceID, c.TargetID)
+		}
+	}
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO credentials (id, name, workspace_id, target_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at)

@@ -147,6 +147,8 @@ func (s *Server) handleCreateCredential(w http.ResponseWriter, r *http.Request) 
 	c := &registry.Credential{ID: uuid.NewString(), Name: req.Name, WorkspaceID: req.WorkspaceID, AgentType: req.AgentType, TargetID: req.TargetID, Value: req.Value}
 	if err := s.credentials.CreateCredential(r.Context(), c); err != nil {
 		switch {
+		case errors.Is(err, registry.ErrConflict) && req.WorkspaceID != "" && req.TargetID != "" && strings.Contains(err.Error(), "another target"):
+			writeError(w, http.StatusBadRequest, "the workspace is on another target")
 		case errors.Is(err, registry.ErrConflict) && (req.WorkspaceID != "" || req.TargetID != "") && strings.Contains(err.Error(), "does not exist"):
 			writeError(w, http.StatusBadRequest, "no such workspace or target")
 		case errors.Is(err, registry.ErrConflict):

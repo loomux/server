@@ -146,7 +146,8 @@ func testEnvironmentNeedsMasterKey(t *testing.T, store registry.Store) {
 }
 
 // A credential scoped to a target (LOOM-178): stored, listed, unique per
-// scope, and the target can't go while it exists.
+// scope, gone with its target, and never on another target than its
+// workspace's.
 func testCredentialTargetScope(t *testing.T, store registry.Store) {
 	ctx := context.Background()
 	target := &registry.Target{ID: "t-cred-1", Name: "machine-cred", Kind: registry.TargetKindRemote, Host: "lx-c.fake.invalid", User: "agent"}
@@ -186,13 +187,39 @@ func testCredentialTargetScope(t *testing.T, store registry.Store) {
 	if !found {
 		t.Errorf("ListCredentialInfo lacks the target scope: %+v", info)
 	}
-	if err := store.DeleteTarget(ctx, target.ID); !errors.Is(err, registry.ErrConflict) {
-		t.Errorf("DeleteTarget with a scoped credential: want ErrConflict, got %v", err)
+	// The target can go: its scoped credentials go with it (design §5's
+	// cascade; a credential scoped to a target that no longer exists is
+	// useless, and a delete refused over one would read as a 409 about
+	// workspaces).
+	if err := store.DeleteTarget(ctx, target.ID); err != nil {
+		t.Fatalf("DeleteTarget with a scoped credential: %v", err)
 	}
-	if err := store.DeleteCredential(ctx, c.ID); err != nil {
+	if _, err := store.GetCredential(ctx, c.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("the scoped credential should go with its target: %v", err)
+	}
+	if _, err := store.GetCredential(ctx, global.ID); err != nil {
+		t.Errorf("the global credential should stay: %v", err)
+	}
+
+	// A workspace's credential may name the workspace's own target only:
+	// on another target it could never apply.
+	onA := &registry.Target{ID: "t-cred-a", Name: "host-a", Kind: registry.TargetKindRemote, Host: "a.example", User: "me"}
+	onB := &registry.Target{ID: "t-cred-b", Name: "host-b", Kind: registry.TargetKindRemote, Host: "b.example", User: "me"}
+	for _, tg := range []*registry.Target{onA, onB} {
+		if err := store.CreateTarget(ctx, tg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := &registry.Workspace{ID: "ws-cred-a", Name: "on-a", Path: "/w/on-a", TargetID: onA.ID, Status: registry.WorkspaceStatusIdle}
+	if err := store.CreateWorkspace(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteTarget(ctx, target.ID); err != nil {
-		t.Errorf("DeleteTarget after the credential is gone: %v", err)
+	elsewhere := &registry.Credential{ID: "cred-ws-other", Name: "TOKEN", WorkspaceID: ws.ID, TargetID: onB.ID, Value: "v"}
+	if err := store.CreateCredential(ctx, elsewhere); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("workspace on another target: want ErrConflict, got %v", err)
+	}
+	same := &registry.Credential{ID: "cred-ws-same", Name: "TOKEN", WorkspaceID: ws.ID, TargetID: onA.ID, Value: "v"}
+	if err := store.CreateCredential(ctx, same); err != nil {
+		t.Errorf("workspace on that target: %v", err)
 	}
 }

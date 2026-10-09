@@ -242,8 +242,11 @@ its workspaces with their tasks, its target-scoped credentials, the
 machine and its data, the generated key. `scan-host-key`, `pin`,
 `DELETE …/pin` and `migrate-ssh` answer `409` for a machine, and `PUT`
 refuses its connection fields (`400`). `POST /credentials` takes
-`target_id`. Attach-info's `attach_commands` lists the plugin's ways in
-and the plain ssh form.
+`target_id`; a credential scoped to a target goes with it when the
+target is deleted (a registered host's too), and one scoped to a
+workspace may name only the workspace's own target (`400`).
+Attach-info's `attach_commands` lists the plugin's ways in and the
+plain ssh form.
 
 ## Layout
 
