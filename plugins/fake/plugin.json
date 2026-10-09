@@ -5,7 +5,7 @@
   "protocol": "loomux-plugin/1",
   "vendor": "Loomux",
   "description": "A test plugin: no infrastructure, scripted behaviour.",
-  "capabilities": [],
+  "capabilities": ["targets.create", "targets.stop_start", "targets.recreate", "targets.persistent", "targets.ephemeral", "targets.attach_commands"],
   "permissions": [],
   "host_requests": [],
   "config_schema": {
@@ -14,7 +14,9 @@
       "mode": {"type": "string", "enum": ["ok", "crash_on_check", "hang_on_check", "exit_after_configure", "leak_token", "reject_configure"], "default": "ok", "description": "what the plugin does, for tests"},
       "token": {"type": "string", "x-secret": true, "description": "a secret the plugin only reports as set or not (except in mode leak_token)"},
       "greeting": {"type": "string", "default": "hi"},
-      "pid_dir": {"type": "string", "description": "a directory the plugin writes a file named after its pid into at configure, so tests can count processes"}
+      "pid_dir": {"type": "string", "description": "a directory the plugin writes a file named after its pid into at configure, so tests can count processes"},
+      "targets_mode": {"type": "string", "enum": ["ok", "create_fails", "vanish", "slow_start"], "default": "ok", "description": "how the in-memory machines behave, for tests"},
+      "address_domain": {"type": "string", "default": "fake.invalid", "description": "machines are addressed as lx-<id>.<address_domain>"}
     }
   }
 }

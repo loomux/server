@@ -19,6 +19,7 @@ import (
 
 	"github.com/Loomux/server/plugins"
 	"github.com/Loomux/server/plugins/protocol"
+	"github.com/Loomux/server/plugins/rpc"
 )
 
 // ManifestJSON is the fake's plugin.json, the one its executable serves
@@ -68,6 +69,9 @@ type Plugin struct {
 	greeting  string
 	host      protocol.HostInfo
 	shutdown  bool
+	tmode     string
+	domain    string
+	targets   *targetsState
 }
 
 // New returns a fake in mode ok.
@@ -77,6 +81,8 @@ func New() *Plugin {
 		Stderr:   func(line string) { fmt.Fprintln(os.Stderr, line) },
 		mode:     ModeOK,
 		greeting: "hi",
+		tmode:    TargetsOK,
+		domain:   "fake.invalid",
 	}
 }
 
@@ -95,6 +101,12 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	}
 	if g, ok := cp.Config["greeting"].(string); ok {
 		p.greeting = g
+	}
+	if tm, ok := cp.Config["targets_mode"].(string); ok && tm != "" {
+		p.tmode = tm
+	}
+	if d, ok := cp.Config["address_domain"].(string); ok && d != "" {
+		p.domain = d
 	}
 	p.host = cp.Host
 	if dir, ok := cp.Config["pid_dir"].(string); ok && dir != "" {
@@ -188,4 +200,214 @@ func loomuxEnv() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// In-memory machines (the targets.* group) for the host's tests.
+
+// Targets modes ("targets_mode").
+const (
+	TargetsOK          = "ok"
+	TargetsCreateFails = "create_fails"
+	TargetsVanish      = "vanish"
+	TargetsSlowStart   = "slow_start"
+)
+
+// machine is one in-memory environment.
+type machine struct {
+	env     protocol.Environment
+	spec    protocol.EnvironmentSpec
+	gets    int
+	started time.Time
+}
+
+// targetsState is the fake's machines; nil until the first targets.*
+// call.
+type targetsState struct {
+	mu       sync.Mutex
+	machines map[string]*machine
+}
+
+func (p *Plugin) targetsMode() (mode, domain, instance string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.tmode, p.domain, p.host.InstanceID
+}
+
+func (p *Plugin) state() *targetsState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.targets == nil {
+		p.targets = &targetsState{machines: map[string]*machine{}}
+	}
+	return p.targets
+}
+
+func notFound(id string) error {
+	return &rpc.Error{Code: rpc.CodeNotFound, Message: "no machine " + id}
+}
+
+func (p *Plugin) DescribeTargets(ctx context.Context) (protocol.TargetsInfo, error) {
+	_, domain, _ := p.targetsMode()
+	st := p.state()
+	st.mu.Lock()
+	n := len(st.machines)
+	st.mu.Unlock()
+	return protocol.TargetsInfo{
+		Sizes:             []protocol.Size{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"}, {Name: "medium", CPU: "2", Memory: "4Gi", Disk: "20Gi"}},
+		PersistentDefault: true,
+		EgressOptions:     []string{protocol.EgressInternet, protocol.EgressNone},
+		Image:             "ghcr.io/loomux/agent:fake",
+		MaxEnvironments:   5,
+		Environments:      n,
+		AddressTemplate:   "lx-{id}." + domain,
+		SSHProxy:          protocol.SSHProxyNone,
+		User:              "agent",
+		Port:              2222,
+	}, nil
+}
+
+func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec) (protocol.Environment, error) {
+	mode, domain, _ := p.targetsMode()
+	if mode == TargetsCreateFails {
+		return protocol.Environment{}, &rpc.Error{Code: rpc.CodeQuota, Message: "the fake refuses to create machines in this mode"}
+	}
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if m, ok := st.machines[spec.ID]; ok {
+		return m.env, nil // idempotent
+	}
+	m := &machine{spec: spec, started: time.Now(), env: protocol.Environment{
+		ID: spec.ID, Status: protocol.EnvStarting,
+		Address: protocol.Address{Host: "lx-" + spec.ID + "." + domain, Port: 2222, Proxy: protocol.SSHProxyNone},
+		Size:    spec.Size, Persistent: spec.Persistent, Egress: spec.Egress, CreatedAt: time.Now().UTC(),
+		ImageDigest: "sha256:fake",
+	}}
+	st.machines[spec.ID] = m
+	return m.env, nil
+}
+
+func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment, error) {
+	mode, _, _ := p.targetsMode()
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	m, ok := st.machines[id]
+	if !ok {
+		return protocol.Environment{}, notFound(id)
+	}
+	m.gets++
+	switch m.env.Status {
+	case protocol.EnvStarting:
+		need := 1
+		if mode == TargetsSlowStart {
+			need = 3
+		}
+		if m.gets >= need {
+			m.env.Status = protocol.EnvRunning
+			m.started = time.Now()
+		}
+	case protocol.EnvRunning:
+		if mode == TargetsVanish && time.Since(m.started) > time.Second {
+			delete(st.machines, id)
+			return protocol.Environment{}, notFound(id)
+		}
+	}
+	return m.env, nil
+}
+
+func (p *Plugin) ListTargets(ctx context.Context) ([]protocol.Environment, error) {
+	_, _, instance := p.targetsMode()
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := []protocol.Environment{}
+	for _, m := range st.machines {
+		if m.spec.Labels[protocol.LabelInstance] == instance {
+			out = append(out, m.env)
+		}
+	}
+	return out, nil
+}
+
+func (p *Plugin) StartTarget(ctx context.Context, id string) error {
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	m, ok := st.machines[id]
+	if !ok {
+		return notFound(id)
+	}
+	if m.env.Status == protocol.EnvStopped || m.env.Status == protocol.EnvLost {
+		m.env.Status, m.gets = protocol.EnvStarting, 0
+	}
+	return nil
+}
+
+func (p *Plugin) StopTarget(ctx context.Context, id string) error {
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	m, ok := st.machines[id]
+	if !ok {
+		return notFound(id)
+	}
+	m.env.Status = protocol.EnvStopped
+	return nil
+}
+
+func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.EnvironmentSpec) (protocol.Environment, error) {
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	m, ok := st.machines[id]
+	if !ok {
+		return protocol.Environment{}, notFound(id)
+	}
+	m.spec = spec
+	m.env.Size, m.env.Status, m.gets = spec.Size, protocol.EnvStarting, 0
+	m.env.ImageDigest = "sha256:fake-" + spec.Image
+	return m.env, nil
+}
+
+func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	delete(st.machines, id) // idempotent
+	return nil
+}
+
+func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.EnvironmentHealth, error) {
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	m, ok := st.machines[id]
+	if !ok {
+		return protocol.EnvironmentHealth{}, notFound(id)
+	}
+	return protocol.EnvironmentHealth{Status: m.env.Status, ImageDigest: m.env.ImageDigest}, nil
+}
+
+func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session string) ([]protocol.AttachCommand, error) {
+	st := p.state()
+	st.mu.Lock()
+	_, ok := st.machines[id]
+	st.mu.Unlock()
+	if !ok {
+		return nil, notFound(id)
+	}
+	return []protocol.AttachCommand{{Via: "fake", Command: "fake attach " + id + " -- tmux -L loomux attach -t " + session}}, nil
+}
+
+// Machines is a snapshot of the fake's machines, for tests.
+func (p *Plugin) Machines() map[string]protocol.Environment {
+	st := p.state()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := map[string]protocol.Environment{}
+	for id, m := range st.machines {
+		out[id] = m.env
+	}
+	return out
 }
