@@ -1,0 +1,13 @@
+# A test copy of what theWyseKube would get for the Kubernetes plugin
+# (docs/design/target-providers.md §10), for the kind cluster CI brings
+# up. Pod Security "restricted" is enforced, so a pod the plugin makes
+# must pass it here before it ever reaches a real cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loomux-agents
+  labels:
+    app.kubernetes.io/part-of: loomux
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

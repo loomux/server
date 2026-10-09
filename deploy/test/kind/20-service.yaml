@@ -1,0 +1,17 @@
+# The headless Service that names machines (design §2.3):
+# lx-<id>.loomux-agents.loomux-agents.svc.cluster.local resolves to the
+# pod's current IP, while sshd starts too.
+apiVersion: v1
+kind: Service
+metadata:
+  name: loomux-agents
+  namespace: loomux-agents
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    loomux.io/role: agent
+  ports:
+    - name: ssh
+      port: 2222
+      targetPort: 2222

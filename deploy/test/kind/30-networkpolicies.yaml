@@ -1,0 +1,86 @@
+# The policies of design §10 item 6. They do nothing until a policy
+# engine enforces them (kind's default CNI doesn't; theWyseKube's
+# Flannel doesn't either), which is why the plugin tests enforcement
+# with a canary instead of assuming it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agents-default-deny
+  namespace: loomux-agents
+spec:
+  podSelector:
+    matchLabels:
+      loomux.io/role: agent
+  policyTypes: [Ingress, Egress]
+---
+# (b) ssh in, from loomuxd only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agents-allow-ssh-from-loomuxd
+  namespace: loomux-agents
+spec:
+  podSelector:
+    matchLabels:
+      loomux.io/role: agent
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: loomux
+          podSelector:
+            matchLabels:
+              app: loomuxd
+      ports:
+        - protocol: TCP
+          port: 2222
+---
+# (c) DNS, for every agent pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agents-allow-dns
+  namespace: loomux-agents
+spec:
+  podSelector:
+    matchLabels:
+      loomux.io/role: agent
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# (d) the internet, and nothing private, for egress "internet" pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agents-allow-internet
+  namespace: loomux-agents
+spec:
+  podSelector:
+    matchLabels:
+      loomux.io/role: agent
+      loomux.io/egress: internet
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+              - 127.0.0.0/8

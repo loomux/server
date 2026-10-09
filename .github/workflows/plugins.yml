@@ -1,15 +1,14 @@
 # Builds, tests, scans and publishes ghcr.io/loomux/agent, the image that
-# runs inside a machine a plugin makes (LOOM-178, deploy/agent/). The
-# first-party plugin images join this workflow with their own jobs when
-# they exist (docs/design/target-providers.md §11, PR 4/5).
+# runs inside a machine a plugin makes (LOOM-178, deploy/agent/), and
+# the first-party plugin images (ghcr.io/loomux/plugin-kubernetes).
 #
-# Two jobs. agent-image builds the image, logs in over ssh and scans
-# it, with read-only permissions, on every change. publish runs only on
-# a push to main (tags :main and :sha-<short>) or a release tag (v*, as
-# the server's: tag :<version>), and pushes the very image the first
-# job tested, handed over as an artifact, so the digest that is
-# published and attested is the one that passed. A pull request never
-# pushes. Every published image carries a GitHub build-provenance
+# Build-and-test jobs, one per image (agent-image: the agent image;
+# plugin-kubernetes: the Kubernetes plugin, with a kind cluster), with
+# read-only permissions, on every change. publish runs only on a push
+# to main (tags :main and :sha-<short>) or a release tag (v*, as the
+# server's: tag :<version>), and pushes the very images the jobs
+# tested, handed over as artifacts, so the digest that is published and
+# attested is the one that passed. A pull request never pushes. Every published image carries a GitHub build-provenance
 # attestation, which the host can verify (LOOM-118's verifier) once
 # plugin artifacts are installed from outside the image.
 #
@@ -23,10 +22,18 @@ on:
     tags: ["v*"]
     paths:
       - "deploy/agent/**"
+      - "deploy/test/kind/**"
+      - "plugins/**"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/plugins.yml"
   pull_request:
     paths:
       - "deploy/agent/**"
+      - "deploy/test/kind/**"
+      - "plugins/**"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/plugins.yml"
   workflow_dispatch:
 
@@ -95,8 +102,98 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # The Kubernetes plugin (LOOM-179, plugins/kubernetes): its own
+  # module's unit tests; then the conformance suite and an end-to-end
+  # run (create, wait for running, ssh in through a port-forward, stop,
+  # start, destroy) against a kind cluster with the §10 manifests
+  # (deploy/test/kind), as the plugin's ServiceAccount; then its image.
+  plugin-kubernetes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: plugins/kubernetes/go.mod
+
+      - name: Unit tests
+        working-directory: plugins/kubernetes
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the agent image for the cluster
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy/agent
+          load: true
+          tags: loomux-agent:test
+          cache-from: type=gha
+
+      - name: Bring up kind
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: loomux
+          wait: 120s
+
+      - name: Load the agent image and apply the manifests
+        run: |
+          kind load docker-image loomux-agent:test --name loomux
+          kubectl apply -f deploy/test/kind/
+          sh deploy/test/kind/kubeconfig-for-sa.sh > "${RUNNER_TEMP}/plugin.kubeconfig"
+
+      - name: Conformance and end to end on kind
+        working-directory: plugins/kubernetes
+        env:
+          LOOMUX_KIND_KUBECONFIG: ${{ runner.temp }}/plugin.kubeconfig
+          LOOMUX_KIND_AGENT_IMAGE: loomux-agent:test
+        run: go test -tags kind -count=1 -timeout 15m -run TestKind -v ./...
+
+      - name: What the cluster holds afterwards
+        if: always()
+        run: kubectl -n loomux-agents get pods,pvc,secrets -o wide || true
+
+      - name: Build the plugin image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: plugins/kubernetes/Dockerfile
+          load: true
+          tags: ghcr.io/loomux/plugin-kubernetes:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the plugin image
+        run: bash plugins/kubernetes/smoke.sh ghcr.io/loomux/plugin-kubernetes:test
+
+      - name: Scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/loomux/plugin-kubernetes:test
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Save the tested image for publish
+        if: github.event_name != 'pull_request'
+        run: docker save ghcr.io/loomux/plugin-kubernetes:test | zstd -T0 -o plugin-kubernetes-image.tar.zst
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name != 'pull_request'
+        with:
+          name: plugin-kubernetes-image
+          path: plugin-kubernetes-image.tar.zst
+          retention-days: 1
+          if-no-files-found: error
+
   publish:
-    needs: agent-image
+    needs: [agent-image, plugin-kubernetes]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -104,13 +201,22 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+    strategy:
+      matrix:
+        include:
+          - artifact: agent-image
+            image: ghcr.io/loomux/agent
+          - artifact: plugin-kubernetes-image
+            image: ghcr.io/loomux/plugin-kubernetes
+    env:
+      IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: agent-image
+          name: ${{ matrix.artifact }}
 
       - name: Load the tested image
-        run: zstd -d -c agent-image.tar.zst | docker load
+        run: zstd -d -c ${{ matrix.artifact }}.tar.zst | docker load
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -120,6 +226,8 @@ jobs:
 
       # The same local image under every tag: one digest, which each
       # push reports and which must agree.
+      # The tags the metadata step computed for the agent image, with
+      # this image's name in place of its own.
       - name: Push
         id: push
         env:
@@ -127,7 +235,8 @@ jobs:
         run: |
           set -euo pipefail
           digest=""
-          for tag in ${TAGS}; do
+          for agent_tag in ${TAGS}; do
+            tag="${IMAGE}:${agent_tag##*:}"
             docker tag "${IMAGE}:test" "${tag}"
             d="$(docker push "${tag}" | sed -n 's/.*digest: \(sha256:[0-9a-f]*\).*/\1/p' | tail -n 1)"
             [ -n "${d}" ] || { echo "no digest reported for ${tag}" >&2; exit 1; }
@@ -152,5 +261,5 @@ jobs:
         run: |
           {
             echo "Published ${IMAGE}@${DIGEST} as:"
-            printf '%s\n' "${TAGS}" | sed 's/^/- /'
+            for agent_tag in ${TAGS}; do echo "- ${IMAGE}:${agent_tag##*:}"; done
           } >> "${GITHUB_STEP_SUMMARY}"
