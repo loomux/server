@@ -139,8 +139,8 @@ jobs:
       # from loomux, GitHub or verified creators, and helm/kind-action is
       # none of those. The release binary is pinned by version and by
       # its sha256 (kind-linux-amd64.sha256sum of that release); the
-      # cluster is deploy/test/kind/kind.yaml, its node image pinned by
-      # digest. kubectl is the runner's.
+      # cluster is deploy/test/kind/cluster/kind.yaml, its node image
+      # pinned by digest. kubectl is the runner's.
       - name: Bring up kind
         env:
           KIND_VERSION: v0.33.0
@@ -150,7 +150,7 @@ jobs:
           echo "${KIND_SHA256}  kind" | sha256sum -c -
           sudo install -m 0755 kind /usr/local/bin/kind
           kind version
-          kind create cluster --config deploy/test/kind/kind.yaml --wait 120s
+          kind create cluster --config deploy/test/kind/cluster/kind.yaml --wait 120s
 
       - name: Load the agent image and apply the manifests
         run: |

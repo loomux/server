@@ -1,7 +1,8 @@
 # The kind cluster CI brings up for the Kubernetes plugin's integration
 # test (.github/workflows/plugins.yml). One node; the node image pinned
 # by digest (from kind v0.33.0's release notes), on the Kubernetes minor
-# closest to theWyseKube's.
+# closest to theWyseKube's. In its own directory so that
+# `kubectl apply -f deploy/test/kind/` (the manifests) never sees it.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: loomux
