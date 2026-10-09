@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/plugins/rpc"
@@ -93,6 +94,9 @@ type View struct {
 
 // Manager installs, configures and runs plugins (design §1.5). It owns
 // the rows and the running instances; nothing else touches either.
+// Lifecycle operations on one plugin are serialised by a lock per
+// plugin id, so two requests (a double-click, a boot racing an enable)
+// can never leave an instance running that the Manager doesn't know.
 type Manager struct {
 	store   registry.Store
 	catalog *Catalog
@@ -111,9 +115,11 @@ type Manager struct {
 	// it starts (tests shorten the supervisor's timings).
 	InstanceOptions func(*InstanceOptions)
 
-	mu        sync.Mutex
+	mu        sync.Mutex // guards the maps below
 	instances map[string]*Instance
 	checks    map[string]protocol.CheckResult
+	secrets   map[string]map[string]string // the plugin's configured secrets, for redaction
+	locks     map[string]*sync.Mutex       // the lifecycle lock per plugin id
 }
 
 // NewManager makes a Manager over store and catalog. host is what every
@@ -128,7 +134,21 @@ func NewManager(store registry.Store, catalog *Catalog, host protocol.HostInfo, 
 	return &Manager{
 		store: store, catalog: catalog, host: host, logger: logger, met: met,
 		instances: map[string]*Instance{}, checks: map[string]protocol.CheckResult{},
+		secrets: map[string]map[string]string{}, locks: map[string]*sync.Mutex{},
 	}
+}
+
+// lock takes the plugin's lifecycle lock and returns its release.
+func (m *Manager) lock(id string) func() {
+	m.mu.Lock()
+	l := m.locks[id]
+	if l == nil {
+		l = &sync.Mutex{}
+		m.locks[id] = l
+	}
+	m.mu.Unlock()
+	l.Lock()
+	return l.Unlock
 }
 
 // Available is the catalog.
@@ -167,9 +187,11 @@ func (m *Manager) Install(ctx context.Context, r InstallRequest) (*View, error) 
 		Capabilities: append([]string{}, a.Manifest.Capabilities...), Manifest: manifestJSON,
 		Config: plain, Secrets: secrets,
 	}
+	defer m.lock(p.ID)()
 	if err := m.store.CreatePlugin(ctx, p); err != nil {
 		return nil, err
 	}
+	m.setSecrets(p.ID, secrets)
 	startErr := m.startAndCheck(ctx, p)
 	view, err := m.view(ctx, p)
 	if err != nil {
@@ -219,6 +241,7 @@ func (m *Manager) List(ctx context.Context) ([]*View, error) {
 // its stored value, "" clears it. A running plugin is reconfigured and
 // checked again; one in error is started again.
 func (m *Manager) SetConfig(ctx context.Context, id string, config map[string]any) (*View, error) {
+	defer m.lock(id)()
 	p, err := m.store.GetPlugin(ctx, id)
 	if err != nil {
 		return nil, err
@@ -255,10 +278,9 @@ func (m *Manager) SetConfig(ctx context.Context, id string, config map[string]an
 		return nil, err
 	}
 	p.Config, p.Secrets = plain, secrets
+	m.setSecrets(id, secrets)
 
-	m.mu.Lock()
-	inst := m.instances[id]
-	m.mu.Unlock()
+	inst := m.instance(id)
 	var applyErr error
 	switch {
 	case inst != nil && inst.Status().State == StateRunning:
@@ -269,7 +291,6 @@ func (m *Manager) SetConfig(ctx context.Context, id string, config map[string]an
 			applyErr = m.check(ctx, p, inst)
 		}
 	case p.Enabled && p.Status != registry.PluginStatusDisabled:
-		m.stopInstance(ctx, id)
 		applyErr = m.startAndCheck(ctx, p)
 	}
 	view, err := m.view(ctx, p)
@@ -279,19 +300,18 @@ func (m *Manager) SetConfig(ctx context.Context, id string, config map[string]an
 	return view, applyErr
 }
 
-// Enable starts a disabled plugin (or retries one in error).
+// Enable starts a disabled plugin (or retries one in error). A plugin
+// already running is left as it is.
 func (m *Manager) Enable(ctx context.Context, id string) (*View, error) {
+	defer m.lock(id)()
 	p, err := m.store.GetPlugin(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	m.mu.Lock()
-	inst := m.instances[id]
-	m.mu.Unlock()
 	var startErr error
-	if inst == nil || inst.Status().State != StateRunning {
-		m.stopInstance(ctx, id)
+	if inst := m.instance(id); inst == nil || inst.Status().State != StateRunning {
 		p.Enabled = true
+		m.setSecrets(id, p.Secrets)
 		startErr = m.startAndCheck(ctx, p)
 	}
 	view, err := m.view(ctx, p)
@@ -304,6 +324,7 @@ func (m *Manager) Enable(ctx context.Context, id string) (*View, error) {
 // Disable stops the plugin and keeps everything else. Its machines keep
 // working as plain targets; only lifecycle control pauses.
 func (m *Manager) Disable(ctx context.Context, id string) (*View, error) {
+	defer m.lock(id)()
 	p, err := m.store.GetPlugin(ctx, id)
 	if err != nil {
 		return nil, err
@@ -317,9 +338,13 @@ func (m *Manager) Disable(ctx context.Context, id string) (*View, error) {
 }
 
 // Upgrade moves the plugin to the catalog's version of it. No-op when
-// the versions match. The old version keeps running if the new one
-// can't start.
+// the versions match. The new version is started beside the old one and
+// checked; only then is the old one stopped and the row changed. If the
+// new one can't start or fails its check, it is stopped again, the old
+// version keeps running, the row keeps its version, and the error is a
+// *CheckFailedError.
 func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
+	defer m.lock(id)()
 	p, err := m.store.GetPlugin(ctx, id)
 	if err != nil {
 		return nil, err
@@ -346,50 +371,95 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 	if err != nil {
 		return nil, fmt.Errorf("plugins: manifest: %w", err)
 	}
-	// The new manifest may know more settings: re-apply defaults.
+	// The new manifest may know more settings: re-apply defaults, and
+	// say which version the stored configuration doesn't fit.
 	schema, err := a.Manifest.Schema()
 	if err != nil {
 		return nil, err
 	}
 	cfg := schema.ApplyDefaults(mergedConfig(p.Config, p.Secrets))
 	if err := schema.Validate(cfg); err != nil {
-		return nil, fmt.Errorf("plugins: the stored configuration doesn't fit %s %s: %w", a.Manifest.Name, a.Manifest.Version, err)
+		var ce *ConfigError
+		if errors.As(err, &ce) {
+			return nil, &ConfigError{Field: ce.Field, Msg: fmt.Sprintf("%s (the stored configuration doesn't fit %s %s)", ce.Msg, a.Manifest.Name, a.Manifest.Version)}
+		}
+		return nil, err
 	}
 	plain, secrets := schema.Split(cfg)
+	running := p.Enabled && p.Status != registry.PluginStatusDisabled
+	var candidate *Instance
+	if running {
+		candidate, err = m.startInstance(ctx, p, &a.Manifest, a.Source, a.Path, mergedConfig(plain, secrets))
+		if err != nil {
+			reason := fmt.Sprintf("upgrade to %s: start: %s", a.Manifest.Version, m.redact(id, safeError(err)))
+			m.logger.Warn("plugin upgrade failed", "plugin", p.Label, "reason", reason)
+			view, verr := m.view(ctx, p)
+			if verr != nil {
+				return nil, verr
+			}
+			return view, &CheckFailedError{Reason: reason}
+		}
+		res, err := candidate.Check(ctx)
+		if err != nil || !res.OK {
+			_ = candidate.Stop(ctx)
+			reason := fmt.Sprintf("upgrade to %s: ", a.Manifest.Version)
+			if err != nil {
+				reason += "check: " + m.redact(id, safeError(err))
+			} else {
+				reason += m.problemsReason(id, res.Problems)
+			}
+			m.logger.Warn("plugin upgrade failed", "plugin", p.Label, "reason", reason)
+			view, verr := m.view(ctx, p)
+			if verr != nil {
+				return nil, verr
+			}
+			return view, &CheckFailedError{Reason: reason, Problems: m.redactProblems(id, res.Problems)}
+		}
+		// The new version works: swap it in and stop the old one.
+		m.mu.Lock()
+		old := m.instances[id]
+		m.instances[id] = candidate
+		m.checks[id] = m.redactResult(id, res)
+		m.mu.Unlock()
+		if old != nil {
+			_ = old.Stop(ctx)
+		}
+	}
 	if err := m.store.SetPluginConfig(ctx, id, plain, secrets); err != nil {
 		return nil, err
 	}
 	p.Config, p.Secrets = plain, secrets
+	m.setSecrets(id, secrets)
 	p.Version, p.Protocol, p.Path, p.Trust = a.Manifest.Version, a.Manifest.Protocol, a.Path, a.Trust
 	p.Capabilities = append([]string{}, a.Manifest.Capabilities...)
 	p.Manifest = manifestJSON
-	m.stopInstance(ctx, id)
-	var startErr error
-	if p.Enabled && p.Status != registry.PluginStatusDisabled {
-		startErr = m.startAndCheck(ctx, p)
-	} else if err := m.store.UpdatePlugin(ctx, p); err != nil {
+	status := p.Status
+	if running {
+		status = registry.PluginStatusInstalled
+	}
+	if err := m.setStatus(ctx, p, status, ""); err != nil {
 		return nil, err
 	}
-	view, err := m.view(ctx, p)
-	if err != nil {
-		return nil, err
-	}
-	return view, startErr
+	return m.view(ctx, p)
 }
 
-// Check runs the plugin's check again and records the result.
+// Check runs the plugin's check again and records the result. While the
+// instance is restarting (a transient the supervisor is handling) the
+// row is left alone and the error is ErrUnavailable.
 func (m *Manager) Check(ctx context.Context, id string) (*View, error) {
+	defer m.lock(id)()
 	p, err := m.store.GetPlugin(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	m.mu.Lock()
-	inst := m.instances[id]
-	m.mu.Unlock()
 	var checkErr error
-	if inst == nil {
+	inst := m.instance(id)
+	switch {
+	case inst == nil:
 		checkErr = ErrUnavailable
-	} else {
+	case inst.Status().State != StateRunning:
+		checkErr = ErrUnavailable
+	default:
 		checkErr = m.check(ctx, p, inst)
 	}
 	view, err := m.view(ctx, p)
@@ -405,6 +475,7 @@ func (m *Manager) Uninstall(ctx context.Context, id, targets string) error {
 	if targets != "" && targets != UninstallDestroy && targets != UninstallKeep {
 		return ErrBadUninstallMode
 	}
+	defer m.lock(id)()
 	if _, err := m.store.GetPlugin(ctx, id); err != nil && errors.Is(err, registry.ErrNotFound) {
 		return err
 	}
@@ -431,6 +502,7 @@ func (m *Manager) Uninstall(ctx context.Context, id, targets string) error {
 	}
 	m.mu.Lock()
 	delete(m.checks, id)
+	delete(m.secrets, id)
 	m.mu.Unlock()
 	m.updateGauge(ctx)
 	return nil
@@ -448,21 +520,29 @@ func (m *Manager) StartAll(ctx context.Context) error {
 		if !row.Enabled || row.Status == registry.PluginStatusDisabled {
 			continue
 		}
-		p, err := m.store.GetPlugin(ctx, row.ID)
-		if err != nil {
-			if p == nil {
-				errs = append(errs, err)
-				continue
-			}
-			errs = append(errs, m.fail(ctx, p, "the stored configuration doesn't decrypt with this server's master key", nil))
-			continue
-		}
-		if err := m.startAndCheck(ctx, p); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", p.Label, err))
+		if err := m.startOne(ctx, row.ID); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", row.Label, err))
 		}
 	}
 	m.updateGauge(ctx)
 	return errors.Join(errs...)
+}
+
+// startOne is StartAll for one plugin, under its lock.
+func (m *Manager) startOne(ctx context.Context, id string) error {
+	defer m.lock(id)()
+	p, err := m.store.GetPlugin(ctx, id)
+	if err != nil {
+		if p == nil {
+			return err
+		}
+		return m.fail(ctx, p, "the stored configuration doesn't decrypt with this server's master key", nil)
+	}
+	if inst := m.instance(id); inst != nil && inst.Status().State == StateRunning {
+		return nil
+	}
+	m.setSecrets(id, p.Secrets)
+	return m.startAndCheck(ctx, p)
 }
 
 // HealthReport is the plugin system's health for GET /health/deep.
@@ -522,58 +602,128 @@ func (m *Manager) Close(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 	for _, id := range ids {
+		release := m.lock(id)
 		m.stopInstance(ctx, id)
+		release()
 	}
 	return nil
 }
 
-// startAndCheck starts p's instance and runs its check, recording the
-// outcome on the row: installed, or error with the reason.
+// startAndCheck starts p's instance (stopping any it replaces), runs its
+// check, and records the outcome on the row: installed, or error with
+// the reason. Callers hold p's lifecycle lock.
 func (m *Manager) startAndCheck(ctx context.Context, p *registry.Plugin) error {
 	manifest, err := m.installedManifest(p)
 	if err != nil {
 		return m.fail(ctx, p, "the installed manifest can't be read: "+safeError(err), nil)
 	}
+	inst, err := m.startInstance(ctx, p, manifest, p.Source, p.Path, mergedConfig(p.Config, p.Secrets))
+	if err != nil {
+		return m.fail(ctx, p, "start: "+m.redact(p.ID, safeError(err)), nil)
+	}
+	m.mu.Lock()
+	old := m.instances[p.ID]
+	m.instances[p.ID] = inst
+	m.mu.Unlock()
+	if old != nil && old != inst {
+		_ = old.Stop(ctx)
+	}
+	return m.check(ctx, p, inst)
+}
+
+// startInstance starts an instance for p from manifest at path, without
+// recording it: the caller decides whether it replaces the current one.
+func (m *Manager) startInstance(ctx context.Context, p *registry.Plugin, manifest *Manifest, source registry.PluginSource, path string, config map[string]any) (*Instance, error) {
+	id := p.ID
 	opts := InstanceOptions{
-		Label: p.Label, Source: p.Source, Path: p.Path, Manifest: manifest,
-		Config: mergedConfig(p.Config, p.Secrets), Host: m.host, Logger: m.logger,
-		OnCall: m.onCall(p.Name),
+		Label: p.Label, Source: source, Path: path, Manifest: manifest,
+		Config: config, Host: m.host, Logger: m.logger,
+		OnCall:  m.onCall(p.Name),
+		Redact:  func(s string) string { return m.redact(id, s) },
+		OnState: m.onState(id),
 	}
 	if m.InstanceOptions != nil {
 		m.InstanceOptions(&opts)
 	}
-	inst, err := Start(ctx, opts)
-	if err != nil {
-		return m.fail(ctx, p, "start: "+safeError(err), nil)
+	return Start(ctx, opts)
+}
+
+// onState is what an instance reports its state changes to: a
+// supervisor that gave up marks the row, and a plugin that came back
+// after a transient is checked again. Both run on their own goroutine
+// under the plugin's lock, since the state change may be reported while
+// a lifecycle call holds it (a Stop ends with one).
+func (m *Manager) onState(id string) func(i *Instance, st InstanceStatus) {
+	return func(i *Instance, st InstanceStatus) {
+		switch st.State {
+		case StateFailed:
+			go m.instanceFailed(id, i, st.Reason)
+		case StateRunning:
+			go m.instanceRecovered(id, i)
+		}
 	}
-	m.mu.Lock()
-	m.instances[p.ID] = inst
-	m.mu.Unlock()
-	return m.check(ctx, p, inst)
+}
+
+func (m *Manager) instanceFailed(id string, i *Instance, reason string) {
+	ctx := context.Background()
+	defer m.lock(id)()
+	if m.instance(id) != i {
+		return // replaced or stopped meanwhile
+	}
+	p, err := m.store.GetPlugin(ctx, id)
+	if p == nil || (err != nil && errors.Is(err, registry.ErrNotFound)) {
+		return
+	}
+	if p.Status == registry.PluginStatusDisabled {
+		return
+	}
+	m.logger.Warn("plugin gave up", "plugin", p.Label, "reason", reason)
+	_ = m.setStatus(ctx, p, registry.PluginStatusError, "the plugin stopped: "+reason)
+}
+
+func (m *Manager) instanceRecovered(id string, i *Instance) {
+	ctx := context.Background()
+	defer m.lock(id)()
+	if m.instance(id) != i {
+		return
+	}
+	p, err := m.store.GetPlugin(ctx, id)
+	if p == nil || err != nil || p.Status != registry.PluginStatusError {
+		return
+	}
+	// It was marked error while away and is back: let its check say.
+	_ = m.check(ctx, p, i)
 }
 
 // check runs the plugin's check and records the row's status from it.
 func (m *Manager) check(ctx context.Context, p *registry.Plugin, inst *Instance) error {
 	res, err := inst.Check(ctx)
 	if err != nil {
-		return m.fail(ctx, p, "check: "+safeError(err), nil)
+		return m.fail(ctx, p, "check: "+m.redact(p.ID, safeError(err)), nil)
 	}
+	res = m.redactResult(p.ID, res)
 	m.mu.Lock()
 	m.checks[p.ID] = res
 	m.mu.Unlock()
 	if !res.OK {
-		var reasons []string
-		for _, pr := range res.Problems {
-			if pr.Severity == protocol.SeverityError {
-				reasons = append(reasons, pr.Message)
-			}
-		}
-		if len(reasons) == 0 {
-			reasons = []string{"the plugin's check failed"}
-		}
-		return m.fail(ctx, p, strings.Join(reasons, "; "), res.Problems)
+		return m.fail(ctx, p, m.problemsReason(p.ID, res.Problems), res.Problems)
 	}
 	return m.setStatus(ctx, p, registry.PluginStatusInstalled, "")
+}
+
+// problemsReason is a check's failure in one line: its error-severity
+// messages, redacted.
+func (m *Manager) problemsReason(id string, problems []protocol.Problem) string {
+	var reasons []string
+	for _, pr := range problems {
+		if pr.Severity == protocol.SeverityError {
+			reasons = append(reasons, m.redact(id, pr.Message))
+		}
+	}
+	if len(reasons) == 0 {
+		return "the plugin's check failed"
+	}
+	return strings.Join(reasons, "; ")
 }
 
 // fail records p as error with reason and stops its instance.
@@ -583,7 +733,7 @@ func (m *Manager) fail(ctx context.Context, p *registry.Plugin, reason string, p
 		return err
 	}
 	m.logger.Warn("plugin failed", "plugin", p.Label, "reason", reason)
-	return &CheckFailedError{Reason: reason, Problems: problems}
+	return &CheckFailedError{Reason: reason, Problems: m.redactProblems(p.ID, problems)}
 }
 
 func (m *Manager) setStatus(ctx context.Context, p *registry.Plugin, status registry.PluginStatus, reason string) error {
@@ -593,6 +743,13 @@ func (m *Manager) setStatus(ctx context.Context, p *registry.Plugin, status regi
 	}
 	m.updateGauge(ctx)
 	return nil
+}
+
+// instance is the running instance for id, if any.
+func (m *Manager) instance(id string) *Instance {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.instances[id]
 }
 
 func (m *Manager) stopInstance(ctx context.Context, id string) {
@@ -610,6 +767,47 @@ func (m *Manager) machines(ctx context.Context, id string) (int, error) {
 		return 0, nil
 	}
 	return m.MachineCounter(ctx, id)
+}
+
+// setSecrets records the plugin's current secret values, which redact
+// scrubs from anything the plugin produces.
+func (m *Manager) setSecrets(id string, secrets map[string]string) {
+	copied := make(map[string]string, len(secrets))
+	for k, v := range secrets {
+		copied[k] = v
+	}
+	m.mu.Lock()
+	m.secrets[id] = copied
+	m.mu.Unlock()
+}
+
+// redact scrubs the plugin's configured secret values from text it
+// produced, before the text is stored, shown or logged.
+func (m *Manager) redact(id, text string) string {
+	m.mu.Lock()
+	secrets := m.secrets[id]
+	m.mu.Unlock()
+	return credentials.RedactValues(text, secrets)
+}
+
+func (m *Manager) redactProblems(id string, problems []protocol.Problem) []protocol.Problem {
+	if problems == nil {
+		return nil
+	}
+	out := make([]protocol.Problem, len(problems))
+	for i, p := range problems {
+		p.Message = m.redact(id, p.Message)
+		out[i] = p
+	}
+	return out
+}
+
+func (m *Manager) redactResult(id string, res protocol.CheckResult) protocol.CheckResult {
+	res.Problems = m.redactProblems(id, res.Problems)
+	if res.Problems == nil {
+		res.Problems = []protocol.Problem{}
+	}
+	return res
 }
 
 // view builds the API's view of p.
@@ -636,10 +834,11 @@ func (m *Manager) view(ctx context.Context, p *registry.Plugin) (*View, error) {
 		r := res
 		v.Check = &r
 	}
-	if inst := m.instances[p.ID]; inst != nil {
+	inst := m.instances[p.ID]
+	m.mu.Unlock()
+	if inst != nil {
 		v.Instance = inst.Status()
 	}
-	m.mu.Unlock()
 	n, err := m.machines(ctx, p.ID)
 	if err != nil {
 		return nil, err

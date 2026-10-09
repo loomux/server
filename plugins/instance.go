@@ -72,6 +72,13 @@ type InstanceOptions struct {
 	Logger *slog.Logger
 	// OnCall, if set, is told about every call's outcome (for metrics).
 	OnCall func(method string, err error)
+	// Redact, if set, scrubs text the plugin produced (stderr lines,
+	// handshake errors) before it is kept or logged: the plugin's own
+	// secrets must not come back out through it.
+	Redact func(string) string
+	// OnState, if set, is told of every state change, outside the
+	// instance's lock; it must not block on a Stop of this instance.
+	OnState func(i *Instance, st InstanceStatus)
 
 	CallTimeout       time.Duration
 	StopTimeout       time.Duration
@@ -95,6 +102,9 @@ func (o *InstanceOptions) defaults() {
 	if o.ReconnectInterval == 0 {
 		o.ReconnectInterval = DefaultReconnectInterval
 	}
+	if o.Redact == nil {
+		o.Redact = func(s string) string { return s }
+	}
 }
 
 // Instance is one running plugin: a supervised subprocess, or a
@@ -111,7 +121,10 @@ type Instance struct {
 	stopping   bool
 	failures   []time.Time
 	lastStderr string
-	done       chan struct{} // closed when the supervisor has ended
+	// connectedAt is when the current connection came up; a run longer
+	// than failureWindow resets the backoff and the failure count.
+	connectedAt time.Time
+	done        chan struct{} // closed when the supervisor has ended
 }
 
 // Start starts (or connects to) the plugin, runs the handshake
@@ -198,8 +211,12 @@ func (i *Instance) Stop(ctx context.Context) error {
 
 func (i *Instance) setState(state, reason string) {
 	i.mu.Lock()
+	changed := i.state != state || i.reason != reason
 	i.state, i.reason = state, reason
 	i.mu.Unlock()
+	if changed && i.opts.OnState != nil {
+		i.opts.OnState(i, InstanceStatus{State: state, Reason: reason})
+	}
 }
 
 // connect spawns or dials, then handshakes and configures.
@@ -225,6 +242,12 @@ func (i *Instance) connect(ctx context.Context) error {
 		i.teardown()
 		return err
 	}
+	// A fresh connection: an old stderr line mustn't explain a later
+	// drop, and a stable run resets the backoff (see supervise).
+	i.mu.Lock()
+	i.lastStderr = ""
+	i.connectedAt = time.Now()
+	i.mu.Unlock()
 	return nil
 }
 
@@ -278,7 +301,7 @@ func (i *Instance) readStderr(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), 64<<10)
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		line := i.opts.Redact(strings.TrimSpace(sc.Text()))
 		if line == "" {
 			continue
 		}
@@ -347,9 +370,16 @@ func (i *Instance) supervise() {
 		i.mu.Lock()
 		stopping := i.stopping
 		reason := i.lastStderr
+		stable := !i.connectedAt.IsZero() && time.Since(i.connectedAt) >= failureWindow
+		if stable {
+			i.failures = nil
+		}
 		i.mu.Unlock()
 		if stopping {
 			return
+		}
+		if stable {
+			backoff = i.opts.RestartBackoff
 		}
 		if reason == "" {
 			reason = "the plugin stopped answering"
@@ -386,7 +416,7 @@ func (i *Instance) supervise() {
 		}
 		if err != nil {
 			i.mu.Lock()
-			i.lastStderr = err.Error()
+			i.lastStderr = i.opts.Redact(err.Error())
 			i.mu.Unlock()
 			continue
 		}

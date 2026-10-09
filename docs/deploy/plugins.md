@@ -52,9 +52,15 @@ them as plain hosts.
 A bundled plugin's available version changes with the image; a
 directory plugin's when you replace its files; a sidecar's with its
 container. `GET /api/v1/plugins` shows `version` next to
-`available_version`; `POST /api/v1/plugins/{id}/upgrade` switches, and
-refuses if the new version drops a capability the plugin's machines
-rely on.
+`available_version`; `POST /api/v1/plugins/{id}/upgrade` starts the new
+version beside the old one and checks it before switching: if it can't
+start or fails its check, the old version keeps running and the row
+keeps its version (`422` with the reason). It is refused up front if
+the new version drops a capability the plugin's machines rely on.
+
+Whatever a plugin writes (its stderr, an error message, a check
+problem) is scrubbed of the plugin's own secret settings before Loomux
+stores, shows or logs it.
 
 ## Writing a plugin
 

@@ -8,8 +8,11 @@ package fake
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +33,10 @@ const (
 	ModeCrashOnCheck       = "crash_on_check"
 	ModeHangOnCheck        = "hang_on_check"
 	ModeExitAfterConfigure = "exit_after_configure"
+	// ModeLeakToken makes the plugin misbehave the way the host must
+	// guard against: its check's message and its stderr carry the
+	// configured token.
+	ModeLeakToken = "leak_token"
 )
 
 // Problem codes the fake reports.
@@ -40,12 +47,16 @@ const (
 	// ProblemTokenSet (warning) says the secret "token" arrived, without
 	// repeating it.
 	ProblemTokenSet = "token_set"
+	// ProblemTokenLeaked (warning, mode leak_token) repeats the token.
+	ProblemTokenLeaked = "token_leaked"
 )
 
 // Plugin is the fake. Exit is what a crash or an exit calls; os.Exit by
-// default, replaceable by tests that serve the fake in-process.
+// default, replaceable by tests that serve the fake in-process. Stderr
+// is where mode leak_token writes; os.Stderr by default.
 type Plugin struct {
-	Exit func(code int)
+	Exit   func(code int)
+	Stderr func(line string)
 
 	mu       sync.Mutex
 	mode     string
@@ -57,7 +68,12 @@ type Plugin struct {
 
 // New returns a fake in mode ok.
 func New() *Plugin {
-	return &Plugin{Exit: os.Exit, mode: ModeOK, greeting: "hi"}
+	return &Plugin{
+		Exit:     os.Exit,
+		Stderr:   func(line string) { fmt.Fprintln(os.Stderr, line) },
+		mode:     ModeOK,
+		greeting: "hi",
+	}
 }
 
 func (p *Plugin) Describe(ctx context.Context) (*plugins.Manifest, error) {
@@ -75,12 +91,18 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 		p.greeting = g
 	}
 	p.host = cp.Host
-	if p.mode == ModeExitAfterConfigure {
+	if dir, ok := cp.Config["pid_dir"].(string); ok && dir != "" {
+		_ = os.WriteFile(filepath.Join(dir, strconv.Itoa(os.Getpid())), []byte(p.host.InstanceID), 0o644)
+	}
+	switch p.mode {
+	case ModeExitAfterConfigure:
 		// Answer first, then go: the host sees a configured plugin die.
 		go func() {
 			time.Sleep(50 * time.Millisecond)
 			p.Exit(0)
 		}()
+	case ModeLeakToken:
+		p.Stderr("configured with token " + p.token)
 	}
 	return nil
 }
@@ -109,6 +131,14 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 			Code: ProblemTokenSet, Severity: protocol.SeverityWarning,
 			Message: "a token is configured",
 		})
+	}
+	if mode == ModeLeakToken && token != "" {
+		res.OK = false
+		res.Problems = append(res.Problems, protocol.Problem{
+			Code: ProblemTokenLeaked, Severity: protocol.SeverityError,
+			Message: "invalid token: " + token,
+		})
+		p.Stderr("check failed for token " + token)
 	}
 	return res, nil
 }

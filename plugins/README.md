@@ -38,8 +38,16 @@ target-provider group (`targets.*`, machines on demand) is the next PR.
 - `manager.go` — `Manager`: install (schema-validated configuration,
   secrets encrypted at rest, the installed manifest kept on the row),
   get/list (secrets shown as set or not), reconfigure in place, enable,
-  disable, upgrade, check, uninstall with an explicit choice for the
-  plugin's machines, `StartAll` at boot, `Health`, two metrics.
+  disable, upgrade (the new version is started beside the old and
+  checked before the swap; a failure leaves the old one running), check
+  (unavailable, not an error, while the supervisor is restarting the
+  plugin), uninstall with an explicit choice for the plugin's machines,
+  `StartAll` at boot, `Health`, two metrics. Lifecycle operations are
+  serialised per plugin id, so concurrent calls can't leave an instance
+  running that the manager doesn't know; a supervisor that gives up
+  marks the row; and everything a plugin produces (stderr, errors,
+  check problems) is scrubbed of its own configured secrets before it
+  is stored, shown or logged.
 - `plugintest/` — the conformance suite any plugin must pass.
 
 Run `go test ./...` from the repo root. The package's own tests build

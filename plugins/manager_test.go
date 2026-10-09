@@ -299,12 +299,19 @@ func TestManagerUpgrade(t *testing.T) {
 		t.Fatalf("Upgrade view = %+v, %v", got, err)
 	}
 	var cf *plugins.CheckFailedError
-	if !errors.As(err, &cf) || !strings.Contains(cf.Reason, "manifest") {
-		t.Errorf("a mismatching binary should fail the upgrade's start: %v", err)
+	if !errors.As(err, &cf) || !strings.Contains(cf.Reason, "0.2.0") {
+		t.Errorf("a mismatching binary should fail the upgrade's start, naming the version: %v", err)
+	}
+	// The old version keeps running and the row keeps its version.
+	if got.Version != "0.1.0" || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
+		t.Errorf("after a failed upgrade = %+v", got)
 	}
 	row, _ := store.GetPlugin(context.Background(), v.ID)
-	if row.Version != "0.2.0" || row.Secrets["token"] != "t" {
-		t.Errorf("row after upgrade = %+v", row)
+	if row.Version != "0.1.0" || row.Secrets["token"] != "t" || row.Status != registry.PluginStatusInstalled {
+		t.Errorf("row after a failed upgrade = %+v", row)
+	}
+	if c, err := m.Check(context.Background(), v.ID); err != nil || c.Check == nil || !c.Check.OK {
+		t.Errorf("the old version should still answer: %+v, %v", c, err)
 	}
 }
 
