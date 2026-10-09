@@ -193,7 +193,7 @@ can say so instead of breaking them.
     "type": "object", "required": ["namespace", "storage_class", "agent_image"],
     "properties": {
       "namespace":     {"type": "string", "default": "loomux-agents", "description": "where machines are made; must exist, with the plugin's Role"},
-      "storage_class": {"type": "string", "default": "ceph-rbd-sc"},
+      "storage_class": {"type": "string", "default": "ceph-rbd-sc-delete", "description": "a Delete-reclaim class: a Retain class leaves volumes behind, and the quota allows none of it"},
       "subdomain":     {"type": "string", "default": "loomux-agents", "description": "the headless Service that names machines"},
       "agent_image":   {"type": "string", "x-format": "image-reference"},
       "kubeconfig":    {"type": "string", "x-secret": true, "x-format": "kubeconfig", "description": "leave empty in-cluster (the mounted ServiceAccount is used)"},
@@ -656,7 +656,10 @@ style direct answer naming the page.
 ## 8. The Kubernetes plugin (LOOM-179)
 
 **Packaging.** Its own Go module, `plugins/kubernetes` (so its dependencies never enter the server's
-`go.mod`), with `cmd/loomux-plugin-kubernetes`. Built three ways by `plugins.yml`: a binary bundled in the
+`go.mod`), with `plugins/kubernetes/cmd/loomux-plugin-kubernetes` inside the module (a `cmd/` at the root
+would pull client-go into the server's module). The module replaces `github.com/Loomux/server` with `../..`;
+no `go.work` is committed, so the root's `go build ./...`, `go vet` and `govulncheck` stay in module mode and
+the server image's build is unchanged (`go work init . ./plugins/kubernetes` is a local convenience). Built three ways by `plugins.yml`: a binary bundled in the
 server image at `/usr/local/lib/loomux/plugins/kubernetes/` (with `plugin.json`), a signed release asset,
 and the image `ghcr.io/loomux/plugin-kubernetes` (distroless static: a pure-Go plugin execs nothing). Started
 with no arguments it serves stdio; with `--listen /run/loomux/plugins/kubernetes.sock` it serves the socket
@@ -757,7 +760,10 @@ hint.
 
 **RBAC it needs** (the plugin's ServiceAccount, in the agents namespace only): `pods` (create, get, list,
 watch, delete), `pods/log` (get), `persistentvolumeclaims` (create, get, list, delete), `secrets` (create,
-get, list, delete), `events` (list). The `permissions` in its manifest say exactly this.
+get, list, update, delete; update carries a recreate's new spec), `events` (list), `services` (get: `check`
+warns when the headless Service is missing, or when it can't tell). theWyseKube's manifests (its PR #25)
+grant exactly this, and so does the kind Role CI runs the plugin under (`deploy/test/kind/`), so a verb it
+needs and the Role lacks fails the integration test.
 
 ## 9. The Docker plugin (LOOM-180)
 
@@ -880,8 +886,9 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
 | later | `provision_target` routing action; per-workspace machines; a sandboxed runtime class; registry fetch at install; VM/VPS plugins (Proxmox, libvirt, a cloud provider) against the same protocol | use |
 
 PR 1 ships with no capability but `plugin.*` and changes nothing for a deployment that installs no plugin;
-PR 2 is where the target API additions land. Each plugin module has its own `go.mod`; a `go.work` at the root
-ties them together for development, and CI runs `go test` per module.
+PR 2 is where the target API additions land. Each plugin module has its own `go.mod` with a `replace` to the
+root (no `go.work` is committed: the root's tooling stays in module mode), and CI runs `go test` per module
+(`plugins.yml`).
 
 ## 12. Test strategy
 
@@ -911,9 +918,10 @@ ties them together for development, and CI runs `go test` per module.
   conformance suite against the plugin binary with a kubeconfig, then a `//go:build k8sintegration` host test
   creates a machine end to end: environment `running`, port-forward 2222, connect through the real
   managed-mode `RemoteExecutor` (AgentPool, pinned host key with the forwarded `[127.0.0.1]:port` host), run
-  `tmux -V` and the `test` steps, `stop`/`start`/`destroy`, assert nothing is left. kind enforces no
-  NetworkPolicy by default, so the job also asserts the enforcement check reports `not enforced` there, and
-  (with kube-network-policies installed into kind in a second variant) `enforced`.
+  `tmux -V` and the `test` steps, `stop`/`start`/`destroy`, assert nothing is left. plain kind enforces no NetworkPolicy (CI's canary reached the API server on 2026-10-09, and still did with
+  kube-network-policies installed into kind), so the job asserts the enforcement check reports `not enforced`
+  there; every exit code is pinned by unit tests, and the `enforced` verdict is observed on TEST, where the
+  engine runs (the test takes `LOOMUX_KIND_ENFORCED=1` for a cluster that enforces).
 - **Docker plugin.** Unit tests against an `httptest` Engine API; an integration test on the GitHub runner's
   own docker over the unix socket (create, archive upload, ssh in via the published port on `127.0.0.1`,
   tmux, destroy) running the conformance suite. The ssh dial-stdio transport is exercised against

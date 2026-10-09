@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -916,7 +917,7 @@ func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) er
 	c.CreatedAt = now
 	c.UpdatedAt = now
 
-	ciphertext, err := seal(s.masterKey, []byte(c.Value), credentialAAD(c.ID))
+	ciphertext, err := seal(s.masterKey, []byte(c.Value), credentialAAD(c.ID, c.WorkspaceID, c.TargetID, c.AgentType))
 	if err != nil {
 		return fmt.Errorf("sqlite: encrypt credential: %w", err)
 	}
@@ -936,9 +937,9 @@ func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) er
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO credentials (id, name, workspace_id, target_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-		c.ID, c.Name, nullIfEmpty(c.WorkspaceID), nullIfEmpty(c.TargetID), c.AgentType, ciphertext, c.CreatedAt, c.UpdatedAt,
+		INSERT INTO credentials (id, name, workspace_id, target_id, agent_type, ciphertext, seal_version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.Name, nullIfEmpty(c.WorkspaceID), nullIfEmpty(c.TargetID), c.AgentType, ciphertext, credentialSealVersion, c.CreatedAt, c.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: credential %q already exists at this scope", registry.ErrConflict, c.Name)
@@ -953,53 +954,106 @@ func (s *Store) CreateCredential(ctx context.Context, c *registry.Credential) er
 }
 
 const credentialColumns = `
-	id, name, workspace_id, target_id, agent_type, ciphertext, sealed_to_id, created_at, updated_at`
+	id, name, workspace_id, target_id, agent_type, ciphertext, seal_version, created_at, updated_at`
+
+// credentialSealVersion is what a credential's value is bound to when
+// sealed today (a row's seal_version): 0 was nothing (before LOOM-175),
+// 1 its row id (LOOM-175), 2 its row id and scope: workspace, target and
+// agent type (LOOM-192).
+const credentialSealVersion = 2
 
 // credentialAAD is the additional data a credential's value is sealed
-// with (LOOM-175): its row id, so the ciphertext opens only on that row.
-func credentialAAD(id string) []byte { return []byte("credential:" + id) }
+// with: its row id, workspace_id, target_id and agent_type (LOOM-192),
+// so the ciphertext opens only on that row at that scope. Each field is
+// length-prefixed, so no two different (id, workspace, target, agent
+// type) tuples encode alike.
+func credentialAAD(id, workspaceID, targetID, agentType string) []byte {
+	aad := []byte("credential/v2")
+	for _, f := range []string{id, workspaceID, targetID, agentType} {
+		aad = binary.BigEndian.AppendUint32(aad, uint32(len(f)))
+		aad = append(aad, f...)
+	}
+	return aad
+}
 
-// resealCredentials re-seals, bound to their row ids, the credentials
-// sealed before LOOM-175 without any additional data. Open runs it when
-// it has the master key; it's a no-op once every row is sealed to its
-// id. A row the key doesn't open (the wrong key) is left as it is: it
-// can't be read either way, and the right key re-seals it at a later
-// Open.
+// legacyCredentialAAD is the additional data a row of an older
+// seal_version was sealed with, for resealCredentials to open it.
+func legacyCredentialAAD(version int, id string) []byte {
+	if version == 1 {
+		return []byte("credential:" + id) // LOOM-175: the row id alone
+	}
+	return nil
+}
+
+// resealCredentials re-seals, bound to their row ids and scopes, the
+// credentials sealed by an older release (seal_version below
+// credentialSealVersion). Open runs it when it has the master key. Once
+// every row is re-sealed it records that in vault_reseal, and from then
+// on returns without scanning the vault: nothing the store writes is
+// sealed the old way, and a row set back behind its back isn't read
+// (scanCredential). A row the key doesn't open (the wrong key) is left as
+// it is and the re-seal isn't recorded: the row can't be read either
+// way, and the right key re-seals it at a later Open.
 func (s *Store) resealCredentials(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlite: reseal credentials: %w", err)
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT id, ciphertext FROM credentials WHERE sealed_to_id = 0`)
+	var done int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM vault_reseal WHERE seal_version = ?`,
+		credentialSealVersion).Scan(&done); err != nil {
+		return fmt.Errorf("sqlite: reseal credentials: %w", err)
+	}
+	if done > 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, workspace_id, target_id, agent_type, ciphertext, seal_version
+		FROM credentials WHERE seal_version < ?`, credentialSealVersion)
 	if err != nil {
 		return fmt.Errorf("sqlite: reseal credentials: %w", err)
 	}
-	resealed := map[string][]byte{}
+	type resealedRow struct {
+		ciphertext []byte
+		version    int
+	}
+	resealed := map[string]resealedRow{}
+	unopened := 0
 	for rows.Next() {
-		var id string
+		var id, agentType string
+		var workspaceID, targetID sql.NullString
 		var ciphertext []byte
-		if err := rows.Scan(&id, &ciphertext); err != nil {
+		var version int
+		if err := rows.Scan(&id, &workspaceID, &targetID, &agentType, &ciphertext, &version); err != nil {
 			rows.Close()
 			return fmt.Errorf("sqlite: reseal credentials: %w", err)
 		}
-		plaintext, err := open(s.masterKey, ciphertext, nil)
+		plaintext, err := open(s.masterKey, ciphertext, legacyCredentialAAD(version, id))
 		if err != nil {
+			unopened++
 			continue
 		}
-		if resealed[id], err = seal(s.masterKey, plaintext, credentialAAD(id)); err != nil {
+		sealed, err := seal(s.masterKey, plaintext, credentialAAD(id, workspaceID.String, targetID.String, agentType))
+		if err != nil {
 			rows.Close()
 			return fmt.Errorf("sqlite: reseal credential %q: %w", id, err)
 		}
+		resealed[id] = resealedRow{sealed, version}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("sqlite: reseal credentials: %w", err)
 	}
-	for id, ciphertext := range resealed {
-		if _, err := tx.ExecContext(ctx, `UPDATE credentials SET ciphertext = ?, sealed_to_id = 1 WHERE id = ? AND sealed_to_id = 0`,
-			ciphertext, id); err != nil {
+	for id, r := range resealed {
+		if _, err := tx.ExecContext(ctx, `UPDATE credentials SET ciphertext = ?, seal_version = ? WHERE id = ? AND seal_version = ?`,
+			r.ciphertext, credentialSealVersion, id, r.version); err != nil {
 			return fmt.Errorf("sqlite: reseal credential %q: %w", id, err)
+		}
+	}
+	if unopened == 0 {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO vault_reseal (seal_version, done_at) VALUES (?, ?)`,
+			credentialSealVersion, time.Now().UTC()); err != nil {
+			return fmt.Errorf("sqlite: record credential reseal: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1081,12 +1135,24 @@ func (s *Store) SetCredentialValue(ctx context.Context, id, value string) error 
 	if s.masterKey == nil {
 		return fmt.Errorf("sqlite: no master key configured (see WithMasterKey); cannot set credential")
 	}
-	ciphertext, err := seal(s.masterKey, []byte(value), credentialAAD(id))
+	var workspaceID, targetID sql.NullString
+	var agentType string
+	err := s.db.QueryRowContext(ctx, `SELECT workspace_id, target_id, agent_type FROM credentials WHERE id = ?`, id).Scan(&workspaceID, &targetID, &agentType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: credential %q", registry.ErrNotFound, id)
+	}
+	if err != nil {
+		return fmt.Errorf("sqlite: set credential value: %w", err)
+	}
+	ciphertext, err := seal(s.masterKey, []byte(value), credentialAAD(id, workspaceID.String, targetID.String, agentType))
 	if err != nil {
 		return fmt.Errorf("sqlite: encrypt credential: %w", err)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE credentials SET ciphertext = ?, sealed_to_id = 1, updated_at = ? WHERE id = ?`,
-		ciphertext, time.Now().UTC(), id)
+	// The scope it was sealed to is in the WHERE, so a row whose scope
+	// changed in between isn't given a value bound to the old one.
+	res, err := s.db.ExecContext(ctx, `UPDATE credentials SET ciphertext = ?, seal_version = ?, updated_at = ?
+		WHERE id = ? AND workspace_id IS ? AND target_id IS ? AND agent_type = ?`,
+		ciphertext, credentialSealVersion, time.Now().UTC(), id, workspaceID, targetID, agentType)
 	if err != nil {
 		return fmt.Errorf("sqlite: set credential value: %w", err)
 	}
@@ -1097,18 +1163,19 @@ func scanCredential(row rowScanner, key []byte) (*registry.Credential, error) {
 	var c registry.Credential
 	var workspaceID, targetID sql.NullString
 	var ciphertext []byte
-	var sealedToID bool
-	if err := row.Scan(&c.ID, &c.Name, &workspaceID, &targetID, &c.AgentType, &ciphertext, &sealedToID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	var sealVersion int
+	if err := row.Scan(&c.ID, &c.Name, &workspaceID, &targetID, &c.AgentType, &ciphertext, &sealVersion, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 	c.WorkspaceID, c.TargetID = workspaceID.String, targetID.String
-	if !sealedToID {
-		// Open re-seals every row its key opens, so one still unbound
-		// was sealed under another key, or written behind the store's
-		// back: not read without its binding (LOOM-175).
-		return nil, fmt.Errorf("decrypt credential %q: not sealed to its row (written under another master key?)", c.ID)
+	if sealVersion != credentialSealVersion {
+		// Open re-seals every row its key opens, so one still sealed
+		// the old way was sealed under another key, or written behind
+		// the store's back: not read without its binding (LOOM-175,
+		// LOOM-192).
+		return nil, fmt.Errorf("decrypt credential %q: not sealed to its row and scope (written under another master key?)", c.ID)
 	}
-	plaintext, err := open(key, ciphertext, credentialAAD(c.ID))
+	plaintext, err := open(key, ciphertext, credentialAAD(c.ID, c.WorkspaceID, c.TargetID, c.AgentType))
 	if err != nil {
 		return nil, fmt.Errorf("decrypt credential %q: %w", c.ID, err)
 	}

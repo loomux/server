@@ -127,10 +127,13 @@ func testTargetsLifecycle(t *testing.T, launch Launch, o Options) {
 	}
 	configure(t, conn, o, m)
 	info := describeTargets(t, conn, o)
+	// An id a plugin can turn into a DNS label: a long test name is cut,
+	// and never left ending in a dash.
 	id := "plugintest-" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
 	if len(id) > 32 {
 		id = id[:32]
 	}
+	id = strings.TrimRight(id, "-")
 	spec := testSpec(id, info)
 	defer func() { _ = call(t, conn, o, protocol.MethodTargetsDestroy, protocol.IDParams{ID: id}, nil) }()
 

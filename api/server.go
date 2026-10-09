@@ -456,6 +456,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("PUT /api/v1/settings/router/{tier}", s.requireAuth(s.handleSetRouterTier))
 	mux.HandleFunc("DELETE /api/v1/settings/router/{tier}", s.requireAuth(s.handleClearRouterTier))
 	mux.HandleFunc("POST /api/v1/settings/router/{tier}/test", s.requireAuth(s.handleTestRouterTier))
+	mux.HandleFunc("POST /api/v1/settings/router/{tier}/models", s.requireAuth(s.handleListRouterModels))
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/health/deep", s.requireAuth(s.handleHealthDeep))
 	mux.HandleFunc("GET /api/v1/version", s.handleVersion)
