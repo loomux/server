@@ -244,6 +244,13 @@ func healthProblem(h *registry.TargetHealth, provision bool) string {
 // probed, costs nothing: the dispatch itself finds out. If the record
 // can't be read, the dispatch goes ahead — health is advice, not a lock.
 func (r *Router) requireHealthyTarget(ctx context.Context, target *registry.Target, provision bool) error {
+	// A machine a plugin made is started first if it was stopped
+	// (LOOM-178); one that can't be used says why.
+	if r.machineStarter != nil {
+		if err := r.machineStarter(ctx, target.ID); err != nil {
+			return &TargetUnhealthyError{TargetName: target.Name, Reason: err.Error()}
+		}
+	}
 	h, err := r.store.GetTargetHealth(ctx, target.ID)
 	if errors.Is(err, registry.ErrNotFound) {
 		return nil

@@ -9,6 +9,7 @@
 package providers
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base32"
@@ -189,4 +190,39 @@ func authorizedKeyLine(k *registry.SSHKey) string {
 // expandTemplate fills {id} in a plugin's address template.
 func expandTemplate(template, id string) string {
 	return strings.ReplaceAll(template, "{id}", id)
+}
+
+// ActiveTaskChecker reports whether a task on any of targetID's
+// workspaces is mid-turn, taken over or waiting on a person: what
+// refuses stop, recreate and destroy. For Manager.ActiveTask.
+func ActiveTaskChecker(store registry.Store) func(ctx context.Context, targetID string) (bool, error) {
+	return func(ctx context.Context, targetID string) (bool, error) {
+		workspaces, err := store.ListWorkspaces(ctx)
+		if err != nil {
+			return false, err
+		}
+		onTarget := map[string]bool{}
+		for _, ws := range workspaces {
+			if ws.TargetID == targetID {
+				onTarget[ws.ID] = true
+			}
+		}
+		if len(onTarget) == 0 {
+			return false, nil
+		}
+		tasks, err := store.ListTasks(ctx)
+		if err != nil {
+			return false, err
+		}
+		for _, t := range tasks {
+			if !onTarget[t.WorkspaceID] {
+				continue
+			}
+			switch t.Status {
+			case registry.TaskStatusRunning, registry.TaskStatusHumanTakeover, registry.TaskStatusNeedsAttention:
+				return true, nil
+			}
+		}
+		return false, nil
+	}
 }

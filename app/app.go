@@ -24,6 +24,7 @@ import (
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/plugins"
 	"github.com/Loomux/server/plugins/protocol"
+	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
@@ -63,6 +64,7 @@ type App struct {
 	sshAgents        *targets.AgentPool
 	routerSettings   *llmrouter.Settings
 	plugins          *plugins.Manager
+	machines         *providers.Manager
 	// bg holds the goroutines Close waits for before closing the store
 	// (LOOM-163).
 	bg *background
@@ -226,6 +228,12 @@ func (a *App) Plugins() *plugins.Manager {
 	return a.plugins
 }
 
+// Machines serves the machine side of /api/v1/targets (LOOM-178):
+// targets plugins made.
+func (a *App) Machines() *providers.Manager {
+	return a.machines
+}
+
 // Close stops the background idle reaper (LOOM-16) and releases the
 // store's resources (its DB connection).
 func (a *App) Close() error {
@@ -250,6 +258,9 @@ func (a *App) Close() error {
 	if a.sshAgents != nil {
 		targets.ResetManagedSSH(a.sshAgents)
 		a.sshAgents.Close()
+	}
+	if a.machines != nil {
+		a.machines.Close()
 	}
 	if a.plugins != nil {
 		_ = a.plugins.Close(context.Background())
@@ -570,13 +581,44 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		report := pluginManager.Health(ctx)
 		return health.ComponentResult{Status: report.Status, Error: report.Error, Detail: report.Plugins}
 	})
+	machines := providers.NewManager(store, pluginManager, instanceID, cfg.Logger, met)
+	machines.ActiveTask = providers.ActiveTaskChecker(store)
+	machines.DropSSHKey = func(keyID string) { sshAgents.Drop(keyID) }
+	pluginManager.MachineCounter = machines.MachineCount
+	pluginManager.UninstallMachines = machines.UninstallMachines
+	pluginManager.OnNotify = machines.HandleNotify
+	routerOpts = append(routerOpts, router.WithMachines(
+		func(ctx context.Context, targetID string) (string, bool, string, bool) {
+			env, err := machines.Get(ctx, targetID)
+			if err != nil {
+				return "", false, "", false
+			}
+			return env.PluginName, !env.Persistent, string(env.Status), true
+		},
+		func(ctx context.Context, targetID string) error {
+			err := machines.EnsureRunning(ctx, targetID)
+			if errors.Is(err, providers.ErrNotMachine) {
+				return nil
+			}
+			return err
+		},
+	))
 	bg.Go(func() {
 		if err := pluginManager.StartAll(reaperCtx); err != nil && cfg.Logger != nil {
 			cfg.Logger.Warn("some plugins didn't start", "error", err.Error())
 		}
+		reconcileEvery := cfg.TargetProbeInterval
+		if reconcileEvery == 0 {
+			reconcileEvery = defaultTargetProbeInterval
+		}
+		machines.RunReconcile(reaperCtx, reconcileEvery)
 	})
 
 	rtr := router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...)
+	machines.Probe = func(ctx context.Context, targetID string) error {
+		_, _, err := rtr.ProbeTarget(ctx, targetID)
+		return err
+	}
 	// The target health probe (LOOM-86) and the late-output relay
 	// (LOOM-121) share the reaper's lifetime too, and Close waits for
 	// them: either, mid-flight, writes to the store.
@@ -683,6 +725,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		metrics:          met,
 		healthChecker:    healthChecker,
 		plugins:          pluginManager,
+		machines:         machines,
 		sshAgents:        sshAgents,
 	}, nil
 }

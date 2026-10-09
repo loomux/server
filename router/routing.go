@@ -78,6 +78,13 @@ type TargetSnapshot struct {
 	// Policy is what Loomux may do there (LOOM-89), so the model can
 	// avoid what the router would refuse anyway.
 	Policy registry.TargetPolicy
+	// CreatedBy names the plugin that made the target (LOOM-178), "" for
+	// a registered host; Ephemeral says its files go when it is
+	// destroyed; MachineStatus is the machine's status ("stopped" means
+	// it will be started when used).
+	CreatedBy     string
+	Ephemeral     bool
+	MachineStatus string
 }
 
 // ProvisionKind is how a new dynamic workspace's directory comes to be
