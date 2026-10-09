@@ -23,6 +23,7 @@ func newPlugin(label string) *registry.Plugin {
 		Status:       registry.PluginStatusInstalling,
 		Enabled:      true,
 		Capabilities: []string{"targets.create"},
+		Manifest:     []byte(`{"name":"fake","version":"0.1.0"}`),
 		Config:       map[string]any{"greeting": "hi", "sizes": map[string]any{"small": map[string]any{"cpu": "1"}}},
 		Secrets:      map[string]string{"token": "s3cret"},
 	}
@@ -59,6 +60,9 @@ func testPluginCRUD(t *testing.T, store registry.Store) {
 	if len(got.Capabilities) != 1 || got.Capabilities[0] != "targets.create" {
 		t.Errorf("capabilities = %v", got.Capabilities)
 	}
+	if string(got.Manifest) != `{"name":"fake","version":"0.1.0"}` {
+		t.Errorf("manifest = %s", got.Manifest)
+	}
 
 	list, err := store.ListPlugins(ctx)
 	if err != nil {
@@ -79,6 +83,7 @@ func testPluginCRUD(t *testing.T, store registry.Store) {
 	got.Enabled = false
 	got.Version = "0.2.0"
 	got.Capabilities = []string{}
+	got.Manifest = []byte(`{"name":"fake","version":"0.2.0"}`)
 	got.Config["greeting"] = "changed through UpdatePlugin, which must not write config"
 	if err := store.UpdatePlugin(ctx, got); err != nil {
 		t.Fatalf("UpdatePlugin: %v", err)
@@ -90,8 +95,8 @@ func testPluginCRUD(t *testing.T, store registry.Store) {
 	if again.Status != registry.PluginStatusError || again.StatusReason != "check failed" || again.Enabled || again.Version != "0.2.0" {
 		t.Errorf("UpdatePlugin not applied: %+v", again)
 	}
-	if len(again.Capabilities) != 0 {
-		t.Errorf("capabilities after update = %v", again.Capabilities)
+	if len(again.Capabilities) != 0 || string(again.Manifest) != `{"name":"fake","version":"0.2.0"}` {
+		t.Errorf("capabilities/manifest after update = %v %s", again.Capabilities, again.Manifest)
 	}
 	if again.Config["greeting"] != "hi" || again.Secrets["token"] != "s3cret" {
 		t.Error("UpdatePlugin must leave config and secrets alone")

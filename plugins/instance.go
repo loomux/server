@@ -375,6 +375,15 @@ func (i *Instance) supervise() {
 		ctx, cancel := context.WithTimeout(context.Background(), i.opts.CallTimeout+i.opts.StopTimeout)
 		err := i.connect(ctx)
 		cancel()
+		// A Stop that arrived while reconnecting has nothing to tear
+		// down yet: do it here, or the new process would outlive it.
+		i.mu.Lock()
+		stopping = i.stopping
+		i.mu.Unlock()
+		if stopping {
+			i.teardown()
+			return
+		}
 		if err != nil {
 			i.mu.Lock()
 			i.lastStderr = err.Error()

@@ -3,6 +3,8 @@
 -- plugin's secret configuration fields as one JSON object, AES-256-GCM
 -- under the master key with "plugin:<id>" as additional data, as
 -- router_settings binds a key to its tier; config is the rest, plain.
+-- manifest is the installed manifest, so the configuration form and an
+-- upgrade's comparison don't need the plugin's files to be there.
 
 -- +goose Up
 CREATE TABLE plugins (
@@ -18,6 +20,7 @@ CREATE TABLE plugins (
     status_reason TEXT NOT NULL DEFAULT '',
     enabled       INTEGER NOT NULL DEFAULT 1,
     capabilities  TEXT NOT NULL DEFAULT '[]',
+    manifest      TEXT NOT NULL DEFAULT '{}',
     config        TEXT NOT NULL DEFAULT '{}',
     secrets       BLOB,
     installed_at  TIMESTAMP NOT NULL,

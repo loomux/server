@@ -81,10 +81,10 @@ func (s *Store) CreatePlugin(ctx context.Context, p *registry.Plugin) error {
 	p.UpdatedAt = now
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO plugins (id, name, label, version, protocol, source, path, trust, status, status_reason,
-			enabled, capabilities, config, secrets, installed_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			enabled, capabilities, manifest, config, secrets, installed_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Name, p.Label, p.Version, p.Protocol, string(p.Source), p.Path, p.Trust, string(p.Status), p.StatusReason,
-		p.Enabled, string(caps), config, sealed, p.InstalledAt, p.UpdatedAt)
+		p.Enabled, string(caps), manifestJSON(p.Manifest), config, sealed, p.InstalledAt, p.UpdatedAt)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: plugin label %q already exists", registry.ErrConflict, p.Label)
 	}
@@ -95,16 +95,25 @@ func (s *Store) CreatePlugin(ctx context.Context, p *registry.Plugin) error {
 }
 
 const pluginColumns = `id, name, label, version, protocol, source, path, trust, status, status_reason,
-	enabled, capabilities, config, secrets, installed_at, updated_at`
+	enabled, capabilities, manifest, config, secrets, installed_at, updated_at`
+
+// manifestJSON is the manifest column's value: "{}" for none.
+func manifestJSON(m json.RawMessage) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	return string(m)
+}
 
 func scanPlugin(row interface{ Scan(...any) error }) (*registry.Plugin, []byte, error) {
 	var p registry.Plugin
-	var source, status, caps, config string
+	var source, status, caps, manifest, config string
 	var sealed []byte
 	if err := row.Scan(&p.ID, &p.Name, &p.Label, &p.Version, &p.Protocol, &source, &p.Path, &p.Trust, &status, &p.StatusReason,
-		&p.Enabled, &caps, &config, &sealed, &p.InstalledAt, &p.UpdatedAt); err != nil {
+		&p.Enabled, &caps, &manifest, &config, &sealed, &p.InstalledAt, &p.UpdatedAt); err != nil {
 		return nil, nil, err
 	}
+	p.Manifest = json.RawMessage(manifest)
 	p.Source = registry.PluginSource(source)
 	p.Status = registry.PluginStatus(status)
 	if err := json.Unmarshal([]byte(caps), &p.Capabilities); err != nil {
@@ -165,9 +174,9 @@ func (s *Store) UpdatePlugin(ctx context.Context, p *registry.Plugin) error {
 	p.UpdatedAt = time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE plugins SET version = ?, protocol = ?, path = ?, trust = ?, status = ?, status_reason = ?,
-			enabled = ?, capabilities = ?, updated_at = ?
+			enabled = ?, capabilities = ?, manifest = ?, updated_at = ?
 		WHERE id = ?`,
-		p.Version, p.Protocol, p.Path, p.Trust, string(p.Status), p.StatusReason, p.Enabled, string(caps), p.UpdatedAt, p.ID)
+		p.Version, p.Protocol, p.Path, p.Trust, string(p.Status), p.StatusReason, p.Enabled, string(caps), manifestJSON(p.Manifest), p.UpdatedAt, p.ID)
 	if err != nil {
 		return fmt.Errorf("sqlite: update plugin: %w", err)
 	}

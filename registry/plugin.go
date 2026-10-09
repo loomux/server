@@ -1,6 +1,9 @@
 package registry
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Plugins installed on this server (LOOM-178, docs/design/target-providers.md
 // §1): a row per installed instance of a plugin, with its configuration.
@@ -66,6 +69,9 @@ type Plugin struct {
 	Enabled      bool
 	// Capabilities are the manifest's, as installed; an upgrade compares.
 	Capabilities []string
+	// Manifest is the installed manifest as JSON, so the configuration
+	// form and an upgrade's comparison work without the plugin's files.
+	Manifest json.RawMessage
 	// Config is the configuration without its secret fields; Secrets are
 	// those, plaintext at this level and encrypted at rest. Only
 	// GetPlugin fills Secrets in; ListPlugins never decrypts.
