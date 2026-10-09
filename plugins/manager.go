@@ -115,6 +115,9 @@ type Manager struct {
 	// InstanceOptions, if set, adjusts every instance's options before
 	// it starts (tests shorten the supervisor's timings).
 	InstanceOptions func(*InstanceOptions)
+	// OnNotify, if set, receives every plugin's notifications with the
+	// plugin instance's id.
+	OnNotify func(pluginID, method string, params json.RawMessage)
 
 	mu        sync.Mutex // guards the maps below
 	instances map[string]*Instance
@@ -594,6 +597,66 @@ func (m *Manager) Health(ctx context.Context) HealthReport {
 	return report
 }
 
+// ErrCapabilityMissing is a call of a method the plugin's manifest
+// doesn't declare the capability for.
+type CapabilityMissingError struct{ Method, Capability string }
+
+func (e *CapabilityMissingError) Error() string {
+	return "plugins: the plugin doesn't declare " + e.Capability + ", which " + e.Method + " needs"
+}
+
+// Call sends method to the plugin instance id, refusing a method whose
+// capability the installed manifest doesn't declare, and ErrUnavailable
+// while the instance isn't running. Errors a plugin answers with come
+// back as *rpc.Error, their text redacted.
+func (m *Manager) Call(ctx context.Context, id, method string, params, result any) error {
+	if cap := protocol.RequiredCapability(method); cap != "" {
+		caps, err := m.Capabilities(ctx, id)
+		if err != nil {
+			return err
+		}
+		declared := false
+		for _, c := range caps {
+			if c == cap {
+				declared = true
+			}
+		}
+		if !declared {
+			return &CapabilityMissingError{Method: method, Capability: cap}
+		}
+	}
+	inst := m.instance(id)
+	if inst == nil {
+		return ErrUnavailable
+	}
+	err := inst.Call(ctx, method, params, result)
+	var rpcErr *rpc.Error
+	if errors.As(err, &rpcErr) {
+		return &rpc.Error{Code: rpcErr.Code, Message: m.redact(id, rpcErr.Message)}
+	}
+	return err
+}
+
+// Capabilities are the installed manifest's, for plugin id.
+func (m *Manager) Capabilities(ctx context.Context, id string) ([]string, error) {
+	rows, err := m.store.ListPlugins(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range rows {
+		if p.ID == id {
+			return append([]string{}, p.Capabilities...), nil
+		}
+	}
+	return nil, fmt.Errorf("%w: plugin %q", registry.ErrNotFound, id)
+}
+
+// Running reports whether plugin id's instance is running.
+func (m *Manager) Running(id string) bool {
+	inst := m.instance(id)
+	return inst != nil && inst.Status().State == StateRunning
+}
+
 // Close stops every running plugin.
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
@@ -642,6 +705,9 @@ func (m *Manager) startInstance(ctx context.Context, p *registry.Plugin, manifes
 		OnCall:  m.onCall(p.Name),
 		Redact:  func(s string) string { return m.redact(id, s) },
 		OnState: m.onState(id),
+	}
+	if m.OnNotify != nil {
+		opts.OnNotify = func(method string, params json.RawMessage) { m.OnNotify(id, method, params) }
 	}
 	if m.InstanceOptions != nil {
 		m.InstanceOptions(&opts)

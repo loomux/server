@@ -178,3 +178,19 @@ type ListResult struct {
 type AttachResult struct {
 	Commands []AttachCommand `json:"commands"`
 }
+
+// RequiredCapability is the capability a manifest must declare for the
+// host to call method; "" for a method outside the targets group.
+func RequiredCapability(method string) string {
+	switch method {
+	case MethodTargetsDescribe, MethodTargetsCreate, MethodTargetsGet, MethodTargetsList, MethodTargetsDestroy, MethodTargetsHealth:
+		return CapTargetsCreate
+	case MethodTargetsStart, MethodTargetsStop:
+		return CapTargetsStopStart
+	case MethodTargetsRecreate:
+		return CapTargetsRecreate
+	case MethodTargetsAttachCommands:
+		return CapTargetsAttachCommands
+	}
+	return ""
+}

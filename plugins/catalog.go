@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -218,12 +219,16 @@ func (c *Catalog) scanSockets(ctx context.Context) ([]Available, error) {
 
 // DialSocket connects to a plugin's unix socket.
 func DialSocket(ctx context.Context, path string) (*rpc.Conn, error) {
+	return dialSocket(ctx, path, nil)
+}
+
+func dialSocket(ctx context.Context, path string, onNotify func(string, json.RawMessage)) (*rpc.Conn, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
 		return nil, err
 	}
-	return rpc.NewConn(conn, conn, nil), nil
+	return rpc.NewConn(conn, conn, onNotify), nil
 }
 
 // DescribeSocket asks the plugin on path for its manifest, validated.
