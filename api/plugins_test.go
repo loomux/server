@@ -60,10 +60,16 @@ func (s *stubPlugins) SetConfig(ctx context.Context, id string, config map[strin
 	s.lastConfig = config
 	return s.view(id)
 }
-func (s *stubPlugins) Enable(ctx context.Context, id string) (*plugins.View, error)  { return s.view(id) }
-func (s *stubPlugins) Disable(ctx context.Context, id string) (*plugins.View, error) { return s.view(id) }
-func (s *stubPlugins) Upgrade(ctx context.Context, id string) (*plugins.View, error) { return s.view(id) }
-func (s *stubPlugins) Check(ctx context.Context, id string) (*plugins.View, error)   { return s.view(id) }
+func (s *stubPlugins) Enable(ctx context.Context, id string) (*plugins.View, error) {
+	return s.view(id)
+}
+func (s *stubPlugins) Disable(ctx context.Context, id string) (*plugins.View, error) {
+	return s.view(id)
+}
+func (s *stubPlugins) Upgrade(ctx context.Context, id string) (*plugins.View, error) {
+	return s.view(id)
+}
+func (s *stubPlugins) Check(ctx context.Context, id string) (*plugins.View, error) { return s.view(id) }
 func (s *stubPlugins) Uninstall(ctx context.Context, id, targets string) error {
 	s.lastUninstall = targets
 	if s.err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -21,11 +22,14 @@ import (
 	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/orchestrator"
+	"github.com/Loomux/server/plugins"
+	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
 	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/version"
 )
 
 // staleProvisioningAfter is how long a workspace may stay provisioning
@@ -58,6 +62,7 @@ type App struct {
 	dispatchDrain    time.Duration
 	sshAgents        *targets.AgentPool
 	routerSettings   *llmrouter.Settings
+	plugins          *plugins.Manager
 	// bg holds the goroutines Close waits for before closing the store
 	// (LOOM-163).
 	bg *background
@@ -215,6 +220,12 @@ func (a *App) HealthChecker() *health.Checker {
 	return a.healthChecker
 }
 
+// Plugins serves /api/v1/plugins (LOOM-178): the plugin system's
+// catalog and installed instances.
+func (a *App) Plugins() *plugins.Manager {
+	return a.plugins
+}
+
 // Close stops the background idle reaper (LOOM-16) and releases the
 // store's resources (its DB connection).
 func (a *App) Close() error {
@@ -239,6 +250,9 @@ func (a *App) Close() error {
 	if a.sshAgents != nil {
 		targets.ResetManagedSSH(a.sshAgents)
 		a.sshAgents.Close()
+	}
+	if a.plugins != nil {
+		_ = a.plugins.Close(context.Background())
 	}
 	return a.store.Close()
 }
@@ -534,6 +548,34 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// counters (LOOM-105).
 	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr)
 
+	// The plugin system (LOOM-178): the instance id labels everything a
+	// plugin makes as this server's, generated once and kept in the
+	// database so a restored backup keeps its machines.
+	instanceID, err := instanceIDFor(store)
+	if err != nil {
+		stopReaper()
+		_ = store.Close()
+		return nil, err
+	}
+	dataDir := filepath.Dir(cfg.DBPath)
+	pluginDir := cfg.PluginDir
+	if pluginDir == "" {
+		pluginDir = filepath.Join(dataDir, "plugins")
+	}
+	catalog := &plugins.Catalog{BundleDir: cfg.PluginBundleDir, PluginDir: pluginDir, SocketDir: cfg.PluginSocketDir, Logger: cfg.Logger}
+	pluginManager := plugins.NewManager(store, catalog,
+		protocol.HostInfo{Version: version.Version, InstanceID: instanceID, DataDir: filepath.Join(dataDir, "plugin-data")},
+		cfg.Logger, met)
+	healthChecker.WithPlugins(func(ctx context.Context) health.ComponentResult {
+		report := pluginManager.Health(ctx)
+		return health.ComponentResult{Status: report.Status, Error: report.Error, Detail: report.Plugins}
+	})
+	bg.Go(func() {
+		if err := pluginManager.StartAll(reaperCtx); err != nil && cfg.Logger != nil {
+			cfg.Logger.Warn("some plugins didn't start", "error", err.Error())
+		}
+	})
+
 	rtr := router.New(store, orch, newExecutor, creds, agentTypes, model, markerDir, routerOpts...)
 	// The target health probe (LOOM-86) and the late-output relay
 	// (LOOM-121) share the reaper's lifetime too, and Close waits for
@@ -640,6 +682,25 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		sweepDone:        sweepDone,
 		metrics:          met,
 		healthChecker:    healthChecker,
+		plugins:          pluginManager,
 		sshAgents:        sshAgents,
 	}, nil
+}
+
+// instanceIDFor reads the server's instance id from the settings table,
+// generating and storing one on first start (LOOM-178).
+func instanceIDFor(store registry.Store) (string, error) {
+	ctx := context.Background()
+	id, err := store.GetSetting(ctx, registry.SettingInstanceID)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, registry.ErrNotFound) {
+		return "", fmt.Errorf("app: instance id: %w", err)
+	}
+	id = uuid.NewString()
+	if err := store.SetSetting(ctx, registry.SettingInstanceID, id); err != nil {
+		return "", fmt.Errorf("app: instance id: %w", err)
+	}
+	return id, nil
 }

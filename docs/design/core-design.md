@@ -153,6 +153,17 @@ closed). A turn ending on an offer is a "needs you" notification.
 A shared work machine such as sc1 is meant to be `purpose: work`,
 `allow_provision: false`, `require_confirmation: true`.
 
+**Plugins create machines (LOOM-178).** Registering a host you already
+use is the primary way to get a target. For work that shouldn't run on
+your own devices, an installed **plugin** creates machines on the
+infrastructure Loomux runs on (a Kubernetes pod or a Docker container
+per target) and registers each as an ordinary managed remote target
+reached over SSH, so nothing upstream of the target changes. Plugins
+are out-of-process programs speaking `loomux-plugin/1` (JSON-RPC over
+stdio or a unix socket), described by a manifest, installed and
+configured from the UI with their secrets encrypted at rest. Design:
+`docs/design/target-providers.md`.
+
 ### 2. Workspace registry
 
 A **workspace** is a directory (with an optional git remote) bound to
@@ -581,8 +592,9 @@ Two different problems, two different solutions:
   so it is fully trusted; the container image turns local targets off
   (`LOOMUX_LOCAL_TARGETS=off`) and local processes get an allow-listed
   environment, never loomuxd's `LOOMUX_*` secrets. Agents on the server
-  itself are planned as a separate provider system (pods/containers as
-  dedicated targets).
+  itself come from a target-provider plugin (LOOM-178,
+  `docs/design/target-providers.md`): a pod or container per target,
+  with its own user and no access to loomuxd's secrets.
 - **Everything else** (GitHub PATs, MCP server tokens, custom API keys)
   goes through a **credential vault Loomux owns**: encrypted at rest,
   scoped per agent-type/workspace, decrypted only at pane-launch time and

@@ -202,6 +202,25 @@ envelope: it classifies the failure with `error_class`.
 - **`/web/*`** is an operations API outside the v1 stability promise
   (`docs/release/versioning.md`, "The API v1 contract").
 
+## Plugins (LOOM-178)
+
+`/api/v1/plugins` is the plugin system (`docs/design/target-providers.md`
+§1): `GET /plugins/available` lists the catalog (every manifest found in
+the bundle directory, the operator's plugin directory and the sidecar
+sockets, with its trust and isolation), `POST /plugins` installs one
+with a label and a configuration validated against the manifest's
+schema, `GET /plugins` and `GET /plugins/{id}` show installed
+instances, `PUT /plugins/{id}/config` reconfigures (a secret left out
+keeps its value, `""` clears it), `POST /plugins/{id}/enable|disable|
+upgrade|check` are the lifecycle verbs, and `DELETE /plugins/{id}`
+uninstalls (`?targets=destroy|keep` is required once the plugin owns
+machines; `409` otherwise). Secrets never come back: each shows in
+`config` as `{"set": bool}`. A plugin that installs but can't work
+answers `422` with the plugin as it is (`status: error`,
+`status_reason`), its row kept so the configuration can be fixed.
+`503` without `LOOMUX_MASTER_KEY`. The routes answer `404` on a server
+built without `WithPlugins`.
+
 ## Layout
 
 - `auth.go` — `HashPassword` (bcrypt, used by `loomuxd -hash-password`
