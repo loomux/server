@@ -21,6 +21,26 @@ import (
 	"github.com/Loomux/server/targets"
 )
 
+// job is one background job (a create, or a follow after start or
+// recreate). The map entry is the job itself, so a job's cleanup never
+// removes a newer job's entry.
+type job struct {
+	cancel context.CancelFunc
+}
+
+// errStale is a job's signal that the machine moved on while it wasn't
+// looking (a Stop, a delete, an uninstall), so its result is dropped.
+var errStale = errors.New("providers: the machine moved on")
+
+// inFlight is whether a job follows a machine in status s.
+func inFlight(s registry.EnvironmentStatus) bool {
+	switch s {
+	case registry.EnvironmentCreating, registry.EnvironmentStarting, registry.EnvironmentRecreating:
+		return true
+	}
+	return false
+}
+
 // Defaults.
 const (
 	DefaultCreateTimeout = 10 * time.Minute
@@ -54,10 +74,11 @@ type Manager struct {
 	OrphanTTL     time.Duration
 	Now           func() time.Time
 
-	mu      sync.Mutex
-	locks   map[string]*sync.Mutex
-	jobs    sync.WaitGroup
-	cancels map[string]context.CancelFunc
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+	jobs  sync.WaitGroup
+	// running is the background job following each machine, if any.
+	running map[string]*job
 	// orphanSeen is when an orphan was first listed, keyed plugin/env.
 	orphanSeen map[string]time.Time
 	closed     bool
@@ -76,7 +97,7 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 		store: store, plugins: pm, logger: logger, met: met, instanceID: instanceID,
 		CreateTimeout: DefaultCreateTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
 		Now:   time.Now,
-		locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, orphanSeen: map[string]time.Time{},
+		locks: map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{},
 	}
 }
 
@@ -374,11 +395,12 @@ func (m *Manager) startJob(envID string, fn func(ctx context.Context)) {
 		m.mu.Unlock()
 		return
 	}
-	if cancel := m.cancels[envID]; cancel != nil {
-		cancel()
+	if old := m.running[envID]; old != nil {
+		old.cancel()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.CreateTimeout)
-	m.cancels[envID] = cancel
+	j := &job{cancel: cancel}
+	m.running[envID] = j
 	m.jobs.Add(1)
 	m.mu.Unlock()
 	go func() {
@@ -386,11 +408,19 @@ func (m *Manager) startJob(envID string, fn func(ctx context.Context)) {
 		defer cancel()
 		fn(ctx)
 		m.mu.Lock()
-		if m.cancels[envID] != nil {
-			delete(m.cancels, envID)
+		// Only this job's own entry: a newer job may have replaced it.
+		if m.running[envID] == j {
+			delete(m.running, envID)
 		}
 		m.mu.Unlock()
 	}()
+}
+
+// following reports whether a job is following the machine.
+func (m *Manager) following(envID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.running[envID] != nil
 }
 
 // runCreate asks the plugin for the machine and follows it to running.
@@ -401,62 +431,73 @@ func (m *Manager) runCreate(ctx context.Context, envID string) {
 	}
 	spec, err := m.buildSpec(ctx, env, target, "")
 	if err != nil {
-		m.failEnv(ctx, env, "prepare: "+err.Error())
+		m.failJob(ctx, envID, "prepare: "+err.Error())
 		return
 	}
 	var pe protocol.Environment
 	if err := m.plugins.Call(ctx, env.PluginID, protocol.MethodTargetsCreate, spec, &pe); err != nil {
-		m.failEnv(ctx, env, "create: "+safeErr(err))
+		m.failJob(ctx, envID, "create: "+safeErr(err))
 		return
 	}
-	if err := m.applyLocked(ctx, env, target, pe); err != nil {
-		m.failEnv(ctx, env, err.Error())
+	if err := m.applyLocked(ctx, envID, pe); err != nil {
+		if !errors.Is(err, errStale) {
+			m.failJob(ctx, envID, err.Error())
+		}
 		return
 	}
-	m.follow(ctx, env.ID)
+	m.follow(ctx, envID)
 }
 
-// applyLocked is apply under the environment's lock, for the jobs.
-func (m *Manager) applyLocked(ctx context.Context, env *registry.Environment, target *registry.Target, pe protocol.Environment) error {
-	defer m.lock(env.ID)()
+// applyLocked is apply under the environment's lock, for the jobs. The
+// row is re-read there: what the job saw before may have been overtaken
+// by a Stop, a delete or an uninstall, and then the plugin's word is
+// dropped (errStale) rather than written over theirs.
+func (m *Manager) applyLocked(ctx context.Context, envID string, pe protocol.Environment) error {
+	defer m.lock(envID)()
+	env, target, err := m.load(ctx, envID)
+	if err != nil {
+		return err
+	}
+	if !inFlight(env.Status) {
+		return errStale
+	}
 	return m.apply(ctx, env, target, pe)
 }
 
 // follow polls the plugin until the machine is running (then probes the
-// target), or ends in error or lost, or the job's deadline passes.
+// target), or ends in error or lost, or the job's deadline passes. A
+// job cancelled on purpose leaves the row as the canceller set it.
 func (m *Manager) follow(ctx context.Context, envID string) {
 	ticker := time.NewTicker(m.PollInterval)
 	defer ticker.Stop()
 	for {
-		env, target, err := m.load(ctx, envID)
-		if err != nil {
-			return
-		}
-		switch env.Status {
-		case registry.EnvironmentRunning, registry.EnvironmentStopped, registry.EnvironmentError, registry.EnvironmentLost, registry.EnvironmentDetached:
+		env, _, err := m.load(ctx, envID)
+		if err != nil || !inFlight(env.Status) {
 			return
 		}
 		var pe protocol.Environment
 		err = m.plugins.Call(ctx, env.PluginID, protocol.MethodTargetsGet, protocol.IDParams{ID: env.ID}, &pe)
 		switch {
 		case err == nil:
-			if err := m.applyLocked(ctx, env, target, pe); err != nil {
-				m.failEnv(ctx, env, err.Error())
+			if err := m.applyLocked(ctx, envID, pe); err != nil {
+				if !errors.Is(err, errStale) {
+					m.failJob(ctx, envID, err.Error())
+				}
 				return
 			}
 			if pe.Status == protocol.EnvRunning {
 				return
 			}
 		case isNotFound(err):
-			m.failEnv(ctx, env, "the plugin lost the machine while it was coming up")
+			m.failJob(ctx, envID, "the plugin lost the machine while it was coming up")
 			return
 		default:
 			// Unavailable or transient: keep polling until the deadline.
 		}
 		select {
 		case <-ctx.Done():
-			if env, _, err := m.load(context.Background(), envID); err == nil && env.Status != registry.EnvironmentRunning {
-				m.failEnv(context.Background(), env, "the machine didn't become ready within "+m.CreateTimeout.String())
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				m.failJob(ctx, envID, "the machine didn't become ready within "+m.CreateTimeout.String())
 			}
 			return
 		case <-ticker.C:
@@ -538,18 +579,28 @@ func mapStatus(s string) (registry.EnvironmentStatus, bool) {
 	return "", false
 }
 
-// failEnv records an error on the environment.
-func (m *Manager) failEnv(ctx context.Context, env *registry.Environment, reason string) {
-	defer m.lock(env.ID)()
-	current, err := m.store.GetEnvironment(ctx, env.ID)
-	if err != nil {
+// failJob records a job's failure: the machine becomes error with
+// reason. Not when the job was cancelled on purpose (a Stop, a delete,
+// an uninstall, shutdown, a newer job): the canceller set the row, and
+// after a shutdown reconcile resumes the machine. Not when the machine
+// is no longer in flight: someone moved it on. The row is re-read under
+// its lock with a fresh context, since the job's own may be the reason.
+func (m *Manager) failJob(ctx context.Context, envID, reason string) {
+	if errors.Is(ctx.Err(), context.Canceled) {
 		return
 	}
-	current.Status, current.StatusReason = registry.EnvironmentError, truncate(reason, 500)
-	if err := m.store.UpdateEnvironment(ctx, current); err != nil {
-		m.logger.Warn("record machine error", "environment", env.ID, "error", err.Error())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer m.lock(envID)()
+	env, err := m.store.GetEnvironment(ctx, envID)
+	if err != nil || !inFlight(env.Status) {
+		return
 	}
-	m.logger.Warn("machine failed", "environment", env.ID, "reason", current.StatusReason)
+	env.Status, env.StatusReason = registry.EnvironmentError, truncate(reason, 500)
+	if err := m.store.UpdateEnvironment(ctx, env); err != nil {
+		m.logger.Warn("record machine error", "environment", envID, "error", err.Error())
+	}
+	m.logger.Warn("machine failed", "environment", envID, "reason", env.StatusReason)
 	m.updateGauge(ctx)
 }
 
@@ -603,6 +654,19 @@ func (m *Manager) managed(ctx context.Context, targetID string) (*registry.Envir
 	return env, target, nil
 }
 
+// reload re-reads a machine once its lock is held: what managed() saw
+// may have moved on while the lock was being taken.
+func (m *Manager) reload(ctx context.Context, envID string) (*registry.Environment, *registry.Target, error) {
+	env, target, err := m.load(ctx, envID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if env.Status == registry.EnvironmentDetached || env.PluginID == "" {
+		return env, target, ErrDetached
+	}
+	return env, target, nil
+}
+
 func (m *Manager) refuseIfActive(ctx context.Context, targetID string) error {
 	if m.ActiveTask == nil {
 		return nil
@@ -624,6 +688,9 @@ func (m *Manager) Stop(ctx context.Context, targetID string) error {
 		return err
 	}
 	defer m.lock(env.ID)()
+	if env, _, err = m.reload(ctx, env.ID); err != nil {
+		return err
+	}
 	if !env.Persistent {
 		return ErrEphemeralStop
 	}
@@ -651,6 +718,9 @@ func (m *Manager) Start(ctx context.Context, targetID string) error {
 		return err
 	}
 	defer m.lock(env.ID)()
+	if env, _, err = m.reload(ctx, env.ID); err != nil {
+		return err
+	}
 	switch env.Status {
 	case registry.EnvironmentRunning, registry.EnvironmentStarting, registry.EnvironmentCreating, registry.EnvironmentRecreating:
 		return nil
@@ -694,6 +764,9 @@ func (m *Manager) Recreate(ctx context.Context, targetID, size string) error {
 		return &InvalidError{Field: "size", Msg: "must be one of " + sizeNames(info)}
 	}
 	defer m.lock(env.ID)()
+	if env, target, err = m.reload(ctx, env.ID); err != nil {
+		return err
+	}
 	switch env.Status {
 	case registry.EnvironmentRunning, registry.EnvironmentStopped, registry.EnvironmentError:
 	default:
@@ -736,6 +809,9 @@ func (m *Manager) DeleteTarget(ctx context.Context, targetID string) error {
 		return err
 	}
 	defer m.lock(env.ID)()
+	if env, target, err = m.load(ctx, env.ID); err != nil {
+		return err
+	}
 	if err := m.refuseIfActive(ctx, targetID); err != nil {
 		return err
 	}
@@ -901,10 +977,13 @@ func (m *Manager) UninstallMachines(ctx context.Context, pluginID, mode string) 
 		case plugins.UninstallKeep:
 			release := m.lock(env.ID)
 			m.cancelJob(env.ID)
-			env.PluginID, env.Status, env.StatusReason = "", registry.EnvironmentDetached, "the plugin was uninstalled keeping its machines"
-			err := m.store.UpdateEnvironment(ctx, env)
+			cur, err := m.store.GetEnvironment(ctx, env.ID)
+			if err == nil {
+				cur.PluginID, cur.Status, cur.StatusReason = "", registry.EnvironmentDetached, "the plugin was uninstalled keeping its machines"
+				err = m.store.UpdateEnvironment(ctx, cur)
+			}
 			release()
-			if err != nil {
+			if err != nil && !errors.Is(err, registry.ErrNotFound) {
 				return err
 			}
 		default:
@@ -926,9 +1005,9 @@ func (m *Manager) setStatus(ctx context.Context, env *registry.Environment, stat
 
 func (m *Manager) cancelJob(envID string) {
 	m.mu.Lock()
-	if cancel := m.cancels[envID]; cancel != nil {
-		cancel()
-		delete(m.cancels, envID)
+	if j := m.running[envID]; j != nil {
+		j.cancel()
+		delete(m.running, envID)
 	}
 	m.mu.Unlock()
 }
@@ -972,9 +1051,9 @@ func (m *Manager) updateGauge(ctx context.Context) {
 func (m *Manager) Close() {
 	m.mu.Lock()
 	m.closed = true
-	for id, cancel := range m.cancels {
-		cancel()
-		delete(m.cancels, id)
+	for id, j := range m.running {
+		j.cancel()
+		delete(m.running, id)
 	}
 	m.mu.Unlock()
 	m.jobs.Wait()

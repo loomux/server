@@ -94,10 +94,7 @@ func (m *Manager) reconcileKnown(ctx context.Context, env *registry.Environment,
 		// Left for inspection; a retry is explicit.
 	default:
 		// creating, starting, running, recreating: take the plugin's word.
-		m.mu.Lock()
-		_, followed := m.cancels[env.ID]
-		m.mu.Unlock()
-		if followed && pe.Status != protocol.EnvRunning {
+		if m.following(env.ID) && pe.Status != protocol.EnvRunning {
 			return // a job is already following it
 		}
 		if err := m.apply(ctx, env, target, pe); err != nil {
@@ -114,8 +111,11 @@ func (m *Manager) reconcileKnown(ctx context.Context, env *registry.Environment,
 func (m *Manager) reconcileMissing(ctx context.Context, env *registry.Environment, target *registry.Target) {
 	switch env.Status {
 	case registry.EnvironmentCreating:
-		// Resume: Create is idempotent on the id, and the deadline
-		// starts again.
+		if m.following(env.ID) {
+			return // the create job hasn't reached the plugin yet
+		}
+		// Resume (after a restart): Create is idempotent on the id, and
+		// the deadline starts again.
 		m.logger.Info("resuming machine creation", "environment", env.ID, "target", target.Name)
 		m.startJob(env.ID, func(ctx context.Context) { m.runCreate(ctx, env.ID) })
 	case registry.EnvironmentRunning, registry.EnvironmentStarting, registry.EnvironmentRecreating:
