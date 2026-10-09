@@ -43,6 +43,27 @@ RUN CGO_ENABLED=0 go build \
         -o /out/loomuxd ./cmd/loomuxd
 
 # ---------------------------------------------------------------------------
+# Stage 1b — the first-party plugins, bundled (LOOM-178, design §1.8)
+# ---------------------------------------------------------------------------
+# Each plugin is its own Go module under plugins/<name> (so client-go and
+# the like never enter the server's go.mod), built here and placed under
+# LOOMUX_PLUGIN_BUNDLE_DIR as <name>/plugin.json + <name>/loomux-plugin-<name>.
+# The modules replace github.com/Loomux/server with ../.., hence the whole
+# tree in the context.
+FROM golang:1.27-alpine AS plugins
+
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY plugins/kubernetes/go.mod plugins/kubernetes/go.sum ./plugins/kubernetes/
+RUN cd plugins/kubernetes && go mod download
+
+COPY . .
+RUN cd plugins/kubernetes \
+ && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+        -o /out/plugins/kubernetes/loomux-plugin-kubernetes ./cmd/loomux-plugin-kubernetes \
+ && cp plugin.json /out/plugins/kubernetes/plugin.json
+
+# ---------------------------------------------------------------------------
 # Stage 2 — runtime
 # ---------------------------------------------------------------------------
 FROM alpine:3.22
@@ -75,6 +96,7 @@ RUN addgroup -g 10001 loomux \
  && chmod -R g=u /home/loomux /var/lib/loomux
 
 COPY --from=build /out/loomuxd /usr/local/bin/loomuxd
+COPY --from=plugins --chown=loomux:loomux /out/plugins/ /usr/local/lib/loomux/plugins/
 
 # Materialises $HOME/.ssh from a read-only Secret mount before exec'ing
 # loomuxd. Remote dispatch is configured through ~/.ssh (identity, the
@@ -104,8 +126,9 @@ COPY --chown=loomux:loomux ${WEB_DIST}/ /srv/loomux/web/
 # run as loomuxd's own user inside this container, able to read its
 # database, vault key and SSH keys. Register machines as remote targets.
 # Plugins (LOOM-178): first-party plugins are bundled under
-# LOOMUX_PLUGIN_BUNDLE_DIR (none yet); a sidecar container serves its
-# socket in LOOMUX_PLUGIN_SOCKET_DIR (an emptyDir shared with it).
+# LOOMUX_PLUGIN_BUNDLE_DIR (the Kubernetes plugin, from stage 1b); a
+# sidecar container serves its socket in LOOMUX_PLUGIN_SOCKET_DIR (an
+# emptyDir shared with it).
 ENV HOME=/home/loomux \
     LOOMUX_LOCAL_TARGETS=off \
     LOOMUX_PLUGIN_BUNDLE_DIR=/usr/local/lib/loomux/plugins \

@@ -1073,6 +1073,28 @@ POST /api/v1/plugins/{id}/upgrade status 409
 POST /api/v1/plugins/{id}/upgrade status 422
 POST /api/v1/plugins/{id}/upgrade status 500
 POST /api/v1/plugins/{id}/upgrade status 503
+POST /api/v1/settings/router/{tier}/models
+POST /api/v1/settings/router/{tier}/models request - object
+POST /api/v1/settings/router/{tier}/models request .api_key string
+POST /api/v1/settings/router/{tier}/models request .base_url string
+POST /api/v1/settings/router/{tier}/models request .provider string
+POST /api/v1/settings/router/{tier}/models request-header Authorization
+POST /api/v1/settings/router/{tier}/models response - object
+POST /api/v1/settings/router/{tier}/models response .cached boolean
+POST /api/v1/settings/router/{tier}/models response .error string omitempty
+POST /api/v1/settings/router/{tier}/models response .error_class string omitempty
+POST /api/v1/settings/router/{tier}/models response .models []object
+POST /api/v1/settings/router/{tier}/models response .models[].id string
+POST /api/v1/settings/router/{tier}/models response .models[].name string omitempty
+POST /api/v1/settings/router/{tier}/models response .ok boolean
+POST /api/v1/settings/router/{tier}/models response .status number omitempty
+POST /api/v1/settings/router/{tier}/models response-header Content-Type
+POST /api/v1/settings/router/{tier}/models status 200
+POST /api/v1/settings/router/{tier}/models status 400
+POST /api/v1/settings/router/{tier}/models status 401
+POST /api/v1/settings/router/{tier}/models status 404
+POST /api/v1/settings/router/{tier}/models status 413
+POST /api/v1/settings/router/{tier}/models status 500
 POST /api/v1/settings/router/{tier}/test
 POST /api/v1/settings/router/{tier}/test request-header Authorization
 POST /api/v1/settings/router/{tier}/test response - object

@@ -1,0 +1,30 @@
+{
+  "name": "kubernetes",
+  "title": "Kubernetes",
+  "version": "0.1.0",
+  "protocol": "loomux-plugin/1",
+  "vendor": "Loomux",
+  "homepage": "https://github.com/Loomux/server/tree/main/plugins/kubernetes",
+  "description": "Creates a pod per machine in one namespace of the cluster Loomux runs in.",
+  "capabilities": ["targets.create", "targets.stop_start", "targets.recreate", "targets.persistent", "targets.ephemeral", "targets.egress_policy", "targets.attach_commands"],
+  "permissions": [
+    {"scope": "kubernetes", "detail": "create, get, list, watch and delete Pods, PersistentVolumeClaims and Secrets in one namespace; read Pod logs and Events there"},
+    {"scope": "network", "detail": "reaches the Kubernetes API server; the cluster pulls the agent image from its registry"}
+  ],
+  "host_requests": [],
+  "config_schema": {
+    "type": "object",
+    "required": ["namespace", "storage_class", "agent_image"],
+    "properties": {
+      "namespace": {"type": "string", "default": "loomux-agents", "description": "where machines are made; must exist, with the plugin's Role and the headless Service"},
+      "storage_class": {"type": "string", "default": "ceph-rbd-sc-delete", "description": "the StorageClass of a persistent machine's data volume: a Delete-reclaim class (a Retain class leaves volumes behind after destroy, and a quota may allow none of it)"},
+      "subdomain": {"type": "string", "default": "loomux-agents", "description": "the headless Service that names machines: lx-<id>.<subdomain>.<namespace>.svc.cluster.local"},
+      "agent_image": {"type": "string", "x-format": "image-reference", "default": "ghcr.io/loomux/agent:main", "description": "the image machines run; pin it by digest in production"},
+      "kubeconfig": {"type": "string", "x-secret": true, "x-format": "kubeconfig", "description": "leave empty in-cluster (the mounted ServiceAccount is used)"},
+      "sizes": {"type": "object", "additionalProperties": {"type": "object", "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}, "disk": {"type": "string"}}}, "description": "machine sizes by name, each {cpu, memory, disk} in Kubernetes quantities; small/medium/large when empty"},
+      "max_environments": {"type": "integer", "minimum": 1, "default": 5, "description": "how many machines this plugin makes at most"},
+      "require_network_policy": {"type": "boolean", "default": false, "description": "refuse to make machines unless NetworkPolicy is enforced (true in production)"},
+      "timezone": {"type": "string", "default": "UTC", "description": "TZ inside machines"}
+    }
+  }
+}
