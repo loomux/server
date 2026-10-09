@@ -117,6 +117,7 @@ GET    /api/v1/settings/router
 PUT    /api/v1/settings/router/{tier}          {provider?, base_url, model, api_key?}
 DELETE /api/v1/settings/router/{tier}
 POST   /api/v1/settings/router/{tier}/test
+POST   /api/v1/settings/router/{tier}/models   {provider?, base_url?, api_key?}   (LOOM-191)
 GET    /api/v1/settings/router/audit?limit=N   (default 50, at most 200)
 ```
 
@@ -166,6 +167,24 @@ escalation tier with no env escalation, that turns escalation off.
 way: the request worked, the provider didn't). 404 for a tier with no
 config (`escalation` with source `none`).
 
+`POST .../models` (LOOM-191) lists the models the provider offers, for
+the model picker, through its own `GET /v1/models` (OpenAI-compatible
+and Anthropic both have one; Anthropic's is paged and read to the end,
+up to 1000). It's a POST so a key being entered travels in the body,
+never a URL. An empty body lists the tier's own provider and base URL
+with its key in force (stored or env). Naming another provider or base
+URL needs `api_key` — the same rule as `PUT`: the saved key never goes
+anywhere it wasn't entered for — and that key is used for the call
+only, never stored or returned. The same base URL rules and 15s timeout
+as the test call apply. → `{"ok": true, "models": [{"id": "...",
+"name": "..."}], "cached": false}` sorted by id (`name` is Anthropic's
+display name), or `{"ok": false, "models": [], "status", "error_class",
+"error"}` with the test call's classes. A successful listing is cached
+for five minutes per provider, base URL and key (a hash of them, so the
+cache holds no key as a map key; at most 32 listings); failures aren't.
+400 for a refused request, 404 for an unknown tier or one with nothing
+to list with.
+
 `GET .../audit` → `{"entries": [{"id", "tier", "action", "fields":
 ["model","api_key"], "actor": "session:…", "created_at"}]}`, newest
 first.
@@ -193,6 +212,11 @@ between Appearance and Devices, in the same card style
   otherwise). Save → `PUT`; the key field is cleared on success and on
   failure, and its value is never put in query cache, URL, or storage.
   Errors show the server's `error` text.
+- **Model** is a combobox (LOOM-191): typing filters the provider's
+  list (`POST .../models`), and free text is still accepted, since some
+  endpoints don't list models. The list is read again when provider,
+  base URL or the key being entered change; while it loads, or if it
+  can't be read, the field says so and stays a plain text field.
 - **Test** → `POST .../test`, shows "Works · 412 ms" or the error, inline,
   until the next edit. Offered for any tier whose source isn't `none`.
 - **Use environment settings** (stored tiers only, confirm dialog: "Go

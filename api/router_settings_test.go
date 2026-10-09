@@ -37,6 +37,10 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":{"message":"Incorrect API key provided: ` + r.Header.Get("Authorization") + `","type":"invalid_request_error"}}`))
 		return
 	}
+	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/models") {
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"model-b","object":"model","created":1,"owned_by":"x"},{"id":"model-a","object":"model","created":1,"owned_by":"x"}]}`))
+		return
+	}
 	_, _ = w.Write([]byte(`{"id":"c","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"length","message":{"role":"assistant","content":"p"}}]}`))
 }
 
@@ -277,5 +281,69 @@ func TestRouterSettings_Errors(t *testing.T) {
 	token, _ := login(t, srv.URL, testPassword)
 	if status, _ := doJSON(t, "GET", srv.URL+"/api/v1/settings/router", token, nil); status != http.StatusNotFound {
 		t.Fatalf("GET on a server without router settings = %d", status)
+	}
+}
+
+// LOOM-191: the model picker's list, with the saved key or one being
+// entered, which never comes back in the answer.
+func TestRouterSettings_ListModels(t *testing.T) {
+	logs := captureLogs(t)
+	f := routerSettingsServer(t, bytes.Repeat([]byte("k"), 32))
+	type modelsJSON struct {
+		OK         bool                `json:"ok"`
+		Models     []map[string]string `json:"models"`
+		Status     int                 `json:"status"`
+		ErrorClass string              `json:"error_class"`
+		Cached     bool                `json:"cached"`
+	}
+	list := func(body any, want int) (modelsJSON, string) {
+		t.Helper()
+		status, out := doJSON(t, "POST", f.base+"/api/v1/settings/router/primary/models", f.token, body)
+		if status != want {
+			t.Fatalf("POST models %v = %d %s, want %d", body, status, out, want)
+		}
+		var got modelsJSON
+		_ = json.Unmarshal([]byte(out), &got)
+		return got, out
+	}
+
+	got, _ := list(nil, http.StatusOK)
+	if !got.OK || len(got.Models) != 2 || got.Models[0]["id"] != "model-a" || got.Models[1]["id"] != "model-b" || got.Cached {
+		t.Fatalf("saved tier's models = %+v", got)
+	}
+	if f.provider.lastKey() != "env-primary-key-000000" {
+		t.Fatal("not listed with the tier's key")
+	}
+	if got, _ = list(map[string]string{}, http.StatusOK); !got.Cached {
+		t.Fatalf("second listing not cached: %+v", got)
+	}
+
+	const entered = "sk-being-entered-0123456789"
+	got, out := list(map[string]string{"base_url": f.providerURL + "/", "api_key": entered}, http.StatusOK)
+	if !got.OK || f.provider.lastKey() != entered {
+		t.Fatalf("entered key listing = %+v", got)
+	}
+	if strings.Contains(out, entered) || strings.Contains(logs.String(), entered) {
+		t.Fatalf("the entered key came back: %s", out)
+	}
+
+	// The saved key isn't sent to another base URL.
+	list(map[string]string{"base_url": "https://elsewhere.example/v1"}, http.StatusBadRequest)
+	list(map[string]string{"base_url": "http://elsewhere.example/v1", "api_key": entered}, http.StatusBadRequest)
+
+	f.provider.mu.Lock()
+	f.provider.reject = true
+	f.provider.mu.Unlock()
+	got, out = list(map[string]string{"base_url": f.providerURL, "api_key": "sk-rejected-0123456789"}, http.StatusOK)
+	if got.OK || got.Status != http.StatusUnauthorized || got.ErrorClass != "auth_failed" || strings.Contains(out, "Incorrect") || strings.Contains(out, "rejected") {
+		t.Fatalf("rejected listing = %s", out)
+	}
+
+	status, _ := doJSON(t, "POST", f.base+"/api/v1/settings/router/escalation/models", f.token, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("unconfigured escalation = %d", status)
+	}
+	if status, _ := doJSON(t, "POST", f.base+"/api/v1/settings/router/primary/models", "", nil); status != http.StatusUnauthorized {
+		t.Fatalf("without a token = %d", status)
 	}
 }
