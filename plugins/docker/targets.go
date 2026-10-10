@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -26,11 +27,18 @@ import (
 // from the record; recreate = the container and the record again with
 // the same port and data; destroy = everything, each tolerating 404.
 
-// createOp is one machine's creation in progress, or its outcome, kept
-// for OpTTL so targets.get can report why a create failed.
+// createOp is one machine's making in progress (a create, a recreate,
+// or a start remaking a lost container), or its outcome, kept for
+// OpTTL so targets.get can report why it failed. It runs in its own
+// goroutine on a cancellable context: a destroy or a recreate cancels
+// it and waits, so nothing is made behind their back.
 type createOp struct {
-	spec protocol.EnvironmentSpec
-	done chan struct{}
+	spec    protocol.EnvironmentSpec
+	port    int       // the fixed port, 0 to probe one
+	created time.Time // the record's creation time, kept across a recreate
+	status  string    // what get reports while it runs: creating, recreating, starting
+	cancel  context.CancelFunc
+	done    chan struct{}
 
 	mu       sync.Mutex
 	phase    string
@@ -277,6 +285,14 @@ func (p *Plugin) uploadFiles(ctx context.Context, eng *engine, cfg Config, host 
 	if err := p.removeContainer(ctx, eng, name); err != nil {
 		return err
 	}
+	// The helper's mount would make the daemon create a missing record
+	// without its labels: the record must still be there (a destroy
+	// may have raced this).
+	if rec, err := p.record(ctx, eng, host, spec.ID); err != nil {
+		return err
+	} else if rec == nil {
+		return &rpc.Error{Code: rpc.CodeNotFound, Message: "the machine's record vanished while it was being made"}
+	}
 	if err := eng.post(ctx, "/containers/create", url.Values{"name": {name}}, helperFor(spec.ID, spec.Image, cfg, host.InstanceID, helperUpload), nil); err != nil {
 		return p.mapErr(err)
 	}
@@ -345,9 +361,14 @@ func (p *Plugin) build(ctx context.Context, eng *engine, cfg Config, host protoc
 			return protocol.Environment{}, &rpc.Error{Code: rpc.CodeInternal, Message: "the machine's record on the docker host is damaged (no port)"}
 		}
 		created = createdFrom(rec.Labels, created)
-		op.setPhase("writing sshd's files")
-		if err := p.uploadFiles(ctx, eng, cfg, host, spec); err != nil {
-			return protocol.Environment{}, err
+		// A create or a recreate carries the key material and writes the
+		// files; a start remaking a lost container has only the record's
+		// spec, and the record's files are already there.
+		if spec.SSH.HostPrivateKey != "" {
+			op.setPhase("writing sshd's files")
+			if err := p.uploadFiles(ctx, eng, cfg, host, spec); err != nil {
+				return protocol.Environment{}, err
+			}
 		}
 		if spec.Persistent {
 			labels := labelsFor(spec.ID, spec.TargetID, host.InstanceID)
@@ -358,6 +379,13 @@ func (p *Plugin) build(ctx context.Context, eng *engine, cfg Config, host protoc
 			}
 		}
 		op.setPhase("starting the container")
+		// Nothing is made for a machine whose record is gone (a destroy
+		// since the top of this attempt).
+		if rec, err := p.record(ctx, eng, host, spec.ID); err != nil {
+			return protocol.Environment{}, err
+		} else if rec == nil {
+			return protocol.Environment{}, &rpc.Error{Code: rpc.CodeNotFound, Message: "the machine's record vanished while it was being made"}
+		}
 		c, err := p.ensureContainer(ctx, eng, cfg, host, spec, port)
 		if err != nil {
 			return protocol.Environment{}, err
@@ -383,22 +411,11 @@ func (p *Plugin) build(ctx context.Context, eng *engine, cfg Config, host protoc
 	return protocol.Environment{}, &rpc.Error{Code: rpc.CodeUnavailable, Message: "every port the docker host offered was taken before the machine could use it: " + oneLine(lastErr.Error())}
 }
 
-// runCreate is the creation, in its own goroutine: the image, the
-// network, the quota, then build.
-func (p *Plugin) runCreate(cfg Config, eng *engine, host protocol.HostInfo, op *createOp) {
-	ctx, cancel := context.WithTimeout(context.Background(), p.CreateTimeout)
-	defer cancel()
+// runCreate is the making, in its own goroutine: the quota, the image,
+// the network, then build.
+func (p *Plugin) runCreate(ctx context.Context, cfg Config, eng *engine, host protocol.HostInfo, op *createOp) {
+	defer op.cancel()
 	env, err := func() (protocol.Environment, error) {
-		image := op.spec.Image
-		if image == "" {
-			image = cfg.AgentImage
-		}
-		if err := p.ensureImage(ctx, eng, image, op); err != nil {
-			return protocol.Environment{}, err
-		}
-		if err := p.ensureNetwork(ctx, eng, host); err != nil {
-			return protocol.Environment{}, err
-		}
 		recs, err := p.records(ctx, eng, host)
 		if err != nil {
 			return protocol.Environment{}, err
@@ -412,14 +429,27 @@ func (p *Plugin) runCreate(cfg Config, eng *engine, host protocol.HostInfo, op *
 		if n >= cfg.MaxEnvironments {
 			return protocol.Environment{}, &rpc.Error{Code: rpc.CodeQuota, Message: fmt.Sprintf("this plugin already has its %d machines", cfg.MaxEnvironments)}
 		}
-		return p.build(ctx, eng, cfg, host, op.spec, 0, p.Now(), op)
+		image := op.spec.Image
+		if image == "" {
+			image = cfg.AgentImage
+		}
+		if err := p.ensureImage(ctx, eng, image, op); err != nil {
+			return protocol.Environment{}, err
+		}
+		if err := p.ensureNetwork(ctx, eng, host); err != nil {
+			return protocol.Environment{}, err
+		}
+		return p.build(ctx, eng, cfg, host, op.spec, op.port, op.created, op)
 	}()
+	if ctx.Err() != nil && err != nil {
+		err = &rpc.Error{Code: rpc.CodeUnavailable, Message: "cancelled"}
+	}
 	op.mu.Lock()
 	op.env, op.err, op.finished = env, err, p.Now()
 	op.mu.Unlock()
 	close(op.done)
 	if err != nil {
-		p.Logger.Printf("creating %s failed: %v", op.spec.ID, err)
+		p.Logger.Printf("making %s failed: %v", op.spec.ID, err)
 		return
 	}
 	p.mu.Lock()
@@ -429,7 +459,7 @@ func (p *Plugin) runCreate(cfg Config, eng *engine, host protocol.HostInfo, op *
 	p.mu.Unlock()
 }
 
-// op is the creation in progress or recently failed for id, nil when
+// op is the making in progress or recently failed for id, nil when
 // none (an outcome older than OpTTL is forgotten).
 func (p *Plugin) op(id string) *createOp {
 	p.mu.Lock()
@@ -445,9 +475,10 @@ func (p *Plugin) op(id string) *createOp {
 	return op
 }
 
-// startOp joins the creation in progress for the spec's id, or starts
-// one (a failed one is retried).
-func (p *Plugin) startOp(cfg Config, eng *engine, host protocol.HostInfo, spec protocol.EnvironmentSpec) *createOp {
+// startOp joins the making in progress for the spec's id, or starts
+// one (a failed one is retried) with the port and creation time to
+// keep (0 and now for a new machine), reported as status while it runs.
+func (p *Plugin) startOp(cfg Config, eng *engine, host protocol.HostInfo, spec protocol.EnvironmentSpec, port int, created time.Time, status string) *createOp {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if op := p.ops[spec.ID]; op != nil {
@@ -455,10 +486,72 @@ func (p *Plugin) startOp(cfg Config, eng *engine, host protocol.HostInfo, spec p
 			return op
 		}
 	}
-	op := &createOp{spec: spec, done: make(chan struct{}), phase: "starting"}
+	ctx, cancel := context.WithTimeout(context.Background(), p.CreateTimeout)
+	op := &createOp{spec: spec, port: port, created: created, status: status, cancel: cancel, done: make(chan struct{}), phase: "starting"}
 	p.ops[spec.ID] = op
-	go p.runCreate(cfg, eng, host, op)
+	go p.runCreate(ctx, cfg, eng, host, op)
 	return op
+}
+
+// cancelOp ends the making in progress for id, if any, and waits for
+// it (its engine calls end at once), so a destroy or a recreate finds
+// nothing in flight. The outcome is forgotten.
+func (p *Plugin) cancelOp(ctx context.Context, id string) error {
+	p.mu.Lock()
+	op := p.ops[id]
+	delete(p.ops, id)
+	p.mu.Unlock()
+	if op == nil {
+		return nil
+	}
+	op.cancel()
+	select {
+	case <-op.done:
+		return nil
+	case <-ctx.Done():
+		return &rpc.Error{Code: rpc.CodeUnavailable, Message: "the machine is still being made; try again shortly"}
+	}
+}
+
+// cancelOps ends every making in progress (a reconfigure: the engine
+// changes under them); the host's reconcile resumes what it needs.
+func (p *Plugin) cancelOps() {
+	p.mu.Lock()
+	ops := p.ops
+	p.ops = map[string]*createOp{}
+	p.mu.Unlock()
+	for _, op := range ops {
+		op.cancel()
+	}
+}
+
+// await waits for an op up to CreateWait (less when the call's own
+// deadline is nearer) and reports whether it finished.
+func (p *Plugin) await(ctx context.Context, op *createOp) bool {
+	wait := p.CreateWait
+	if deadline, ok := ctx.Deadline(); ok {
+		if until := time.Until(deadline) - 2*time.Second; until < wait {
+			wait = until
+		}
+	}
+	select {
+	case <-op.done:
+		return true
+	case <-time.After(wait):
+	case <-ctx.Done():
+	}
+	_, _, finished := op.state()
+	return !finished.IsZero()
+}
+
+// outcome is a finished op's answer.
+func (p *Plugin) outcome(op *createOp) (protocol.Environment, error) {
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	if op.err != nil {
+		return protocol.Environment{}, p.mapErr(op.err)
+	}
+	return op.env, nil
 }
 
 func (p *Plugin) DescribeTargets(ctx context.Context) (protocol.TargetsInfo, error) {
@@ -492,7 +585,8 @@ func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec
 	if err := validateSpec(spec, cfg, host); err != nil {
 		return protocol.Environment{}, err
 	}
-	// Already made (a retry): make sure it runs and answer at once.
+	// Already made (a retry): make sure it runs and answer at once. A
+	// port taken meanwhile falls through to build, which rebuilds.
 	if p.op(spec.ID) == nil {
 		rec, err := p.record(ctx, eng, host, spec.ID)
 		if err != nil {
@@ -504,37 +598,32 @@ func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec
 				return protocol.Environment{}, err
 			}
 			if c != nil {
-				if err := p.startContainer(ctx, eng, containerName(spec.ID)); err != nil && !portTaken(err) {
+				err := p.startContainer(ctx, eng, containerName(spec.ID))
+				if err == nil {
+					return p.GetTarget(ctx, spec.ID)
+				}
+				if !portTaken(err) {
 					return protocol.Environment{}, err
 				}
-				return p.GetTarget(ctx, spec.ID)
 			}
 		}
 	}
-	op := p.startOp(cfg, eng, host, spec)
-	select {
-	case <-op.done:
-	case <-time.After(p.CreateWait):
-	case <-ctx.Done():
+	op := p.startOp(cfg, eng, host, spec, 0, p.Now(), protocol.EnvCreating)
+	if p.await(ctx, op) {
+		return p.outcome(op)
 	}
-	phase, opErr, finished := op.state()
-	if finished.IsZero() {
-		return p.pending(spec, cfg, "creating", phase), nil
-	}
-	if opErr != nil {
-		return protocol.Environment{}, p.mapErr(opErr)
-	}
-	op.mu.Lock()
-	env := op.env
-	op.mu.Unlock()
-	return env, nil
+	phase, _, _ := op.state()
+	return p.pending(spec, cfg, 0, protocol.EnvCreating, phase), nil
 }
 
-// pending is a machine still being made (or whose making failed): no
-// record yet, the address its template promised.
-func (p *Plugin) pending(spec protocol.EnvironmentSpec, cfg Config, status, reason string) protocol.Environment {
+// pending is a machine still being made (or whose making failed): the
+// port when known, else the one its template promised.
+func (p *Plugin) pending(spec protocol.EnvironmentSpec, cfg Config, port int, status, reason string) protocol.Environment {
+	if port == 0 {
+		port = sshPort
+	}
 	return protocol.Environment{
-		ID: spec.ID, Status: status, Reason: reason, Address: cfg.address(sshPort),
+		ID: spec.ID, Status: status, Reason: reason, Address: cfg.address(port),
 		Size: spec.Size, Persistent: spec.Persistent, Egress: spec.Egress, CreatedAt: p.Now(),
 	}
 }
@@ -554,7 +643,7 @@ func (p *Plugin) environment(ctx context.Context, eng *engine, cfg Config, rec *
 		phase, opErr, finished := op.state()
 		switch {
 		case finished.IsZero():
-			env.Status, env.Reason = protocol.EnvCreating, phase
+			env.Status, env.Reason = op.status, phase
 		case opErr != nil:
 			env.Status, env.Reason = protocol.EnvError, oneLine(opErr.Error())
 		}
@@ -593,10 +682,10 @@ func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment
 		if op := p.op(id); op != nil {
 			phase, opErr, finished := op.state()
 			if finished.IsZero() {
-				return p.pending(op.spec, cfg, protocol.EnvCreating, phase), nil
+				return p.pending(op.spec, cfg, op.port, op.status, phase), nil
 			}
 			if opErr != nil {
-				return p.pending(op.spec, cfg, protocol.EnvError, oneLine(opErr.Error())), nil
+				return p.pending(op.spec, cfg, op.port, protocol.EnvError, oneLine(opErr.Error())), nil
 			}
 		}
 		return protocol.Environment{}, notFound(id)
@@ -656,7 +745,8 @@ func (p *Plugin) StartTarget(ctx context.Context, id string) error {
 	}
 	if c == nil {
 		// Gone: a persistent machine with its data is made again from
-		// the record; an ephemeral one is lost, and the host creates it
+		// the record (its image pulled if pruned, in the background like
+		// a create); an ephemeral one is lost, and the host creates it
 		// anew.
 		spec, err := specFrom(rec.Labels)
 		if err != nil {
@@ -671,13 +761,16 @@ func (p *Plugin) StartTarget(ctx context.Context, id string) error {
 			}
 			return p.mapErr(err)
 		}
-		if c, err = p.ensureContainer(ctx, eng, cfg, host, spec, portFrom(rec.Labels)); err != nil {
+		op := p.startOp(cfg, eng, host, spec, portFrom(rec.Labels), createdFrom(rec.Labels, p.Now()), protocol.EnvStarting)
+		if p.await(ctx, op) {
+			_, err := p.outcome(op)
 			return err
 		}
+		return nil
 	}
 	if err := p.startContainer(ctx, eng, c.Name[1:]); err != nil {
 		if portTaken(err) {
-			return &rpc.Error{Code: rpc.CodeUnavailable, Message: "the machine's port is in use on the docker host right now; try again shortly"}
+			return &rpc.Error{Code: rpc.CodeUnavailable, Message: "the machine's port " + strconv.Itoa(portFrom(rec.Labels)) + " is held by something else on the docker host: recreate the machine to give it another port"}
 		}
 		return err
 	}
@@ -720,6 +813,9 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	if err := validateSpec(spec, cfg, host); err != nil {
 		return protocol.Environment{}, err
 	}
+	if err := p.cancelOp(ctx, id); err != nil {
+		return protocol.Environment{}, err
+	}
 	rec, err := p.record(ctx, eng, host, id)
 	if err != nil {
 		return protocol.Environment{}, err
@@ -734,16 +830,10 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	if spec.Persistent != old.Persistent {
 		return protocol.Environment{}, invalidParams("a machine can't change between persistent and ephemeral")
 	}
-	image := spec.Image
-	if image == "" {
-		image = cfg.AgentImage
-	}
-	if err := p.ensureImage(ctx, eng, image, nil); err != nil {
-		return protocol.Environment{}, err
-	}
 	port, created := portFrom(rec.Labels), createdFrom(rec.Labels, p.Now())
 	// The container goes (an ephemeral machine's scratch data with it),
-	// then the record, remade with the new spec at the same port; the
+	// then the record; both are made again at the same port, in the
+	// background like a create (the new image may need pulling); the
 	// data volume stays.
 	if err := p.removeContainer(ctx, eng, containerName(id)); err != nil {
 		return protocol.Environment{}, err
@@ -754,7 +844,12 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	if err := p.removeVolume(ctx, eng, recordName(id)); err != nil {
 		return protocol.Environment{}, err
 	}
-	return p.build(ctx, eng, cfg, host, spec, port, created, nil)
+	op := p.startOp(cfg, eng, host, spec, port, created, protocol.EnvRecreating)
+	if p.await(ctx, op) {
+		return p.outcome(op)
+	}
+	phase, _, _ := op.state()
+	return p.pending(spec, cfg, port, protocol.EnvRecreating, phase), nil
 }
 
 func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {
@@ -765,9 +860,9 @@ func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {
 	if !idPattern.MatchString(id) {
 		return nil
 	}
-	p.mu.Lock()
-	delete(p.ops, id)
-	p.mu.Unlock()
+	if err := p.cancelOp(ctx, id); err != nil {
+		return err
+	}
 	for _, name := range []string{containerName(id), helperName(id)} {
 		c, err := p.inspect(ctx, eng, name)
 		if err != nil {

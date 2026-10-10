@@ -475,3 +475,132 @@ func TestNotConfigured(t *testing.T) {
 	_, err = p.Check(ctx)
 	wantCode(t, err, rpc.CodeUnavailable)
 }
+
+// A destroy during a slow create cancels it: nothing is made behind
+// the destroy's back (an unlabelled record, a container the plugin can
+// never list).
+func TestDestroyDuringCreate(t *testing.T) {
+	p, f := fakePlugin(t, map[string]any{"agent_image": "ghcr.io/loomux/agent:v9"})
+	p.CreateWait = 100 * time.Millisecond
+	f.pullDelay = 600 * time.Millisecond
+	env, err := p.CreateTarget(ctx, specWithImage("gone", "ghcr.io/loomux/agent:v9"))
+	if err != nil || env.Status != protocol.EnvCreating {
+		t.Fatalf("create = %+v, %v", env, err)
+	}
+	if err := p.DestroyTarget(ctx, "gone"); err != nil {
+		t.Fatalf("destroy: %v", err)
+	}
+	time.Sleep(time.Second)
+	containers, volumes := f.names()
+	if len(containers) != 0 || len(volumes) != 0 {
+		t.Errorf("the cancelled create still made: containers %v volumes %v", containers, volumes)
+	}
+	_, err = p.GetTarget(ctx, "gone")
+	wantCode(t, err, rpc.CodeNotFound)
+}
+
+// A recreate onto an image the host doesn't have pulls it in the
+// background: the call answers recreating, get reports the progress,
+// and the machine comes back at its port with the new image.
+func TestRecreatePullsInBackground(t *testing.T) {
+	p, f := fakePlugin(t, nil)
+	p.CreateWait = 100 * time.Millisecond
+	sp := spec("k7f3q2")
+	if _, err := p.CreateTarget(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	f.pullDelay = 600 * time.Millisecond
+	sp2 := specWithImage("k7f3q2", "ghcr.io/loomux/agent:v9")
+	re, err := p.RecreateTarget(ctx, "k7f3q2", sp2)
+	if err != nil || re.Status != protocol.EnvRecreating || !strings.Contains(re.Reason, "pulling") || re.Address.Port != 32768 {
+		t.Fatalf("recreate = %+v, %v", re, err)
+	}
+	got, err := p.GetTarget(ctx, "k7f3q2")
+	if err != nil || got.Status != protocol.EnvRecreating || got.Address.Port != 32768 {
+		t.Errorf("get while recreating = %+v, %v", got, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for got.Status != protocol.EnvRunning && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		got, _ = p.GetTarget(ctx, "k7f3q2")
+	}
+	if got.Status != protocol.EnvRunning || got.Address.Port != 32768 || got.ImageDigest != "sha256:bbbb" {
+		t.Errorf("after the pull = %+v", got)
+	}
+	if c := f.container("lx-k7f3q2"); c == nil || c.cfg.Image != "ghcr.io/loomux/agent:v9" {
+		t.Errorf("container = %+v", c)
+	}
+	if f.volume("lx-k7f3q2-data") == nil {
+		t.Error("recreate lost the data volume")
+	}
+}
+
+// start of a lost persistent container whose image was pruned pulls
+// the image again, and never rewrites the record's files (the record's
+// spec carries no key material).
+func TestStartRemakePullsMissingImage(t *testing.T) {
+	p, f := fakePlugin(t, nil)
+	sp := spec("k7f3q2")
+	if _, err := p.CreateTarget(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	f.vanish("lx-k7f3q2")
+	f.mu.Lock()
+	delete(f.images, "ghcr.io/loomux/agent:test")
+	f.mu.Unlock()
+	if err := p.StartTarget(ctx, "k7f3q2"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if f.pulls != 1 {
+		t.Errorf("pulls = %d", f.pulls)
+	}
+	if c := f.container("lx-k7f3q2"); c == nil || c.state != "running" || c.ports["2222/tcp"] != 32768 {
+		t.Errorf("container = %+v", c)
+	}
+	if rec := f.volume("lx-k7f3q2-ssh"); string(rec.files["host_ed25519"].data) != sp.SSH.HostPrivateKey {
+		t.Errorf("start rewrote the record's host key: %q", rec.files["host_ed25519"].data)
+	}
+}
+
+// A retried create whose machine exists but whose port got taken while
+// it was stopped rebuilds it with another port instead of answering
+// "creating" forever.
+func TestCreateOfExistingMachineWithTakenPort(t *testing.T) {
+	p, f := fakePlugin(t, nil)
+	sp := spec("k7f3q2")
+	if _, err := p.CreateTarget(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.StopTarget(ctx, "k7f3q2"); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.taken[32768] = true
+	f.mu.Unlock()
+	env, err := p.CreateTarget(ctx, sp)
+	if err != nil || env.Status != protocol.EnvRunning || env.Address.Port == 32768 {
+		t.Errorf("create with the port taken = %+v, %v", env, err)
+	}
+	if rec := f.volume("lx-k7f3q2-ssh"); rec.labels[labelPort] == "32768" {
+		t.Error("the record keeps the taken port")
+	}
+}
+
+// start can't free a port another process holds: it says what can.
+func TestStartWithTakenPortSaysRecreate(t *testing.T) {
+	p, f := fakePlugin(t, nil)
+	if _, err := p.CreateTarget(ctx, spec("k7f3q2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.StopTarget(ctx, "k7f3q2"); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.taken[32768] = true
+	f.mu.Unlock()
+	err := p.StartTarget(ctx, "k7f3q2")
+	var rpcErr *rpc.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Code != rpc.CodeUnavailable || !strings.Contains(rpcErr.Message, "recreate") {
+		t.Errorf("want unavailable naming recreate as the way out, got %v", err)
+	}
+}

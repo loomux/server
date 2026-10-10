@@ -54,11 +54,11 @@ only ever touches its own:
 
 | Endpoint | For |
 |---|---|
-| `GET /_ping`, `/version`, `/info` | the check: the engine answers, its API is 1.41+, Linux containers, seccomp on |
+| `GET /_ping`, `GET /info` | the check: the engine answers (`_ping`'s `API-Version` is 1.41+), Linux containers, seccomp on |
 | `GET /networks/loomux-agents`, `POST /networks/create` | the one user-defined bridge, `enable_icc=false`, made once per host |
 | `GET /volumes`, `GET /volumes/{name}`, `POST /volumes/create`, `DELETE /volumes/{name}` | the record volume `lx-<id>-ssh` and the data volume `lx-<id>-data`, by label |
 | `GET /images/{ref}/json`, `POST /images/create` | is the agent image there; pull it when not |
-| `POST /containers/create`, `GET /containers/json`, `GET /containers/{name}/json` | the machine's container and its transient helper, by label |
+| `POST /containers/create`, `GET /containers/{name}/json` | the machine's container and its transient helper, by name, checked for its labels |
 | `POST /containers/{name}/start`, `/stop`, `DELETE /containers/{name}?force=1&v=1` | lifecycle |
 | `PUT /containers/{name}/archive` | sshd's two files into the record volume, through the helper |
 | `GET /containers/{name}/logs?tail=5` | the last line a failing container wrote, for its error reason |
@@ -102,10 +102,15 @@ by field, including the JSON the engine receives.
   daemon's default profile applies, and the check warns
   (`seccomp_disabled`) when the engine runs without one.
 - The image isn't pulled by the engine: a missing one is pulled by the
-  plugin in the background; `create` answers `creating` ("pulling the
-  image") after 20 s and finishes the creation when the pull ends;
-  `get` reports the progress. A plugin restart drops the creation; the
-  host's reconcile resumes it.
+  plugin in the background. `create`, `recreate` (onto a new image, the
+  usual case) and `start` remaking a lost container all run in the
+  background the same way: the call answers `creating` / `recreating` /
+  `starting` with the phase ("pulling the image") after 20 s (less when
+  the host's call deadline is nearer) and finishes when the pull ends;
+  `get` reports the progress. A destroy or a recreate cancels a making
+  in progress and waits for it, so nothing is made behind its back; a
+  plugin restart drops it, and the host's reconcile resumes what it
+  needs.
 
 ## The check
 

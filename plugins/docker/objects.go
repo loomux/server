@@ -138,13 +138,6 @@ type containerInspect struct {
 	} `json:"NetworkSettings"`
 }
 
-type containerSummary struct {
-	ID     string            `json:"Id"`
-	Names  []string          `json:"Names"`
-	Labels map[string]string `json:"Labels"`
-	State  string            `json:"State"`
-}
-
 type volumeInfo struct {
 	Name      string            `json:"Name"`
 	Labels    map[string]string `json:"Labels"`
@@ -165,13 +158,6 @@ type networkInfo struct {
 type imageInspect struct {
 	ID          string   `json:"Id"`
 	RepoDigests []string `json:"RepoDigests"`
-}
-
-type versionInfo struct {
-	Version       string `json:"Version"`
-	APIVersion    string `json:"ApiVersion"`
-	MinAPIVersion string `json:"MinAPIVersion"`
-	OS            string `json:"Os"`
 }
 
 type infoResult struct {

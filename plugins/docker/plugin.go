@@ -86,6 +86,7 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 		return err
 	}
 	d := newDialer(cfg)
+	p.cancelOps()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.engine != nil {

@@ -418,11 +418,12 @@ uses for `~/.ssh` (a Secret volume is root-owned 0644, and sshd's `StrictModes` 
   Tailscale sidecar isn't in the path). A restarted pod gets a new IP and the same name, and the same host key,
   so nothing on the target row changes. The host knows the name before `create` because the plugin's
   `targets.describe` reports its `address_template`.
-- **Docker**: the container publishes 2222 on the docker host's configured `bind_address` (its tailnet IP) with
-  an ephemeral host port read back from `inspect` and returned by `create`; the target's `host` is the docker
-  host's address from the plugin's configuration, `ssh_port` that port, `ssh_proxy` what the plugin's
-  configuration says (`default` through the sidecar from the cluster). When loomuxd runs as a bare binary on
-  the docker host itself, `bind_address` may be `127.0.0.1`.
+- **Docker**: the container publishes 2222 on the docker host's configured `bind_address` (its tailnet IP) at a
+  host port the plugin probes once from Docker's ephemeral range and then fixes for the machine's life (§9),
+  returned by `create`; the target's `host` is the docker host's address from the plugin's configuration,
+  `ssh_port` that port, `ssh_proxy` what the plugin's configuration says (`default` through the sidecar from
+  the cluster). When loomuxd runs as a bare binary on the docker host itself, `bind_address` may be
+  `127.0.0.1`.
 
 ### 2.4 Workspaces: one machine per target, one volume per machine
 
@@ -813,8 +814,10 @@ found taken at start rebuilds the record with a fresh probe), a health check `ba
 3<>/dev/tcp/127.0.0.1/2222'` every 5 s standing in for the readiness probe (`running` means healthy),
 `--restart unless-stopped`, env `HOME`, `CLAUDE_CONFIG_DIR`, `TZ` as for the pod, labels as above. Nothing
 from the host is mounted; `/var/run/docker.sock` is never passed. The image isn't pulled by the engine: a
-missing one is pulled by the plugin in the background, `create` answering `creating` ("pulling the image")
-after 20 s and finishing the creation when the pull ends.
+missing one is pulled by the plugin in the background, `create` (and `recreate` onto a new image, and `start`
+remaking a lost container) answering `creating`/`recreating`/`starting` with the phase ("pulling the image")
+after 20 s and finishing when the pull ends; a destroy or a recreate cancels a making in progress and waits
+for it.
 
 **Bootstrap without Secrets.** Docker (outside Swarm) has no Secret object, and `PUT /containers/{id}/archive`
 is refused on a `--read-only` container ("container rootfs is marked read-only"; found at implementation,
