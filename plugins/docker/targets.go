@@ -520,20 +520,27 @@ func (p *Plugin) op(id string) *createOp {
 // keep (0 and now for a new machine), reported as status while it runs.
 func (p *Plugin) startOp(cfg Config, eng *engine, host protocol.HostInfo, spec protocol.EnvironmentSpec, port int, created time.Time, status string) *createOp {
 	p.mu.Lock()
-	if op := p.ops[spec.ID]; op != nil {
-		if _, _, finished := op.state(); finished.IsZero() {
-			if op.ctx.Err() == nil {
-				p.mu.Unlock()
-				return op
-			}
-			// Cancelled (a reconfigure) but still ending: wait for it
-			// rather than inherit its cancellation, then start afresh.
-			p.mu.Unlock()
-			<-op.done
-			p.mu.Lock()
-		}
-	}
 	defer p.mu.Unlock()
+	// The map is read again after every wait: two callers waiting on
+	// the same cancelled making must end up joining one new making, not
+	// starting one each.
+	for {
+		op := p.ops[spec.ID]
+		if op == nil {
+			break
+		}
+		if _, _, finished := op.state(); !finished.IsZero() {
+			break
+		}
+		if op.ctx.Err() == nil {
+			return op
+		}
+		// Cancelled (a reconfigure) but still ending: wait for it rather
+		// than inherit its cancellation, then look again.
+		p.mu.Unlock()
+		<-op.done
+		p.mu.Lock()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), p.CreateTimeout)
 	op := &createOp{spec: spec, port: port, created: created, status: status, ctx: ctx, cancel: cancel, done: make(chan struct{}), phase: "starting"}
 	p.ops[spec.ID] = op

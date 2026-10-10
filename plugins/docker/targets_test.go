@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -776,5 +777,45 @@ func TestConfigureKeepsCancelledMakingsTracked(t *testing.T) {
 	env, err := p.CreateTarget(ctx, sp)
 	if err != nil || env.Status != protocol.EnvRunning {
 		t.Fatalf("create after the reconfigure = %+v, %v", env, err)
+	}
+}
+
+// Two callers arriving while a cancelled making is still ending (the
+// host's reconcile and a user's create, after a reconfigure) must join
+// one new making, never start one each with the second untracked.
+func TestStartOpIsSingleAfterReconfigure(t *testing.T) {
+	for round := 0; round < 5; round++ {
+		p, f := fakePlugin(t, map[string]any{"agent_image": "ghcr.io/loomux/agent:v9"})
+		p.CreateWait = 50 * time.Millisecond
+		f.pullDelay = 600 * time.Millisecond
+		sp := specWithImage("twice", "ghcr.io/loomux/agent:v9")
+		if _, err := p.CreateTarget(ctx, sp); err != nil {
+			t.Fatal(err)
+		}
+		path := serveUnix(t, f.handler())
+		if err := p.Configure(ctx, configureParams(t, map[string]any{"engine": "unix://" + path, "bind_address": "127.0.0.1", "ssh_proxy": "none", "agent_image": "ghcr.io/loomux/agent:v9"})); err != nil {
+			t.Fatal(err)
+		}
+		cfg, eng, host, err := p.state()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		ops := make([]*createOp, 2)
+		for i := range ops {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				ops[i] = p.startOp(cfg, eng, host, sp, 0, p.Now(), protocol.EnvCreating)
+			}(i)
+		}
+		wg.Wait()
+		if ops[0] != ops[1] {
+			t.Fatalf("round %d: two makings of one machine started: %p and %p", round, ops[0], ops[1])
+		}
+		if tracked := p.op("twice"); tracked != ops[0] {
+			t.Fatalf("round %d: the tracked op %p isn't the one the callers got %p", round, tracked, ops[0])
+		}
+		_ = p.cancelOp(ctx, "twice")
 	}
 }
