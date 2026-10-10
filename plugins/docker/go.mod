@@ -5,6 +5,7 @@ go 1.27.2
 require (
 	github.com/Loomux/server v0.0.0
 	golang.org/x/crypto v0.57.0
+	golang.org/x/net v0.60.0
 )
 
 require (
