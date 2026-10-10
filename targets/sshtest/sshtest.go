@@ -13,6 +13,7 @@ import (
 	crand "crypto/rand"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -36,6 +37,12 @@ type Server struct {
 	// HostKey is the server's public host key in authorized_keys form
 	// ("ssh-ed25519 AAAA…"), for a known_hosts line.
 	HostKey string
+
+	// Exec, when set, may serve an exec request itself: it returns the
+	// exit status and true for a command it handled, or false to let the
+	// login shell run it as usual. A test stands in for a program the
+	// test host lacks (a plugin's `docker system dial-stdio`).
+	Exec func(command string, stdin io.Reader, stdout, stderr io.Writer) (int, bool)
 
 	listener net.Listener
 	// loginShell runs each exec request's command as `<loginShell> -c
@@ -137,11 +144,11 @@ func (s *Server) serve(config *ssh.ServerConfig) {
 		if err != nil {
 			return // listener closed: normal shutdown
 		}
-		go handleConn(nConn, config, s.loginShell)
+		go s.handleConn(nConn, config)
 	}
 }
 
-func handleConn(nConn net.Conn, config *ssh.ServerConfig, loginShell string) {
+func (s *Server) handleConn(nConn net.Conn, config *ssh.ServerConfig) {
 	sshConn, chans, reqs, err := ssh.NewServerConn(nConn, config)
 	if err != nil {
 		return
@@ -157,7 +164,7 @@ func handleConn(nConn net.Conn, config *ssh.ServerConfig, loginShell string) {
 		if err != nil {
 			continue
 		}
-		go handleSession(channel, requests, loginShell)
+		go s.handleSession(channel, requests)
 	}
 }
 
@@ -173,7 +180,7 @@ type exitStatusPayload struct {
 // running the received command locally, then reports its exit status —
 // this is what makes commands sent by a real ssh client (tmux
 // invocations included) actually take effect.
-func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, loginShell string) {
+func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
 	for req := range requests {
 		if req.Type != "exec" {
@@ -190,7 +197,13 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, loginShell
 		}
 		req.Reply(true, nil)
 
-		cmd := exec.Command(loginShell, "-c", payload.Command)
+		if s.Exec != nil {
+			if status, handled := s.Exec(payload.Command, channel, channel, channel.Stderr()); handled {
+				channel.SendRequest("exit-status", false, ssh.Marshal(exitStatusPayload{Status: uint32(status)}))
+				return
+			}
+		}
+		cmd := exec.Command(s.loginShell, "-c", payload.Command)
 		cmd.Stdout = channel
 		cmd.Stderr = channel.Stderr()
 		cmd.Stdin = channel

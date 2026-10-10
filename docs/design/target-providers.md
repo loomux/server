@@ -418,11 +418,12 @@ uses for `~/.ssh` (a Secret volume is root-owned 0644, and sshd's `StrictModes` 
   Tailscale sidecar isn't in the path). A restarted pod gets a new IP and the same name, and the same host key,
   so nothing on the target row changes. The host knows the name before `create` because the plugin's
   `targets.describe` reports its `address_template`.
-- **Docker**: the container publishes 2222 on the docker host's configured `bind_address` (its tailnet IP) with
-  an ephemeral host port read back from `inspect` and returned by `create`; the target's `host` is the docker
-  host's address from the plugin's configuration, `ssh_port` that port, `ssh_proxy` what the plugin's
-  configuration says (`default` through the sidecar from the cluster). When loomuxd runs as a bare binary on
-  the docker host itself, `bind_address` may be `127.0.0.1`.
+- **Docker**: the container publishes 2222 on the docker host's configured `bind_address` (its tailnet IP) at a
+  host port the plugin probes once from Docker's ephemeral range and then fixes for the machine's life (§9),
+  returned by `create`; the target's `host` is the docker host's address from the plugin's configuration,
+  `ssh_port` that port, `ssh_proxy` what the plugin's configuration says (`default` through the sidecar from
+  the cluster). When loomuxd runs as a bare binary on the docker host itself, `bind_address` may be
+  `127.0.0.1`.
 
 ### 2.4 Workspaces: one machine per target, one volume per machine
 
@@ -786,42 +787,70 @@ the handful of endpoints used are small and the plugin controls every request).
 
 **Transport.** The plugin dials SSH (pinned host key, its own key, through the proxy if set), runs `docker
 system dial-stdio` on the host, and speaks the Engine API (HTTP) over that session's stdio, the same thing the
-Docker CLI's `ssh://` contexts do. One multiplexed SSH connection per plugin instance, reconnected on loss.
+Docker CLI's `ssh://` contexts do. One multiplexed SSH connection per plugin instance, reconnected on loss; a
+loss without a close (a tailnet path change, a NAT timeout) is found by keepalives and by a session that
+doesn't open within its bound, either of which drops the connection for the next call to dial anew. The
+handshake asks for the pinned key's type, so the ed25519 line people copy from `known_hosts` pins a host that
+also has an RSA key.
 
 **Objects per machine**, labelled like the pods (`loomux.io/*` labels on Docker objects):
 
 | Object | Name | Notes |
 |---|---|---|
-| Network | `loomux-agents` (shared, created once per host) | user-defined bridge, `com.docker.network.bridge.enable_icc=false` (no container-to-container); a second, `--internal` network `loomux-agents-internal` backs egress `none` |
+| Network | `loomux-agents` (shared, created once per host) | user-defined bridge, `com.docker.network.bridge.enable_icc=false` (no container-to-container). No `--internal` network: Docker publishes no port on one, so an egress-`none` machine's sshd would be unreachable (found at implementation); **`egress: none` is withdrawn** and the plugin declares no `targets.egress_policy` |
+| Volume | `lx-<id>-ssh` | the record: sshd's two files, the spec and the port as labels (see Bootstrap) |
 | Volume | `lx-<id>-data` | only for `persistent: true`; an anonymous volume otherwise |
 | Container | `lx-<id>` | below |
+| Container | `lx-<id>-init` | transient: probes the port, writes the record's files; removed in the same call |
 
-**The container**: image `<agent_image>`, `--user 10002:10002`, `--read-only`, `--tmpfs /tmp:size=1g`,
-`--tmpfs /run/loomux:size=1m`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`,
-`--security-opt seccomp=default`, `--pids-limit 512`, `--memory`/`--cpus` from the size, `--mount
+**The container**: image `<agent_image>`, `--user 10002:10002`, `--read-only`, `--tmpfs
+/tmp:size=1g,mode=1777`, `--tmpfs /run/loomux:size=1m,mode=1777` (Docker mounts a tmpfs root-owned 0755
+otherwise, and the entrypoint runs as the agent), `--cap-drop ALL`, `--security-opt no-new-privileges:true`,
+the daemon's default seccomp profile (`seccomp=default` isn't a value the API takes; `check` warns when the
+daemon runs without seccomp), `--pids-limit 512`, `--init` (sshd is process 1 and reaps nothing: orphans
+would pile up as zombies against the pids limit), `--memory`/`--cpus` from the size, `--mount
+type=volume,source=lx-<id>-ssh,target=/etc/loomux/ssh-src,readonly`, `--mount
 type=volume,source=lx-<id>-data,target=/data`, `--network loomux-agents`, `--publish
-<bind_address>:0:2222` (an ephemeral host port, read back with `inspect` and returned by `create`),
+<bind_address>:<port>:2222` with **the port fixed** (a `HostPort` of 0 is allocated anew at every start, found at
+implementation; so `create` probes one once with the helper published on `<bind_address>:0:2222`, reads it
+back from `inspect`, removes the helper and bakes the port into the record and the container; a probe landing
+on a port a stopped machine of this instance has fixed is repeated, and a port found taken at start rebuilds
+the record with a fresh probe), a health check `bash -c 'exec
+3<>/dev/tcp/127.0.0.1/2222'` every 5 s standing in for the readiness probe (`running` means healthy),
 `--restart unless-stopped`, env `HOME`, `CLAUDE_CONFIG_DIR`, `TZ` as for the pod, labels as above. Nothing
-from the host is mounted; `/var/run/docker.sock` is never passed.
+from the host is mounted; `/var/run/docker.sock` is never passed. The image isn't pulled by the engine: a
+missing one is pulled by the plugin in the background, `create` (and `recreate` onto a new image, and `start`
+remaking a lost container) answering `creating`/`recreating`/`starting` with the phase ("pulling the image")
+after 20 s and finishing when the pull ends; a destroy or a recreate cancels a making in progress and waits
+for it.
 
-**Bootstrap without Secrets.** Docker (outside Swarm) has no Secret object. After `create` and before `start`,
-the plugin uploads a tar with `host_ed25519` (0600) and `authorized_keys` into `/etc/loomux/ssh-src` with
-`PUT /containers/{id}/archive`; the entrypoint copies them to `/run/loomux/ssh` (tmpfs) exactly as in the
-pod. The uploaded files live in the container's writable layer, which `--read-only` makes immutable at run
-time and which is deleted with the container; a `recreate` uploads them again.
+**Bootstrap without Secrets.** Docker (outside Swarm) has no Secret object, and `PUT /containers/{id}/archive`
+is refused on a `--read-only` container ("container rootfs is marked read-only"; found at implementation,
+Docker 29.8). So the files go into a named volume, **`lx-<id>-ssh`, the machine's record** (the Secret's
+analogue): the plugin creates it with labels carrying the spec without key material, the creation time and the
+fixed ssh port, then uploads a tar with `host_ed25519` and `authorized_keys` (0400, uid 10002) into it through
+a transient helper container `lx-<id>-init` that mounts the volume read-write and is never started (the
+daemon does extract into a created container's volume). The machine's container mounts the volume read-only
+at `/etc/loomux/ssh-src`; the entrypoint copies the files to `/run/loomux/ssh` (tmpfs) exactly as in the pod.
+While the record exists the machine exists: `stopped` when its container is gone and its data volume stays,
+`lost` otherwise. A `recreate` remakes the record and uploads again; `start` of a persistent machine whose
+container is gone makes the container again from the record.
 
-**Lifecycle mapping.** `create` = network (get-or-create), volume, container, archive upload, start. `stop` =
-`stop` (the container and its published port stay; the port number is fixed on first create and recorded, so
-the target's `ssh_port` never changes). `start` = `start`. `recreate` = `rm` the container, create again with
-the same name, port and volume. `destroy` = `rm -f`, remove the volume. `health` = `inspect` state, exit
-code, restart count. `list` = containers by label. Orphan cleanup = containers/volumes with this instance's
-label and no row.
+**Lifecycle mapping.** `create` = image (pulled if missing), network (get-or-create), the port probed, the
+record volume with its files, the data volume, the container, start. `stop` = `stop` (the container and its
+published port stay; the port is fixed on first create and recorded in the record, so the target's `ssh_port`
+never changes). `start` = `start`, or the container again from the record when it is gone and the data volume
+stays. `recreate` = `rm` the container and the record, make both again with the same name, port and data
+volume. `destroy` = `rm -f` the container and any helper, remove the data volume, then the record (last, so a
+crash in between leaves a record the host's reconcile destroys again). `health` = `inspect` state, health
+check, exit code, restart count, and the container's last log line for an error. `list` = records by label.
+Orphan cleanup = records with this instance's label and no row.
 
 **What Docker can't give**, declared in the manifest's description and shown at install: no NetworkPolicy
-(the LAN is reachable from an `internet` container; `none` is the `--internal` network, which the plugin
-*can* enforce, so it keeps its egress options), no quota beyond per-container limits (so `max_environments`
-matters more), no PSA (the plugin asserts its own flags instead), and the docker host's own security is the
-user's.
+(the LAN is reachable from a container; and since a port published on an `--internal` network isn't mapped
+at all, there is no `egress: none` either: the plugin offers no egress choice), no quota beyond per-container
+limits (so `max_environments` matters more), no PSA (the plugin asserts its own flags instead, and a test pins
+them), and the docker host's own security is the user's.
 
 ## 10. What theWyseKube would need (handoff to command-center; nothing edited here)
 
@@ -922,11 +951,13 @@ root (no `go.work` is committed: the root's tooling stays in module mode), and C
   kube-network-policies installed into kind), so the job asserts the enforcement check reports `not enforced`
   there; every exit code is pinned by unit tests, and the `enforced` verdict is observed on TEST, where the
   engine runs (the test takes `LOOMUX_KIND_ENFORCED=1` for a cluster that enforces).
-- **Docker plugin.** Unit tests against an `httptest` Engine API; an integration test on the GitHub runner's
-  own docker over the unix socket (create, archive upload, ssh in via the published port on `127.0.0.1`,
-  tmux, destroy) running the conformance suite. The ssh dial-stdio transport is exercised against
-  `targets/sshtest` extended with a command handler that pipes to the local socket; the first real run is
-  against jet01 by hand, recorded in the PR.
+- **Docker plugin.** Unit tests against an in-memory Engine API (with Docker's port reallocation, archive
+  refusal, anonymous volumes and label filters); an integration test on the GitHub runner's own docker over
+  the unix socket (the conformance suite; then create, ssh in at the published port on `127.0.0.1` with the
+  host key pinned, tmux, stop and start at the same port, recreate at the same port, destroy leaving nothing),
+  and the same through SSH to the runner itself (`targets/sshtest`, whose shell runs the real `docker system
+  dial-stdio`). The ssh dial-stdio transport's unit tests use `sshtest`'s `Exec` hook piping to the fake
+  engine. The first real run against jet01 by hand is pending the user's go.
 - **Agent image.** The workflow builds it, runs `claude --version`, `codex --version`, `opencode --version`
   (above the floors), `tmux -V`, `sshd -t`, checks the user is 10002 and `/` is read-only, generates a key,
   starts the container with it and logs in over ssh, runs the folder-trust Python script once, runs the

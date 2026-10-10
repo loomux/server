@@ -1,0 +1,31 @@
+{
+  "name": "docker",
+  "title": "Docker",
+  "version": "0.1.0",
+  "protocol": "loomux-plugin/1",
+  "vendor": "Loomux",
+  "homepage": "https://github.com/Loomux/server/tree/main/plugins/docker",
+  "description": "Creates a container per machine on one Docker host, reached over SSH or its local socket. Docker gives no network isolation: a machine can reach the LAN and the tailnet the host is on, and no egress choice is offered; the docker host's own security is yours.",
+  "capabilities": ["targets.create", "targets.stop_start", "targets.recreate", "targets.persistent", "targets.ephemeral", "targets.attach_commands"],
+  "permissions": [
+    {"scope": "docker", "detail": "the Docker engine on the configured host, which is root-equivalent there: creates, starts, stops and removes containers and volumes carrying its labels, creates one network, pulls the agent image and reads engine info; nothing it makes is privileged, mounts the host or shares its namespaces"},
+    {"scope": "network", "detail": "reaches the docker host over SSH as the configured user (who must be in the docker group) or through its local socket; the docker host pulls the agent image from its registry"}
+  ],
+  "host_requests": [],
+  "config_schema": {
+    "type": "object",
+    "required": ["engine", "bind_address", "agent_image"],
+    "properties": {
+      "engine": {"type": "string", "description": "ssh://user@host[:port] (the user must be in the docker group, which is root on that host) or unix:///var/run/docker.sock for a plugin running on the docker host itself"},
+      "ssh_private_key": {"type": "string", "x-secret": true, "x-format": "ssh-private-key", "description": "the plugin's own key to the docker host (Generate, then add the public half to the docker user's authorized_keys); not used with a unix engine"},
+      "ssh_host_key": {"type": "string", "description": "the docker host's host key line (ssh-ed25519 AAAA…, or a known_hosts line); leave empty, run the check and trust the key it scanned"},
+      "proxy": {"type": "string", "x-format": "socks5-url", "description": "socks5://host:port the plugin reaches the docker host through (the userspace Tailscale sidecar when it runs in the pod); empty for a direct connection"},
+      "bind_address": {"type": "string", "description": "the docker host's IP address machines publish sshd on, and what loomuxd connects to: its tailnet IP, or 127.0.0.1 when loomuxd runs on the docker host itself"},
+      "ssh_proxy": {"type": "string", "enum": ["default", "none"], "default": "default", "description": "how loomuxd reaches the machines: default (through LOOMUX_SSH_PROXY when set) or none (directly)"},
+      "agent_image": {"type": "string", "x-format": "image-reference", "default": "ghcr.io/loomux/agent:main", "description": "the image machines run, pulled by the docker host on first use; pin it by digest in production"},
+      "sizes": {"type": "object", "additionalProperties": {"type": "object", "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}, "disk": {"type": "string"}}}, "description": "machine sizes by name, each {cpu, memory, disk} in Kubernetes quantities (cpu and memory become --cpus and --memory; disk is advisory, a volume isn't capped); small/medium/large when empty"},
+      "max_environments": {"type": "integer", "minimum": 1, "default": 5, "description": "how many machines this plugin makes at most; Docker has no quota beyond per-container limits, so this is the host's cap"},
+      "timezone": {"type": "string", "default": "UTC", "description": "TZ inside machines"}
+    }
+  }
+}
