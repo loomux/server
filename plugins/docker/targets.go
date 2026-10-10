@@ -37,6 +37,7 @@ type createOp struct {
 	port    int       // the fixed port, 0 to probe one
 	created time.Time // the record's creation time, kept across a recreate
 	status  string    // what get reports while it runs: creating, recreating, starting
+	ctx     context.Context
 	cancel  context.CancelFunc
 	done    chan struct{}
 
@@ -519,14 +520,22 @@ func (p *Plugin) op(id string) *createOp {
 // keep (0 and now for a new machine), reported as status while it runs.
 func (p *Plugin) startOp(cfg Config, eng *engine, host protocol.HostInfo, spec protocol.EnvironmentSpec, port int, created time.Time, status string) *createOp {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if op := p.ops[spec.ID]; op != nil {
 		if _, _, finished := op.state(); finished.IsZero() {
-			return op
+			if op.ctx.Err() == nil {
+				p.mu.Unlock()
+				return op
+			}
+			// Cancelled (a reconfigure) but still ending: wait for it
+			// rather than inherit its cancellation, then start afresh.
+			p.mu.Unlock()
+			<-op.done
+			p.mu.Lock()
 		}
 	}
+	defer p.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), p.CreateTimeout)
-	op := &createOp{spec: spec, port: port, created: created, status: status, cancel: cancel, done: make(chan struct{}), phase: "starting"}
+	op := &createOp{spec: spec, port: port, created: created, status: status, ctx: ctx, cancel: cancel, done: make(chan struct{}), phase: "starting"}
 	p.ops[spec.ID] = op
 	go p.runCreate(ctx, cfg, eng, host, op)
 	return op
@@ -559,14 +568,25 @@ func (p *Plugin) cancelOp(ctx context.Context, id string) error {
 }
 
 // cancelOps ends every making in progress (a reconfigure: the engine
-// changes under them); the host's reconcile resumes what it needs.
+// changes under them), each staying tracked until it has ended; the
+// host's reconcile resumes what it needs.
 func (p *Plugin) cancelOps() {
 	p.mu.Lock()
-	ops := p.ops
-	p.ops = map[string]*createOp{}
-	p.mu.Unlock()
-	for _, op := range ops {
+	defer p.mu.Unlock()
+	for id, op := range p.ops {
+		if _, _, finished := op.state(); !finished.IsZero() {
+			delete(p.ops, id)
+			continue
+		}
 		op.cancel()
+		go func(id string, op *createOp) {
+			<-op.done
+			p.mu.Lock()
+			if p.ops[id] == op {
+				delete(p.ops, id)
+			}
+			p.mu.Unlock()
+		}(id, op)
 	}
 }
 
@@ -782,7 +802,7 @@ func (p *Plugin) ListTargets(ctx context.Context) ([]protocol.Environment, error
 		seen[id] = true
 		out = append(out, protocol.Environment{
 			ID: id, Status: protocol.EnvLost, Reason: "the machine's record is gone; only its container remains",
-			Address: cfg.address(portFrom(c.Labels)), Egress: protocol.EgressInternet, CreatedAt: p.Now(),
+			Address: cfg.address(portFrom(c.Labels)), Egress: protocol.EgressInternet, CreatedAt: time.Unix(c.Created, 0).UTC(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

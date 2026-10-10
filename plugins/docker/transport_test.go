@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -491,5 +492,34 @@ func TestSSHPinnedKeyTypeIsNegotiated(t *testing.T) {
 		}
 		client.Close()
 		d.Close()
+	}
+}
+
+// The keepalive on a healthy, long-lived connection must not grow the
+// goroutine count tick by tick (one Wait per tick would be thousands a
+// day).
+func TestKeepaliveLeaksNoGoroutines(t *testing.T) {
+	socket := serveUnix(t, pingHandler())
+	s := sshtest.Start(t)
+	var calls atomic.Int32
+	s.Exec = dialStdioHook(t, socket, &calls)
+	d := newSSHDialer(sshConfig(t, s, true, nil))
+	d.KeepaliveInterval, d.KeepaliveTimeout = 5*time.Millisecond, time.Second
+	defer d.Close()
+	if _, err := d.connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // the keepalive settles
+	before := runtime.NumGoroutine()
+	time.Sleep(time.Second) // ~200 ticks
+	after := runtime.NumGoroutine()
+	if after-before > 10 {
+		t.Fatalf("goroutines grew from %d to %d over ~200 keepalive ticks", before, after)
+	}
+	d.mu.Lock()
+	alive := d.client != nil
+	d.mu.Unlock()
+	if !alive {
+		t.Error("the keepalive dropped a healthy connection")
 	}
 }

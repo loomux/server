@@ -321,7 +321,7 @@ func (f *fakeEngine) handler() http.Handler {
 			if !matchLabels(c.cfg.Labels, filters["label"]) {
 				continue
 			}
-			out = append(out, map[string]any{"Id": c.id, "Names": []string{"/" + c.name}, "Labels": c.cfg.Labels, "State": c.state})
+			out = append(out, map[string]any{"Id": c.id, "Names": []string{"/" + c.name}, "Labels": c.cfg.Labels, "State": c.state, "Created": c.created.Unix()})
 		}
 		writeJSON(w, 200, out)
 	})

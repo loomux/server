@@ -204,10 +204,11 @@ func hostKeyAlgorithms(pub ssh.PublicKey) []string {
 func (d *sshDialer) keepalive(client *ssh.Client) {
 	ticker := time.NewTicker(d.KeepaliveInterval)
 	defer ticker.Stop()
+	done := clientDone(client) // once: each call waits in a goroutine of its own
 	for {
 		select {
 		case <-ticker.C:
-		case <-clientDone(client):
+		case <-done:
 			return
 		}
 		answered := make(chan error, 1)

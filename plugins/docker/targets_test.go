@@ -647,6 +647,12 @@ func TestListIncludesContainersWithoutRecord(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].ID != "orphan" || list[0].Status != protocol.EnvLost || list[0].Address.Port != 32768 {
 		t.Fatalf("list = %+v, %v", list, err)
 	}
+	// Its creation time is the container's, the same at every listing.
+	time.Sleep(1100 * time.Millisecond)
+	again, _ := p.ListTargets(ctx)
+	if list[0].CreatedAt.IsZero() || !again[0].CreatedAt.Equal(list[0].CreatedAt) {
+		t.Errorf("created_at moved between listings: %v then %v", list[0].CreatedAt, again[0].CreatedAt)
+	}
 	if err := p.DestroyTarget(ctx, "orphan"); err != nil {
 		t.Fatal(err)
 	}
@@ -744,4 +750,31 @@ func TestQuotaCountsMakingsInFlight(t *testing.T) {
 	f.mu.Unlock()
 	_, err := p.CreateTarget(ctx, specWithImage("two", "ghcr.io/loomux/agent:v9"))
 	wantCode(t, err, rpc.CodeQuota)
+}
+
+// A reconfigure cancels the makings in flight and keeps them tracked
+// until they end; a create right after waits for the old making to end
+// and starts a fresh one instead of inheriting its cancellation.
+func TestConfigureKeepsCancelledMakingsTracked(t *testing.T) {
+	p, f := fakePlugin(t, map[string]any{"agent_image": "ghcr.io/loomux/agent:v9"})
+	p.CreateWait = 100 * time.Millisecond
+	f.pullDelay = 600 * time.Millisecond
+	sp := specWithImage("slow", "ghcr.io/loomux/agent:v9")
+	if _, err := p.CreateTarget(ctx, sp); err != nil {
+		t.Fatal(err)
+	}
+	path := serveUnix(t, f.handler())
+	if err := p.Configure(ctx, configureParams(t, map[string]any{"engine": "unix://" + path, "bind_address": "127.0.0.1", "ssh_proxy": "none", "agent_image": "ghcr.io/loomux/agent:v9"})); err != nil {
+		t.Fatal(err)
+	}
+	if p.op("slow") == nil {
+		t.Fatal("the reconfigure forgot a making still in flight")
+	}
+	f.mu.Lock()
+	f.pullDelay = 0
+	f.mu.Unlock()
+	env, err := p.CreateTarget(ctx, sp)
+	if err != nil || env.Status != protocol.EnvRunning {
+		t.Fatalf("create after the reconfigure = %+v, %v", env, err)
+	}
 }

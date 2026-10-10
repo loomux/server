@@ -139,10 +139,11 @@ type containerInspect struct {
 }
 
 type containerSummary struct {
-	ID     string            `json:"Id"`
-	Names  []string          `json:"Names"`
-	Labels map[string]string `json:"Labels"`
-	State  string            `json:"State"`
+	ID      string            `json:"Id"`
+	Names   []string          `json:"Names"`
+	Labels  map[string]string `json:"Labels"`
+	State   string            `json:"State"`
+	Created int64             `json:"Created"` // unix seconds
 }
 
 type volumeInfo struct {
