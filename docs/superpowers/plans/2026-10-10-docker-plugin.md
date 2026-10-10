@@ -76,38 +76,39 @@ v0.60.0, distroless static for the plugin image, the runner's Docker in CI.
 
 ---
 
-### Task 1: Module, manifest, config, Engine client, transports
-- [ ] `go.mod`/`go.sum`, `plugin.json`, `config.go` (engine URL, bind_address an IP that isn't unspecified,
+### Task 1: Module, manifest, config, Engine client, transports — done
+- [x] `go.mod`/`go.sum`, `plugin.json`, `config.go` (engine URL, bind_address an IP that isn't unspecified,
   sizes with Kubernetes-style quantities, `ssh_proxy`, `proxy`), `quantity.go`.
-- [ ] `engine.go`: the client over an `http.Transport` whose `DialContext` is the engine's dialer; errors
+- [x] `engine.go`: the client over an `http.Transport` whose `DialContext` is the engine's dialer; errors
   mapped (404 not_found, 401/403 unauthorized, 409/5xx unavailable with the daemon's message, bounded).
-- [ ] `transport.go`: `unixDialer`, `sshDialer` (x/crypto/ssh, the plugin's key, `FixedHostKey`, optional
+- [x] `transport.go`: `unixDialer`, `sshDialer` (x/crypto/ssh, the plugin's key, `FixedHostKey`, optional
   SOCKS5, one client reconnected on loss, a session per connection running `docker system dial-stdio`),
   host-key scan.
-- [ ] Tests: config (defaults, rejections), quantities, the ssh transport against `targets/sshtest` with
+- [x] Tests: config (defaults, rejections), quantities, the ssh transport against `targets/sshtest` with
   its new `Exec` hook piping to a fake engine on a unix socket, the scan and the mismatch.
 
-### Task 2: Objects, status, targets.*, check
-- [ ] `objects.go`: names, labels, record labels/spec, `containerFor` (§9 + the findings), `helperFor`,
+### Task 2: Objects, status, targets.*, check — done
+- [x] `objects.go`: names, labels, record labels/spec, `containerFor` (§9 + the findings), `helperFor`,
   the tar of the two files (uid/gid 10002, 0400).
-- [ ] `status.go`: inspect → status, digest via `RepoDigests`, the log tail for an error reason.
-- [ ] `targets.go`: describe, create (the op machinery: probe, record, upload, data volume, container,
+- [x] `status.go`: inspect → status, digest via `RepoDigests`, the log tail for an error reason.
+- [x] `targets.go`: describe, create (the op machinery: probe, record, upload, data volume, container,
   start; background pull), get, list (records), start, stop, recreate, destroy, health, attach_commands.
-- [ ] `plugin.go`: Describe/Configure/Check (`engine_unreachable`, `unauthorized`, `host_key_unpinned`,
+- [x] `plugin.go`: Describe/Configure/Check (`engine_unreachable`, `unauthorized`, `host_key_unpinned`,
   `host_key_mismatch`, `engine_too_old`, `seccomp_disabled`, `image_missing`, `network_misconfigured`).
-- [ ] Tests against the in-memory fake engine (`fakeengine_test.go`): the container's security fields, the
+- [x] Tests against the in-memory fake engine (`fakeengine_test.go`): the container's security fields, the
   lifecycle, resume, the taken port, lost containers, another instance invisible, check cases, the
   conformance suite in-process. `cmd/loomux-plugin-docker`.
 
 ### Task 3: Host-side changes, images, workflow, docs
-- [ ] `plugins/plugintest/targets.go`: an address template without `{id}` is a fixed host.
-- [ ] `targets/sshtest`: `Exec` hook.
-- [ ] `plugins/docker/Dockerfile` + `smoke.sh`; server `Dockerfile` stage 1b bundles the plugin.
-- [ ] `docker_test.go` (`-tags docker`): the binary against the runner's Docker over the socket
+- [x] `plugins/plugintest/targets.go`: an address template without `{id}` is a fixed host.
+- [x] `targets/sshtest`: `Exec` hook.
+- [x] `plugins/docker/Dockerfile` + `smoke.sh`; server `Dockerfile` stage 1b bundles the plugin.
+- [x] `docker_test.go` (`-tags docker`): the binary against the runner's Docker over the socket
   (conformance, end to end with a real ssh login on `127.0.0.1:<port>`, stop/start/recreate keeping the
   port, destroy leaving nothing), and through `sshtest` running the real `docker system dial-stdio`.
-- [ ] `plugins.yml`: `plugin-docker` job (unit, govulncheck, integration against the runner's Docker, image,
+- [x] `plugins.yml`: `plugin-docker` job (unit, govulncheck, integration against the runner's Docker, image,
   smoke, scan) and the publish matrix; paths.
-- [ ] README (what it does with the socket, endpoint by endpoint), `docs/deploy/plugins.md`, design §9
+- [x] README (what it does with the socket, endpoint by endpoint), `docs/deploy/plugins.md`, design §9
   edits, `changes/loom-180-docker-plugin.md`.
-- [ ] Local integration run green; PR; handoff for review; merge on approve + green CI; handoff.
+- [x] Local integration run green (both transports, 43 s).
+- [ ] PR; handoff for review; merge on approve + green CI; handoff.
