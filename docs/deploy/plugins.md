@@ -12,7 +12,7 @@ you register the hosts you already use. Design and threat model:
 
 | Setting | Image default | What is there |
 |---|---|---|
-| `LOOMUX_PLUGIN_BUNDLE_DIR` | `/usr/local/lib/loomux/plugins` | first-party plugins shipped in the image, one directory each with `plugin.json` and `loomux-plugin-<name>`. Trusted as the image is. The Kubernetes plugin (`plugins/kubernetes/README.md`) is bundled; the Docker plugin follows. |
+| `LOOMUX_PLUGIN_BUNDLE_DIR` | `/usr/local/lib/loomux/plugins` | first-party plugins shipped in the image, one directory each with `plugin.json` and `loomux-plugin-<name>`. Trusted as the image is. The Kubernetes plugin (`plugins/kubernetes/README.md`) and the Docker plugin (`plugins/docker/README.md`) are bundled. |
 | `LOOMUX_PLUGIN_DIR` | `plugins/` beside the database | plugins you put there yourself, same layout. Shown as **unsigned** until signed first-party assets exist; installing one means trusting it with the permissions its manifest declares |
 | `LOOMUX_PLUGIN_SOCKET_DIR` | `/run/loomux/plugins` | sockets served by sidecar containers (`loomux-plugin-<name> --listen /run/loomux/plugins/<name>.sock`). The recommended form on Kubernetes: the plugin container alone holds the cluster credential |
 
@@ -85,6 +85,29 @@ know are destroyed after a day.
 Credentials for the agents on a machine go in the vault scoped to the
 target (`target_id`); a one-time interactive sign-in kept in the
 machine's home works too, where the plugin keeps the data.
+
+### The Docker plugin
+
+A container per machine on one Docker host, reached over SSH at a port
+published on the host's address (`bind_address`: its tailnet IP, or
+`127.0.0.1` when loomuxd runs on the docker host itself). The plugin
+reaches the engine over SSH too, as a user in the docker group, with
+its own key (**Generate** in the install form, then add the public half
+to that user's `authorized_keys`), or through the engine's local
+socket. **The docker group is root on that host** and the plugin's
+manifest says so; it uses a fixed set of engine endpoints, listed in
+its README, and labels everything it makes.
+
+The first check reports `host_key_unpinned` with the host's key type,
+fingerprint and the line to trust: put it in `ssh_host_key` and check
+again. Until then the plugin never connects.
+
+What Docker can't give: no network isolation (a machine can reach the
+LAN and the tailnet its host is on; the plugin offers no `egress`
+choice, since Docker publishes no port on an internal network), no
+quota beyond each container's limits (`max_environments` is the cap),
+no admission control (the plugin asserts its own container flags, and
+a test pins them). The docker host's own security is yours.
 
 ## Writing a plugin
 

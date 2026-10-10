@@ -326,8 +326,10 @@ func hardened(h *hostConfig) {
 // read-only where the entrypoint looks (an archive can't be uploaded
 // into a read-only rootfs), the fixed host port (an ephemeral one is
 // reallocated at every start), docker-init as process 1 (sshd reaps
-// nothing, and zombies count against the pids limit), and a health
-// check standing in for the readiness probe.
+// nothing, and zombies count against the pids limit), a health check
+// standing in for the readiness probe, and the tmpfs mounts world-
+// writable with the sticky bit (Docker mounts them root-owned 0755
+// otherwise, and the entrypoint runs as the agent).
 func containerFor(spec protocol.EnvironmentSpec, size protocol.Size, cfg Config, instance string, port int) containerCreate {
 	image := spec.Image
 	if image == "" {
@@ -351,7 +353,7 @@ func containerFor(spec protocol.EnvironmentSpec, size protocol.Size, cfg Config,
 			{Type: "volume", Source: recordName(spec.ID), Target: sshSrcDir, ReadOnly: true},
 			data,
 		},
-		Tmpfs:      map[string]string{"/tmp": "size=1g", "/run/loomux": "size=1m"},
+		Tmpfs:      map[string]string{"/tmp": "size=1g,mode=1777", "/run/loomux": "size=1m,mode=1777"},
 		PidsLimit:  ptr(pidsLimit),
 		Memory:     memory,
 		MemorySwap: memory,

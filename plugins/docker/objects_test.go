@@ -56,7 +56,7 @@ func TestContainerConfig(t *testing.T) {
 	if pb := h.PortBindings["2222/tcp"]; len(pb) != 1 || pb[0].HostIP != "100.64.0.5" || pb[0].HostPort != "32768" || len(h.PortBindings) != 1 {
 		t.Errorf("port bindings = %v", h.PortBindings)
 	}
-	if h.Tmpfs["/tmp"] != "size=1g" || h.Tmpfs["/run/loomux"] != "size=1m" || len(h.Tmpfs) != 2 {
+	if h.Tmpfs["/tmp"] != "size=1g,mode=1777" || h.Tmpfs["/run/loomux"] != "size=1m,mode=1777" || len(h.Tmpfs) != 2 {
 		t.Errorf("tmpfs = %v", h.Tmpfs)
 	}
 	if strings.Join(h.CapDrop, ",") != "ALL" || strings.Join(h.SecurityOpt, ",") != "no-new-privileges:true" {
