@@ -787,7 +787,11 @@ the handful of endpoints used are small and the plugin controls every request).
 
 **Transport.** The plugin dials SSH (pinned host key, its own key, through the proxy if set), runs `docker
 system dial-stdio` on the host, and speaks the Engine API (HTTP) over that session's stdio, the same thing the
-Docker CLI's `ssh://` contexts do. One multiplexed SSH connection per plugin instance, reconnected on loss.
+Docker CLI's `ssh://` contexts do. One multiplexed SSH connection per plugin instance, reconnected on loss; a
+loss without a close (a tailnet path change, a NAT timeout) is found by keepalives and by a session that
+doesn't open within its bound, either of which drops the connection for the next call to dial anew. The
+handshake asks for the pinned key's type, so the ed25519 line people copy from `known_hosts` pins a host that
+also has an RSA key.
 
 **Objects per machine**, labelled like the pods (`loomux.io/*` labels on Docker objects):
 
@@ -809,8 +813,9 @@ type=volume,source=lx-<id>-ssh,target=/etc/loomux/ssh-src,readonly`, `--mount
 type=volume,source=lx-<id>-data,target=/data`, `--network loomux-agents`, `--publish
 <bind_address>:<port>:2222` with **the port fixed** (a `HostPort` of 0 is allocated anew at every start, found at
 implementation; so `create` probes one once with the helper published on `<bind_address>:0:2222`, reads it
-back from `inspect`, removes the helper and bakes the port into the record and the container, and a port
-found taken at start rebuilds the record with a fresh probe), a health check `bash -c 'exec
+back from `inspect`, removes the helper and bakes the port into the record and the container; a probe landing
+on a port a stopped machine of this instance has fixed is repeated, and a port found taken at start rebuilds
+the record with a fresh probe), a health check `bash -c 'exec
 3<>/dev/tcp/127.0.0.1/2222'` every 5 s standing in for the readiness probe (`running` means healthy),
 `--restart unless-stopped`, env `HOME`, `CLAUDE_CONFIG_DIR`, `TZ` as for the pod, labels as above. Nothing
 from the host is mounted; `/var/run/docker.sock` is never passed. The image isn't pulled by the engine: a

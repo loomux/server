@@ -2,6 +2,9 @@ package docker
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -9,8 +12,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -270,5 +275,221 @@ func TestDialFuncFor(t *testing.T) {
 		// sshtest runs the command in a shell: no docker here, which is
 		// the shell's failure, not the dial's.
 		t.Logf("dial through the shell: %v", err)
+	}
+}
+
+// relay forwards TCP connections to a target and can freeze the ones
+// already open (they stay connected but carry nothing more), as a
+// tailnet path change or a NAT timeout does; new connections work.
+type relay struct {
+	l      net.Listener
+	target string
+	stop   chan struct{}
+	mu     sync.Mutex
+	frozen []chan struct{}
+}
+
+func newRelay(t *testing.T, target string) *relay {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &relay{l: l, target: target, stop: make(chan struct{})}
+	t.Cleanup(func() { close(r.stop); l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go r.handle(c)
+		}
+	}()
+	return r
+}
+
+func (r *relay) handle(c net.Conn) {
+	defer c.Close()
+	up, err := net.Dial("tcp", r.target)
+	if err != nil {
+		return
+	}
+	defer up.Close()
+	frozen := make(chan struct{})
+	r.mu.Lock()
+	r.frozen = append(r.frozen, frozen)
+	r.mu.Unlock()
+	pipe := func(dst, src net.Conn) {
+		buf := make([]byte, 4096)
+		for {
+			n, err := src.Read(buf)
+			if n > 0 {
+				select {
+				case <-frozen:
+					<-r.stop
+					return
+				default:
+				}
+				if _, err := dst.Write(buf[:n]); err != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+	done := make(chan struct{})
+	go func() { pipe(up, c); close(done) }()
+	pipe(c, up)
+	<-done
+}
+
+// freeze stops every connection open now, keeping it open.
+func (r *relay) freeze() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, f := range r.frozen {
+		close(f)
+	}
+	r.frozen = nil
+}
+
+func (r *relay) addr() string { return r.l.Addr().String() }
+
+// A connection that went silently dead (nothing closes it) is found
+// out: a session opened under the call's context ends with it, the
+// dead client is dropped and the next call dials anew; and keepalives
+// notice the loss before any call does.
+func TestSSHDeadConnectionIsReplaced(t *testing.T) {
+	socket := serveUnix(t, pingHandler())
+	s := sshtest.Start(t)
+	var calls atomic.Int32
+	s.Exec = dialStdioHook(t, socket, &calls)
+	r := newRelay(t, net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
+	host, port, _ := net.SplitHostPort(r.addr())
+
+	t.Run("a session that never opens drops the client, then a redial", func(t *testing.T) {
+		d := newSSHDialer(sshConfig(t, s, true, map[string]any{"engine": "ssh://tester@" + host + ":" + port}))
+		d.KeepaliveInterval = time.Hour // only the session's bound here
+		d.SessionTimeout = 500 * time.Millisecond
+		defer d.Close()
+		e := newEngine(d.Dial)
+		defer e.Close()
+		if _, err := e.ping(ctx); err != nil {
+			t.Fatal(err)
+		}
+		r.freeze()
+		e.closeIdle()
+		short, cancel := context.WithTimeout(ctx, time.Second)
+		start := time.Now()
+		_, err := e.ping(short)
+		cancel()
+		if err == nil || time.Since(start) > 5*time.Second {
+			t.Fatalf("a call over the dead connection should fail at its deadline, got %v after %s", err, time.Since(start))
+		}
+		next, cancelNext := context.WithTimeout(ctx, 10*time.Second)
+		defer cancelNext()
+		if _, err := e.ping(next); err != nil {
+			t.Fatalf("the next call should dial anew: %v", err)
+		}
+	})
+	t.Run("keepalives drop a dead client", func(t *testing.T) {
+		d := newSSHDialer(sshConfig(t, s, true, map[string]any{"engine": "ssh://tester@" + host + ":" + port}))
+		d.KeepaliveInterval, d.KeepaliveTimeout = 100*time.Millisecond, 300*time.Millisecond
+		defer d.Close()
+		e := newEngine(d.Dial)
+		defer e.Close()
+		if _, err := e.ping(ctx); err != nil {
+			t.Fatal(err)
+		}
+		r.freeze()
+		e.closeIdle()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			d.mu.Lock()
+			gone := d.client == nil
+			d.mu.Unlock()
+			if gone {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		d.mu.Lock()
+		gone := d.client == nil
+		d.mu.Unlock()
+		if !gone {
+			t.Fatal("the keepalive never dropped the dead client")
+		}
+		next, cancelNext := context.WithTimeout(ctx, 10*time.Second)
+		defer cancelNext()
+		if _, err := e.ping(next); err != nil {
+			t.Fatalf("the next call should succeed at once on a fresh connection: %v", err)
+		}
+	})
+}
+
+// twoKeyServer is an SSH server with an RSA and an Ed25519 host key
+// (a real docker host has several) that accepts any client.
+func twoKeyServer(t *testing.T) (addr string, ed25519Line, rsaLine string) {
+	t.Helper()
+	_, edPriv, _ := ed25519.GenerateKey(rand.Reader)
+	edSigner, _ := ssh.NewSignerFromKey(edPriv)
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaSigner, _ := ssh.NewSignerFromKey(rsaKey)
+	cfg := &ssh.ServerConfig{NoClientAuth: true}
+	cfg.AddHostKey(rsaSigner)
+	cfg.AddHostKey(edSigner)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				conn, chans, reqs, err := ssh.NewServerConn(c, cfg)
+				if err != nil {
+					return
+				}
+				go ssh.DiscardRequests(reqs)
+				for ch := range chans {
+					ch.Reject(ssh.Prohibited, "no channels")
+				}
+				conn.Close()
+			}()
+		}
+	}()
+	line := func(s ssh.Signer) string { return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(s.PublicKey()))) }
+	return l.Addr().String(), line(edSigner), line(rsaSigner)
+}
+
+// The pinned key's type decides which host key the handshake asks
+// for: the ed25519 line people copy from known_hosts must pin a host
+// that also has an RSA key, which the library would otherwise prefer.
+func TestSSHPinnedKeyTypeIsNegotiated(t *testing.T) {
+	addr, edLine, rsaLine := twoKeyServer(t)
+	key, _ := testKey(t)
+	for _, pin := range []string{edLine, rsaLine} {
+		cfg, err := parseConfig(map[string]any{"engine": "ssh://tester@" + addr, "ssh_private_key": key, "ssh_host_key": pin, "bind_address": "127.0.0.1", "agent_image": "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := newSSHDialer(cfg)
+		client, err := d.connect(ctx)
+		if err != nil {
+			t.Errorf("pinning %s: %v", strings.Fields(pin)[0], err)
+			continue
+		}
+		client.Close()
+		d.Close()
 	}
 }

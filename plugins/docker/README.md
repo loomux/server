@@ -58,7 +58,7 @@ only ever touches its own:
 | `GET /networks/loomux-agents`, `POST /networks/create` | the one user-defined bridge, `enable_icc=false`, made once per host |
 | `GET /volumes`, `GET /volumes/{name}`, `POST /volumes/create`, `DELETE /volumes/{name}` | the record volume `lx-<id>-ssh` and the data volume `lx-<id>-data`, by label |
 | `GET /images/{ref}/json`, `POST /images/create` | is the agent image there; pull it when not |
-| `POST /containers/create`, `GET /containers/{name}/json` | the machine's container and its transient helper, by name, checked for its labels |
+| `POST /containers/create`, `GET /containers/{name}/json`, `GET /containers/json?all=1&filters=…` | the machine's container and its transient helper, by name, checked for its labels; the listing finds a container of ours whose record is gone, reported `lost` so the host's orphan sweep destroys it |
 | `POST /containers/{name}/start`, `/stop`, `DELETE /containers/{name}?force=1&v=1` | lifecycle |
 | `PUT /containers/{name}/archive` | sshd's two files into the record volume, through the helper |
 | `GET /containers/{name}/logs?tail=5` | the last line a failing container wrote, for its error reason |
@@ -73,7 +73,7 @@ by field, including the JSON the engine receives.
 
 | Object | Name | |
 |---|---|---|
-| Volume | `lx-<id>-ssh` | **the record**: labels carry the spec (without key material), the creation time and the fixed ssh port; contents are `host_ed25519` and `authorized_keys` (0400, the agent's), mounted read-only at `/etc/loomux/ssh-src`. While it exists the machine exists: `stopped` when its container is gone and its data volume stays, `lost` otherwise |
+| Volume | `lx-<id>-ssh` | **the record**: labels carry the spec (without key material), the creation time and the fixed ssh port; contents are `host_ed25519` and `authorized_keys` (0400, the agent's), mounted read-only at `/etc/loomux/ssh-src`. The machine's host private key therefore sits on the docker host's disk (`/var/lib/docker/volumes`, readable by root and the docker group) for the machine's life, as the Secret sits in etcd on Kubernetes. While the record exists the machine exists: `stopped` when its container is gone and its data volume stays, `lost` otherwise |
 | Volume | `lx-<id>-data` | persistent machines only, `/data`; an ephemeral machine's `/data` is an anonymous volume removed with its container |
 | Container | `lx-<id>` | the container of design §9: `--user 10002:10002`, `--read-only`, tmpfs `/tmp` (1g) and `/run/loomux` (1m), `--cap-drop ALL`, `no-new-privileges`, `--pids-limit 512`, `--memory`/`--cpus` from the size, `--init`, `--restart unless-stopped`, on `loomux-agents`, sshd published at `bind_address:<port>`, a health check (`bash -c 'exec 3<>/dev/tcp/127.0.0.1/2222'` every 5 s) standing in for the readiness probe: `running` means healthy |
 | Container | `lx-<id>-init` | a transient helper, hardened like the machine, that sleeps: one probes the port, one (never started) receives the archive into the record volume; removed in the same call |
@@ -87,8 +87,10 @@ by field, including the JSON the engine receives.
 - A `HostPort` of `0` is allocated anew at every start, so the plugin
   probes a port once (the helper, `--publish bind:0:2222`), then fixes
   it in the record and the container; stop/start and recreate keep it.
-  A port found taken at start (another process in the gap) rebuilds the
-  record with a fresh probe, three attempts.
+  A probe that lands on a port a stopped machine of this instance has
+  fixed (nothing holds it on the host, so the allocator can hand it out
+  again) is repeated; a port found taken at start (another process in
+  the gap) rebuilds the record with a fresh probe, three attempts.
 - A port published on an `--internal` network isn't mapped at all, so
   an egress-`none` machine's sshd would be unreachable: **`egress: none`
   is withdrawn**. The manifest declares no `targets.egress_policy`,
@@ -111,6 +113,20 @@ by field, including the JSON the engine receives.
   in progress and waits for it, so nothing is made behind its back; a
   plugin restart drops it, and the host's reconcile resumes what it
   needs.
+
+## The SSH connection
+
+One multiplexed connection per instance, a session per HTTP
+connection. A connection that dies without a close (a tailnet path
+change, a NAT timeout) is found out two ways: a keepalive every 15 s
+that drops the client when unanswered for 10 s, and sessions opened
+under the call's context, so a call on a dead connection fails at its
+deadline, drops the client, and the next call dials anew. The
+handshake asks for the pinned key's type (RSA with its SHA-2
+signatures), so an ed25519 line pins a host that also has an RSA key.
+The agents' network must be as the plugin makes it: an existing
+`loomux-agents` without `enable_icc=false` is refused at create, not
+used.
 
 ## The check
 

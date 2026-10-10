@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -603,4 +604,144 @@ func TestStartWithTakenPortSaysRecreate(t *testing.T) {
 	if !errors.As(err, &rpcErr) || rpcErr.Code != rpc.CodeUnavailable || !strings.Contains(rpcErr.Message, "recreate") {
 		t.Errorf("want unavailable naming recreate as the way out, got %v", err)
 	}
+}
+
+// A probed port that a stopped machine of this instance has fixed in
+// its record (the allocator wrapped, or the daemon restarted) is
+// probed again: the stopped machine keeps its port.
+func TestProbeAvoidsAStoppedMachinesPort(t *testing.T) {
+	p, f := fakePlugin(t, nil)
+	if _, err := p.CreateTarget(ctx, spec("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.StopTarget(ctx, "first"); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.nextPort = 32768 // the allocator's cursor is back at the stopped machine's port
+	f.mu.Unlock()
+	env, err := p.CreateTarget(ctx, spec("second"))
+	if err != nil || env.Status != protocol.EnvRunning {
+		t.Fatalf("create = %+v, %v", env, err)
+	}
+	if env.Address.Port == 32768 {
+		t.Errorf("the new machine took the stopped machine's port")
+	}
+	if err := p.StartTarget(ctx, "first"); err != nil {
+		t.Errorf("the stopped machine can't start again: %v", err)
+	}
+}
+
+// A container carrying this instance's labels without a record (a
+// destroy whose last step raced, a record removed by hand) is listed
+// as lost, so the host's orphan sweep destroys it.
+func TestListIncludesContainersWithoutRecord(t *testing.T) {
+	p, f := fakePlugin(t, nil)
+	if _, err := p.CreateTarget(ctx, spec("orphan")); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	delete(f.volumes, "lx-orphan-ssh")
+	f.mu.Unlock()
+	list, err := p.ListTargets(ctx)
+	if err != nil || len(list) != 1 || list[0].ID != "orphan" || list[0].Status != protocol.EnvLost || list[0].Address.Port != 32768 {
+		t.Fatalf("list = %+v, %v", list, err)
+	}
+	if err := p.DestroyTarget(ctx, "orphan"); err != nil {
+		t.Fatal(err)
+	}
+	if containers, _ := f.names(); len(containers) != 0 {
+		t.Errorf("containers left: %v", containers)
+	}
+}
+
+// A destroy whose own deadline ends while the making is still inside
+// an engine call keeps tracking the op: nothing is lost sight of, and
+// the next destroy finishes the job.
+func TestCancelOpKeepsTrackingUntilDone(t *testing.T) {
+	p, f := fakePlugin(t, map[string]any{"agent_image": "ghcr.io/loomux/agent:v9"})
+	p.CreateWait = 100 * time.Millisecond
+	f.pullDelay = 2 * time.Second
+	if _, err := p.CreateTarget(ctx, specWithImage("slow", "ghcr.io/loomux/agent:v9")); err != nil {
+		t.Fatal(err)
+	}
+	expired, cancel := context.WithCancel(ctx)
+	cancel()
+	err := p.DestroyTarget(expired, "slow")
+	wantCode(t, err, rpc.CodeUnavailable)
+	if p.op("slow") == nil {
+		t.Fatal("the op was forgotten while its goroutine may still run")
+	}
+	if err := p.DestroyTarget(ctx, "slow"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	containers, volumes := f.names()
+	if len(containers) != 0 || len(volumes) != 0 {
+		t.Errorf("left: %v %v", containers, volumes)
+	}
+}
+
+// The agents' network must be as the plugin makes it: one that exists
+// with container-to-container traffic on isn't used.
+func TestCreateRefusesMisconfiguredNetwork(t *testing.T) {
+	p, f := fakePlugin(t, nil)
+	f.mu.Lock()
+	f.networks[networkName] = &fakeNetwork{id: "n", name: networkName, driver: "bridge", options: map[string]string{"com.docker.network.bridge.enable_icc": "true"}}
+	f.mu.Unlock()
+	_, err := p.CreateTarget(ctx, spec("k7f3q2"))
+	var rpcErr *rpc.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Code != rpc.CodeUnavailable || !strings.Contains(rpcErr.Message, "enable_icc") {
+		t.Fatalf("want a refusal naming enable_icc, got %v", err)
+	}
+	if containers, _ := f.names(); len(containers) != 0 {
+		t.Errorf("containers made on a misconfigured network: %v", containers)
+	}
+}
+
+// stop of a machine whose lost container is being remade cancels the
+// remake: the machine stays stopped.
+func TestStopCancelsStartRemake(t *testing.T) {
+	p, f := fakePlugin(t, nil)
+	p.CreateWait = 100 * time.Millisecond
+	if _, err := p.CreateTarget(ctx, spec("k7f3q2")); err != nil {
+		t.Fatal(err)
+	}
+	f.vanish("lx-k7f3q2")
+	f.mu.Lock()
+	delete(f.images, "ghcr.io/loomux/agent:test")
+	f.pullDelay = 600 * time.Millisecond
+	f.mu.Unlock()
+	if err := p.StartTarget(ctx, "k7f3q2"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := p.GetTarget(ctx, "k7f3q2"); got.Status != protocol.EnvStarting {
+		t.Fatalf("while remaking: %+v", got)
+	}
+	if err := p.StopTarget(ctx, "k7f3q2"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+	if c := f.container("lx-k7f3q2"); c != nil {
+		t.Errorf("the remake went on after the stop: %+v", c)
+	}
+	if got, _ := p.GetTarget(ctx, "k7f3q2"); got.Status != protocol.EnvStopped {
+		t.Errorf("after the stop: %+v", got)
+	}
+}
+
+// Two creates racing past the quota: the second sees the first's
+// making in flight.
+func TestQuotaCountsMakingsInFlight(t *testing.T) {
+	p, f := fakePlugin(t, map[string]any{"max_environments": float64(1), "agent_image": "ghcr.io/loomux/agent:v9"})
+	p.CreateWait = 100 * time.Millisecond
+	f.pullDelay = 600 * time.Millisecond
+	if _, err := p.CreateTarget(ctx, specWithImage("one", "ghcr.io/loomux/agent:v9")); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.pullDelay = 0
+	f.mu.Unlock()
+	_, err := p.CreateTarget(ctx, specWithImage("two", "ghcr.io/loomux/agent:v9"))
+	wantCode(t, err, rpc.CodeQuota)
 }

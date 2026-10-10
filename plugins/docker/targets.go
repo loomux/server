@@ -172,6 +172,9 @@ func (p *Plugin) ensureNetwork(ctx context.Context, eng *engine, host protocol.H
 	var n networkInfo
 	err := eng.get(ctx, "/networks/"+networkName, nil, &n)
 	if err == nil {
+		if n.Options["com.docker.network.bridge.enable_icc"] != "false" {
+			return &rpc.Error{Code: rpc.CodeUnavailable, Message: "the network " + networkName + " on the docker host exists without enable_icc=false, so machines could reach each other: remove it and the plugin makes it again"}
+		}
 		return nil
 	}
 	if !isStatus(err, 404) {
@@ -250,6 +253,34 @@ func (p *Plugin) probePort(ctx context.Context, eng *engine, cfg Config, host pr
 		return 0, &rpc.Error{Code: rpc.CodeUnavailable, Message: "the engine published no port for the probe on " + cfg.BindAddress}
 	}
 	return port, nil
+}
+
+// freePort probes a port that no other machine of this instance has
+// fixed in its record: a stopped machine holds nothing on the host, so
+// the allocator (wrapped around, or restarted with the daemon) can
+// hand its port out again; the probe is repeated until it doesn't.
+func (p *Plugin) freePort(ctx context.Context, eng *engine, cfg Config, host protocol.HostInfo, id, image string) (int, error) {
+	recs, err := p.records(ctx, eng, host)
+	if err != nil {
+		return 0, err
+	}
+	taken := map[int]bool{}
+	for _, r := range recs {
+		if r.Labels[protocol.LabelEnvironment] != id {
+			taken[portFrom(r.Labels)] = true
+		}
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		port, err := p.probePort(ctx, eng, cfg, host, id, image)
+		if err != nil {
+			return 0, err
+		}
+		if !taken[port] {
+			return port, nil
+		}
+		p.Logger.Printf("%s: port %d belongs to a stopped machine; probing again", id, port)
+	}
+	return 0, &rpc.Error{Code: rpc.CodeUnavailable, Message: "every port the docker host offered belongs to a stopped machine of this instance"}
 }
 
 // publishedPort is the host port sshd is published on, 0 when none.
@@ -349,7 +380,7 @@ func (p *Plugin) build(ctx context.Context, eng *engine, cfg Config, host protoc
 		if rec == nil {
 			if port == 0 {
 				op.setPhase("choosing a port")
-				if port, err = p.probePort(ctx, eng, cfg, host, spec.ID, spec.Image); err != nil {
+				if port, err = p.freePort(ctx, eng, cfg, host, spec.ID, spec.Image); err != nil {
 					return protocol.Environment{}, err
 				}
 			}
@@ -420,13 +451,21 @@ func (p *Plugin) runCreate(ctx context.Context, cfg Config, eng *engine, host pr
 		if err != nil {
 			return protocol.Environment{}, err
 		}
-		n := 0
+		// Records, and makings in flight that have none yet: two creates
+		// racing past the cap both see the other.
+		ids := map[string]bool{}
 		for _, r := range recs {
-			if r.Labels[protocol.LabelEnvironment] != op.spec.ID {
-				n++
+			ids[r.Labels[protocol.LabelEnvironment]] = true
+		}
+		p.mu.Lock()
+		for id, other := range p.ops {
+			if _, _, finished := other.state(); finished.IsZero() {
+				ids[id] = true
 			}
 		}
-		if n >= cfg.MaxEnvironments {
+		p.mu.Unlock()
+		delete(ids, op.spec.ID)
+		if len(ids) >= cfg.MaxEnvironments {
 			return protocol.Environment{}, &rpc.Error{Code: rpc.CodeQuota, Message: fmt.Sprintf("this plugin already has its %d machines", cfg.MaxEnvironments)}
 		}
 		image := op.spec.Image
@@ -499,7 +538,6 @@ func (p *Plugin) startOp(cfg Config, eng *engine, host protocol.HostInfo, spec p
 func (p *Plugin) cancelOp(ctx context.Context, id string) error {
 	p.mu.Lock()
 	op := p.ops[id]
-	delete(p.ops, id)
 	p.mu.Unlock()
 	if op == nil {
 		return nil
@@ -507,10 +545,17 @@ func (p *Plugin) cancelOp(ctx context.Context, id string) error {
 	op.cancel()
 	select {
 	case <-op.done:
-		return nil
 	case <-ctx.Done():
+		// Still inside an engine call: it stays tracked until it ends,
+		// so the next call finds it rather than a machine made unseen.
 		return &rpc.Error{Code: rpc.CodeUnavailable, Message: "the machine is still being made; try again shortly"}
 	}
+	p.mu.Lock()
+	if p.ops[id] == op {
+		delete(p.ops, id)
+	}
+	p.mu.Unlock()
+	return nil
 }
 
 // cancelOps ends every making in progress (a reconfigure: the engine
@@ -707,8 +752,10 @@ func (p *Plugin) ListTargets(ctx context.Context) ([]protocol.Environment, error
 		return nil, err
 	}
 	out := []protocol.Environment{}
+	seen := map[string]bool{}
 	for i := range recs {
 		id := recs[i].Labels[protocol.LabelEnvironment]
+		seen[id] = true
 		c, err := p.inspect(ctx, eng, containerName(id))
 		if err != nil {
 			return nil, err
@@ -720,8 +767,32 @@ func (p *Plugin) ListTargets(ctx context.Context) ([]protocol.Environment, error
 		}
 		out = append(out, env)
 	}
+	// A container of ours without a record (a destroy whose last step
+	// raced, a record removed by hand) is lost, and listed so the host's
+	// orphan sweep destroys it.
+	var containers []containerSummary
+	if err := eng.get(ctx, "/containers/json", withAll(labelFilter(host.InstanceID, roleAgent)), &containers); err != nil {
+		return nil, p.mapErr(err)
+	}
+	for _, c := range containers {
+		id := c.Labels[protocol.LabelEnvironment]
+		if seen[id] || !idPattern.MatchString(id) {
+			continue
+		}
+		seen[id] = true
+		out = append(out, protocol.Environment{
+			ID: id, Status: protocol.EnvLost, Reason: "the machine's record is gone; only its container remains",
+			Address: cfg.address(portFrom(c.Labels)), Egress: protocol.EgressInternet, CreatedAt: p.Now(),
+		})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// withAll adds all=1 to a container listing's query.
+func withAll(q url.Values) url.Values {
+	q.Set("all", "1")
+	return q
 }
 
 func (p *Plugin) StartTarget(ctx context.Context, id string) error {
@@ -791,6 +862,11 @@ func (p *Plugin) StopTarget(ctx context.Context, id string) error {
 	}
 	if rec == nil {
 		return notFound(id)
+	}
+	// A start remaking a lost container is ended first: the machine
+	// stays stopped.
+	if err := p.cancelOp(ctx, id); err != nil {
+		return err
 	}
 	err = eng.post(ctx, "/containers/"+containerName(id)+"/stop", url.Values{"t": {"30"}}, nil, nil)
 	if err != nil && !isStatus(err, 404) {

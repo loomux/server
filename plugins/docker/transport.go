@@ -65,13 +65,24 @@ type sshDialer struct {
 	// HandshakeTimeout bounds the TCP connect and the SSH handshake;
 	// 20 s, under the host's 30 s call deadline.
 	HandshakeTimeout time.Duration
+	// KeepaliveInterval is how often the connection is probed; a probe
+	// unanswered within KeepaliveTimeout drops the client, so a
+	// connection dead without a close (a tailnet path change, a NAT
+	// timeout) is replaced by the next call; 15 s and 10 s.
+	KeepaliveInterval time.Duration
+	KeepaliveTimeout  time.Duration
+	// SessionTimeout bounds opening a session (milliseconds on a live
+	// connection): one that takes longer is on a dead connection, which
+	// is dropped. net/http dials with a context detached from the
+	// request's, so the call's own deadline doesn't reach here; 10 s.
+	SessionTimeout time.Duration
 
 	mu     sync.Mutex
 	client *ssh.Client
 }
 
 func newSSHDialer(cfg Config) *sshDialer {
-	return &sshDialer{cfg: cfg, HandshakeTimeout: 20 * time.Second}
+	return &sshDialer{cfg: cfg, HandshakeTimeout: 20 * time.Second, KeepaliveInterval: 15 * time.Second, KeepaliveTimeout: 10 * time.Second, SessionTimeout: 10 * time.Second}
 }
 
 func (d *sshDialer) addr() string {
@@ -100,7 +111,7 @@ func (d *sshDialer) dialTCP(ctx context.Context) (net.Conn, error) {
 
 // handshake runs the SSH handshake on a fresh TCP connection with
 // callback deciding about the host key. Its errors are classified.
-func (d *sshDialer) handshake(ctx context.Context, callback ssh.HostKeyCallback) (ssh.Conn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
+func (d *sshDialer) handshake(ctx context.Context, callback ssh.HostKeyCallback, algorithms []string) (ssh.Conn, <-chan ssh.NewChannel, <-chan *ssh.Request, error) {
 	conn, err := d.dialTCP(ctx)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("connecting to %s: %w", d.cfg.Engine, err)
@@ -111,11 +122,12 @@ func (d *sshDialer) handshake(ctx context.Context, callback ssh.HostKeyCallback)
 		auth = append(auth, ssh.PublicKeys(d.cfg.signer))
 	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, d.addr(), &ssh.ClientConfig{
-		User:            d.cfg.Engine.User,
-		Auth:            auth,
-		HostKeyCallback: callback,
-		Timeout:         d.HandshakeTimeout,
-		ClientVersion:   "SSH-2.0-loomux-plugin-docker_" + Version,
+		User:              d.cfg.Engine.User,
+		Auth:              auth,
+		HostKeyCallback:   callback,
+		HostKeyAlgorithms: algorithms,
+		Timeout:           d.HandshakeTimeout,
+		ClientVersion:     "SSH-2.0-loomux-plugin-docker_" + Version,
 	})
 	if err != nil {
 		conn.Close()
@@ -148,12 +160,16 @@ func (d *sshDialer) connect(ctx context.Context) (*ssh.Client, error) {
 		return nil, errHostKeyUnpinned
 	}
 	pinned := d.cfg.hostKey.Marshal()
+	// The handshake asks for the pinned key's type: a host with several
+	// host keys would otherwise present the library's favourite (RSA)
+	// and the ed25519 line people copy from known_hosts would never
+	// match.
 	c, chans, reqs, err := d.handshake(ctx, func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		if bytes.Equal(key.Marshal(), pinned) {
 			return nil
 		}
 		return fmt.Errorf("%w: the host presented %s %s", errHostKeyMismatch, key.Type(), ssh.FingerprintSHA256(key))
-	})
+	}, hostKeyAlgorithms(d.cfg.hostKey))
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +183,89 @@ func (d *sshDialer) connect(ctx context.Context) (*ssh.Client, error) {
 		}
 		d.mu.Unlock()
 	}()
+	go d.keepalive(client)
 	return client, nil
+}
+
+// hostKeyAlgorithms are the handshake's host key algorithms for a
+// pinned key: the key's own type, with RSA's SHA-2 signatures first.
+func hostKeyAlgorithms(pub ssh.PublicKey) []string {
+	switch pub.Type() {
+	case ssh.KeyAlgoRSA:
+		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
+	}
+	return []string{pub.Type()}
+}
+
+// keepalive probes the connection every KeepaliveInterval and closes
+// the client when a probe isn't answered within KeepaliveTimeout: a
+// connection dead without a close is dropped, and the next call dials
+// anew instead of hanging on it.
+func (d *sshDialer) keepalive(client *ssh.Client) {
+	ticker := time.NewTicker(d.KeepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+		case <-clientDone(client):
+			return
+		}
+		answered := make(chan error, 1)
+		go func() {
+			_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+			answered <- err
+		}()
+		select {
+		case err := <-answered:
+			if err != nil {
+				client.Close()
+				return
+			}
+		case <-time.After(d.KeepaliveTimeout):
+			client.Close()
+			return
+		}
+	}
+}
+
+// clientDone is closed when the client's connection ends.
+func clientDone(client *ssh.Client) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		_ = client.Wait()
+		close(done)
+	}()
+	return done
+}
+
+// newSession opens a session within SessionTimeout (and ctx): a client
+// whose connection is dead never answers, so the client is closed and
+// dropped (the next call dials anew) and the call fails instead of
+// hanging until the kernel gives up on the connection.
+func (d *sshDialer) newSession(ctx context.Context, client *ssh.Client) (*ssh.Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, d.SessionTimeout)
+	defer cancel()
+	type result struct {
+		sess *ssh.Session
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		sess, err := client.NewSession()
+		ch <- result{sess, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.sess, r.err
+	case <-ctx.Done():
+		client.Close()
+		go func() {
+			if r := <-ch; r.sess != nil {
+				r.sess.Close()
+			}
+		}()
+		return nil, fmt.Errorf("ssh session to %s: the connection isn't answering (%w)", d.cfg.Engine, ctx.Err())
+	}
 }
 
 // Dial opens a session running docker system dial-stdio on the host
@@ -177,8 +275,11 @@ func (d *sshDialer) Dial(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := client.NewSession()
+	sess, err := d.newSession(ctx, client)
 	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		// The connection may have died since: drop it and try once more.
 		d.mu.Lock()
 		if d.client == client {
@@ -189,7 +290,7 @@ func (d *sshDialer) Dial(ctx context.Context) (net.Conn, error) {
 		if client, err = d.connect(ctx); err != nil {
 			return nil, err
 		}
-		if sess, err = client.NewSession(); err != nil {
+		if sess, err = d.newSession(ctx, client); err != nil {
 			return nil, fmt.Errorf("ssh session to %s: %w", d.cfg.Engine, err)
 		}
 	}
@@ -227,7 +328,7 @@ func (d *sshDialer) Scan(ctx context.Context) (ssh.PublicKey, error) {
 	_, _, _, err := d.handshake(ctx, func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		seen = key
 		return errScanned
-	})
+	}, nil)
 	if seen != nil {
 		return seen, nil
 	}

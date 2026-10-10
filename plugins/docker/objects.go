@@ -138,6 +138,13 @@ type containerInspect struct {
 	} `json:"NetworkSettings"`
 }
 
+type containerSummary struct {
+	ID     string            `json:"Id"`
+	Names  []string          `json:"Names"`
+	Labels map[string]string `json:"Labels"`
+	State  string            `json:"State"`
+}
+
 type volumeInfo struct {
 	Name      string            `json:"Name"`
 	Labels    map[string]string `json:"Labels"`
