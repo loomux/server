@@ -42,9 +42,9 @@ func dialStdioHook(t *testing.T, socket string, calls *atomic.Int32) func(string
 	}
 }
 
-// sshConfig is a configuration reaching s as the plugin would: its own
-// key (sshtest's identity), the host key pinned unless unpinned.
-func sshConfig(t *testing.T, s *sshtest.Server, pin bool, extra map[string]any) Config {
+// sshConfigMap is a configuration reaching s as the plugin would: its
+// own key (sshtest's identity), the host key pinned unless unpinned.
+func sshConfigMap(t *testing.T, s *sshtest.Server, pin bool, extra map[string]any) map[string]any {
 	t.Helper()
 	key, err := os.ReadFile(s.IdentityFile)
 	if err != nil {
@@ -57,7 +57,13 @@ func sshConfig(t *testing.T, s *sshtest.Server, pin bool, extra map[string]any) 
 	for k, v := range extra {
 		m[k] = v
 	}
-	cfg, err := parseConfig(m)
+	return m
+}
+
+// sshConfig is sshConfigMap parsed.
+func sshConfig(t *testing.T, s *sshtest.Server, pin bool, extra map[string]any) Config {
+	t.Helper()
+	cfg, err := parseConfig(sshConfigMap(t, s, pin, extra))
 	if err != nil {
 		t.Fatal(err)
 	}

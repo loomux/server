@@ -2,7 +2,10 @@ package docker
 
 import (
 	"context"
+	"io"
+	"log"
 	"testing"
+	"time"
 
 	"github.com/Loomux/server/plugins"
 	"github.com/Loomux/server/plugins/protocol"
@@ -57,4 +60,53 @@ func required(s *plugins.Schema, name string) bool {
 		}
 	}
 	return false
+}
+
+const testInstance = "11111111-2222-3333-4444-555555555555"
+
+// newTestPlugin is a plugin with short waits and no log output.
+func newTestPlugin() *Plugin {
+	p := New()
+	p.Logger = log.New(io.Discard, "", 0)
+	p.CreateWait = 2 * time.Second
+	p.CreateTimeout = 10 * time.Second
+	p.OpTTL = time.Minute
+	return p
+}
+
+// configureParams is what the host sends at configure: cfg with the
+// schema's defaults, validated against it.
+func configureParams(t *testing.T, cfg map[string]any) protocol.ConfigureParams {
+	t.Helper()
+	m, err := plugins.ParseManifest(ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := m.Schema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg["agent_image"]; !ok {
+		cfg["agent_image"] = "ghcr.io/loomux/agent:test"
+	}
+	cfg = s.ApplyDefaults(cfg)
+	if err := s.Validate(cfg); err != nil {
+		t.Fatalf("config isn't valid for the schema: %v", err)
+	}
+	return protocol.ConfigureParams{Config: cfg, Host: protocol.HostInfo{Version: "test", InstanceID: testInstance}}
+}
+
+// spec is a machine's spec as the host sends it.
+func spec(id string) protocol.EnvironmentSpec {
+	return protocol.EnvironmentSpec{
+		ID: id, TargetID: "target-" + id, Name: "builds for project x", Size: "small", Persistent: true, Egress: protocol.EgressInternet,
+		Image: "ghcr.io/loomux/agent:test",
+		SSH: protocol.SSHBootstrap{
+			AuthorizedKey:  "no-port-forwarding,no-agent-forwarding,no-X11-forwarding ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestTestTestTestTestTestTestTestTestTestKey loomux-builds",
+			HostPrivateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nTESTKEY\n-----END OPENSSH PRIVATE KEY-----\n",
+			HostPublicKey:  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHostHostHostHostHostHostHostHostHostHostHost",
+			Port:           2222,
+		},
+		Labels: map[string]string{protocol.LabelInstance: testInstance, protocol.LabelTarget: "target-" + id, protocol.LabelEnvironment: id},
+	}
 }

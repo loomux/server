@@ -49,6 +49,12 @@ func testSpec(id string, info protocol.TargetsInfo) protocol.EnvironmentSpec {
 	}
 }
 
+// plainHost is what checkEnvironment accepts of a host: nothing ssh
+// could read as an option or a shell as syntax.
+func plainHost(h string) bool {
+	return h != "" && !strings.ContainsAny(h, " \t\r\n;$`'\"\\@/{}") && !strings.HasPrefix(h, "-")
+}
+
 func describeTargets(t *testing.T, conn *rpc.Conn, o Options) protocol.TargetsInfo {
 	t.Helper()
 	var info protocol.TargetsInfo
@@ -105,8 +111,12 @@ func testTargetsDescribe(t *testing.T, launch Launch, o Options) {
 	if info.Port < 1 || info.Port > 65535 || info.User == "" {
 		t.Errorf("targets.describe must say the sshd user and port: %+v", info)
 	}
-	if !strings.Contains(info.AddressTemplate, "{id}") {
-		t.Errorf("address_template must contain {id}: %q", info.AddressTemplate)
+	// Either a name derived from the id (Kubernetes) or one fixed host
+	// every machine shares, each at its own port (Docker).
+	if info.AddressTemplate == "" {
+		t.Error("address_template must name where machines are reachable")
+	} else if !strings.Contains(info.AddressTemplate, "{id}") && !plainHost(info.AddressTemplate) {
+		t.Errorf("address_template must contain {id} or be a host the host's grammar accepts: %q", info.AddressTemplate)
 	}
 	switch info.SSHProxy {
 	case protocol.SSHProxyNone, protocol.SSHProxyDefault:
