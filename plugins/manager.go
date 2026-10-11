@@ -326,7 +326,11 @@ func (m *Manager) Enable(ctx context.Context, id string) (*View, error) {
 	if inst := m.instance(id); inst == nil || inst.Status().State != StateRunning {
 		p.Enabled = true
 		m.setSecrets(id, p.Secrets)
-		startErr = m.startAndCheck(ctx, p)
+		// The retry adopts like a start does: a sidecar that came up
+		// late, on a new version, recovers here.
+		if startErr = m.adopt(ctx, p); startErr == nil {
+			startErr = m.startAndCheck(ctx, p)
+		}
 	}
 	view, err := m.view(ctx, p)
 	if err != nil {

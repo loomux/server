@@ -574,7 +574,7 @@ func TestManagerAdoptsSocketBuiltForAnOlderMinor(t *testing.T) {
 	m2 := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, host, nil, nil)
 	t.Cleanup(func() { _ = m2.Close(context.Background()) })
 	avail, err := m2.Available(context.Background())
-	if err != nil || len(avail) != 1 || !strings.Contains(avail[0].Incompatible, "was built for Loomux 0.3.x") {
+	if err != nil || len(avail) != 1 || avail[0].Incompatible != "" || !strings.Contains(avail[0].Warning, "was built for Loomux 0.3.x") {
 		t.Fatalf("Available = %+v, %v", avail, err)
 	}
 	if err := m2.StartAll(context.Background()); err != nil {
@@ -583,5 +583,44 @@ func TestManagerAdoptsSocketBuiltForAnOlderMinor(t *testing.T) {
 	got, err := m2.Get(context.Background(), v.ID)
 	if err != nil || got.Version != "0.2.0" || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
 		t.Errorf("after start = %+v, %v; want 0.2.0 running", got, err)
+	}
+}
+
+// A sidecar that wasn't listening when the server started is in
+// error; when it comes up on a new version, Enable (the retry) adopts
+// it like a start does, so neither Upgrade nor a server restart is
+// needed (review of #352).
+func TestManagerEnableAdoptsALateSidecar(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "fake.sock")
+	host := protocol.HostInfo{Version: "test", InstanceID: "inst"}
+	stop := serveFakeSocket(t, sock)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	m := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, host, nil, nil)
+	v, err := m.Install(context.Background(), plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceSocket, Label: "side", Config: map[string]any{"token": "t"}})
+	if err != nil {
+		t.Fatalf("Install from the socket: %v", err)
+	}
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	// The server comes up before the sidecar does.
+	m2 := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, host, nil, nil)
+	t.Cleanup(func() { _ = m2.Close(context.Background()) })
+	if err := m2.StartAll(context.Background()); err == nil {
+		t.Fatal("a start without the sidecar should fail")
+	}
+	if got, _ := m2.Get(context.Background(), v.ID); got.Status != registry.PluginStatusError {
+		t.Fatalf("without the sidecar = %+v", got)
+	}
+	// Now it listens, on a new version.
+	fake.Version = "0.2.0"
+	t.Cleanup(func() { fake.Version = "" })
+	stop2 := serveFakeSocket(t, sock)
+	t.Cleanup(stop2)
+	got, err := m2.Enable(context.Background(), v.ID)
+	if err != nil || got.Version != "0.2.0" || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
+		t.Errorf("Enable = version %s %s %q instance %q, %v; want 0.2.0 running", got.Version, got.Status, got.StatusReason, got.Instance.State, err)
 	}
 }

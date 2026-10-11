@@ -66,16 +66,20 @@ container. At startup the server adopts the new version on its own,
 for a bundled plugin and for a sidecar (from what it describes itself
 as), when it declares the same capabilities and configuration schema
 as the installed one, defaults aside: the row moves to the new
-version and the new binary runs, nothing to click. A setting you never
-changed follows the plugin's new default at that point (the
-`agent_image` pin of a release, for instance), one you set stays. When
-the capabilities or the schema's shape changed, the plugin stays
-stopped in status `error` with a reason naming the new version
-("upgrade the plugin"): the old binary is no longer there, and only
-`POST /api/v1/plugins/{id}/upgrade`, which applies the same default
-rule, adds new settings' defaults and checks the new version, can move
-it. A directory plugin is yours to upgrade: replace its files, then
-press Upgrade.
+version and the new binary runs, nothing to click. A setting still
+equal to the plugin's previous default follows its new default at that
+point (the `agent_image` pin of a release, for instance); one that
+differs from the previous default stays. The server can't tell a value
+you set from the default it equals, so to freeze an image, pin a value
+other than the one the plugin shipped with. A sidecar that wasn't
+answering when the server started is in status `error`; enabling it
+again adopts it the same way once it is up. When the capabilities or
+the schema's shape changed, the plugin stays stopped in status `error`
+with a reason naming the new version ("upgrade the plugin"): the old
+binary is no longer there, and only `POST /api/v1/plugins/{id}/upgrade`,
+which applies the same default rule, adds new settings' defaults and
+checks the new version, can move it. A directory plugin is yours to
+upgrade: replace its files, then press Upgrade.
 
 **`min_host_version` is enforced.** A manifest's `min_host_version` is
 checked against the server's version. The server **refuses** a plugin

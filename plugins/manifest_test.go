@@ -369,3 +369,26 @@ func TestSchemaFollowDefaults(t *testing.T) {
 		t.Errorf("nil in, nil out: %v", got)
 	}
 }
+
+// Only the schema keyword "default" is set aside: a configuration
+// property that happens to be named "default" is part of the shape
+// (review of #352).
+func TestManifestSameSchemaKeepsAPropertyNamedDefault(t *testing.T) {
+	a := manifestWith(t, "")
+	a.ConfigSchema = json.RawMessage(`{"type":"object","properties":{"default":{"type":"string","default":"x"}}}`)
+	b := manifestWith(t, "")
+	b.ConfigSchema = json.RawMessage(`{"type":"object","properties":{"default":{"type":"integer","default":"x"}}}`)
+	if a.SameCapabilitiesAndSchema(b) {
+		t.Error("a changed type of the property named default must differ")
+	}
+	c := manifestWith(t, "")
+	c.ConfigSchema = json.RawMessage(`{"type":"object","properties":{}}`)
+	if a.SameCapabilitiesAndSchema(c) {
+		t.Error("a dropped property named default must differ")
+	}
+	d := manifestWith(t, "")
+	d.ConfigSchema = json.RawMessage(`{"type":"object","properties":{"default":{"type":"string","default":"y"}}}`)
+	if !a.SameCapabilitiesAndSchema(d) {
+		t.Error("the property's own default keyword is still set aside")
+	}
+}

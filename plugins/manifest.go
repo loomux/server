@@ -231,9 +231,9 @@ func (m *Manifest) SameCapabilitiesAndSchema(o *Manifest) bool {
 	return reflect.DeepEqual(schemaValue(m.ConfigSchema), schemaValue(o.ConfigSchema))
 }
 
-// schemaValue is a config_schema as a comparable value, its defaults
-// removed at every depth: nil when absent or null, the raw text when
-// it doesn't parse.
+// schemaValue is a config_schema as a comparable value, its default
+// keywords removed at every depth: nil when absent or null, the raw
+// text when it doesn't parse.
 func schemaValue(raw json.RawMessage) any {
 	if len(raw) == 0 {
 		return nil
@@ -242,24 +242,27 @@ func schemaValue(raw json.RawMessage) any {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return string(raw)
 	}
-	return withoutDefaults(v)
+	return withoutDefaults(v, false)
 }
 
-func withoutDefaults(v any) any {
+// withoutDefaults drops the "default" keyword from every schema object.
+// The keys of a "properties" object are property names, not keywords:
+// a property that happens to be called "default" stays.
+func withoutDefaults(v any, propertyNames bool) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, val := range x {
-			if k == "default" {
+			if !propertyNames && k == "default" {
 				continue
 			}
-			out[k] = withoutDefaults(val)
+			out[k] = withoutDefaults(val, !propertyNames && k == "properties")
 		}
 		return out
 	case []any:
 		out := make([]any, len(x))
 		for i, val := range x {
-			out[i] = withoutDefaults(val)
+			out[i] = withoutDefaults(val, false)
 		}
 		return out
 	}
