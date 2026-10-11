@@ -184,9 +184,14 @@ refuses a plugin below its `min_host_version` or from another major,
 warns about one built for an older `0.Y` and runs it, and adopts a
 bundled or sidecar plugin's new version on its own when its
 capabilities and configuration schema (defaults aside) are unchanged;
-a setting still at the plugin's previous default follows the new one
-then, so an install that never changed `agent_image` moves to the
-release's agent pin, while a value the operator set stays
+a setting still equal to the plugin's previous default follows the new
+one then, so an install whose `agent_image` is still the shipped
+default moves to the release's agent pin, while a value that differs
+from the previous default stays (to freeze an image, pin a value other
+than the one the plugin shipped with: the server can't tell a hand-set
+copy of the default from the default). `GET /api/v1/plugins/available`
+says `incompatible` for a plugin the server refuses and
+`incompatible_warning` for one that runs with a warning
 (`docs/deploy/plugins.md`, "Upgrades and compatibility").
 
 ### Deploying a release
@@ -203,10 +208,18 @@ The digests are in the release notes and in the run's `publish` job
 summaries; verify them with `gh attestation verify` before pinning.
 Flux image automation is not used: TEST deploys are deliberate and
 reviewed, and production is pinned by hand. After the rollout the
-server adopts the new sidecar version at its next start when the
+server adopts the new sidecar version at its next start, or on Enable
+when the sidecar wasn't answering at that moment, as long as the
 plugin's capabilities and schema are unchanged (the usual case); when
 they changed, the plugin shows "upgrade the plugin" and Upgrade moves
 it.
+
+**The first stamped deploy moves every install still on
+`ghcr.io/loomux/agent:main` to the release's pinned agent image**, TEST
+included: that value is the old shipped default, so it follows. Machines
+on another digest then show `update_available`; recreate them when
+convenient. An install meant to stay on a floating or other image must
+be set to a value other than the shipped default before that deploy.
 
 ## The API v1 contract (`api/testdata/api-v1-contract.txt`)
 
