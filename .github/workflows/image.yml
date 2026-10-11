@@ -1,4 +1,14 @@
-# Builds ghcr.io/loomux/server and publishes it on merge to main (LOOM-51).
+# The release run (LOOM-51, LOOM-129, LOOM-194; docs/release/versioning.md):
+# builds ghcr.io/loomux/server and, through the reusable workflows it
+# calls, the agent and plugin images, and publishes them all under the
+# version a merge to main reserves. version -> agent (agent.yml: reused
+# or rebuilt and published) -> image (the server, built with the agent
+# pin) and plugins (plugins.yml: tested and built with it) -> publish
+# (one matrix: server, plugin-kubernetes, plugin-docker, each as
+# :X.Y.Z, :sha-<short> and :main, the server also its legacy bare
+# :<short>, attested) -> release (the GitHub release, naming each
+# image's tag@digest). A pull request builds and verifies the server
+# image only; plugin pull requests run plugins.yml on their own.
 #
 # Two things here are less boilerplate than they look:
 #
@@ -84,19 +94,32 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Version: ${version:-none}" >> "$GITHUB_STEP_SUMMARY"
 
-  image:
+  # The agent image this release pins (agent.yml): the current one when
+  # deploy/agent didn't change, otherwise rebuilt and published first,
+  # since the server and plugin builds name it by digest.
+  agent:
     needs: version
-    if: ${{ !cancelled() && needs.version.result != 'failure' }}
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.version.result == 'success' }}
+    uses: ./.github/workflows/agent.yml
     permissions:
       contents: read
       packages: write
-      # The build-provenance attestation of the pushed image (LOOM-194).
       id-token: write
       attestations: write
+    with:
+      version: ${{ needs.version.outputs.version }}
+      publish: true
+
+  image:
+    needs: [version, agent]
+    if: ${{ !cancelled() && needs.version.result != 'failure' && needs.agent.result != 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       web_version: ${{ steps.meta.outputs.web_version }}
       web_short: ${{ steps.webref.outputs.short }}
+      sha: ${{ steps.meta.outputs.sha }}
 
     steps:
       - name: Check out loomux/server
@@ -193,7 +216,7 @@ jobs:
           WEB_REF: ${{ steps.webref.outputs.ref }}
         run: |
           set -eu
-          short="$(git rev-parse --short HEAD)"
+          short="$(git rev-parse --short=7 HEAD)"
           echo "sha=${short}" >> "$GITHUB_OUTPUT"
           echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
           # The web client's own version, from its tag on the pinned commit:
@@ -208,8 +231,9 @@ jobs:
 
       # OCI labels: the action's version/revision/source/created, with
       # the title and description of this image rather than of the
-      # repository, and the version as the release (or the commit) rather
-      # than a tag name (LOOM-194).
+      # repository, and the version as the release, or sha-<short>
+      # without one, as every image labels it: publish-image.sh reuses a
+      # commit tag only under this run's version label (LOOM-194).
       - name: Image labels
         id: labels
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -218,7 +242,7 @@ jobs:
           labels: |
             org.opencontainers.image.title=loomux-server
             org.opencontainers.image.description=Loomux server (loomuxd): chat-driven multi-agent tmux orchestration
-            org.opencontainers.image.version=${{ steps.meta.outputs.release || steps.meta.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.release || format('sha-{0}', steps.meta.outputs.sha) }}
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -271,69 +295,155 @@ jobs:
             echo "OK: runtime dependencies and web bundle present"
           '
 
-      - name: Log in to GHCR
+      # Handed to the publish job below, which pushes it once every build
+      # and test job of the release passed: a pushed-then-failed image is
+      # already visible to anything watching the tag.
+      - name: Save the verified image for publish
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        run: docker save "${IMAGE}:${{ steps.meta.outputs.sha }}" | zstd -T0 -o server-image.tar.zst
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name != 'pull_request'
+        with:
+          name: server-image
+          path: server-image.tar.zst
+          retention-days: 1
+          if-no-files-found: error
+
+  # The plugin images (plugins.yml): unit tests, the end to end when
+  # plugin code changed, the images built against the agent pin, smoke
+  # tested and scanned, uploaded for the publish job.
+  plugins:
+    needs: [version, agent]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.version.result == 'success' && needs.agent.result == 'success' }}
+    uses: ./.github/workflows/plugins.yml
+    permissions:
+      contents: read
+    with:
+      version: ${{ needs.version.outputs.version }}
+      agent_image: ${{ needs.agent.outputs.image }}
+
+  # Every image of the release, pushed only once every build and test
+  # job passed, each under :sha-<short>, :<version> (a release) and
+  # :main (a main push; a hand-pushed tag on an older commit doesn't
+  # move it), the server also under its legacy bare :<short> until
+  # theWyseKube pins versions. A version or sha tag is never re-pushed:
+  # one that exists for this commit under this run's version is reused
+  # (a re-run), one under another version is left alone (a hand-pushed
+  # MINOR on a released commit: its own build is pushed as the MINOR),
+  # one from another commit fails the run (deploy/publish-image.sh).
+  # Each digest gets a GitHub
+  # build-provenance attestation. A run without a version (a merge a
+  # newer release already covers, a plain rebuild) publishes its sha
+  # tags only and moves nothing.
+  publish:
+    needs: [version, image, plugins]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.image.result == 'success' && needs.plugins.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            image: ghcr.io/loomux/server
+            artifact: server-image
+          - name: plugin-kubernetes
+            image: ghcr.io/loomux/plugin-kubernetes
+            artifact: plugin-kubernetes-image
+          - name: plugin-docker
+            image: ghcr.io/loomux/plugin-docker
+            artifact: plugin-docker-image
+    env:
+      IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.artifact }}
+
+      - name: Load the tested image
+        run: zstd -d -c ${{ matrix.artifact }}.tar.zst | docker load
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Both tags point at the same verified image. theWyseKube pins the SHA
-      # tag; :main exists for humans and for "what is current".
-      - name: Push
-        id: push
-        if: github.event_name != 'pull_request'
+      - name: Publish
+        id: publish
         env:
-          RELEASE: ${{ steps.meta.outputs.release }}
+          NAME: ${{ matrix.name }}
+          VERSION: ${{ needs.version.outputs.version }}
+          SERVER_SHA: ${{ needs.image.outputs.sha }}
         run: |
-          set -euo pipefail
-          # The digest the push reports is what the attestation names.
-          digest="$(docker push "${IMAGE}:${{ steps.meta.outputs.sha }}" | tee /dev/stderr |
-            sed -n 's/.*digest: \(sha256:[0-9a-f]*\).*/\1/p' | tail -n 1)"
-          [ -n "${digest}" ] || { echo "::error::the push reported no digest"; exit 1; }
+          set -eu
+          short="$(git rev-parse --short=7 HEAD)"
+          if [ "${NAME}" = server ]; then
+            local="${IMAGE}:${SERVER_SHA}"
+            tags="${short} sha-${short}"
+          else
+            local="${IMAGE}:test"
+            tags="sha-${short}"
+          fi
+          [ -z "${VERSION}" ] || tags="${tags} ${VERSION}"
+          [ "${GITHUB_REF}" != refs/heads/main ] || tags="${tags} main"
+          # The version label this run gives its image: an existing commit
+          # tag is adopted only under the same one, so a hand-pushed MINOR
+          # on a released commit publishes its own build (deploy/publish-image.sh).
+          # shellcheck disable=SC2086 # one word per tag
+          digest="$(deploy/publish-image.sh "${IMAGE}" "${GITHUB_SHA}" "${VERSION:-sha-${short}}" "${local}" ${tags})"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          # :main follows main; a release adds its version tag.
-          if [ "${GITHUB_REF}" = refs/heads/main ]; then
-            docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:main"
-            docker push "${IMAGE}:main"
-          fi
-          if [ -n "${RELEASE}" ]; then
-            docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:${RELEASE}"
-            docker push "${IMAGE}:${RELEASE}"
-          fi
+          mkdir -p published
+          echo "${IMAGE}:${VERSION:-sha-${short}}@${digest}" > "published/${NAME}.txt"
           {
-            echo "### Pushed \`${IMAGE}:${{ steps.meta.outputs.sha }}\`${RELEASE:+ and \`:${RELEASE}\`}"
+            echo "### \`${IMAGE}:${VERSION:-sha-${short}}@${digest}\`"
             echo ""
-            echo "UI from loomux/web release \`web-${{ steps.webref.outputs.short }}\`"
+            echo "Tags: ${tags}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # A GitHub build-provenance attestation for the pushed digest, as
-      # the agent and plugin images have (plugins.yml): the same identity
-      # the web updater verifies bundles against (LOOM-118, LOOM-194).
       - name: Attest
-        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
           push-to-registry: true
 
-  # The GitHub release for a version, once its image is pushed (LOOM-129).
-  # Its tag already exists (reserved above, or pushed by hand). The notes
-  # are the version's CHANGELOG.md section when it has one (a milestone),
-  # otherwise the merged pull request's title, and say which web version
-  # the release pins. 0.y.z and -pre versions are pre-releases, and
-  # nothing here marks a release "latest".
+      # For the release notes.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-${{ matrix.name }}
+          path: published/
+          retention-days: 1
+          if-no-files-found: error
+
+  # The GitHub release for a version, once every image is pushed
+  # (LOOM-129). Its tag already exists (reserved above, or pushed by
+  # hand). The notes are the version's CHANGELOG.md section when it has
+  # one (a milestone), otherwise the merged pull request's title, and
+  # say which web version the release pins and which images it
+  # published, each as tag@digest. 0.y.z and -pre versions are
+  # pre-releases, and nothing here marks a release "latest".
   release:
-    needs: [version, image]
-    if: ${{ !cancelled() && needs.image.result == 'success' && needs.version.outputs.version != '' }}
+    needs: [version, image, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.version.outputs.version != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: published-*
+          path: published
+          merge-multiple: true
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -350,6 +460,8 @@ jobs:
             [ -s notes.md ] || git log -1 --format='- %s' > notes.md
           fi
           printf '\nWeb client: %s (`web-%s`).\n' "${WEB_VERSION:-unversioned}" "${WEB_SHORT}" >> notes.md
+          printf '\nImages:\n' >> notes.md
+          for f in published/*.txt; do printf -- '- `%s`\n' "$(cat "$f")" >> notes.md; done
           pre=""
           if deploy/release.sh prerelease "${VERSION}"; then pre="--prerelease"; fi
           gh release create "${tag}" --verify-tag ${pre} --latest=false \

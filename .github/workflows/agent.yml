@@ -1,0 +1,196 @@
+# The agent image, ghcr.io/loomux/agent (deploy/agent/, docs/deploy/
+# agent-image.md), on the server's version line (LOOM-194;
+# docs/release/versioning.md, "Images"). A reusable workflow: the
+# release run (image.yml) calls it with the version it is releasing,
+# before the server and plugin builds, which pin the image it answers
+# with.
+#
+# The image is rebuilt only when its inputs changed: on a release, the
+# current :main's revision label (the commit it was built from) is
+# compared with HEAD over deploy/agent; unchanged, the current image is
+# reused and its tag@digest handed on. A rebuilt image is smoke tested
+# and scanned, then published as :sha-<short>, :<version> (a release)
+# and :main (a main push), and attested. A version tag that already
+# exists for this commit is reused (a re-run); one built from another
+# commit fails the run (deploy/publish-image.sh). Every version of the
+# image stays: nothing here deletes a tag.
+#
+# Actions are pinned by commit, with the release in a comment.
+name: agent
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "The release version (X.Y.Z); empty when the run has none"
+        type: string
+        default: ""
+      publish:
+        description: "Publish (a release run). Otherwise build and test only."
+        type: boolean
+        default: false
+    outputs:
+      image:
+        description: "ghcr.io/loomux/agent:<tag>@sha256:<digest>, the image this release pins; empty when not publishing"
+        value: ${{ jobs.agent.outputs.image }}
+      built:
+        description: "true when the image was rebuilt in this run"
+        value: ${{ jobs.agent.outputs.built }}
+
+env:
+  IMAGE: ghcr.io/loomux/agent
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ steps.result.outputs.image }}
+      built: ${{ steps.decide.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The revision the current image was built from is compared
+          # with HEAD.
+          fetch-depth: 0
+
+      # Reuse or rebuild (see the header). A reused image is named by a
+      # tag that exists for its digest: the version it was released as,
+      # or its sha-<short> tag.
+      - name: Decide
+        id: decide
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          short="$(git rev-parse --short=7 HEAD)"
+          echo "short=${short}" >> "$GITHUB_OUTPUT"
+          build=true
+          ref=""
+          if [ "${PUBLISH}" = true ]; then
+            if [ -n "${VERSION}" ] && existing="$(deploy/ghcr.sh digest "${IMAGE}" "${VERSION}")"; then
+              rev="$(deploy/ghcr.sh label "${IMAGE}" "${VERSION}" org.opencontainers.image.revision)"
+              if [ "${rev}" != "${GITHUB_SHA}" ]; then
+                echo "::error::${IMAGE}:${VERSION} exists and was built from ${rev:-an unknown commit}, not ${GITHUB_SHA}"
+                exit 1
+              fi
+              build=false
+              ref="${IMAGE}:${VERSION}@${existing}"
+              echo "${IMAGE}:${VERSION} already exists for this commit: reusing it."
+            else
+              rev="$(deploy/ghcr.sh label "${IMAGE}" main org.opencontainers.image.revision || true)"
+              ver="$(deploy/ghcr.sh label "${IMAGE}" main org.opencontainers.image.version || true)"
+              digest="$(deploy/ghcr.sh digest "${IMAGE}" main || true)"
+              case "${ver}" in
+              main | "") ver="sha-$(git rev-parse --short=7 "${rev}" 2>/dev/null || true)" ;;
+              esac
+              if [ -n "${rev}" ] && [ -n "${digest}" ] &&
+                 git cat-file -e "${rev}^{commit}" 2>/dev/null &&
+                 git diff --quiet "${rev}" HEAD -- deploy/agent &&
+                 [ "$(deploy/ghcr.sh digest "${IMAGE}" "${ver}" || true)" = "${digest}" ]; then
+                build=false
+                ref="${IMAGE}:${ver}@${digest}"
+                echo "deploy/agent is unchanged since ${rev}: reusing ${ref}."
+              else
+                echo "Rebuilding: deploy/agent changed since the current :main (built from ${rev:-no revision label})."
+              fi
+            fi
+          fi
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+          echo "image=${ref}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.decide.outputs.build == 'true'
+
+      # The action's defaults name the repository ("server"): say what
+      # this image is, and name its version as the release (or its
+      # commit) rather than a branch.
+      - name: Image labels
+        id: meta
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.title=loomux-agent
+            org.opencontainers.image.description=Loomux agent machine: tmux, sshd and the agent CLIs, for machines a plugin makes
+            org.opencontainers.image.version=${{ inputs.version || format('sha-{0}', steps.decide.outputs.short) }}
+
+      - name: Build
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: deploy/agent
+          load: true
+          tags: ${{ env.IMAGE }}:test
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A green build says nothing about whether sshd starts as a
+      # non-root user or the CLIs run: log in over ssh the way Loomux
+      # does, with a generated key and a pinned host key.
+      - name: Smoke test
+        if: steps.decide.outputs.build == 'true'
+        run: bash deploy/agent/smoke.sh "${IMAGE}:test"
+
+      - name: Scan
+        if: steps.decide.outputs.build == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:test
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: steps.decide.outputs.build == 'true' && inputs.publish
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The very image the steps above tested, under every tag; :main
+      # only follows main (a hand-pushed MINOR tag on an older commit
+      # doesn't move it).
+      - name: Publish
+        id: publish
+        if: steps.decide.outputs.build == 'true' && inputs.publish
+        env:
+          VERSION: ${{ inputs.version }}
+          SHORT: ${{ steps.decide.outputs.short }}
+        run: |
+          set -eu
+          tags="sha-${SHORT}"
+          [ -z "${VERSION}" ] || tags="${tags} ${VERSION}"
+          [ "${GITHUB_REF}" != refs/heads/main ] || tags="${tags} main"
+          # shellcheck disable=SC2086 # the tags are one word each
+          digest="$(deploy/publish-image.sh "${IMAGE}" "${GITHUB_SHA}" "${VERSION:-sha-${SHORT}}" "${IMAGE}:test" ${tags})"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "tag=${VERSION:-sha-${SHORT}}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest
+        if: steps.decide.outputs.build == 'true' && inputs.publish
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      - name: Result
+        id: result
+        env:
+          REUSED: ${{ steps.decide.outputs.image }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          TAG: ${{ steps.publish.outputs.tag }}
+        run: |
+          ref="${REUSED}"
+          if [ -n "${DIGEST}" ]; then ref="${IMAGE}:${TAG}@${DIGEST}"; fi
+          echo "image=${ref}" >> "$GITHUB_OUTPUT"
+          echo "Agent image: ${ref:-built and tested, not published}" >> "$GITHUB_STEP_SUMMARY"

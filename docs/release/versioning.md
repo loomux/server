@@ -32,13 +32,13 @@ Loomux follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
      Nothing is queued or cancelled: no concurrency group, so every merge's run builds. A re-run of a commit that already has a version keeps it. If a newer merge's run has already released, an older merge it contains releases nothing of its own (its changes ship in the newer version), so versions follow main's order.
    - **A hand-pushed tag** (`v0.1.0`, a MINOR milestone, 1.0.0) must be `v` + SemVer 2.0.0 with no build metadata, on `main`, with a `CHANGELOG.md` section.
    - **A plain manual rebuild, or a PR,** has no version.
-2. **`image`** builds with that version (`server_version` = `0.1.N (web 0.1.M)`) and pushes `:<sha>`, `:main` for main, and `:0.1.N`. The tag already exists by then.
+2. **`agent`**, **`image`** and **`plugins`** build with that version: the agent image is reused or rebuilt and published first (`agent.yml`), then the server image (`image` job, built with the agent pin) and the plugin images (`plugins.yml`) are built and tested. **`publish`** then pushes every image at once, each as `:0.1.N`, `:sha-<short>` and `:main` (the server also its legacy bare `:<short>`), once every build and test job passed. The tag already exists by then. See "Images" below.
 3. **A failed build burns its number.** v* tags are immutable (a
    ruleset on both repositories: no update or delete), so a reserved tag
    is never given back. A re-run of that commit finds its tag and builds
    the same version; otherwise the next merge takes the next number, and
    the line has a gap. SemVer allows gaps, and no version is ever reused.
-4. **`release`** creates the GitHub pre-release for the tag (never "latest"). The notes are the merged PR's title, or the version's CHANGELOG section for a milestone, plus the web version pinned.
+4. **`release`** creates the GitHub pre-release for the tag (never "latest"). The notes are the merged PR's title, or the version's CHANGELOG section for a milestone, plus the web version pinned and each image's `tag@digest`.
 5. **MINOR:** a hand-pushed tag, as below. (The workflow's
    **bump = minor** input doesn't work on a merge commit: that commit
    already has its patch tag, and a re-run keeps a commit's version.)
