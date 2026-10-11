@@ -548,3 +548,40 @@ func TestManagerRunsAnOlderMinorWithAWarning(t *testing.T) {
 		t.Errorf("after start = %+v, %v; want running", got, err)
 	}
 }
+
+// A sidecar whose new image was built for an older 0.Y than this host
+// is adopted all the same, with the warning (the host refuses only
+// below the minimum or across majors).
+func TestManagerAdoptsSocketBuiltForAnOlderMinor(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "fake.sock")
+	host := protocol.HostInfo{Version: "0.4.2 (web 0.4.0)", InstanceID: "inst"}
+	stop := serveFakeSocket(t, sock)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	m := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, host, nil, nil)
+	v, err := m.Install(context.Background(), plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceSocket, Label: "side", Config: map[string]any{"token": "t"}})
+	if err != nil {
+		t.Fatalf("Install from the socket: %v", err)
+	}
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	fake.Version, fake.MinHostVersion = "0.2.0", "0.3.0"
+	t.Cleanup(func() { fake.Version, fake.MinHostVersion = "", "" })
+	stop2 := serveFakeSocket(t, sock)
+	t.Cleanup(stop2)
+	m2 := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, host, nil, nil)
+	t.Cleanup(func() { _ = m2.Close(context.Background()) })
+	avail, err := m2.Available(context.Background())
+	if err != nil || len(avail) != 1 || !strings.Contains(avail[0].Incompatible, "was built for Loomux 0.3.x") {
+		t.Fatalf("Available = %+v, %v", avail, err)
+	}
+	if err := m2.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	got, err := m2.Get(context.Background(), v.ID)
+	if err != nil || got.Version != "0.2.0" || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
+		t.Errorf("after start = %+v, %v; want 0.2.0 running", got, err)
+	}
+}
