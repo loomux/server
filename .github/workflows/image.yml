@@ -392,6 +392,9 @@ jobs:
           NAME: ${{ matrix.name }}
           VERSION: ${{ needs.version.outputs.version }}
           SERVER_SHA: ${{ needs.image.outputs.sha }}
+          # The re-tagging copies manifests through the registry API.
+          GHCR_USER: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           short="$(git rev-parse --short=7 HEAD)"
