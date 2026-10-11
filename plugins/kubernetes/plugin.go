@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -33,8 +34,19 @@ import (
 //go:embed plugin.json
 var ManifestJSON []byte
 
-// Version is the plugin's, as plugin.json says.
-const Version = "0.1.0"
+// Version is the plugin's, as plugin.json says: 0.0.0-dev in the tree,
+// the release a build was stamped with (plugins/manifeststamp).
+var Version = manifestVersion()
+
+func manifestVersion() string {
+	var m struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(ManifestJSON, &m); err != nil || m.Version == "" {
+		return "unknown"
+	}
+	return m.Version
+}
 
 // Problem codes the plugin reports from plugin.check.
 const (

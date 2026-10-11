@@ -21,7 +21,7 @@ func TestManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plugin.json: %v", err)
 	}
-	if m.Name != "docker" || m.Version != Version || m.Protocol != protocol.Version {
+	if m.Name != "docker" || m.Version != "0.0.0-dev" || Version != "0.0.0-dev" || m.Protocol != protocol.Version {
 		t.Errorf("manifest = %+v", m)
 	}
 	for _, c := range []string{protocol.CapTargetsCreate, protocol.CapTargetsStopStart, protocol.CapTargetsRecreate, protocol.CapTargetsPersistent, protocol.CapTargetsEphemeral, protocol.CapTargetsAttachCommands} {

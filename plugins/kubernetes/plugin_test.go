@@ -121,7 +121,7 @@ func TestManifest(t *testing.T) {
 	if err := m.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if m.Name != "kubernetes" || m.Version != Version || len(m.Capabilities) != 7 || len(m.Permissions) != 2 {
+	if m.Name != "kubernetes" || m.Version != "0.0.0-dev" || Version != "0.0.0-dev" || len(m.Capabilities) != 7 || len(m.Permissions) != 2 {
 		t.Errorf("manifest = %+v", m)
 	}
 	s, err := m.Schema()
