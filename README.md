@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/banner-dark.svg">
+  <img alt="Loomux" src="docs/brand/banner-light.svg" width="100%">
+</picture>
+
 # Loomux — server
 
 Chat-driven interface to on-demand, tmux-backed coding agents, with a
