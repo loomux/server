@@ -175,7 +175,10 @@ func (m *Manager) Install(ctx context.Context, r InstallRequest) (*View, error) 
 		return nil, err
 	}
 	if err := a.Manifest.HostCompatible(m.host.Version); err != nil {
-		return nil, err
+		if Refused(err) {
+			return nil, err
+		}
+		m.logger.Warn("plugin built for another Loomux", "plugin", r.Label, "reason", err.Error())
 	}
 	schema, err := a.Manifest.Schema()
 	if err != nil {
@@ -367,7 +370,10 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 		return m.view(ctx, p)
 	}
 	if err := a.Manifest.HostCompatible(m.host.Version); err != nil {
-		return nil, err
+		if Refused(err) {
+			return nil, err
+		}
+		m.logger.Warn("plugin built for another Loomux", "plugin", p.Label, "reason", err.Error())
 	}
 	machines, err := m.machines(ctx, id)
 	if err != nil {
@@ -564,7 +570,10 @@ func (m *Manager) startOne(ctx context.Context, id string) error {
 	}
 	if manifest, err := m.installedManifest(p); err == nil {
 		if err := manifest.HostCompatible(m.host.Version); err != nil {
-			return m.fail(ctx, p, strings.TrimPrefix(err.Error(), "plugins: "), nil)
+			if Refused(err) {
+				return m.fail(ctx, p, strings.TrimPrefix(err.Error(), "plugins: "), nil)
+			}
+			m.logger.Warn("plugin built for another Loomux", "plugin", p.Label, "reason", err.Error())
 		}
 	}
 	return m.startAndCheck(ctx, p)
@@ -590,8 +599,8 @@ func (m *Manager) adoptBundled(ctx context.Context, p *registry.Plugin) error {
 	if err != nil {
 		return nil
 	}
-	if a.Incompatible != "" {
-		return m.fail(ctx, p, strings.TrimPrefix(a.Incompatible, "plugins: "), nil)
+	if err := a.Manifest.HostCompatible(m.host.Version); Refused(err) {
+		return m.fail(ctx, p, strings.TrimPrefix(err.Error(), "plugins: "), nil)
 	}
 	if !installed.SameCapabilitiesAndSchema(&a.Manifest) {
 		return m.fail(ctx, p, fmt.Sprintf("the bundled %s is now %s, which changed its capabilities or configuration schema; upgrade the plugin", p.Name, a.Manifest.Version), nil)

@@ -72,17 +72,21 @@ the schema's defaults and checks the new version, can move it. A
 sidecar is upgraded by changing its container, then pressing Upgrade.
 
 **`min_host_version` is enforced.** A manifest's `min_host_version` is
-read as a caret range on the server's version: under 0.x the server
-must be on the same `0.Y` line at or above it (`0.3.0` is met by
-`0.3.80`, not by `0.4.0` or `0.2.9`); from 1.0 the same major. A plugin
-the server can't run is still listed by `GET /api/v1/plugins/available`,
-with `incompatible` saying why; installing or upgrading to it answers
-`409`, and an installed one whose minimum the server no longer meets
-stays stopped in status `error` with the same reason. A server built
-without a release version (`dev`, a plain commit build) runs anything.
-Bundled plugins always match, since they are stamped with the server's
-own version; the rule matters for a sidecar or a directory plugin from
-another release.
+checked against the server's version. The server **refuses** a plugin
+when it is below that minimum (`0.3.81` or `0.4.0` on a `0.3.80`
+server) or on another major (from 1.0 the major is the compatibility
+unit; a `1.x` plugin on a `2.x` server, or a `0.y` one on a `1.x`
+server): `GET /api/v1/plugins/available` still lists it, with
+`incompatible` saying why; installing or upgrading to it answers `409`,
+and an installed one stays stopped in status `error` with the same
+reason. A plugin built for an **older `0.Y`** than the server's
+(`min_host_version 0.3.0` on a `0.4.2` server) is listed with
+`incompatible` as well and a warning is logged, but it installs and
+runs: under 0.x the minor is where things change, so it may not match,
+and the message says so. A server built without a release version
+(`dev`, a plain commit build) runs anything. Bundled plugins always
+match, since they are stamped with the server's own version; the rule
+matters for a sidecar or a directory plugin from another release.
 
 Whatever a plugin writes (its stderr, an error message, a check
 problem) is scrubbed of the plugin's own secret settings before Loomux

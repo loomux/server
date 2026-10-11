@@ -155,10 +155,13 @@ func (m *Manifest) ProtocolMajor() (int, error) {
 	return n, nil
 }
 
-// IncompatibleError: a manifest whose min_host_version this host
-// doesn't meet (LOOM-194). Safe to show.
+// IncompatibleError: a manifest built for another Loomux than this
+// host (LOOM-194). Refuse says the host won't run it (below its
+// min_host_version, or another major); otherwise it runs, warned
+// about: a plugin built for an older 0.Y than the host's. Safe to show.
 type IncompatibleError struct {
 	Name, Version, MinHost, Host string
+	Refuse                       bool
 }
 
 func (e *IncompatibleError) Error() string {
@@ -167,14 +170,21 @@ func (e *IncompatibleError) Error() string {
 	if min.Major == 0 {
 		line = fmt.Sprintf("0.%d.x", min.Minor)
 	}
+	if !e.Refuse {
+		return fmt.Sprintf("plugins: %s %s was built for Loomux %s (min_host_version %s); this server is %s: it runs, but may not match this server", e.Name, e.Version, line, e.MinHost, e.Host)
+	}
 	return fmt.Sprintf("plugins: %s %s needs Loomux %s (min_host_version %s); this server is %s", e.Name, e.Version, line, e.MinHost, e.Host)
 }
 
-// HostCompatible reports whether this host's version meets the
-// manifest's min_host_version, read as a caret range (version.Satisfies:
-// under 0.x the same 0.Y line, otherwise the same major, at or above
-// the minimum). A manifest without a minimum, or a host without a
-// version (dev, a plain commit build), is compatible with anything.
+// HostCompatible checks this host's version against the manifest's
+// min_host_version (user decision 2026-10-11): nil when it is met on
+// the same line; an *IncompatibleError with Refuse when the host is
+// below the minimum or on another major (from 1.0, the major is the
+// compatibility unit); one without Refuse, a warning, when the plugin
+// was built for an older 0.Y than the host's (under 0.x the minor is
+// the unit, but such a plugin still runs). A manifest without a
+// minimum, or a host without a version (dev, a plain commit build), is
+// compatible with anything.
 func (m *Manifest) HostCompatible(host string) error {
 	if m.MinHostVersion == "" {
 		return nil
@@ -184,10 +194,25 @@ func (m *Manifest) HostCompatible(host string) error {
 		return fmt.Errorf("plugins: manifest %q min_host_version %q isn't X.Y.Z", m.Name, m.MinHostVersion)
 	}
 	h, ok := version.Parse(host)
-	if !ok || h.Satisfies(min) {
+	if !ok {
 		return nil
 	}
-	return &IncompatibleError{Name: m.Name, Version: m.Version, MinHost: min.String(), Host: h.String()}
+	err := &IncompatibleError{Name: m.Name, Version: m.Version, MinHost: min.String(), Host: h.String()}
+	switch {
+	case h.Compare(min) < 0, h.Major != min.Major:
+		err.Refuse = true
+		return err
+	case h.Major == 0 && h.Minor != min.Minor:
+		return err
+	}
+	return nil
+}
+
+// Refused reports whether err is an *IncompatibleError the host acts
+// on (as opposed to one it only warns about).
+func Refused(err error) bool {
+	var inc *IncompatibleError
+	return errors.As(err, &inc) && inc.Refuse
 }
 
 // SameCapabilitiesAndSchema reports whether o declares the same

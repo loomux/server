@@ -437,3 +437,37 @@ func TestManagerBundledChangeNeedsUpgrade(t *testing.T) {
 		t.Errorf("the new setting's default wasn't applied: %+v", up.Config)
 	}
 }
+
+// A plugin built for an older 0.Y than this host's runs: listed as
+// incompatible with the reason, warned about, but installed and
+// started (user decision 2026-10-11).
+func TestManagerRunsAnOlderMinorWithAWarning(t *testing.T) {
+	bundle := t.TempDir()
+	dir := fakeDir(t, bundle)
+	m := strings.Replace(string(fake.ManifestJSON), `"version": "0.1.0"`, `"version": "0.1.0", "min_host_version": "0.3.0"`, 1)
+	if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(m), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	mgr := plugins.NewManager(store, &plugins.Catalog{BundleDir: bundle}, protocol.HostInfo{Version: "0.4.2 (web 0.4.0)", InstanceID: "inst"}, nil, nil)
+	t.Cleanup(func() { _ = mgr.Close(context.Background()) })
+	avail, err := mgr.Available(context.Background())
+	if err != nil || len(avail) != 1 || !strings.Contains(avail[0].Incompatible, "was built for Loomux 0.3.x") {
+		t.Fatalf("Available = %+v, %v", avail, err)
+	}
+	v, err := mgr.Install(context.Background(), plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceBundled, Label: "older", Config: map[string]any{"token": "t"}})
+	if err != nil || v.Status != registry.PluginStatusInstalled || v.Instance.State != plugins.StateRunning {
+		t.Fatalf("Install = %+v, %v; want installed and running", v, err)
+	}
+	if err := mgr.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mgr2 := plugins.NewManager(store, &plugins.Catalog{BundleDir: bundle}, protocol.HostInfo{Version: "0.4.2 (web 0.4.0)", InstanceID: "inst"}, nil, nil)
+	t.Cleanup(func() { _ = mgr2.Close(context.Background()) })
+	if err := mgr2.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	if got, err := mgr2.Get(context.Background(), v.ID); err != nil || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
+		t.Errorf("after start = %+v, %v; want running", got, err)
+	}
+}

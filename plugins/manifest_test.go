@@ -185,38 +185,62 @@ func manifestWith(t *testing.T, edits string) *Manifest {
 // HostCompatible: min_host_version is a caret range on the host's
 // version (LOOM-194); a host without a version (dev, a commit) runs
 // anything, and so does a manifest without a minimum.
+// HostCompatible (user decision 2026-10-11): refused when the host is
+// below min_host_version or on another major (from 1.0); a plugin built
+// for an older 0.Y on a newer 0.x host is marked and warned about, and
+// runs.
 func TestManifestHostCompatible(t *testing.T) {
+	const (
+		ok     = "ok"
+		warn   = "warn"
+		refuse = "refuse"
+	)
 	for _, tc := range []struct {
 		min, host string
-		ok        bool
+		want      string
 	}{
-		{"", "0.3.80", true},
-		{"0.3.0", "0.3.80 (web 0.3.12)", true},
-		{"0.3.81", "0.3.80", false},
-		{"0.4.0", "0.3.80", false},
-		{"0.3.0", "0.4.0", false},
-		{"1.0.0", "1.2.3", true},
-		{"1.0.0", "2.0.0", false},
-		{"9.0.0", "dev", true},
-		{"9.0.0", "abc1234 (web 0.3.1)", true},
-		{"9.0.0", "", true},
+		{"", "0.3.80", ok},
+		{"0.3.0", "0.3.80 (web 0.3.12)", ok},
+		{"0.3.81", "0.3.80", refuse},
+		{"0.4.0", "0.3.80", refuse},
+		{"0.3.0", "0.4.0", warn},
+		{"0.3.0", "0.9.9", warn},
+		{"1.0.0", "1.2.3", ok},
+		{"1.0.0", "2.0.0", refuse},
+		{"0.3.0", "1.0.0", refuse},
+		{"9.0.0", "dev", ok},
+		{"9.0.0", "abc1234 (web 0.3.1)", ok},
+		{"9.0.0", "", ok},
 	} {
 		m := manifestWith(t, "")
 		m.MinHostVersion = tc.min
 		err := m.HostCompatible(tc.host)
-		if (err == nil) != tc.ok {
-			t.Errorf("min %q on host %q: err %v, want ok %v", tc.min, tc.host, err, tc.ok)
-		}
+		got := ok
 		var inc *IncompatibleError
-		if err != nil && !errors.As(err, &inc) {
-			t.Errorf("min %q on host %q: %T, want *IncompatibleError", tc.min, tc.host, err)
+		switch {
+		case err == nil:
+		case errors.As(err, &inc) && inc.Refuse:
+			got = refuse
+		case errors.As(err, &inc):
+			got = warn
+		default:
+			t.Errorf("min %q on host %q: %T %v, want *IncompatibleError", tc.min, tc.host, err, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("min %q on host %q = %s (%v), want %s", tc.min, tc.host, got, err, tc.want)
 		}
 	}
 	m := manifestWith(t, "")
 	m.MinHostVersion = "0.4.0"
 	if err := m.HostCompatible("0.3.80 (web 0.3.12)"); err == nil ||
 		!strings.Contains(err.Error(), "x 0.3.0 needs Loomux 0.4.x") || !strings.Contains(err.Error(), "this server is 0.3.80") {
-		t.Errorf("reason = %v", err)
+		t.Errorf("refusal reason = %v", err)
+	}
+	m.MinHostVersion = "0.3.0"
+	if err := m.HostCompatible("0.4.2"); err == nil ||
+		!strings.Contains(err.Error(), "x 0.3.0 was built for Loomux 0.3.x") || !strings.Contains(err.Error(), "this server is 0.4.2") || !strings.Contains(err.Error(), "runs") {
+		t.Errorf("warning reason = %v", err)
 	}
 }
 

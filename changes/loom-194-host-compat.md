@@ -1,6 +1,6 @@
 ### Added
 
-- A plugin's `min_host_version` is enforced (LOOM-194): read as a caret range on the server's version (under 0.x the same `0.Y` line at or above it; from 1.0 the same major). `GET /api/v1/plugins/available` lists a plugin the server can't run with `incompatible` saying why; installing or upgrading to it answers `409`; an installed plugin whose minimum the server no longer meets stays stopped in status `error` with the reason. A server built without a release version runs anything.
+- A plugin's `min_host_version` is enforced (LOOM-194). The server refuses a plugin below that minimum or on another major (from 1.0): `GET /api/v1/plugins/available` lists it with `incompatible` saying why, installing or upgrading to it answers `409`, and an installed one stays stopped in status `error` with the reason. A plugin built for an older `0.Y` than the server's is listed with `incompatible` and a logged warning, but installs and runs. A server built without a release version runs anything.
 
 ### Changed
 

@@ -194,7 +194,7 @@ func TestPlugins_Install(t *testing.T) {
 		{plugins.ErrBadLabel, http.StatusBadRequest, "label"},
 		{registry.ErrConflict, http.StatusConflict, "already installed"},
 		{registry.ErrNoMasterKey, http.StatusServiceUnavailable, "LOOMUX_MASTER_KEY"},
-		{&plugins.IncompatibleError{Name: "fake", Version: "0.1.0", MinHost: "9.0.0", Host: "0.3.80"}, http.StatusConflict, "needs Loomux 9.x"},
+		{&plugins.IncompatibleError{Name: "fake", Version: "0.1.0", MinHost: "9.0.0", Host: "0.3.80", Refuse: true}, http.StatusConflict, "needs Loomux 9.x"},
 		{errors.New("boom"), http.StatusInternalServerError, "failed"},
 	}
 	for _, c := range cases {
