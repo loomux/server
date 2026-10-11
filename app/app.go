@@ -601,7 +601,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if pluginDir == "" {
 		pluginDir = filepath.Join(dataDir, "plugins")
 	}
-	catalog := &plugins.Catalog{BundleDir: cfg.PluginBundleDir, PluginDir: pluginDir, SocketDir: cfg.PluginSocketDir, Logger: cfg.Logger}
+	catalog := &plugins.Catalog{BundleDir: cfg.PluginBundleDir, PluginDir: pluginDir, SocketDir: cfg.PluginSocketDir, Logger: cfg.Logger, HostVersion: version.Version}
 	pluginManager := plugins.NewManager(store, catalog,
 		protocol.HostInfo{Version: version.Version, InstanceID: instanceID, DataDir: filepath.Join(dataDir, "plugin-data")},
 		cfg.Logger, met)

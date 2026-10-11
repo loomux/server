@@ -135,6 +135,9 @@ func NewManager(store registry.Store, catalog *Catalog, host protocol.HostInfo, 
 	if met == nil {
 		met = metrics.NewDiscard()
 	}
+	if catalog.HostVersion == "" {
+		catalog.HostVersion = host.Version
+	}
 	return &Manager{
 		store: store, catalog: catalog, host: host, logger: logger, met: met,
 		instances: map[string]*Instance{}, checks: map[string]protocol.CheckResult{},

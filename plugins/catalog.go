@@ -46,6 +46,11 @@ type Available struct {
 	Path      string
 	Trust     string
 	Isolation string
+	// Incompatible is why this host can't run the plugin (its
+	// min_host_version isn't met: Manifest.HostCompatible), "" when it
+	// can. The entry is listed either way, so the UI can say what it
+	// needs.
+	Incompatible string
 }
 
 // ErrNotAvailable is a plugin the catalog doesn't have.
@@ -70,6 +75,17 @@ type Catalog struct {
 	SocketDir string
 	Verifier  Verifier
 	Logger    *slog.Logger
+	// HostVersion is this server's version string (version.Version),
+	// against which every manifest's min_host_version is checked.
+	HostVersion string
+}
+
+// incompatible is the reason a manifest can't run on this host, "".
+func (c *Catalog) incompatible(m *Manifest) string {
+	if err := m.HostCompatible(c.HostVersion); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 func (c *Catalog) logger() *slog.Logger {
@@ -179,7 +195,7 @@ func (c *Catalog) readDir(ctx context.Context, dir string, source registry.Plugi
 			return nil, fmt.Errorf("plugins: verify: %w", err)
 		}
 	}
-	return &Available{Manifest: *m, Source: source, Path: dir, Trust: trust, Isolation: IsolationNone}, nil
+	return &Available{Manifest: *m, Source: source, Path: dir, Trust: trust, Isolation: IsolationNone, Incompatible: c.incompatible(m)}, nil
 }
 
 // scanSockets lists the sockets in SocketDir and asks each to describe
@@ -211,7 +227,7 @@ func (c *Catalog) scanSockets(ctx context.Context) ([]Available, error) {
 			continue
 		}
 		out = append(out, Available{Manifest: *m, Source: registry.PluginSourceSocket, Path: path,
-			Trust: registry.PluginTrustUnsigned, Isolation: IsolationContainer})
+			Trust: registry.PluginTrustUnsigned, Isolation: IsolationContainer, Incompatible: c.incompatible(m)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Manifest.Name < out[j].Manifest.Name })
 	return out, nil
