@@ -396,6 +396,7 @@ GET /api/v1/plugins/available response .plugins[].capabilities []string
 GET /api/v1/plugins/available response .plugins[].config_schema any
 GET /api/v1/plugins/available response .plugins[].description string
 GET /api/v1/plugins/available response .plugins[].homepage string
+GET /api/v1/plugins/available response .plugins[].incompatible string omitempty
 GET /api/v1/plugins/available response .plugins[].installed []string
 GET /api/v1/plugins/available response .plugins[].isolation string
 GET /api/v1/plugins/available response .plugins[].min_host_version string

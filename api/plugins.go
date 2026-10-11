@@ -59,6 +59,9 @@ type availablePluginResponse struct {
 	// Installed lists the ids of the instances installed from this
 	// entry.
 	Installed []string `json:"installed"`
+	// Incompatible is why this server can't run the plugin (its
+	// min_host_version isn't met), absent when it can (LOOM-194).
+	Incompatible string `json:"incompatible,omitempty"`
 }
 
 type permissionResponse struct {
@@ -202,7 +205,7 @@ func (s *Server) handleListAvailablePlugins(w http.ResponseWriter, r *http.Reque
 			Vendor: a.Manifest.Vendor, Homepage: a.Manifest.Homepage, Description: a.Manifest.Description,
 			MinHostVersion: a.Manifest.MinHostVersion, Source: string(a.Source), Path: a.Path, Trust: a.Trust,
 			Isolation: a.Isolation, Capabilities: append([]string{}, a.Manifest.Capabilities...), Permissions: perms,
-			ConfigSchema: schema, Installed: ids,
+			ConfigSchema: schema, Installed: ids, Incompatible: a.Incompatible,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -349,9 +352,10 @@ func (s *Server) writePluginError(w http.ResponseWriter, err error, v *plugins.V
 		return true
 	}
 	var (
-		configErr   *plugins.ConfigError
-		checkFailed *plugins.CheckFailedError
-		dropped     *plugins.CapabilityDroppedError
+		configErr    *plugins.ConfigError
+		checkFailed  *plugins.CheckFailedError
+		dropped      *plugins.CapabilityDroppedError
+		incompatible *plugins.IncompatibleError
 	)
 	switch {
 	case errors.Is(err, registry.ErrNotFound):
@@ -368,6 +372,8 @@ func (s *Server) writePluginError(w http.ResponseWriter, err error, v *plugins.V
 		writeError(w, http.StatusServiceUnavailable, "plugin configuration needs LOOMUX_MASTER_KEY, which this server doesn't have")
 	case errors.As(err, &dropped):
 		writeError(w, http.StatusConflict, dropped.Error())
+	case errors.As(err, &incompatible):
+		writeError(w, http.StatusConflict, incompatible.Error())
 	case errors.As(err, &checkFailed) && v != nil:
 		writeJSON(w, http.StatusUnprocessableEntity, newPluginResponse(v))
 	case errors.Is(err, plugins.ErrUnavailable):
