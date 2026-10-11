@@ -60,6 +60,16 @@ RUN cd plugins/kubernetes && go mod download \
  && cd ../docker && go mod download
 
 COPY . .
+
+# The release this build is (X.Y.Z; empty for a dev build) and the agent
+# image it pins, written into the manifests before the build, so the
+# manifest each binary embeds and the plugin.json shipped beside it are
+# one stamped file (LOOM-194; docs/release/versioning.md, "Images").
+ARG RELEASE=
+ARG AGENT_IMAGE=
+RUN go run ./plugins/manifeststamp -version "${RELEASE}" -agent-image "${AGENT_IMAGE}" \
+        plugins/kubernetes/plugin.json plugins/docker/plugin.json
+
 RUN cd plugins/kubernetes \
  && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
         -o /out/plugins/kubernetes/loomux-plugin-kubernetes ./cmd/loomux-plugin-kubernetes \

@@ -17,13 +17,20 @@ COPY go.mod go.sum ./
 COPY plugins/docker/go.mod plugins/docker/go.sum ./plugins/docker/
 RUN cd plugins/docker && go mod download
 COPY . .
+# The release this build is (X.Y.Z; empty for a dev build) and the agent
+# image it pins, written into the manifest before the build: the
+# embedded manifest and the shipped plugin.json are one stamped file
+# (LOOM-194; docs/release/versioning.md, "Images").
+ARG RELEASE=
+ARG AGENT_IMAGE=
+RUN go run ./plugins/manifeststamp -version "${RELEASE}" -agent-image "${AGENT_IMAGE}" plugins/docker/plugin.json
 RUN cd plugins/docker \
  && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/loomux-plugin-docker ./cmd/loomux-plugin-docker
 
 # Pinned by digest as well as tag (a base change is an image change).
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/loomux-plugin-docker /loomux-plugin-docker
-COPY plugins/docker/plugin.json /plugin.json
+COPY --from=build /src/plugins/docker/plugin.json /plugin.json
 # The pod sets runAsUser 10003 / runAsGroup 10001 so the socket it makes
 # is connectable by loomuxd (§10); this is the fallback.
 USER 10003:10001
