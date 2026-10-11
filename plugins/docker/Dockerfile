@@ -30,5 +30,5 @@ USER 10003:10001
 ENTRYPOINT ["/loomux-plugin-docker"]
 LABEL org.opencontainers.image.title="loomux-plugin-docker" \
       org.opencontainers.image.description="Loomux Docker target-provider plugin: a container per machine on one docker host" \
-      org.opencontainers.image.source="https://github.com/Loomux/server" \
+      org.opencontainers.image.source="https://github.com/loomux/server" \
       org.opencontainers.image.licenses="MIT"

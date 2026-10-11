@@ -156,5 +156,5 @@ ENTRYPOINT ["/usr/local/bin/loomux-entrypoint"]
 
 LABEL org.opencontainers.image.title="loomux-server" \
       org.opencontainers.image.description="Loomux server (loomuxd): chat-driven multi-agent tmux orchestration" \
-      org.opencontainers.image.source="https://github.com/Loomux/server" \
+      org.opencontainers.image.source="https://github.com/loomux/server" \
       org.opencontainers.image.licenses="MIT"
