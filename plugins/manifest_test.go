@@ -170,3 +170,125 @@ func TestEmptySchema(t *testing.T) {
 		t.Error("an empty schema must refuse any key")
 	}
 }
+
+func manifestWith(t *testing.T, edits string) *Manifest {
+	t.Helper()
+	m, err := ParseManifest([]byte(`{"name":"x","title":"X","version":"0.3.0","protocol":"loomux-plugin/1",
+		"capabilities":["targets.create","targets.stop_start"],
+		"config_schema":{"type":"object","properties":{"a":{"type":"string"}}}` + edits + `}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// HostCompatible: min_host_version is a caret range on the host's
+// version (LOOM-194); a host without a version (dev, a commit) runs
+// anything, and so does a manifest without a minimum.
+// HostCompatible (user decision 2026-10-11): refused when the host is
+// below min_host_version or on another major (from 1.0); a plugin built
+// for an older 0.Y on a newer 0.x host is marked and warned about, and
+// runs.
+func TestManifestHostCompatible(t *testing.T) {
+	const (
+		ok     = "ok"
+		warn   = "warn"
+		refuse = "refuse"
+	)
+	for _, tc := range []struct {
+		min, host string
+		want      string
+	}{
+		{"", "0.3.80", ok},
+		{"0.3.0", "0.3.80 (web 0.3.12)", ok},
+		{"0.3.81", "0.3.80", refuse},
+		{"0.4.0", "0.3.80", refuse},
+		{"0.3.0", "0.4.0", warn},
+		{"0.3.0", "0.9.9", warn},
+		{"1.0.0", "1.2.3", ok},
+		{"1.0.0", "2.0.0", refuse},
+		{"0.3.0", "1.0.0", refuse},
+		{"9.0.0", "dev", ok},
+		{"9.0.0", "abc1234 (web 0.3.1)", ok},
+		{"9.0.0", "", ok},
+	} {
+		m := manifestWith(t, "")
+		m.MinHostVersion = tc.min
+		err := m.HostCompatible(tc.host)
+		got := ok
+		var inc *IncompatibleError
+		switch {
+		case err == nil:
+		case errors.As(err, &inc) && inc.Refuse:
+			got = refuse
+		case errors.As(err, &inc):
+			got = warn
+		default:
+			t.Errorf("min %q on host %q: %T %v, want *IncompatibleError", tc.min, tc.host, err, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("min %q on host %q = %s (%v), want %s", tc.min, tc.host, got, err, tc.want)
+		}
+	}
+	m := manifestWith(t, "")
+	m.MinHostVersion = "0.4.0"
+	if err := m.HostCompatible("0.3.80 (web 0.3.12)"); err == nil ||
+		!strings.Contains(err.Error(), "x 0.3.0 needs Loomux 0.4.x") || !strings.Contains(err.Error(), "this server is 0.3.80") {
+		t.Errorf("refusal reason = %v", err)
+	}
+	m.MinHostVersion = "0.3.0"
+	if err := m.HostCompatible("0.4.2"); err == nil ||
+		!strings.Contains(err.Error(), "x 0.3.0 was built for Loomux 0.3.x") || !strings.Contains(err.Error(), "this server is 0.4.2") || !strings.Contains(err.Error(), "runs") {
+		t.Errorf("warning reason = %v", err)
+	}
+}
+
+func TestManifestMinHostVersionValidated(t *testing.T) {
+	for _, bad := range []string{"0.4", "v0.4.0", "latest"} {
+		if _, err := ParseManifest([]byte(`{"name":"x","version":"0.3.0","protocol":"loomux-plugin/1","min_host_version":"` + bad + `"}`)); err == nil {
+			t.Errorf("min_host_version %q accepted", bad)
+		}
+	}
+	if _, err := ParseManifest([]byte(`{"name":"x","version":"0.3.0","protocol":"loomux-plugin/1","min_host_version":"0.4.0"}`)); err != nil {
+		t.Errorf("min_host_version 0.4.0 refused: %v", err)
+	}
+}
+
+// SameCapabilitiesAndSchema is what lets the host adopt a bundled
+// plugin's new version silently (D3): the version may differ, the
+// capabilities (as a set) and the configuration schema may not.
+func TestManifestSameCapabilitiesAndSchema(t *testing.T) {
+	a := manifestWith(t, "")
+	b := manifestWith(t, "")
+	b.Version = "0.4.0"
+	b.Description = "reworded"
+	if !a.SameCapabilitiesAndSchema(b) {
+		t.Error("a version and description change must count as the same")
+	}
+	b.Capabilities = []string{"targets.stop_start", "targets.create"}
+	if !a.SameCapabilitiesAndSchema(b) {
+		t.Error("capability order must not matter")
+	}
+	b.Capabilities = []string{"targets.create"}
+	if a.SameCapabilitiesAndSchema(b) {
+		t.Error("a dropped capability must differ")
+	}
+	c := manifestWith(t, "")
+	c.ConfigSchema = json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"integer"}}}`)
+	if a.SameCapabilitiesAndSchema(c) {
+		t.Error("a new setting must differ")
+	}
+	d := manifestWith(t, "")
+	d.ConfigSchema = json.RawMessage(`{ "properties": {"a": {"type": "string"}}, "type": "object" }`)
+	if !a.SameCapabilitiesAndSchema(d) {
+		t.Error("the same schema with other key order and spacing must be the same")
+	}
+	e := manifestWith(t, "")
+	e.ConfigSchema = nil
+	f := manifestWith(t, "")
+	f.ConfigSchema = json.RawMessage(`null`)
+	if !e.SameCapabilitiesAndSchema(f) || e.SameCapabilitiesAndSchema(a) {
+		t.Error("an absent schema equals null and differs from a real one")
+	}
+}

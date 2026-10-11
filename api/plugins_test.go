@@ -126,7 +126,16 @@ func TestPlugins_Unauthenticated(t *testing.T) {
 }
 
 func TestPlugins_AvailableAndList(t *testing.T) {
-	base, token, _ := pluginServer(t)
+	base, token, stub := pluginServer(t)
+	// A second entry this host can't run (LOOM-194): listed, with why.
+	old := stub.available[0]
+	old.Manifest.Name = "old"
+	old.Incompatible = "plugins: old 0.1.0 needs Loomux 9.x (min_host_version 9.0.0); this server is 0.3.80"
+	// And one built for an older 0.Y: it runs, with a warning.
+	older := stub.available[0]
+	older.Manifest.Name = "older"
+	older.Warning = "plugins: older 0.1.0 was built for Loomux 0.3.x (min_host_version 0.3.0); this server is 0.4.2: it runs, but may not match this server"
+	stub.available = append(stub.available, old, older)
 	status, body := doJSON(t, "GET", base+"/api/v1/plugins/available", token, nil)
 	if status != http.StatusOK {
 		t.Fatalf("available: %d %s", status, body)
@@ -137,14 +146,25 @@ func TestPlugins_AvailableAndList(t *testing.T) {
 			Installed                      []string
 			ConfigSchema                   map[string]any `json:"config_schema"`
 			Permissions                    []map[string]string
+			Incompatible                   string
+			IncompatibleWarning            string `json:"incompatible_warning"`
 		}
 	}
-	if err := json.Unmarshal([]byte(body), &avail); err != nil || len(avail.Plugins) != 1 {
+	if err := json.Unmarshal([]byte(body), &avail); err != nil || len(avail.Plugins) != 3 {
 		t.Fatalf("available body: %s (%v)", body, err)
 	}
 	a := avail.Plugins[0]
-	if a.Name != "fake" || a.Source != "bundled" || a.Trust != "bundled" || a.Isolation != "none" || len(a.Installed) != 1 || a.Installed[0] != "p1" || a.ConfigSchema["type"] != "object" || a.Permissions[0]["scope"] != "none" {
+	if a.Name != "fake" || a.Source != "bundled" || a.Trust != "bundled" || a.Isolation != "none" || len(a.Installed) != 1 || a.Installed[0] != "p1" || a.ConfigSchema["type"] != "object" || a.Permissions[0]["scope"] != "none" || a.Incompatible != "" {
 		t.Errorf("available entry = %+v", a)
+	}
+	if b := avail.Plugins[1]; b.Name != "old" || !strings.Contains(b.Incompatible, "needs Loomux 9.x") || b.IncompatibleWarning != "" {
+		t.Errorf("incompatible entry = %+v", b)
+	}
+	if c := avail.Plugins[2]; c.Name != "older" || c.Incompatible != "" || !strings.Contains(c.IncompatibleWarning, "was built for Loomux 0.3.x") {
+		t.Errorf("warned entry = %+v", c)
+	}
+	if strings.Contains(body, `"name":"fake"`) && strings.Contains(strings.SplitN(body, `"name":"old"`, 2)[0], `"incompatible"`) {
+		t.Errorf("a compatible entry carries an incompatible field: %s", body)
 	}
 
 	status, body = doJSON(t, "GET", base+"/api/v1/plugins", token, nil)
@@ -182,6 +202,7 @@ func TestPlugins_Install(t *testing.T) {
 		{plugins.ErrBadLabel, http.StatusBadRequest, "label"},
 		{registry.ErrConflict, http.StatusConflict, "already installed"},
 		{registry.ErrNoMasterKey, http.StatusServiceUnavailable, "LOOMUX_MASTER_KEY"},
+		{&plugins.IncompatibleError{Name: "fake", Version: "0.1.0", MinHost: "9.0.0", Host: "0.3.80", Refuse: true}, http.StatusConflict, "needs Loomux 9.x"},
 		{errors.New("boom"), http.StatusInternalServerError, "failed"},
 	}
 	for _, c := range cases {

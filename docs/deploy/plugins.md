@@ -47,7 +47,7 @@ targets, only their start/stop/recreate/destroy pause. **Uninstall**
 asks what to do with its machines: destroy them (data included) or keep
 them as plain hosts.
 
-## Upgrades
+## Upgrades and compatibility
 
 A bundled plugin's available version changes with the image; a
 directory plugin's when you replace its files; a sidecar's with its
@@ -57,6 +57,36 @@ version beside the old one and checks it before switching: if it can't
 start or fails its check, the old version keeps running and the row
 keeps its version (`422` with the reason). It is refused up front if
 the new version drops a capability the plugin's machines rely on.
+
+**Bundled plugins follow the server without an upgrade.** First-party
+plugins are built with the server and carry its version
+(`docs/release/versioning.md`, "Images"), so every server release
+bundles a new plugin version. At startup the server adopts it on its
+own when the new version declares the same capabilities and
+configuration schema as the installed one: the row moves to the new
+version and the new binary runs, nothing to click. When either changed,
+the plugin stays stopped in status `error` with a reason naming the
+new version ("upgrade the plugin"): the old binary is no longer in the
+image, and only `POST /api/v1/plugins/{id}/upgrade`, which re-applies
+the schema's defaults and checks the new version, can move it. A
+sidecar is upgraded by changing its container, then pressing Upgrade.
+
+**`min_host_version` is enforced.** A manifest's `min_host_version` is
+checked against the server's version. The server **refuses** a plugin
+when it is below that minimum (`0.3.81` or `0.4.0` on a `0.3.80`
+server) or on another major (from 1.0 the major is the compatibility
+unit; a `1.x` plugin on a `2.x` server, or a `0.y` one on a `1.x`
+server): `GET /api/v1/plugins/available` still lists it, with
+`incompatible` saying why; installing or upgrading to it answers `409`,
+and an installed one stays stopped in status `error` with the same
+reason. A plugin built for an **older `0.Y`** than the server's
+(`min_host_version 0.3.0` on a `0.4.2` server) is listed with
+`incompatible_warning` instead and a warning is logged, but it installs
+and runs: under 0.x the minor is where things change, so it may not
+match, and the message says so. A server built without a release version
+(`dev`, a plain commit build) runs anything. Bundled plugins always
+match, since they are stamped with the server's own version; the rule
+matters for a sidecar or a directory plugin from another release.
 
 Whatever a plugin writes (its stderr, an error message, a check
 problem) is scrubbed of the plugin's own secret settings before Loomux

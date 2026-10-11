@@ -46,6 +46,13 @@ type Available struct {
 	Path      string
 	Trust     string
 	Isolation string
+	// Incompatible is why this host refuses the plugin (below its
+	// min_host_version, or another major: Manifest.HostCompatible), ""
+	// when it doesn't; an install answers 409 with it. Warning is why
+	// the plugin may not match this host though it runs (built for an
+	// older 0.Y). The entry is listed either way, so the UI can say.
+	Incompatible string
+	Warning      string
 }
 
 // ErrNotAvailable is a plugin the catalog doesn't have.
@@ -70,6 +77,23 @@ type Catalog struct {
 	SocketDir string
 	Verifier  Verifier
 	Logger    *slog.Logger
+	// HostVersion is this server's version string (version.Version),
+	// against which every manifest's min_host_version is checked.
+	HostVersion string
+}
+
+// compatibility is why this host refuses the manifest, or why it only
+// warns about it; both "" when it fits.
+func (c *Catalog) compatibility(m *Manifest) (refused, warning string) {
+	err := m.HostCompatible(c.HostVersion)
+	switch {
+	case err == nil:
+	case Refused(err):
+		refused = err.Error()
+	default:
+		warning = err.Error()
+	}
+	return refused, warning
 }
 
 func (c *Catalog) logger() *slog.Logger {
@@ -179,7 +203,8 @@ func (c *Catalog) readDir(ctx context.Context, dir string, source registry.Plugi
 			return nil, fmt.Errorf("plugins: verify: %w", err)
 		}
 	}
-	return &Available{Manifest: *m, Source: source, Path: dir, Trust: trust, Isolation: IsolationNone}, nil
+	refused, warning := c.compatibility(m)
+	return &Available{Manifest: *m, Source: source, Path: dir, Trust: trust, Isolation: IsolationNone, Incompatible: refused, Warning: warning}, nil
 }
 
 // scanSockets lists the sockets in SocketDir and asks each to describe
@@ -210,8 +235,9 @@ func (c *Catalog) scanSockets(ctx context.Context) ([]Available, error) {
 			c.logger().Warn("plugin socket skipped", "socket", path, "error", "manifest name "+m.Name+" doesn't match the socket's")
 			continue
 		}
+		refused, warning := c.compatibility(m)
 		out = append(out, Available{Manifest: *m, Source: registry.PluginSourceSocket, Path: path,
-			Trust: registry.PluginTrustUnsigned, Isolation: IsolationContainer})
+			Trust: registry.PluginTrustUnsigned, Isolation: IsolationContainer, Incompatible: refused, Warning: warning})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Manifest.Name < out[j].Manifest.Name })
 	return out, nil

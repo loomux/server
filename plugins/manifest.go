@@ -9,12 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/Loomux/server/plugins/protocol"
+	"github.com/Loomux/server/version"
 )
 
 // ProtocolV1 is the protocol this host speaks.
@@ -99,6 +102,11 @@ func (m *Manifest) Validate() error {
 	if len(m.HostRequests) != 0 {
 		return fmt.Errorf("plugins: manifest %q asks the host for %v; no host request is supported", m.Name, m.HostRequests)
 	}
+	if m.MinHostVersion != "" {
+		if _, ok := version.Parse(m.MinHostVersion); !ok {
+			return fmt.Errorf("plugins: manifest %q min_host_version %q isn't X.Y.Z", m.Name, m.MinHostVersion)
+		}
+	}
 	seen := map[string]bool{}
 	for _, c := range m.Capabilities {
 		if !knownCapability(c) {
@@ -145,6 +153,92 @@ func (m *Manifest) ProtocolMajor() (int, error) {
 		return 0, fmt.Errorf("plugins: manifest %q protocol %q isn't loomux-plugin/<n>", m.Name, m.Protocol)
 	}
 	return n, nil
+}
+
+// IncompatibleError: a manifest built for another Loomux than this
+// host (LOOM-194). Refuse says the host won't run it (below its
+// min_host_version, or another major); otherwise it runs, warned
+// about: a plugin built for an older 0.Y than the host's. Safe to show.
+type IncompatibleError struct {
+	Name, Version, MinHost, Host string
+	Refuse                       bool
+}
+
+func (e *IncompatibleError) Error() string {
+	min, _ := version.Parse(e.MinHost)
+	line := fmt.Sprintf("%d.x", min.Major)
+	if min.Major == 0 {
+		line = fmt.Sprintf("0.%d.x", min.Minor)
+	}
+	if !e.Refuse {
+		return fmt.Sprintf("plugins: %s %s was built for Loomux %s (min_host_version %s); this server is %s: it runs, but may not match this server", e.Name, e.Version, line, e.MinHost, e.Host)
+	}
+	return fmt.Sprintf("plugins: %s %s needs Loomux %s (min_host_version %s); this server is %s", e.Name, e.Version, line, e.MinHost, e.Host)
+}
+
+// HostCompatible checks this host's version against the manifest's
+// min_host_version (user decision 2026-10-11): nil when it is met on
+// the same line; an *IncompatibleError with Refuse when the host is
+// below the minimum or on another major (from 1.0, the major is the
+// compatibility unit); one without Refuse, a warning, when the plugin
+// was built for an older 0.Y than the host's (under 0.x the minor is
+// the unit, but such a plugin still runs). A manifest without a
+// minimum, or a host without a version (dev, a plain commit build), is
+// compatible with anything.
+func (m *Manifest) HostCompatible(host string) error {
+	if m.MinHostVersion == "" {
+		return nil
+	}
+	min, ok := version.Parse(m.MinHostVersion)
+	if !ok {
+		return fmt.Errorf("plugins: manifest %q min_host_version %q isn't X.Y.Z", m.Name, m.MinHostVersion)
+	}
+	h, ok := version.Parse(host)
+	if !ok {
+		return nil
+	}
+	err := &IncompatibleError{Name: m.Name, Version: m.Version, MinHost: min.String(), Host: h.String()}
+	switch {
+	case h.Compare(min) < 0, h.Major != min.Major:
+		err.Refuse = true
+		return err
+	case h.Major == 0 && h.Minor != min.Minor:
+		return err
+	}
+	return nil
+}
+
+// Refused reports whether err is an *IncompatibleError the host acts
+// on (as opposed to one it only warns about).
+func Refused(err error) bool {
+	var inc *IncompatibleError
+	return errors.As(err, &inc) && inc.Refuse
+}
+
+// SameCapabilitiesAndSchema reports whether o declares the same
+// capabilities (as a set) and the same configuration schema as m,
+// whatever its version: what lets the host adopt a bundled plugin's
+// new version without an upgrade (D3, LOOM-194).
+func (m *Manifest) SameCapabilitiesAndSchema(o *Manifest) bool {
+	a := slices.Sorted(slices.Values(m.Capabilities))
+	b := slices.Sorted(slices.Values(o.Capabilities))
+	if !slices.Equal(a, b) {
+		return false
+	}
+	return reflect.DeepEqual(schemaValue(m.ConfigSchema), schemaValue(o.ConfigSchema))
+}
+
+// schemaValue is a config_schema as a comparable value: nil when absent
+// or null, the raw text when it doesn't parse.
+func schemaValue(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	return v
 }
 
 // Equal reports whether two manifests agree on what the host compares

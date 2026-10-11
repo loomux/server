@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Loomux/server/plugins"
+	"github.com/Loomux/server/plugins/fake"
 	"github.com/Loomux/server/registry"
 )
 
@@ -91,5 +93,43 @@ func TestCatalogVerifier(t *testing.T) {
 	got, err := c.Available(context.Background())
 	if err != nil || len(got) != 1 || got[0].Trust != "signed:ci" {
 		t.Fatalf("Available with verifier = %+v, %v", got, err)
+	}
+}
+
+// An entry whose min_host_version this host doesn't meet stays listed,
+// marked incompatible with the reason (LOOM-194); a host without a
+// version marks nothing.
+func TestCatalogIncompatible(t *testing.T) {
+	bundle := t.TempDir()
+	dir := fakeDir(t, bundle)
+	m := strings.Replace(string(fake.ManifestJSON), `"version": "0.1.0"`, `"version": "0.1.0", "min_host_version": "9.0.0"`, 1)
+	if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(m), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &plugins.Catalog{BundleDir: bundle, HostVersion: "0.3.80 (web 0.3.12)"}
+	got, err := c.Available(context.Background())
+	if err != nil || len(got) != 1 {
+		t.Fatalf("Available = %+v, %v", got, err)
+	}
+	if !strings.Contains(got[0].Incompatible, "needs Loomux 9.x") || !strings.Contains(got[0].Incompatible, "this server is 0.3.80") {
+		t.Errorf("Incompatible = %q", got[0].Incompatible)
+	}
+	if got[0].Warning != "" {
+		t.Errorf("a refusal is not a warning: %+v", got[0])
+	}
+	c.HostVersion = "dev"
+	got, err = c.Available(context.Background())
+	if err != nil || len(got) != 1 || got[0].Incompatible != "" || got[0].Warning != "" {
+		t.Errorf("on a dev host: %+v, %v", got, err)
+	}
+	// Built for an older 0.Y: a warning, not a refusal.
+	m = strings.Replace(string(fake.ManifestJSON), `"version": "0.1.0"`, `"version": "0.1.0", "min_host_version": "0.3.0"`, 1)
+	if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(m), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.HostVersion = "0.4.2"
+	got, err = c.Available(context.Background())
+	if err != nil || len(got) != 1 || got[0].Incompatible != "" || !strings.Contains(got[0].Warning, "was built for Loomux 0.3.x") {
+		t.Errorf("an older 0.Y plugin: %+v, %v", got, err)
 	}
 }
