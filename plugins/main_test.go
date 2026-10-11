@@ -16,8 +16,9 @@ import (
 	"github.com/Loomux/server/plugins/sdk"
 )
 
-// fakeBin is the fake plugin's executable, built once for the package.
-var fakeBin string
+// fakeBin is the fake plugin's executable, built once for the package;
+// fakeBin2 the same reporting version 0.2.0, a newer bundled plugin.
+var fakeBin, fakeBin2 string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "loomux-plugin-fake-")
@@ -30,6 +31,13 @@ func TestMain(m *testing.M) {
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "building the fake plugin:", err)
+		os.Exit(1)
+	}
+	fakeBin2 = filepath.Join(dir, "loomux-plugin-fake-0.2.0")
+	build = exec.Command("go", "build", "-ldflags", "-X github.com/Loomux/server/plugins/fake.Version=0.2.0", "-o", fakeBin2, "github.com/Loomux/server/cmd/loomux-plugin-fake")
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "building the fake plugin at 0.2.0:", err)
 		os.Exit(1)
 	}
 	code := m.Run()
@@ -53,6 +61,31 @@ func fakeDir(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, plugins.ExecutableName("fake")), data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// fakeDirVersion replaces the fake under root with one at version (its
+// manifest edited, the executable bin), as a new server image would.
+// The old executable is unlinked first: it may still be running.
+func fakeDirVersion(t *testing.T, root, version, bin string) string {
+	t.Helper()
+	dir := filepath.Join(root, "fake")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := strings.Replace(string(fake.ManifestJSON), `"version": "0.1.0"`, `"version": "`+version+`"`, 1)
+	if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(m), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(dir, plugins.ExecutableName("fake"))
+	_ = os.Remove(exe)
+	if err := os.WriteFile(exe, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return dir

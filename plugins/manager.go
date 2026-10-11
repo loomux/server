@@ -174,6 +174,9 @@ func (m *Manager) Install(ctx context.Context, r InstallRequest) (*View, error) 
 	if err != nil {
 		return nil, err
 	}
+	if err := a.Manifest.HostCompatible(m.host.Version); err != nil {
+		return nil, err
+	}
 	schema, err := a.Manifest.Schema()
 	if err != nil {
 		return nil, err
@@ -363,6 +366,9 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 	if a.Manifest.Version == p.Version {
 		return m.view(ctx, p)
 	}
+	if err := a.Manifest.HostCompatible(m.host.Version); err != nil {
+		return nil, err
+	}
 	machines, err := m.machines(ctx, id)
 	if err != nil {
 		return nil, err
@@ -422,11 +428,13 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 			}
 			return view, &CheckFailedError{Reason: reason, Problems: m.redactProblems(id, res.Problems)}
 		}
-		// The new version works: swap it in and stop the old one.
+		// The new version works: swap it in and stop the old one. (The
+		// result is redacted before the lock: redact takes it too.)
+		redacted := m.redactResult(id, res)
 		m.mu.Lock()
 		old := m.instances[id]
 		m.instances[id] = candidate
-		m.checks[id] = m.redactResult(id, res)
+		m.checks[id] = redacted
 		m.mu.Unlock()
 		if old != nil {
 			_ = old.Stop(ctx)
@@ -549,7 +557,58 @@ func (m *Manager) startOne(ctx context.Context, id string) error {
 		return nil
 	}
 	m.setSecrets(id, p.Secrets)
+	if p.Source == registry.PluginSourceBundled {
+		if err := m.adoptBundled(ctx, p); err != nil {
+			return err
+		}
+	}
+	if manifest, err := m.installedManifest(p); err == nil {
+		if err := manifest.HostCompatible(m.host.Version); err != nil {
+			return m.fail(ctx, p, strings.TrimPrefix(err.Error(), "plugins: "), nil)
+		}
+	}
 	return m.startAndCheck(ctx, p)
+}
+
+// adoptBundled moves a bundled plugin's row to the version the image
+// now bundles when that version declares the same capabilities and
+// configuration schema (D3, LOOM-194): a server update then needs no
+// upgrade, and the handshake (which compares the row's manifest with
+// the binary's) passes. A version that changed either isn't adopted:
+// the row is marked, since the old binary is gone from the image and
+// only an upgrade, which re-applies defaults and checks the new
+// version, can move it.
+func (m *Manager) adoptBundled(ctx context.Context, p *registry.Plugin) error {
+	a, err := m.catalog.Find(ctx, p.Name, registry.PluginSourceBundled)
+	if err != nil {
+		return nil // not bundled any more: the start says what's wrong
+	}
+	if a.Manifest.Version == p.Version {
+		return nil
+	}
+	installed, err := m.installedManifest(p)
+	if err != nil {
+		return nil
+	}
+	if a.Incompatible != "" {
+		return m.fail(ctx, p, strings.TrimPrefix(a.Incompatible, "plugins: "), nil)
+	}
+	if !installed.SameCapabilitiesAndSchema(&a.Manifest) {
+		return m.fail(ctx, p, fmt.Sprintf("the bundled %s is now %s, which changed its capabilities or configuration schema; upgrade the plugin", p.Name, a.Manifest.Version), nil)
+	}
+	manifestJSON, err := json.Marshal(a.Manifest)
+	if err != nil {
+		return fmt.Errorf("plugins: manifest: %w", err)
+	}
+	from := p.Version
+	p.Version, p.Protocol, p.Path, p.Trust = a.Manifest.Version, a.Manifest.Protocol, a.Path, a.Trust
+	p.Capabilities = append([]string{}, a.Manifest.Capabilities...)
+	p.Manifest = manifestJSON
+	if err := m.store.UpdatePlugin(ctx, p); err != nil {
+		return err
+	}
+	m.logger.Info("bundled plugin adopted", "plugin", p.Label, "from", from, "to", p.Version)
+	return nil
 }
 
 // HealthReport is the plugin system's health for GET /health/deep.

@@ -28,6 +28,12 @@ import (
 //go:embed plugin.json
 var ManifestJSON []byte
 
+// Version, when set at build time
+// (-ldflags "-X github.com/Loomux/server/plugins/fake.Version=0.2.0"),
+// is the version the executable reports instead of plugin.json's: a
+// test's stand-in for a newer bundled plugin (LOOM-194).
+var Version string
+
 // Modes the "mode" setting selects.
 const (
 	ModeOK                 = "ok"
@@ -87,7 +93,11 @@ func New() *Plugin {
 }
 
 func (p *Plugin) Describe(ctx context.Context) (*plugins.Manifest, error) {
-	return plugins.ParseManifest(ManifestJSON)
+	m, err := plugins.ParseManifest(ManifestJSON)
+	if err == nil && Version != "" {
+		m.Version = Version
+	}
+	return m, err
 }
 
 func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) error {

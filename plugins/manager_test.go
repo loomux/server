@@ -342,3 +342,98 @@ func TestManagerUninstall(t *testing.T) {
 		t.Errorf("Uninstall twice: %v", err)
 	}
 }
+
+// A plugin whose min_host_version this host doesn't meet is listed as
+// incompatible and refused at install (LOOM-194).
+func TestManagerInstallRefusesIncompatible(t *testing.T) {
+	bundle := t.TempDir()
+	dir := fakeDir(t, bundle)
+	m := strings.Replace(string(fake.ManifestJSON), `"version": "0.1.0"`, `"version": "0.1.0", "min_host_version": "9.0.0"`, 1)
+	if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(m), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	mgr := plugins.NewManager(store, &plugins.Catalog{BundleDir: bundle}, protocol.HostInfo{Version: "0.3.80 (web 0.3.12)", InstanceID: "inst"}, nil, nil)
+	t.Cleanup(func() { _ = mgr.Close(context.Background()) })
+	avail, err := mgr.Available(context.Background())
+	if err != nil || len(avail) != 1 || !strings.Contains(avail[0].Incompatible, "needs Loomux 9.x") {
+		t.Fatalf("Available = %+v, %v", avail, err)
+	}
+	_, err = mgr.Install(context.Background(), plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceBundled, Label: "inc", Config: map[string]any{"token": "t"}})
+	var inc *plugins.IncompatibleError
+	if !errors.As(err, &inc) {
+		t.Fatalf("Install = %v, want *IncompatibleError", err)
+	}
+	if rows, _ := store.ListPlugins(context.Background()); len(rows) != 0 {
+		t.Errorf("a refused install left a row: %+v", rows)
+	}
+}
+
+// A bundled plugin whose new version declares the same capabilities and
+// configuration schema is adopted at startup, with no upgrade (D3): the
+// row moves to the new version and the new binary runs.
+func TestManagerAdoptsBundledVersionOnStart(t *testing.T) {
+	m, store, bundle := newManager(t)
+	v := install(t, m, "ad", map[string]any{"token": "t"})
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fakeDirVersion(t, bundle, "0.2.0", fakeBin2)
+	m2 := managerOn(t, store, bundle)
+	if err := m2.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	got, err := m2.Get(context.Background(), v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != "0.2.0" || got.AvailableVersion != "0.2.0" || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
+		t.Errorf("after start = version %s (available %s) %s %s", got.Version, got.AvailableVersion, got.Status, got.Instance.State)
+	}
+	row, _ := store.GetPlugin(context.Background(), v.ID)
+	if row.Version != "0.2.0" || !strings.Contains(string(row.Manifest), `"0.2.0"`) || row.Secrets["token"] != "t" {
+		t.Errorf("row = %+v", row)
+	}
+	if c, err := m2.Check(context.Background(), v.ID); err != nil || c.Check == nil || !c.Check.OK {
+		t.Errorf("the adopted version should answer: %+v, %v", c, err)
+	}
+}
+
+// A bundled plugin whose new version changed its configuration schema
+// is not adopted: the row says so, nothing runs (the old binary is
+// gone), and Upgrade moves it over.
+func TestManagerBundledChangeNeedsUpgrade(t *testing.T) {
+	m, store, bundle := newManager(t)
+	v := install(t, m, "ch", map[string]any{"token": "t"})
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dir := fakeDirVersion(t, bundle, "0.2.0", fakeBin2)
+	data, _ := os.ReadFile(filepath.Join(dir, plugins.ManifestFile))
+	if strings.Count(string(data), `"properties": {`) != 1 {
+		t.Fatal("the fake's schema changed shape; adjust the test")
+	}
+	changed := strings.Replace(string(data), `"properties": {`, `"properties": {"extra": {"type": "string", "default": "x"}, `, 1)
+	if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m2 := managerOn(t, store, bundle)
+	if err := m2.StartAll(context.Background()); err == nil || !strings.Contains(err.Error(), "upgrade the plugin") {
+		t.Errorf("StartAll = %v, want the upgrade reason", err)
+	}
+	got, err := m2.Get(context.Background(), v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != "0.1.0" || got.Status != registry.PluginStatusError || got.Instance.State != "" ||
+		!strings.Contains(got.StatusReason, "0.2.0") || !strings.Contains(got.StatusReason, "upgrade the plugin") {
+		t.Errorf("after start = version %s %s %q instance %q", got.Version, got.Status, got.StatusReason, got.Instance.State)
+	}
+	up, err := m2.Upgrade(context.Background(), v.ID)
+	if err != nil || up.Version != "0.2.0" || up.Status != registry.PluginStatusInstalled || up.Instance.State != plugins.StateRunning {
+		t.Fatalf("Upgrade = %+v, %v", up, err)
+	}
+	if up.Config["extra"] != "x" {
+		t.Errorf("the new setting's default wasn't applied: %+v", up.Config)
+	}
+}
