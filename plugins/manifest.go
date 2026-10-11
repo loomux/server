@@ -217,8 +217,11 @@ func Refused(err error) bool {
 
 // SameCapabilitiesAndSchema reports whether o declares the same
 // capabilities (as a set) and the same configuration schema as m,
-// whatever its version: what lets the host adopt a bundled plugin's
-// new version without an upgrade (D3, LOOM-194).
+// whatever its version: what lets the host adopt a plugin's new
+// version without an upgrade (D3, LOOM-194). Defaults are not part of
+// the schema's shape: a stamped build changes the agent_image default
+// with every agent rebuild, and a stored setting that still equals the
+// old default follows the new one at adoption (Manager.followDefaults).
 func (m *Manifest) SameCapabilitiesAndSchema(o *Manifest) bool {
 	a := slices.Sorted(slices.Values(m.Capabilities))
 	b := slices.Sorted(slices.Values(o.Capabilities))
@@ -228,8 +231,9 @@ func (m *Manifest) SameCapabilitiesAndSchema(o *Manifest) bool {
 	return reflect.DeepEqual(schemaValue(m.ConfigSchema), schemaValue(o.ConfigSchema))
 }
 
-// schemaValue is a config_schema as a comparable value: nil when absent
-// or null, the raw text when it doesn't parse.
+// schemaValue is a config_schema as a comparable value, its default
+// keywords removed at every depth: nil when absent or null, the raw
+// text when it doesn't parse.
 func schemaValue(raw json.RawMessage) any {
 	if len(raw) == 0 {
 		return nil
@@ -237,6 +241,30 @@ func schemaValue(raw json.RawMessage) any {
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return string(raw)
+	}
+	return withoutDefaults(v, false)
+}
+
+// withoutDefaults drops the "default" keyword from every schema object.
+// The keys of a "properties" object are property names, not keywords:
+// a property that happens to be called "default" stays.
+func withoutDefaults(v any, propertyNames bool) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			if !propertyNames && k == "default" {
+				continue
+			}
+			out[k] = withoutDefaults(val, !propertyNames && k == "properties")
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, val := range x {
+			out[i] = withoutDefaults(val, false)
+		}
+		return out
 	}
 	return v
 }
@@ -510,6 +538,34 @@ func (s *Schema) ApplyDefaults(config map[string]any) map[string]any {
 			continue
 		}
 		if _, ok := out[name]; !ok {
+			out[name] = p.Default
+		}
+	}
+	return out
+}
+
+// FollowDefaults returns a copy of config in which every top-level
+// setting that still equals from's default, where s's default differs,
+// is set to s's default: a setting the operator never changed follows
+// the plugin's new default (the stamped agent image pin, LOOM-194),
+// one they set stays. Secret fields are never touched.
+func (s *Schema) FollowDefaults(config map[string]any, from *Schema) map[string]any {
+	out := make(map[string]any, len(config))
+	for k, v := range config {
+		out[k] = v
+	}
+	if from == nil {
+		return out
+	}
+	for name, p := range s.Properties {
+		if p == nil || p.Secret || p.Default == nil {
+			continue
+		}
+		old, ok := from.Properties[name]
+		if !ok || old == nil || old.Default == nil || reflect.DeepEqual(old.Default, p.Default) {
+			continue
+		}
+		if stored, ok := out[name]; ok && reflect.DeepEqual(stored, old.Default) {
 			out[name] = p.Default
 		}
 	}

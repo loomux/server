@@ -222,11 +222,15 @@ jobs:
           load: true
           tags: ghcr.io/loomux/plugin-kubernetes:test
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            RELEASE=${{ inputs.version }}
+            AGENT_IMAGE=${{ inputs.agent_image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The manifest it serves says the version the run is (LOOM-194).
       - name: Smoke test the plugin image
-        run: bash plugins/kubernetes/smoke.sh ghcr.io/loomux/plugin-kubernetes:test
+        run: bash plugins/kubernetes/smoke.sh ghcr.io/loomux/plugin-kubernetes:test "${{ inputs.version || '0.0.0-dev' }}"
 
       - name: Scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -336,11 +340,15 @@ jobs:
           load: true
           tags: ghcr.io/loomux/plugin-docker:test
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            RELEASE=${{ inputs.version }}
+            AGENT_IMAGE=${{ inputs.agent_image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The manifest it serves says the version the run is (LOOM-194).
       - name: Smoke test the plugin image
-        run: bash plugins/docker/smoke.sh ghcr.io/loomux/plugin-docker:test
+        run: bash plugins/docker/smoke.sh ghcr.io/loomux/plugin-docker:test "${{ inputs.version || '0.0.0-dev' }}"
 
       - name: Scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

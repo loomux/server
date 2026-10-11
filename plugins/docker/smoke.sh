@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # Smoke test for the plugin image: start it the way the host would
-# (stdio), send plugin.describe, and expect the manifest back. Usage:
-#   bash plugins/docker/smoke.sh <image>
+# (stdio), send plugin.describe, and expect the manifest back, at the
+# version the build was stamped with when one is given (LOOM-194). Usage:
+#   bash plugins/docker/smoke.sh <image> [version]
 set -euo pipefail
-IMAGE="${1:?usage: smoke.sh <image>}"
+IMAGE="${1:?usage: smoke.sh <image> [version]}"
+VERSION="${2:-}"
 req='{"jsonrpc":"2.0","id":1,"method":"plugin.describe"}'
 out="$(printf 'Content-Length: %d\r\n\r\n%s' "${#req}" "${req}" | timeout 20 docker run -i --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true --user 10003:10001 "${IMAGE}" | head -c 4096 || true)"
 echo "${out}" | grep -q '"name":"docker"' || { echo "no manifest in the plugin's answer: ${out}" >&2; exit 1; }
 echo "${out}" | grep -q '"capabilities"' || { echo "manifest lacks capabilities: ${out}" >&2; exit 1; }
+if [ -n "${VERSION}" ]; then
+	echo "${out}" | grep -q "\"version\":\"${VERSION}\"" || { echo "manifest isn't stamped ${VERSION}: ${out}" >&2; exit 1; }
+fi
 docker run --rm --entrypoint /loomux-plugin-docker "${IMAGE}" --listen /tmp/x.sock </dev/null >/dev/null 2>&1 & pid=$!
 sleep 2; kill "${pid}" 2>/dev/null || true; wait "${pid}" 2>/dev/null || true
 echo "plugin image ok"

@@ -1,7 +1,7 @@
 {
   "name": "kubernetes",
   "title": "Kubernetes",
-  "version": "0.1.0",
+  "version": "0.0.0-dev",
   "protocol": "loomux-plugin/1",
   "vendor": "Loomux",
   "homepage": "https://github.com/Loomux/server/tree/main/plugins/kubernetes",

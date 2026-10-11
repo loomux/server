@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -290,5 +291,104 @@ func TestManifestSameCapabilitiesAndSchema(t *testing.T) {
 	f.ConfigSchema = json.RawMessage(`null`)
 	if !e.SameCapabilitiesAndSchema(f) || e.SameCapabilitiesAndSchema(a) {
 		t.Error("an absent schema equals null and differs from a real one")
+	}
+}
+
+// A default is not part of the schema's shape: a stamped build changes
+// the agent_image default with every agent rebuild, and that must not
+// read as "changed its configuration schema" (review of #352). A
+// type, a property or the required list still does.
+func TestManifestSameSchemaIgnoresDefaults(t *testing.T) {
+	a := manifestWith(t, "")
+	a.ConfigSchema = json.RawMessage(`{"type":"object","required":["agent_image"],"properties":{
+		"agent_image":{"type":"string","x-format":"image-reference","default":"ghcr.io/loomux/agent:main"},
+		"sizes":{"type":"object","additionalProperties":{"type":"object","properties":{"cpu":{"type":"string","default":"1"}}}}}}`)
+	b := manifestWith(t, "")
+	b.ConfigSchema = json.RawMessage(`{"type":"object","required":["agent_image"],"properties":{
+		"agent_image":{"type":"string","x-format":"image-reference","default":"ghcr.io/loomux/agent:0.3.90@sha256:abc"},
+		"sizes":{"type":"object","additionalProperties":{"type":"object","properties":{"cpu":{"type":"string","default":"2"}}}}}}`)
+	if !a.SameCapabilitiesAndSchema(b) {
+		t.Error("a changed default (top level and nested) must still be the same schema")
+	}
+	c := manifestWith(t, "")
+	c.ConfigSchema = json.RawMessage(`{"type":"object","required":["agent_image"],"properties":{
+		"agent_image":{"type":"integer","x-format":"image-reference","default":"ghcr.io/loomux/agent:main"},
+		"sizes":{"type":"object","additionalProperties":{"type":"object","properties":{"cpu":{"type":"string","default":"1"}}}}}}`)
+	if a.SameCapabilitiesAndSchema(c) {
+		t.Error("a changed type must differ")
+	}
+	d := manifestWith(t, "")
+	d.ConfigSchema = json.RawMessage(`{"type":"object","required":[],"properties":{
+		"agent_image":{"type":"string","x-format":"image-reference","default":"ghcr.io/loomux/agent:main"},
+		"sizes":{"type":"object","additionalProperties":{"type":"object","properties":{"cpu":{"type":"string","default":"1"}}}}}}`)
+	if a.SameCapabilitiesAndSchema(d) {
+		t.Error("a changed required list must differ")
+	}
+	e := manifestWith(t, "")
+	e.ConfigSchema = json.RawMessage(`{"type":"object","required":["agent_image"],"properties":{
+		"agent_image":{"type":"string","x-format":"image-reference","default":"ghcr.io/loomux/agent:main"},
+		"sizes":{"type":"object","additionalProperties":{"type":"object","properties":{"cpu":{"type":"string","default":"1"}}}},
+		"timezone":{"type":"string","default":"UTC"}}}`)
+	if a.SameCapabilitiesAndSchema(e) {
+		t.Error("a new property must differ")
+	}
+}
+
+// FollowDefaults: a stored setting that still equals the previous
+// schema's default moves to the new default; one the operator set, or
+// one whose default didn't change, stays.
+func TestSchemaFollowDefaults(t *testing.T) {
+	old := manifestWith(t, "")
+	old.ConfigSchema = json.RawMessage(`{"type":"object","properties":{
+		"agent_image":{"type":"string","default":"ghcr.io/loomux/agent:main"},
+		"timezone":{"type":"string","default":"UTC"},
+		"max":{"type":"integer","default":5},
+		"token":{"type":"string","x-secret":true}}}`)
+	cur := manifestWith(t, "")
+	cur.ConfigSchema = json.RawMessage(`{"type":"object","properties":{
+		"agent_image":{"type":"string","default":"ghcr.io/loomux/agent:0.3.90@sha256:abc"},
+		"timezone":{"type":"string","default":"UTC"},
+		"max":{"type":"integer","default":9},
+		"token":{"type":"string","x-secret":true}}}`)
+	oldS, _ := old.Schema()
+	curS, _ := cur.Schema()
+	stored := map[string]any{"agent_image": "ghcr.io/loomux/agent:main", "timezone": "Europe/Berlin", "max": float64(7), "token": "t"}
+	got := curS.FollowDefaults(stored, oldS)
+	want := map[string]any{"agent_image": "ghcr.io/loomux/agent:0.3.90@sha256:abc", "timezone": "Europe/Berlin", "max": float64(7), "token": "t"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("FollowDefaults = %v, want %v", got, want)
+	}
+	if stored["agent_image"] != "ghcr.io/loomux/agent:main" {
+		t.Error("the stored map was changed in place")
+	}
+	custom := map[string]any{"agent_image": "registry.local/agent:1", "max": float64(5)}
+	if got := curS.FollowDefaults(custom, oldS); got["agent_image"] != "registry.local/agent:1" || got["max"] != float64(9) {
+		t.Errorf("custom value changed, or an untouched default didn't follow: %v", got)
+	}
+	if got := curS.FollowDefaults(nil, nil); len(got) != 0 {
+		t.Errorf("nil in, nil out: %v", got)
+	}
+}
+
+// Only the schema keyword "default" is set aside: a configuration
+// property that happens to be named "default" is part of the shape
+// (review of #352).
+func TestManifestSameSchemaKeepsAPropertyNamedDefault(t *testing.T) {
+	a := manifestWith(t, "")
+	a.ConfigSchema = json.RawMessage(`{"type":"object","properties":{"default":{"type":"string","default":"x"}}}`)
+	b := manifestWith(t, "")
+	b.ConfigSchema = json.RawMessage(`{"type":"object","properties":{"default":{"type":"integer","default":"x"}}}`)
+	if a.SameCapabilitiesAndSchema(b) {
+		t.Error("a changed type of the property named default must differ")
+	}
+	c := manifestWith(t, "")
+	c.ConfigSchema = json.RawMessage(`{"type":"object","properties":{}}`)
+	if a.SameCapabilitiesAndSchema(c) {
+		t.Error("a dropped property named default must differ")
+	}
+	d := manifestWith(t, "")
+	d.ConfigSchema = json.RawMessage(`{"type":"object","properties":{"default":{"type":"string","default":"y"}}}`)
+	if !a.SameCapabilitiesAndSchema(d) {
+		t.Error("the property's own default keyword is still set aside")
 	}
 }

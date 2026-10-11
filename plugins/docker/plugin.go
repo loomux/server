@@ -10,6 +10,7 @@ package docker
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -32,8 +33,19 @@ import (
 //go:embed plugin.json
 var ManifestJSON []byte
 
-// Version is the plugin's, as plugin.json says.
-const Version = "0.1.0"
+// Version is the plugin's, as plugin.json says: 0.0.0-dev in the tree,
+// the release a build was stamped with (plugins/manifeststamp).
+var Version = manifestVersion()
+
+func manifestVersion() string {
+	var m struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(ManifestJSON, &m); err != nil || m.Version == "" {
+		return "unknown"
+	}
+	return m.Version
+}
 
 // Plugin is the Docker plugin. Its exported fields are seams for tests;
 // New sets them for real use.

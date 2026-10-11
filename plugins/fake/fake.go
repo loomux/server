@@ -34,6 +34,10 @@ var ManifestJSON []byte
 // test's stand-in for a newer bundled plugin (LOOM-194).
 var Version string
 
+// MinHostVersion, likewise, is the min_host_version the executable
+// reports when set (tests: a plugin built for another Loomux).
+var MinHostVersion string
+
 // Modes the "mode" setting selects.
 const (
 	ModeOK                 = "ok"
@@ -96,6 +100,9 @@ func (p *Plugin) Describe(ctx context.Context) (*plugins.Manifest, error) {
 	m, err := plugins.ParseManifest(ManifestJSON)
 	if err == nil && Version != "" {
 		m.Version = Version
+	}
+	if err == nil && MinHostVersion != "" {
+		m.MinHostVersion = MinHostVersion
 	}
 	return m, err
 }
