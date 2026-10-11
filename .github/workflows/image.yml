@@ -91,6 +91,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # The build-provenance attestation of the pushed image (LOOM-194).
+      id-token: write
+      attestations: write
     outputs:
       web_version: ${{ steps.meta.outputs.web_version }}
       web_short: ${{ steps.webref.outputs.short }}
@@ -203,6 +206,20 @@ jobs:
           echo "web_version=${web_version}" >> "$GITHUB_OUTPUT"
           echo "version=${RELEASE:-${short}} (web ${web_version:-${{ steps.webref.outputs.short }}})" >> "$GITHUB_OUTPUT"
 
+      # OCI labels: the action's version/revision/source/created, with
+      # the title and description of this image rather than of the
+      # repository, and the version as the release (or the commit) rather
+      # than a tag name (LOOM-194).
+      - name: Image labels
+        id: labels
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.title=loomux-server
+            org.opencontainers.image.description=Loomux server (loomuxd): chat-driven multi-agent tmux orchestration
+            org.opencontainers.image.version=${{ steps.meta.outputs.release || steps.meta.outputs.sha }}
+
       - uses: docker/setup-buildx-action@v3
 
       # Built and loaded locally first, never built straight to the registry:
@@ -215,6 +232,7 @@ jobs:
           load: true
           push: false
           tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.sha }}
+          labels: ${{ steps.labels.outputs.labels }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             WEB_DIST=.web-dist
@@ -264,11 +282,17 @@ jobs:
       # Both tags point at the same verified image. theWyseKube pins the SHA
       # tag; :main exists for humans and for "what is current".
       - name: Push
+        id: push
         if: github.event_name != 'pull_request'
         env:
           RELEASE: ${{ steps.meta.outputs.release }}
         run: |
-          docker push "${IMAGE}:${{ steps.meta.outputs.sha }}"
+          set -euo pipefail
+          # The digest the push reports is what the attestation names.
+          digest="$(docker push "${IMAGE}:${{ steps.meta.outputs.sha }}" | tee /dev/stderr |
+            sed -n 's/.*digest: \(sha256:[0-9a-f]*\).*/\1/p' | tail -n 1)"
+          [ -n "${digest}" ] || { echo "::error::the push reported no digest"; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           # :main follows main; a release adds its version tag.
           if [ "${GITHUB_REF}" = refs/heads/main ]; then
             docker tag "${IMAGE}:${{ steps.meta.outputs.sha }}" "${IMAGE}:main"
@@ -283,6 +307,17 @@ jobs:
             echo ""
             echo "UI from loomux/web release \`web-${{ steps.webref.outputs.short }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # A GitHub build-provenance attestation for the pushed digest, as
+      # the agent and plugin images have (plugins.yml): the same identity
+      # the web updater verifies bundles against (LOOM-118, LOOM-194).
+      - name: Attest
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   # The GitHub release for a version, once its image is pushed (LOOM-129).
   # Its tag already exists (reserved above, or pushed by hand). The notes
