@@ -15,6 +15,13 @@ theWyseKube's manifests pin the server image; an update is a recreate.
 | Tools | `tmux`, `openssh-server`, `git`, `python3` (the folder-trust script Loomux runs before a Claude Code launch), `ripgrep`, `jq`, `curl`, `procps`, CA certificates, tzdata |
 | Not in it | Loomux itself, any `LOOMUX_*` variable, Docker or cloud CLIs, compilers. An agent that needs one asks in chat and the install offer runs in its pane |
 
+The image labels what a plugin relies on and what it was tested with:
+`io.loomux.agent.contract` (`1`: sshd on 2222 as uid 10002,
+`/run/loomux/ssh/*`, `/data`; bumped only when that changes) and
+`io.loomux.agent.claude-code`, `io.loomux.agent.codex`,
+`io.loomux.agent.opencode` (the pinned CLI versions), beside the usual
+`org.opencontainers.image.*` labels (version, revision, source, created).
+
 ## The user and the volume
 
 Everything runs as **`agent`, uid/gid 10002** (distinct from the server's

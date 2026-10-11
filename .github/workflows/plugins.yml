@@ -68,6 +68,11 @@ jobs:
             type=ref,event=branch
             type=sha,prefix=sha-,format=short
             type=semver,pattern={{version}}
+          # The action's defaults name the repository ("server", its
+          # description): say what this image is instead (LOOM-194).
+          labels: |
+            org.opencontainers.image.title=loomux-agent
+            org.opencontainers.image.description=Loomux agent machine: tmux, sshd and the agent CLIs, for machines a plugin makes
 
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -183,6 +188,21 @@ jobs:
           kubectl -n loomux-agents get pods,pvc,secrets -o wide || true
           kubectl -n loomux-agents get events --sort-by=.lastTimestamp | tail -n 40 || true
 
+      # Its own labels (version, revision, source, and its own title and
+      # description), as the agent image's (LOOM-194).
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/loomux/plugin-kubernetes
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.title=loomux-plugin-kubernetes
+            org.opencontainers.image.description=Loomux Kubernetes target-provider plugin: a pod per machine
+
       - name: Build the plugin image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -190,6 +210,7 @@ jobs:
           file: plugins/kubernetes/Dockerfile
           load: true
           tags: ghcr.io/loomux/plugin-kubernetes:test
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -269,6 +290,21 @@ jobs:
           docker ps -a --filter label=loomux.io/managed-by=loomux-plugin-docker || true
           docker volume ls --filter label=loomux.io/managed-by=loomux-plugin-docker || true
 
+      # Its own labels (version, revision, source, and its own title and
+      # description), as the agent image's (LOOM-194).
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/loomux/plugin-docker
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.title=loomux-plugin-docker
+            org.opencontainers.image.description=Loomux Docker target-provider plugin: a container per machine on one docker host
+
       - name: Build the plugin image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -276,6 +312,7 @@ jobs:
           file: plugins/docker/Dockerfile
           load: true
           tags: ghcr.io/loomux/plugin-docker:test
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

@@ -65,7 +65,14 @@ USER agent
 EXPOSE 2222
 ENTRYPOINT ["/usr/local/bin/loomux-agent-entrypoint"]
 
+# io.loomux.agent.contract: what a plugin relies on (sshd on 2222 as uid
+# 10002, /run/loomux/ssh/*, /data); bumped only when that changes. The
+# CLI labels say what the image was tested with (LOOM-194).
 LABEL org.opencontainers.image.title="loomux-agent" \
       org.opencontainers.image.description="Loomux agent machine: tmux, sshd and the agent CLIs, for machines a plugin makes" \
-      org.opencontainers.image.source="https://github.com/Loomux/server" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.source="https://github.com/loomux/server" \
+      org.opencontainers.image.licenses="MIT" \
+      io.loomux.agent.contract="1" \
+      io.loomux.agent.claude-code="${CLAUDE_CODE_VERSION}" \
+      io.loomux.agent.codex="${CODEX_VERSION}" \
+      io.loomux.agent.opencode="${OPENCODE_VERSION}"

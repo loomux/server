@@ -29,5 +29,5 @@ USER 10003:10001
 ENTRYPOINT ["/loomux-plugin-kubernetes"]
 LABEL org.opencontainers.image.title="loomux-plugin-kubernetes" \
       org.opencontainers.image.description="Loomux Kubernetes target-provider plugin: a pod per machine" \
-      org.opencontainers.image.source="https://github.com/Loomux/server" \
+      org.opencontainers.image.source="https://github.com/loomux/server" \
       org.opencontainers.image.licenses="MIT"
