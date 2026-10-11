@@ -42,7 +42,7 @@ Loomux follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 5. **MINOR:** a hand-pushed tag, as below. (The workflow's
    **bump = minor** input doesn't work on a merge commit: that commit
    already has its patch tag, and a re-run keeps a commit's version.)
-6. **Deploy** as before: `loomux-deploy-test-instance <sha> "v0.1.N"`.
+6. **Deploy**: pin the release's images by digest ("Images" below).
 
 loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, release.
 
@@ -90,6 +90,136 @@ loomux/web does the same in its publish job: reserve, bundle `web-<sha>`, releas
    builds the image as `0.Y.0` and releases it with the section as notes.
 3. Deploy that commit's image (`loomux-deploy-test-instance <sha>`); it
    reports `0.Y.0 (web 0.Y.0)`.
+
+## Images (LOOM-194, user decisions 2026-10-10)
+
+One release run names every image. The server's `vX.Y.Z` is the version
+of `ghcr.io/loomux/server`, `ghcr.io/loomux/plugin-kubernetes` and
+`ghcr.io/loomux/plugin-docker` built from that commit, and of the
+`ghcr.io/loomux/agent` built from it when `deploy/agent` changed.
+
+### Tags
+
+| Tag | Moves? | server | plugin-kubernetes, plugin-docker | agent |
+|---|---|---|---|---|
+| `X.Y.Z` | never | every release | every release | releases where `deploy/agent/**` changed |
+| `sha-<short>` | never | every published build | every published build | every agent build |
+| `<short>` (bare) | never | **legacy**, kept until theWyseKube and `loomux-deploy-test-instance` pin `X.Y.Z@digest`; then dropped | — | — |
+| `main` | yes, follows `main` | yes | yes | yes |
+| `X.Y` | — | not published (decided against for now) | — | — |
+| `latest` | — | not before 1.0.0: every 0.x is a pre-release | — | — |
+
+"Never moves" is a rule of the pipeline, not of the registry (GHCR has
+no immutable tags): `deploy/publish-image.sh` accepts an existing
+`X.Y.Z` or `sha-<short>` only when its `org.opencontainers.image.revision`
+label is the commit being published **and** its `.version` label is the
+version this run publishes (a re-run), and then reuses its digest rather
+than pushing a second image for the same commit. A commit tag of the
+same commit under another version (a hand-pushed MINOR on a commit the
+merge already released as a patch) is left alone, and the image built
+as the MINOR is pushed under its version tag; a plain rebuild of a
+released commit pushes nothing. An existing tag from another commit
+fails the run. Nothing in the pipeline deletes a tag or a package
+version. A consumer pins **`X.Y.Z@sha256:…`**: the tag says what it is,
+the digest is what runs.
+
+### Labels and attestation
+
+Every image carries `org.opencontainers.image.version` (the release, or
+`sha-<short>` when the build has none), `.revision` (the commit),
+`.source` (`https://github.com/loomux/server`), `.created`, and its own
+`.title` and `.description`. The agent image adds
+`io.loomux.agent.contract` and its CLI versions
+(`docs/deploy/agent-image.md`). Every published digest has a GitHub
+build-provenance attestation, pushed to the registry beside the image:
+
+```sh
+gh attestation verify oci://ghcr.io/loomux/server:0.3.80 --owner loomux
+```
+
+The signer workflow is `.github/workflows/image.yml` for the server and
+plugin images and `.github/workflows/agent.yml` for the agent, at
+`refs/heads/main` for a patch release (the run is the merge's) and at
+`refs/tags/v0.Y.0` for a hand-pushed MINOR. The provenance names the
+commit; for a release it is the commit `vX.Y.Z` tags.
+
+### The release run (`.github/workflows/image.yml`)
+
+1. **`version`** reserves or reads the version (above).
+2. **`agent`** (`agent.yml`, reusable): if `deploy/agent` is unchanged
+   since the commit the current `:main` agent image was built from
+   (its `revision` label), the current image is reused; otherwise it is
+   rebuilt, smoke tested, scanned, published and attested. Either way the
+   run has one agent reference, `ghcr.io/loomux/agent:<tag>@sha256:…`.
+3. **`image`** builds the server with `RELEASE` and that agent reference
+   (the bundled plugin manifests are stamped with both), verifies it by
+   running it, and uploads it as an artifact. **`plugins`**
+   (`plugins.yml`, reusable) runs each plugin's unit tests, the end to
+   end on kind and on the runner's docker engine when plugin code
+   changed since the previous push to `main` (`plugins/`,
+   `deploy/test/kind`, `deploy/agent`, the two workflows; always on a
+   pull request), builds each plugin image with the same stamp, smoke
+   tests it (the manifest it serves says the release) and scans it, and
+   uploads it.
+4. **`publish`**, once every job above passed: each of the three images
+   is pushed under its tags, attested, and its `tag@digest` recorded.
+5. **`release`** creates the GitHub pre-release; its notes list the web
+   version pinned and each image's `tag@digest`.
+
+A run without a version (a merge a newer release already covers; a
+plain `workflow_dispatch` rebuild) publishes `sha-<short>` (and the
+server's bare `<short>`) only and moves nothing. A pull request builds
+and verifies the server image, and plugin pull requests run
+`plugins.yml` on their own; nothing is pushed.
+
+### What the version means for plugins
+
+The manifests in the tree say `version: 0.0.0-dev`. A build stamps
+them (`plugins/manifeststamp`): `version` = the release,
+`min_host_version` = its `X.Y.0`, and the `agent_image` setting's
+default = the agent reference of the run. The bundled binaries in the
+server image and the sidecar images of the same release are built from
+the same source and stamped the same, so they can't drift. The host
+refuses a plugin below its `min_host_version` or from another major,
+warns about one built for an older `0.Y` and runs it, and adopts a
+bundled or sidecar plugin's new version on its own when its
+capabilities and configuration schema (defaults aside) are unchanged;
+a setting still equal to the plugin's previous default follows the new
+one then, so an install whose `agent_image` is still the shipped
+default moves to the release's agent pin, while a value that differs
+from the previous default stays (to freeze an image, pin a value other
+than the one the plugin shipped with: the server can't tell a hand-set
+copy of the default from the default). `GET /api/v1/plugins/available`
+says `incompatible` for a plugin the server refuses and
+`incompatible_warning` for one that runs with a warning
+(`docs/deploy/plugins.md`, "Upgrades and compatibility").
+
+### Deploying a release
+
+Pin the server and its sidecar at the same `X.Y.Z`, each by digest, in
+one change:
+
+```yaml
+image: ghcr.io/loomux/server:0.3.80@sha256:…
+image: ghcr.io/loomux/plugin-kubernetes:0.3.80@sha256:…
+```
+
+The digests are in the release notes and in the run's `publish` job
+summaries; verify them with `gh attestation verify` before pinning.
+Flux image automation is not used: TEST deploys are deliberate and
+reviewed, and production is pinned by hand. After the rollout the
+server adopts the new sidecar version at its next start, or on Enable
+when the sidecar wasn't answering at that moment, as long as the
+plugin's capabilities and schema are unchanged (the usual case); when
+they changed, the plugin shows "upgrade the plugin" and Upgrade moves
+it.
+
+**The first stamped deploy moves every install still on
+`ghcr.io/loomux/agent:main` to the release's pinned agent image**, TEST
+included: that value is the old shipped default, so it follows. Machines
+on another digest then show `update_available`; recreate them when
+convenient. An install meant to stay on a floating or other image must
+be set to a value other than the shipped default before that deploy.
 
 ## The API v1 contract (`api/testdata/api-v1-contract.txt`)
 

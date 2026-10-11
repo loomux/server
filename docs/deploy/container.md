@@ -2,7 +2,9 @@
 
 `Dockerfile` at the repo root builds the `loomuxd` image published as
 **`ghcr.io/loomux/server`**. That name is fixed: theWyseKube's manifests pin
-it. Don't rename the image without coordinating that change.
+it. Don't rename the image without coordinating that change. Its tags
+(`X.Y.Z`, `sha-<short>`, `main`, and the legacy bare `<short>`), labels
+and attestation are in `docs/release/versioning.md`, "Images".
 
 ```sh
 # Build with the placeholder web page (no credentials, no extra network):
@@ -375,7 +377,8 @@ readinessProbe:
 ```
 
 `/api/v1/version` remains available for unauthenticated build identification
-(CI stamps `version.Version` with the short commit SHA).
+(CI stamps `version.Version` with the release, `0.3.80 (web 0.3.12)`, or
+the short commit SHA for a build without one).
 
 TLS is *not* terminated here. `loomuxd` serves plain HTTP by design; an
 ingress or reverse proxy in front handles TLS (see `api/README.md`).

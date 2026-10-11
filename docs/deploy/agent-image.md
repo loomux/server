@@ -100,7 +100,16 @@ request never pushes. The actions are pinned by commit.
 ## Changing a version
 
 Edit the `ARG`s in the Dockerfile in a PR; the workflow builds and
-smoke-tests the result. Keep every pin at or above the floors in
+smoke-tests the result. Once merged, the release run rebuilds the image
+(`deploy/agent` changed) and publishes it under that release's version;
+the plugins built in the same run pin the new digest as their default
+`agent_image`. An installed plugin whose `agent_image` still equals the
+previous shipped default follows the new one when the server adopts
+the release's plugin version (`docs/deploy/plugins.md`); a value that
+differs from the previous default stays until edited (to freeze an
+image, pin a value other than the shipped one). A machine still running
+an older digest than its plugin's configured image shows
+`update_available` until it is recreated. Keep every pin at or above the floors in
 `agents/README.md`, which are the oldest releases on which a real turn
 was verified to write its completion marker. The base image is pinned
 by digest as well as tag (`docker pull node:22-bookworm-slim` prints

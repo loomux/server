@@ -204,6 +204,12 @@ can say so instead of breaking them.
 }
 ```
 
+- **`version` and `min_host_version` are stamped at build** (LOOM-194, `docs/release/versioning.md`, "Images"):
+  the manifest in the tree says `0.0.0-dev`; a release build writes the server's `X.Y.Z` as `version`, its
+  `X.Y.0` as `min_host_version` and the agent image the release pins as the `agent_image` default, so the
+  bundled binary and the sidecar image of one release can't drift. The host reads `min_host_version` as a
+  caret range (under 0.x the same `0.Y` line) and adopts a bundled plugin's new version on its own when its
+  capabilities and configuration schema are unchanged.
 - **Capabilities** map to UI affordances and host behaviour: no `targets.stop_start`, no Stop button; no
   `targets.ephemeral`, no "Keep data" toggle. The host refuses a method a plugin didn't declare.
 - **Permissions** are human-readable declarations for informed consent, shown before install (§6). The
@@ -237,7 +243,7 @@ Routes join the "admin-only once there are roles" list (freeze review, section D
 | Plugin origin | How it is trusted | What the UI shows before install |
 |---|---|---|
 | **Bundled first-party** (in the loomuxd image) | the same supply chain as loomuxd itself: built by this repo's CI from a reviewed commit, the image pinned by digest in the manifests | "Part of this Loomux release", version, capabilities, permissions |
-| **First-party as a release asset or its own image** | signed in CI with GitHub build-provenance attestations; verified at install with the LOOM-118 verifier (`webbundle/attest.go`'s pattern) against Sigstore's trust root, with the identity pinned to `github.com/loomux/server/.github/workflows/plugins.yml@refs/tags/v*` (release) or `@refs/heads/main` (TEST, like attested web updates) | "Signed by Loomux CI", the commit, version, capabilities, permissions |
+| **First-party as a release asset or its own image** | signed in CI with GitHub build-provenance attestations; verified at install with the LOOM-118 verifier (`webbundle/attest.go`'s pattern) against Sigstore's trust root, with the identity pinned to `github.com/loomux/server/.github/workflows/image.yml@refs/heads/main` (every patch release is published by the merge's run; a hand-pushed MINOR by `@refs/tags/v0.Y.0`; the agent image by `agent.yml` at the same refs) and the provenance's commit checked to be the one `vX.Y.Z` tags (LOOM-194) | "Signed by Loomux CI", the commit, version, capabilities, permissions |
 | **Third-party** (a directory on the plugin path, or a sidecar) | unsigned, or signed by another identity the host can verify but doesn't know | "Not signed by Loomux" (or "Signed by `<identity>`"), the permissions, and an explicit confirmation: "I trust this plugin with the permissions above" |
 
 Stated plainly in that confirmation, because it is true: a plugin run as a **subprocess runs as loomuxd's
@@ -453,8 +459,10 @@ workspace is kept for inspection; the 1 GiB free rule applies to `/data`.
 ## 3. The agent image (`ghcr.io/loomux/agent`)
 
 Built from this repo (`deploy/agent/Dockerfile`, `deploy/agent/entrypoint.sh`, `deploy/agent/sshd_config`) by
-the plugins workflow (`plugins.yml`, §11) on the same version line as the server: tag `<version>` for a
-release, `main` for a tested main build, plus the digest. A plugin's configuration names the image
+`agent.yml` as the first step of the release run (LOOM-194, `docs/release/versioning.md`, "Images"), on the
+server's version line but sparsely: rebuilt only when `deploy/agent` changed since the current image's
+commit, and then tagged `<version>`, `sha-<short>` and `main`; otherwise the current image is reused. Either
+way the plugins built in that run pin it as `tag@digest`: a plugin's configuration names the image
 (`agent_image`, defaulting to the one the plugin was built with), exactly as the manifests pin the server
 image.
 
@@ -907,7 +915,7 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
 |---|---|---|
 | **1. Plugin framework** (host side, LOOM-178 implementation part 1) | `plugins/`: manifest parsing and validation, the catalog over the three sources, the JSON-RPC client with `Content-Length` framing and per-call deadlines, the subprocess supervisor and the socket connector, `plugins` + `settings` tables (migration `00028_plugins`) with encrypted config, the plugin lifecycle API of §5 (install, configure, enable/disable, upgrade, check, uninstall; `targets=destroy|keep` is accepted and validated from PR 1, and never blocks until PR 2 gives a plugin machines to own), trust (bundled / attestation-verified via the LOOM-118 verifier / unsigned), `plugintest` (a conformance suite any plugin binary must pass) and `loomux-plugin-fake` (a test plugin), deep-health component, metrics, docs (`docs/deploy/plugins.md`), `core-design.md` §1/§7 paragraph | LOOM-138 (merged) |
 | **2. Target-provider capability** (part 2) | `providers/`: the Manager, `00029_environments`, the `targets.*` client, target API additions of §5, cascade delete, vault `target_id` scope, attach-info `attach_commands`, router snapshot fields and the start-if-stopped dispatch stage; the fake plugin grows an in-memory `targets.*` | PR 1 |
-| **3. Agent image and the plugins workflow** | `deploy/agent/{Dockerfile,entrypoint.sh,sshd_config}`; `plugins.yml` builds the agent image, every plugin binary and image, signs them (GitHub attestations), publishes `ghcr.io/loomux/agent` and `ghcr.io/loomux/plugin-*`; the server `Dockerfile` gains a stage that builds the plugin modules and bundles their binaries; `docs/deploy/agent-image.md` | none (can run beside PR 1) |
+| **3. Agent image and the plugins workflow** | `deploy/agent/{Dockerfile,entrypoint.sh,sshd_config}`; `plugins.yml` builds the agent image, every plugin binary and image, signs them (GitHub attestations), publishes `ghcr.io/loomux/agent` and `ghcr.io/loomux/plugin-*`; the server `Dockerfile` gains a stage that builds the plugin modules and bundles their binaries; `docs/deploy/agent-image.md`. (LOOM-194 later moved the publishing into the release run, `image.yml` calling `agent.yml` and `plugins.yml`, so every image carries the server's version.) | none (can run beside PR 1) |
 | **4. Kubernetes plugin** (LOOM-179) | `plugins/kubernetes` module, client-go, objects, pod spec, the enforcement check, `--listen` form; a `kind`-based CI job; the §10 handoff | PR 1, 2, 3 |
 | **5. Docker plugin** (LOOM-180) | `plugins/docker` module: ssh dial-stdio and socket transports, objects, archive upload, host-key scan-and-pin; CI against the runner's docker | PR 1, 2, 3 |
 | **6. Web** (loomux/web) | Plugins page, the Machines page with its two Add flows, created-machine cards, warnings, attach commands, update badge | PR 1, 2 (fake plugin for dev) |
