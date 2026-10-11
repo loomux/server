@@ -112,11 +112,16 @@ of `ghcr.io/loomux/server`, `ghcr.io/loomux/plugin-kubernetes` and
 "Never moves" is a rule of the pipeline, not of the registry (GHCR has
 no immutable tags): `deploy/publish-image.sh` accepts an existing
 `X.Y.Z` or `sha-<short>` only when its `org.opencontainers.image.revision`
-label is the commit being published (a re-run), and then reuses its
-digest rather than pushing a second image for the same commit; an
-existing tag from another commit fails the run. Nothing in the pipeline
-deletes a tag or a package version. A consumer pins **`X.Y.Z@sha256:…`**:
-the tag says what it is, the digest is what runs.
+label is the commit being published **and** its `.version` label is the
+version this run publishes (a re-run), and then reuses its digest rather
+than pushing a second image for the same commit. A commit tag of the
+same commit under another version (a hand-pushed MINOR on a commit the
+merge already released as a patch) is left alone, and the image built
+as the MINOR is pushed under its version tag; a plain rebuild of a
+released commit pushes nothing. An existing tag from another commit
+fails the run. Nothing in the pipeline deletes a tag or a package
+version. A consumer pins **`X.Y.Z@sha256:…`**: the tag says what it is,
+the digest is what runs.
 
 ### Labels and attestation
 
@@ -175,10 +180,14 @@ them (`plugins/manifeststamp`): `version` = the release,
 default = the agent reference of the run. The bundled binaries in the
 server image and the sidecar images of the same release are built from
 the same source and stamped the same, so they can't drift. The host
-enforces `min_host_version` as a caret range and adopts a bundled
-plugin's new version on its own when its capabilities and configuration
-schema are unchanged (`docs/deploy/plugins.md`, "Upgrades and
-compatibility").
+refuses a plugin below its `min_host_version` or from another major,
+warns about one built for an older `0.Y` and runs it, and adopts a
+bundled or sidecar plugin's new version on its own when its
+capabilities and configuration schema (defaults aside) are unchanged;
+a setting still at the plugin's previous default follows the new one
+then, so an install that never changed `agent_image` moves to the
+release's agent pin, while a value the operator set stays
+(`docs/deploy/plugins.md`, "Upgrades and compatibility").
 
 ### Deploying a release
 
@@ -193,7 +202,11 @@ image: ghcr.io/loomux/plugin-kubernetes:0.3.80@sha256:…
 The digests are in the release notes and in the run's `publish` job
 summaries; verify them with `gh attestation verify` before pinning.
 Flux image automation is not used: TEST deploys are deliberate and
-reviewed, and production is pinned by hand.
+reviewed, and production is pinned by hand. After the rollout the
+server adopts the new sidecar version at its next start when the
+plugin's capabilities and schema are unchanged (the usual case); when
+they changed, the plugin shows "upgrade the plugin" and Upgrade moves
+it.
 
 ## The API v1 contract (`api/testdata/api-v1-contract.txt`)
 
