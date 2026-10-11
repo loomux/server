@@ -81,9 +81,9 @@ server): `GET /api/v1/plugins/available` still lists it, with
 and an installed one stays stopped in status `error` with the same
 reason. A plugin built for an **older `0.Y`** than the server's
 (`min_host_version 0.3.0` on a `0.4.2` server) is listed with
-`incompatible` as well and a warning is logged, but it installs and
-runs: under 0.x the minor is where things change, so it may not match,
-and the message says so. A server built without a release version
+`incompatible_warning` instead and a warning is logged, but it installs
+and runs: under 0.x the minor is where things change, so it may not
+match, and the message says so. A server built without a release version
 (`dev`, a plain commit build) runs anything. Bundled plugins always
 match, since they are stamped with the server's own version; the rule
 matters for a sidecar or a directory plugin from another release.

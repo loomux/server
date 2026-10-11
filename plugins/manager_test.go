@@ -452,8 +452,8 @@ func TestManagerRunsAnOlderMinorWithAWarning(t *testing.T) {
 	mgr := plugins.NewManager(store, &plugins.Catalog{BundleDir: bundle}, protocol.HostInfo{Version: "0.4.2 (web 0.4.0)", InstanceID: "inst"}, nil, nil)
 	t.Cleanup(func() { _ = mgr.Close(context.Background()) })
 	avail, err := mgr.Available(context.Background())
-	if err != nil || len(avail) != 1 || !strings.Contains(avail[0].Incompatible, "was built for Loomux 0.3.x") {
-		t.Fatalf("Available = %+v, %v", avail, err)
+	if err != nil || len(avail) != 1 || avail[0].Incompatible != "" || !strings.Contains(avail[0].Warning, "was built for Loomux 0.3.x") {
+		t.Fatalf("Available = %+v, %v; want a warning, no refusal", avail, err)
 	}
 	v, err := mgr.Install(context.Background(), plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceBundled, Label: "older", Config: map[string]any{"token": "t"}})
 	if err != nil || v.Status != registry.PluginStatusInstalled || v.Instance.State != plugins.StateRunning {
