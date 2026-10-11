@@ -85,14 +85,17 @@ root filesystem isn't writable, then starts the container the way a
 plugin would (read-only, tmpfs, no capabilities, the two files mounted
 read-only), logs in over ssh with a generated key and a pinned host key,
 starts and kills a tmux session on Loomux's socket, and checks a
-stranger's key is refused. `.github/workflows/plugins.yml` runs it on
-every change and scans the image with trivy (critical, fixable), with
-read-only permissions. On `main` a second job publishes `:main` and
-`:sha-<short>`, on a release tag `:<version>`: it pushes the very image
-the first job tested (handed over as an artifact), so the published and
-attested digest is the one that passed, each with a GitHub
-build-provenance attestation. A pull request never pushes. The actions
-are pinned by commit.
+stranger's key is refused. `.github/workflows/agent.yml` runs it before
+publishing and scans the image with trivy (critical, fixable);
+`plugins.yml` runs the same on a pull request that changes
+`deploy/agent`, without publishing. The image is on the server's
+version line (`docs/release/versioning.md`, "Images"): the release run
+rebuilds it only when `deploy/agent` changed since the commit the
+current `:main` was built from, and publishes the rebuilt image as
+`:sha-<short>`, `:<version>` and `:main` with a GitHub build-provenance
+attestation; otherwise the current image is reused. Either way the
+plugins built in that run pin the agent image as `tag@digest`. A pull
+request never pushes. The actions are pinned by commit.
 
 ## Changing a version
 
