@@ -327,8 +327,11 @@ jobs:
   # :main (a main push; a hand-pushed tag on an older commit doesn't
   # move it), the server also under its legacy bare :<short> until
   # theWyseKube pins versions. A version or sha tag is never re-pushed:
-  # one that exists for this commit is reused, one from another commit
-  # fails the run (deploy/publish-image.sh). Each digest gets a GitHub
+  # one that exists for this commit under this run's version is reused
+  # (a re-run), one under another version is left alone (a hand-pushed
+  # MINOR on a released commit: its own build is pushed as the MINOR),
+  # one from another commit fails the run (deploy/publish-image.sh).
+  # Each digest gets a GitHub
   # build-provenance attestation. A run without a version (a merge a
   # newer release already covers, a plain rebuild) publishes its sha
   # tags only and moves nothing.
@@ -390,8 +393,11 @@ jobs:
           fi
           [ -z "${VERSION}" ] || tags="${tags} ${VERSION}"
           [ "${GITHUB_REF}" != refs/heads/main ] || tags="${tags} main"
+          # The version label this run gives its image: an existing commit
+          # tag is adopted only under the same one, so a hand-pushed MINOR
+          # on a released commit publishes its own build (deploy/publish-image.sh).
           # shellcheck disable=SC2086 # one word per tag
-          digest="$(deploy/publish-image.sh "${IMAGE}" "${GITHUB_SHA}" "${local}" ${tags})"
+          digest="$(deploy/publish-image.sh "${IMAGE}" "${GITHUB_SHA}" "${VERSION:-sha-${short}}" "${local}" ${tags})"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           mkdir -p published
           echo "${IMAGE}:${VERSION:-sha-${short}}@${digest}" > "published/${NAME}.txt"

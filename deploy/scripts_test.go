@@ -155,7 +155,12 @@ esac
 f="$FIX/$(basename "$2")/$3"
 case "$1" in
 digest) [ -f "$f.digest" ] || exit 2; cat "$f.digest" ;;
-label) [ -f "$f.digest" ] || exit 2; [ "$4" = org.opencontainers.image.revision ] && cat "$f.revision" || true ;;
+label)
+  [ -f "$f.digest" ] || exit 2
+  case "$4" in
+  org.opencontainers.image.revision) cat "$f.revision" ;;
+  org.opencontainers.image.version) cat "$f.version" ;;
+  esac ;;
 *) exit 1 ;;
 esac
 `
@@ -168,12 +173,14 @@ esac
 	return h
 }
 
-// existing records that <image name>:<tag> exists with digest and revision.
-func (h *publishHarness) existing(t *testing.T, name, tag, digest, revision string) {
+// existing records that <image name>:<tag> exists with digest, revision
+// and version label.
+func (h *publishHarness) existing(t *testing.T, name, tag, digest, revision, version string) {
 	t.Helper()
 	os.MkdirAll(h.fix+"/"+name, 0o755)
 	os.WriteFile(h.fix+"/"+name+"/"+tag+".digest", []byte(digest+"\n"), 0o644)
 	os.WriteFile(h.fix+"/"+name+"/"+tag+".revision", []byte(revision+"\n"), 0o644)
+	os.WriteFile(h.fix+"/"+name+"/"+tag+".version", []byte(version+"\n"), 0o644)
 }
 
 func (h *publishHarness) run(t *testing.T, args ...string) (stdout string, code int, log string) {
@@ -206,7 +213,7 @@ const agent = "ghcr.io/loomux/agent"
 
 func TestPublishImageFresh(t *testing.T) {
 	h := newPublishHarness(t)
-	out, code, log := h.run(t, agent, "rev1", "agent:test", "sha-abc1234", "0.3.80", "main")
+	out, code, log := h.run(t, agent, "rev1", "0.3.80", "agent:test", "sha-abc1234", "0.3.80", "main")
 	want := pushedDigest(agent + ":sha-abc1234")
 	if code != 0 || out != want {
 		t.Fatalf("stdout %q, exit %d; want the pushed digest %s", out, code, want)
@@ -228,8 +235,8 @@ func TestPublishImageFresh(t *testing.T) {
 
 func TestPublishImageRerunAdoptsTheExistingShaTag(t *testing.T) {
 	h := newPublishHarness(t)
-	h.existing(t, "agent", "sha-abc1234", "sha256:earlier", "rev1")
-	out, code, log := h.run(t, agent, "rev1", "agent:test", "sha-abc1234", "0.3.80", "main")
+	h.existing(t, "agent", "sha-abc1234", "sha256:earlier", "rev1", "0.3.80")
+	out, code, log := h.run(t, agent, "rev1", "0.3.80", "agent:test", "sha-abc1234", "0.3.80", "main")
 	if code != 0 || out != "sha256:earlier" {
 		t.Fatalf("stdout %q, exit %d; want the existing digest", out, code)
 	}
@@ -245,8 +252,8 @@ func TestPublishImageRerunAdoptsTheExistingShaTag(t *testing.T) {
 
 func TestPublishImageImmutableTagForAnotherCommitFails(t *testing.T) {
 	h := newPublishHarness(t)
-	h.existing(t, "agent", "0.3.80", "sha256:other", "rev0")
-	out, code, log := h.run(t, agent, "rev1", "agent:test", "sha-abc1234", "0.3.80", "main")
+	h.existing(t, "agent", "0.3.80", "sha256:other", "rev0", "0.3.80")
+	out, code, log := h.run(t, agent, "rev1", "0.3.80", "agent:test", "sha-abc1234", "0.3.80", "main")
 	if code == 0 {
 		t.Fatalf("exit 0 with stdout %q; want a failure", out)
 	}
@@ -257,18 +264,18 @@ func TestPublishImageImmutableTagForAnotherCommitFails(t *testing.T) {
 
 func TestPublishImageTwoExistingTagsMustAgree(t *testing.T) {
 	h := newPublishHarness(t)
-	h.existing(t, "agent", "sha-abc1234", "sha256:e1", "rev1")
-	h.existing(t, "agent", "0.3.80", "sha256:e2", "rev1")
-	if _, code, log := h.run(t, agent, "rev1", "agent:test", "sha-abc1234", "0.3.80"); code == 0 || strings.Contains(log, "imagetools create") {
+	h.existing(t, "agent", "sha-abc1234", "sha256:e1", "rev1", "0.3.80")
+	h.existing(t, "agent", "0.3.80", "sha256:e2", "rev1", "0.3.80")
+	if _, code, log := h.run(t, agent, "rev1", "0.3.80", "agent:test", "sha-abc1234", "0.3.80"); code == 0 || strings.Contains(log, "imagetools create") {
 		t.Errorf("two digests for one commit must fail (exit %d):\n%s", code, log)
 	}
 }
 
 func TestPublishImageMovingTagIsRepointed(t *testing.T) {
 	h := newPublishHarness(t)
-	h.existing(t, "server", "main", "sha256:old", "rev0")
+	h.existing(t, "server", "main", "sha256:old", "rev0", "0.3.79")
 	server := "ghcr.io/loomux/server"
-	out, code, log := h.run(t, server, "rev1", "server:test", "abc1234", "sha-abc1234", "main")
+	out, code, log := h.run(t, server, "rev1", "0.3.80", "server:test", "abc1234", "sha-abc1234", "main")
 	want := pushedDigest(server + ":abc1234")
 	if code != 0 || out != want {
 		t.Fatalf("stdout %q, exit %d; want %s", out, code, want)
@@ -287,7 +294,47 @@ func TestPublishImageMovingTagIsRepointed(t *testing.T) {
 
 func TestPublishImageNeedsArguments(t *testing.T) {
 	h := newPublishHarness(t)
-	if _, code, _ := h.run(t, agent, "rev1", "agent:test"); code == 0 {
+	if _, code, _ := h.run(t, agent, "rev1", "0.3.80", "agent:test"); code == 0 {
 		t.Error("no tags should be refused")
+	}
+}
+
+// A hand-pushed MINOR on a commit the merge already released as a
+// patch: the commit tags exist for this revision under the patch's
+// version label, so they are left alone (neither adopted nor
+// re-pushed), and the new build, made as the MINOR, is pushed under the
+// version tag (review of #353).
+func TestPublishImageSameCommitOtherVersionPushesTheNewBuild(t *testing.T) {
+	h := newPublishHarness(t)
+	server := "ghcr.io/loomux/server"
+	h.existing(t, "server", "abc1234", "sha256:patchbuild", "rev1", "0.3.80")
+	h.existing(t, "server", "sha-abc1234", "sha256:patchbuild", "rev1", "0.3.80")
+	out, code, log := h.run(t, server, "rev1", "0.4.0", "server:test", "abc1234", "sha-abc1234", "0.4.0")
+	want := pushedDigest(server + ":0.4.0")
+	if code != 0 || out != want {
+		t.Fatalf("stdout %q, exit %d; want the new build's digest %s", out, code, want)
+	}
+	if !strings.Contains(log, "docker push "+server+":0.4.0\n") {
+		t.Errorf("the MINOR wasn't pushed:\n%s", log)
+	}
+	if strings.Contains(log, "imagetools create") || strings.Contains(log, "patchbuild") {
+		t.Errorf("the patch's commit tags must be left alone:\n%s", log)
+	}
+}
+
+// A run without a version (a plain rebuild) of a commit that was
+// released: its commit tags exist under the release's label; nothing
+// is pushed or moved, and the run reports the commit's existing digest.
+func TestPublishImageNothingNewReportsTheExistingDigest(t *testing.T) {
+	h := newPublishHarness(t)
+	server := "ghcr.io/loomux/server"
+	h.existing(t, "server", "abc1234", "sha256:released", "rev1", "0.3.80")
+	h.existing(t, "server", "sha-abc1234", "sha256:released", "rev1", "0.3.80")
+	out, code, log := h.run(t, server, "rev1", "sha-abc1234", "server:test", "abc1234", "sha-abc1234")
+	if code != 0 || out != "sha256:released" {
+		t.Fatalf("stdout %q, exit %d, log:\n%s", out, code, log)
+	}
+	if strings.Contains(log, "docker push") || strings.Contains(log, "imagetools create") {
+		t.Errorf("nothing may be pushed or moved:\n%s", log)
 	}
 }

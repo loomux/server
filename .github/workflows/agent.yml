@@ -171,7 +171,7 @@ jobs:
           [ -z "${VERSION}" ] || tags="${tags} ${VERSION}"
           [ "${GITHUB_REF}" != refs/heads/main ] || tags="${tags} main"
           # shellcheck disable=SC2086 # the tags are one word each
-          digest="$(deploy/publish-image.sh "${IMAGE}" "${GITHUB_SHA}" "${IMAGE}:test" ${tags})"
+          digest="$(deploy/publish-image.sh "${IMAGE}" "${GITHUB_SHA}" "${VERSION:-sha-${SHORT}}" "${IMAGE}:test" ${tags})"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "tag=${VERSION:-sha-${SHORT}}" >> "$GITHUB_OUTPUT"
 
