@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,12 @@ func fakeRegistry(t *testing.T) *httptest.Server {
 type storedManifest struct {
 	ContentType string
 	Body        string
+}
+
+// fakeManifestFixture is the manifest the fake serves for main and
+// sha256:man1, pretty-printed as GHCR does.
+func fakeManifestFixture() string {
+	return "{\n   \"schemaVersion\": 2,\n   \"mediaType\": \"application/vnd.docker.distribution.manifest.v2+json\",\n   \"config\": {\n      \"mediaType\": \"application/vnd.docker.container.image.v1+json\",\n      \"size\": 1,\n      \"digest\": \"sha256:cfg\"\n   }\n}\n"
 }
 
 func fakeRegistryWithStore(t *testing.T) (*httptest.Server, map[string]storedManifest) {
@@ -69,7 +76,9 @@ func fakeRegistryWithStore(t *testing.T) (*httptest.Server, map[string]storedMan
 			h(w, r)
 		}
 	}
-	manifest := `{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"digest":"sha256:cfg","mediaType":"application/vnd.docker.container.image.v1+json","size":1}}`
+	// Pretty-printed, as GHCR serves manifests: the newlines and
+	// indentation are bytes a copy must keep, or the digest changes.
+	manifest := fakeManifestFixture()
 	// The fixture manifest's digest is the placeholder sha256:man1 (as
 	// its GET advertises); anything else digests for real.
 	digestOf := func(body []byte) string {
@@ -429,13 +438,45 @@ func TestGhcrTag(t *testing.T) {
 		t.Fatalf("tag = %q, %d; want the same digest and exit 0", out, code)
 	}
 	m, ok := stored["0.9.9"]
-	if !ok || m.ContentType != "application/vnd.docker.distribution.manifest.v2+json" || !strings.Contains(m.Body, `"config":{"digest":"sha256:cfg"`) {
-		t.Errorf("stored under 0.9.9: %+v", m)
+	if !ok || m.ContentType != "application/vnd.docker.distribution.manifest.v2+json" {
+		t.Fatalf("stored under 0.9.9: %+v", m)
+	}
+	// Byte for byte: a copy that drops the newlines (curl --data rather
+	// than --data-binary) changes the digest.
+	if want := fakeManifestFixture(); m.Body != want {
+		t.Errorf("the copy changed the bytes:\n got %q\nwant %q", m.Body, want)
 	}
 	if _, code := ghcr(t, srv.URL, "tag", "ghcr.io/loomux/agent", "sha256:man1", "0.9.9"); code == 0 {
 		t.Error("tagging without credentials must fail")
 	}
 	if _, code := ghcrEnv(t, srv.URL, creds, "tag", "ghcr.io/loomux/agent", "sha256:nothere", "0.9.9"); code == 0 {
 		t.Error("tagging a digest the registry doesn't have must fail")
+	}
+}
+
+// The push credentials never reach curl's command line (a process list
+// shows argv): a curl shim records every invocation's arguments.
+func TestGhcrTagKeepsTheTokenOffArgv(t *testing.T) {
+	srv, _ := fakeRegistryWithStore(t)
+	real, err := exec.LookPath("curl")
+	if err != nil {
+		t.Skip("no curl")
+	}
+	bin := t.TempDir()
+	log := filepath.Join(bin, "curl.log")
+	shim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\nexec \"$REAL_CURL\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "REAL_CURL=" + real, "CURL_LOG=" + log, "GHCR_USER=x", "GHCR_PASSWORD=secret"}
+	if out, code := ghcrEnv(t, srv.URL, env, "tag", "ghcr.io/loomux/agent", "sha256:man1", "0.9.9"); code != 0 || out != "sha256:man1" {
+		t.Fatalf("tag = %q, %d", out, code)
+	}
+	logged, _ := os.ReadFile(log)
+	if strings.Contains(string(logged), "secret") {
+		t.Errorf("the password is on curl's command line:\n%s", logged)
+	}
+	if !strings.Contains(string(logged), "/token?scope=repository:loomux/agent:pull,push") {
+		t.Errorf("the shim didn't see the token request:\n%s", logged)
 	}
 }

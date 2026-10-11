@@ -134,8 +134,21 @@ Every image carries `org.opencontainers.image.version` (the release, or
 build-provenance attestation, pushed to the registry beside the image:
 
 ```sh
-gh attestation verify oci://ghcr.io/loomux/server:0.3.80 --owner loomux
+# by the digest a release's notes give (what a deployment pins):
+gh attestation verify oci://ghcr.io/loomux/server@sha256:<digest> --owner loomux
+# or by tag, for any release published after the tags became copies
+# of the attested manifest (see below):
+gh attestation verify oci://ghcr.io/loomux/server:<X.Y.Z> --owner loomux
 ```
+
+Every tag of an image names the same digest, the one attested: after
+the first push, the other tags are set by copying the manifest's bytes
+through the registry API (`deploy/ghcr.sh tag`), never by a tool that
+wraps the image in a manifest list. The version tags of 0.3.77 to
+0.3.81 were first published that way (a one-entry manifest list with a
+digest of its own, so they verified only by the digest in their notes
+or by the bare `:<short>`) and were re-pointed to the attested digest
+afterwards; the lists stay in the registry as untagged versions.
 
 The signer workflow is `.github/workflows/image.yml` for the server and
 plugin images and `.github/workflows/agent.yml` for the agent, at

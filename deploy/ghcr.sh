@@ -28,6 +28,8 @@ registry="${GHCR_REGISTRY:-https://ghcr.io}"
 accept='application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json'
 
 die() { echo "ghcr: $*" >&2; exit 1; }
+# escape quotes a value for a curl config file's "...".
+escape() { printf '%s' "$1" | sed 's/[\\"]/\\&/g'; }
 usage() { die "usage: $0 digest|labels <image> <tag> | label <image> <tag> <name> | tag <image> <digest> <tag>"; }
 
 cmd="${1:-}"
@@ -59,7 +61,10 @@ trap 'rm -f "$body" "$hdr"' EXIT
 if [ "$scope" = pull ]; then
   token="$(curl -fsS "${registry}/token?scope=repository:${repo}:${scope}" | jq -r '.token // empty')"
 else
-  token="$(curl -fsS -u "${GHCR_USER}:${GHCR_PASSWORD}" "${registry}/token?scope=repository:${repo}:${scope}" | jq -r '.token // empty')"
+  # The credentials go to curl as a config on stdin, never on its
+  # command line (a process list shows argv).
+  token="$(printf 'user = "%s:%s"\n' "$(escape "$GHCR_USER")" "$(escape "$GHCR_PASSWORD")" |
+    curl -fsS -K - "${registry}/token?scope=repository:${repo}:${scope}" | jq -r '.token // empty')"
 fi
 [ -n "$token" ] || die "no ${scope} token for ${repo}"
 
