@@ -130,3 +130,164 @@ func TestGhcrLabels(t *testing.T) {
 		t.Errorf("labels main = %q, %d", got, code)
 	}
 }
+
+// publishHarness is a fake docker on PATH and a fake ghcr.sh for
+// publish-image.sh: docker push reports a digest derived from the ref,
+// every docker call is logged; the fake ghcr answers from fixture files
+// <fix>/<image name>/<tag>.digest and .revision.
+type publishHarness struct {
+	bin, fix, log string
+}
+
+func newPublishHarness(t *testing.T) *publishHarness {
+	t.Helper()
+	dir := t.TempDir()
+	h := &publishHarness{bin: dir + "/bin", fix: dir + "/fix", log: dir + "/docker.log"}
+	os.MkdirAll(h.bin, 0o755)
+	os.MkdirAll(h.fix, 0o755)
+	docker := `#!/bin/sh
+echo "docker $*" >> "$FAKE_LOG"
+case "$1" in
+push) printf 'The push refers to repository\nlatest: digest: sha256:%s size: 1\n' "$(printf '%s' "$2" | sha256sum | cut -c1-64)" ;;
+esac
+`
+	ghcr := `#!/bin/sh
+f="$FIX/$(basename "$2")/$3"
+case "$1" in
+digest) [ -f "$f.digest" ] || exit 2; cat "$f.digest" ;;
+label) [ -f "$f.digest" ] || exit 2; [ "$4" = org.opencontainers.image.revision ] && cat "$f.revision" || true ;;
+*) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(h.bin+"/docker", []byte(docker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.bin+"/ghcr", []byte(ghcr), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// existing records that <image name>:<tag> exists with digest and revision.
+func (h *publishHarness) existing(t *testing.T, name, tag, digest, revision string) {
+	t.Helper()
+	os.MkdirAll(h.fix+"/"+name, 0o755)
+	os.WriteFile(h.fix+"/"+name+"/"+tag+".digest", []byte(digest+"\n"), 0o644)
+	os.WriteFile(h.fix+"/"+name+"/"+tag+".revision", []byte(revision+"\n"), 0o644)
+}
+
+func (h *publishHarness) run(t *testing.T, args ...string) (stdout string, code int, log string) {
+	t.Helper()
+	os.Remove(h.log)
+	cmd := exec.Command("sh", append([]string{"./publish-image.sh"}, args...)...)
+	cmd.Env = append(os.Environ(), "PATH="+h.bin+":"+os.Getenv("PATH"), "GHCR="+h.bin+"/ghcr", "FAKE_LOG="+h.log, "FIX="+h.fix)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("publish-image.sh %v: %v", args, err)
+	}
+	if stderr.Len() > 0 {
+		t.Logf("publish-image.sh %v stderr:\n%s", args, stderr.String())
+	}
+	b, _ := os.ReadFile(h.log)
+	return strings.TrimSpace(string(out)), code, string(b)
+}
+
+// pushedDigest is what the fake docker reports for a push of ref.
+func pushedDigest(ref string) string {
+	out, _ := exec.Command("sh", "-c", "printf '%s' \""+ref+"\" | sha256sum | cut -c1-64").Output()
+	return "sha256:" + strings.TrimSpace(string(out))
+}
+
+const agent = "ghcr.io/loomux/agent"
+
+func TestPublishImageFresh(t *testing.T) {
+	h := newPublishHarness(t)
+	out, code, log := h.run(t, agent, "rev1", "agent:test", "sha-abc1234", "0.3.80", "main")
+	want := pushedDigest(agent + ":sha-abc1234")
+	if code != 0 || out != want {
+		t.Fatalf("stdout %q, exit %d; want the pushed digest %s", out, code, want)
+	}
+	for _, line := range []string{
+		"docker tag agent:test " + agent + ":sha-abc1234",
+		"docker push " + agent + ":sha-abc1234",
+		"docker buildx imagetools create -t " + agent + ":0.3.80 " + agent + "@" + want,
+		"docker buildx imagetools create -t " + agent + ":main " + agent + "@" + want,
+	} {
+		if !strings.Contains(log, line+"\n") {
+			t.Errorf("missing %q in\n%s", line, log)
+		}
+	}
+	if strings.Count(log, "docker push") != 1 {
+		t.Errorf("one push expected:\n%s", log)
+	}
+}
+
+func TestPublishImageRerunAdoptsTheExistingShaTag(t *testing.T) {
+	h := newPublishHarness(t)
+	h.existing(t, "agent", "sha-abc1234", "sha256:earlier", "rev1")
+	out, code, log := h.run(t, agent, "rev1", "agent:test", "sha-abc1234", "0.3.80", "main")
+	if code != 0 || out != "sha256:earlier" {
+		t.Fatalf("stdout %q, exit %d; want the existing digest", out, code)
+	}
+	if strings.Contains(log, "docker push") {
+		t.Errorf("nothing should be pushed on a re-run:\n%s", log)
+	}
+	for _, tag := range []string{"0.3.80", "main"} {
+		if !strings.Contains(log, "docker buildx imagetools create -t "+agent+":"+tag+" "+agent+"@sha256:earlier\n") {
+			t.Errorf("%s not pointed at the existing digest:\n%s", tag, log)
+		}
+	}
+}
+
+func TestPublishImageImmutableTagForAnotherCommitFails(t *testing.T) {
+	h := newPublishHarness(t)
+	h.existing(t, "agent", "0.3.80", "sha256:other", "rev0")
+	out, code, log := h.run(t, agent, "rev1", "agent:test", "sha-abc1234", "0.3.80", "main")
+	if code == 0 {
+		t.Fatalf("exit 0 with stdout %q; want a failure", out)
+	}
+	if strings.Contains(log, "docker push") || strings.Contains(log, "imagetools create") {
+		t.Errorf("nothing may be pushed or re-tagged:\n%s", log)
+	}
+}
+
+func TestPublishImageTwoExistingTagsMustAgree(t *testing.T) {
+	h := newPublishHarness(t)
+	h.existing(t, "agent", "sha-abc1234", "sha256:e1", "rev1")
+	h.existing(t, "agent", "0.3.80", "sha256:e2", "rev1")
+	if _, code, log := h.run(t, agent, "rev1", "agent:test", "sha-abc1234", "0.3.80"); code == 0 || strings.Contains(log, "imagetools create") {
+		t.Errorf("two digests for one commit must fail (exit %d):\n%s", code, log)
+	}
+}
+
+func TestPublishImageMovingTagIsRepointed(t *testing.T) {
+	h := newPublishHarness(t)
+	h.existing(t, "server", "main", "sha256:old", "rev0")
+	server := "ghcr.io/loomux/server"
+	out, code, log := h.run(t, server, "rev1", "server:test", "abc1234", "sha-abc1234", "main")
+	want := pushedDigest(server + ":abc1234")
+	if code != 0 || out != want {
+		t.Fatalf("stdout %q, exit %d; want %s", out, code, want)
+	}
+	// The legacy bare tag is immutable too, and was the one pushed.
+	for _, line := range []string{
+		"docker push " + server + ":abc1234",
+		"docker buildx imagetools create -t " + server + ":sha-abc1234 " + server + "@" + want,
+		"docker buildx imagetools create -t " + server + ":main " + server + "@" + want,
+	} {
+		if !strings.Contains(log, line+"\n") {
+			t.Errorf("missing %q in\n%s", line, log)
+		}
+	}
+}
+
+func TestPublishImageNeedsArguments(t *testing.T) {
+	h := newPublishHarness(t)
+	if _, code, _ := h.run(t, agent, "rev1", "agent:test"); code == 0 {
+		t.Error("no tags should be refused")
+	}
+}
