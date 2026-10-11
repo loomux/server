@@ -23,13 +23,18 @@
 #
 # Tags that don't exist yet all get one digest: the local image is
 # pushed under the first missing immutable tag, and every other tag is
-# pointed at that digest in the registry without a second upload. When
+# pointed at that digest in the registry without a second upload, by
+# copying the manifest's bytes as they are (deploy/ghcr.sh tag): a tag
+# then names exactly the pushed, attested digest, where buildx's
+# imagetools create would wrap the image in a manifest list with a
+# digest of its own. When
 # nothing is missing and nothing was adopted (a plain rebuild of a
 # released commit), nothing is pushed and the commit's existing digest
 # is reported.
 #
-# Needs docker (logged in; buildx for the re-tagging) and deploy/ghcr.sh
-# (GHCR names another reader: tests).
+# Needs docker (logged in) for the push, and deploy/ghcr.sh with
+# GHCR_USER and GHCR_PASSWORD for the re-tagging (GHCR names another
+# implementation: tests).
 set -eu
 
 ghcr="${GHCR:-$(dirname "$0")/ghcr.sh}"
@@ -92,6 +97,7 @@ if [ -z "$digest" ]; then
   [ -n "$digest" ] || die "the push of ${image}:${first} reported no digest"
 fi
 for tag in $pending $moving; do
-  docker buildx imagetools create -t "${image}:${tag}" "${image}@${digest}" >&2
+  "$ghcr" tag "$image" "$digest" "$tag" >/dev/null
+  echo "publish-image: ${image}:${tag} -> ${digest}" >&2
 done
 printf '%s\n' "$digest"

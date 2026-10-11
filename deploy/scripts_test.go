@@ -4,7 +4,10 @@
 package deploy_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,33 +22,82 @@ import (
 //	main    a single docker manifest, digest sha256:man1, config labels
 //	multi   an index: an amd64 manifest (sha256:amd) and an attestation
 //	missing 404
+//
+// fakeRegistry returns the server and the manifests it stores by tag
+// after a PUT (the tag -> content type and body).
 func fakeRegistry(t *testing.T) *httptest.Server {
+	srv, _ := fakeRegistryWithStore(t)
+	return srv
+}
+
+type storedManifest struct {
+	ContentType string
+	Body        string
+}
+
+func fakeRegistryWithStore(t *testing.T) (*httptest.Server, map[string]storedManifest) {
 	t.Helper()
+	stored := map[string]storedManifest{}
 	mux := http.NewServeMux()
+	// A pull token for anyone; a push token only with basic auth.
 	mux.HandleFunc("GET /token", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("scope") != "repository:loomux/agent:pull" {
-			http.Error(w, "bad scope "+r.URL.Query().Get("scope"), http.StatusBadRequest)
-			return
+		scope := r.URL.Query().Get("scope")
+		switch scope {
+		case "repository:loomux/agent:pull":
+			json.NewEncoder(w).Encode(map[string]string{"token": "tok"})
+		case "repository:loomux/agent:pull,push":
+			if u, p, ok := r.BasicAuth(); !ok || u != "x" || p != "secret" {
+				http.Error(w, "push needs credentials", http.StatusUnauthorized)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"token": "tok-push"})
+		default:
+			http.Error(w, "bad scope "+scope, http.StatusBadRequest)
 		}
-		json.NewEncoder(w).Encode(map[string]string{"token": "tok"})
 	})
 	authed := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("Authorization") != "Bearer tok" {
+			a := r.Header.Get("Authorization")
+			if a != "Bearer tok" && a != "Bearer tok-push" {
 				http.Error(w, "no token", http.StatusUnauthorized)
+				return
+			}
+			if r.Method == http.MethodPut && a != "Bearer tok-push" {
+				http.Error(w, "a pull token can't push", http.StatusUnauthorized)
 				return
 			}
 			h(w, r)
 		}
 	}
 	manifest := `{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"digest":"sha256:cfg","mediaType":"application/vnd.docker.container.image.v1+json","size":1}}`
+	// The fixture manifest's digest is the placeholder sha256:man1 (as
+	// its GET advertises); anything else digests for real.
+	digestOf := func(body []byte) string {
+		if string(body) == manifest {
+			return "sha256:man1"
+		}
+		sum := sha256.Sum256(body)
+		return "sha256:" + hex.EncodeToString(sum[:])
+	}
+	mux.HandleFunc("PUT /v2/loomux/agent/manifests/{ref}", authed(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		stored[r.PathValue("ref")] = storedManifest{ContentType: r.Header.Get("Content-Type"), Body: string(body)}
+		w.Header().Set("Docker-Content-Digest", digestOf(body))
+		w.WriteHeader(http.StatusCreated)
+	}))
 	mux.HandleFunc("GET /v2/loomux/agent/manifests/{ref}", authed(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.Header.Get("Accept"), "application/vnd.oci.image.index.v1+json") {
 			http.Error(w, "accept lacks the index type", http.StatusBadRequest)
 			return
 		}
+		if m, ok := stored[r.PathValue("ref")]; ok {
+			w.Header().Set("Content-Type", m.ContentType)
+			w.Header().Set("Docker-Content-Digest", digestOf([]byte(m.Body)))
+			w.Write([]byte(m.Body))
+			return
+		}
 		switch r.PathValue("ref") {
-		case "main", "sha256:amd":
+		case "main", "sha256:amd", "sha256:man1":
 			d := "sha256:man1"
 			if r.PathValue("ref") == "sha256:amd" {
 				d = "sha256:amd"
@@ -72,13 +124,18 @@ func fakeRegistry(t *testing.T) *httptest.Server {
 	}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, stored
 }
 
 func ghcr(t *testing.T, registry string, args ...string) (string, int) {
 	t.Helper()
+	return ghcrEnv(t, registry, nil, args...)
+}
+
+func ghcrEnv(t *testing.T, registry string, env []string, args ...string) (string, int) {
+	t.Helper()
 	cmd := exec.Command("sh", append([]string{"./ghcr.sh"}, args...)...)
-	cmd.Env = append(os.Environ(), "GHCR_REGISTRY="+registry)
+	cmd.Env = append(append(os.Environ(), "GHCR_REGISTRY="+registry), env...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -161,6 +218,7 @@ label)
   org.opencontainers.image.revision) cat "$f.revision" ;;
   org.opencontainers.image.version) cat "$f.version" ;;
   esac ;;
+tag) echo "ghcr tag $2 $3 $4" >> "$FAKE_LOG" ;;
 *) exit 1 ;;
 esac
 `
@@ -221,8 +279,8 @@ func TestPublishImageFresh(t *testing.T) {
 	for _, line := range []string{
 		"docker tag agent:test " + agent + ":sha-abc1234",
 		"docker push " + agent + ":sha-abc1234",
-		"docker buildx imagetools create -t " + agent + ":0.3.80 " + agent + "@" + want,
-		"docker buildx imagetools create -t " + agent + ":main " + agent + "@" + want,
+		"ghcr tag " + agent + " " + want + " 0.3.80",
+		"ghcr tag " + agent + " " + want + " main",
 	} {
 		if !strings.Contains(log, line+"\n") {
 			t.Errorf("missing %q in\n%s", line, log)
@@ -244,7 +302,7 @@ func TestPublishImageRerunAdoptsTheExistingShaTag(t *testing.T) {
 		t.Errorf("nothing should be pushed on a re-run:\n%s", log)
 	}
 	for _, tag := range []string{"0.3.80", "main"} {
-		if !strings.Contains(log, "docker buildx imagetools create -t "+agent+":"+tag+" "+agent+"@sha256:earlier\n") {
+		if !strings.Contains(log, "ghcr tag "+agent+" sha256:earlier "+tag+"\n") {
 			t.Errorf("%s not pointed at the existing digest:\n%s", tag, log)
 		}
 	}
@@ -257,7 +315,7 @@ func TestPublishImageImmutableTagForAnotherCommitFails(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("exit 0 with stdout %q; want a failure", out)
 	}
-	if strings.Contains(log, "docker push") || strings.Contains(log, "imagetools create") {
+	if strings.Contains(log, "docker push") || strings.Contains(log, "ghcr tag") {
 		t.Errorf("nothing may be pushed or re-tagged:\n%s", log)
 	}
 }
@@ -266,7 +324,7 @@ func TestPublishImageTwoExistingTagsMustAgree(t *testing.T) {
 	h := newPublishHarness(t)
 	h.existing(t, "agent", "sha-abc1234", "sha256:e1", "rev1", "0.3.80")
 	h.existing(t, "agent", "0.3.80", "sha256:e2", "rev1", "0.3.80")
-	if _, code, log := h.run(t, agent, "rev1", "0.3.80", "agent:test", "sha-abc1234", "0.3.80"); code == 0 || strings.Contains(log, "imagetools create") {
+	if _, code, log := h.run(t, agent, "rev1", "0.3.80", "agent:test", "sha-abc1234", "0.3.80"); code == 0 || strings.Contains(log, "ghcr tag") {
 		t.Errorf("two digests for one commit must fail (exit %d):\n%s", code, log)
 	}
 }
@@ -283,8 +341,8 @@ func TestPublishImageMovingTagIsRepointed(t *testing.T) {
 	// The legacy bare tag is immutable too, and was the one pushed.
 	for _, line := range []string{
 		"docker push " + server + ":abc1234",
-		"docker buildx imagetools create -t " + server + ":sha-abc1234 " + server + "@" + want,
-		"docker buildx imagetools create -t " + server + ":main " + server + "@" + want,
+		"ghcr tag " + server + " " + want + " sha-abc1234",
+		"ghcr tag " + server + " " + want + " main",
 	} {
 		if !strings.Contains(log, line+"\n") {
 			t.Errorf("missing %q in\n%s", line, log)
@@ -317,7 +375,7 @@ func TestPublishImageSameCommitOtherVersionPushesTheNewBuild(t *testing.T) {
 	if !strings.Contains(log, "docker push "+server+":0.4.0\n") {
 		t.Errorf("the MINOR wasn't pushed:\n%s", log)
 	}
-	if strings.Contains(log, "imagetools create") || strings.Contains(log, "patchbuild") {
+	if strings.Contains(log, "ghcr tag") || strings.Contains(log, "patchbuild") {
 		t.Errorf("the patch's commit tags must be left alone:\n%s", log)
 	}
 }
@@ -334,7 +392,7 @@ func TestPublishImageNothingNewReportsTheExistingDigest(t *testing.T) {
 	if code != 0 || out != "sha256:released" {
 		t.Fatalf("stdout %q, exit %d, log:\n%s", out, code, log)
 	}
-	if strings.Contains(log, "docker push") || strings.Contains(log, "imagetools create") {
+	if strings.Contains(log, "docker push") || strings.Contains(log, "ghcr tag") {
 		t.Errorf("nothing may be pushed or moved:\n%s", log)
 	}
 }
@@ -356,5 +414,28 @@ func TestImageWorkflowServerVersionLabelMatchesThePublishStep(t *testing.T) {
 	}
 	if !strings.Contains(wf, `"${VERSION:-sha-${short}}"`) {
 		t.Error("image.yml's publish step doesn't pass ${VERSION:-sha-${short}} as the version label")
+	}
+}
+
+// tag points <tag> at the manifest <digest> names by copying its bytes
+// through the registry API, so the tag names the same digest (buildx
+// imagetools create wraps a single manifest in a list, which gave the
+// version tags a digest the attestation doesn't cover). Pushing needs
+// credentials.
+func TestGhcrTag(t *testing.T) {
+	srv, stored := fakeRegistryWithStore(t)
+	creds := []string{"GHCR_USER=x", "GHCR_PASSWORD=secret"}
+	if out, code := ghcrEnv(t, srv.URL, creds, "tag", "ghcr.io/loomux/agent", "sha256:man1", "0.9.9"); code != 0 || out != "sha256:man1" {
+		t.Fatalf("tag = %q, %d; want the same digest and exit 0", out, code)
+	}
+	m, ok := stored["0.9.9"]
+	if !ok || m.ContentType != "application/vnd.docker.distribution.manifest.v2+json" || !strings.Contains(m.Body, `"config":{"digest":"sha256:cfg"`) {
+		t.Errorf("stored under 0.9.9: %+v", m)
+	}
+	if _, code := ghcr(t, srv.URL, "tag", "ghcr.io/loomux/agent", "sha256:man1", "0.9.9"); code == 0 {
+		t.Error("tagging without credentials must fail")
+	}
+	if _, code := ghcrEnv(t, srv.URL, creds, "tag", "ghcr.io/loomux/agent", "sha256:nothere", "0.9.9"); code == 0 {
+		t.Error("tagging a digest the registry doesn't have must fail")
 	}
 }

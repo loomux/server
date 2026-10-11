@@ -165,6 +165,9 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           SHORT: ${{ steps.decide.outputs.short }}
+          # The re-tagging copies manifests through the registry API.
+          GHCR_USER: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           tags="sha-${SHORT}"
