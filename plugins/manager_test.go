@@ -414,6 +414,9 @@ func TestManagerBundledChangeNeedsUpgrade(t *testing.T) {
 		t.Fatal("the fake's schema changed shape; adjust the test")
 	}
 	changed := strings.Replace(string(data), `"properties": {`, `"properties": {"extra": {"type": "string", "default": "x"}, `, 1)
+	// A default changes as well: the stored value that equalled the old
+	// one follows on upgrade.
+	changed = strings.Replace(changed, `"default": "hi"`, `"default": "hello"`, 1)
 	if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(changed), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -433,8 +436,82 @@ func TestManagerBundledChangeNeedsUpgrade(t *testing.T) {
 	if err != nil || up.Version != "0.2.0" || up.Status != registry.PluginStatusInstalled || up.Instance.State != plugins.StateRunning {
 		t.Fatalf("Upgrade = %+v, %v", up, err)
 	}
-	if up.Config["extra"] != "x" {
-		t.Errorf("the new setting's default wasn't applied: %+v", up.Config)
+	if up.Config["extra"] != "x" || up.Config["greeting"] != "hello" {
+		t.Errorf("the new setting's default wasn't applied, or the changed default not followed: %+v", up.Config)
+	}
+}
+
+// A bundled version whose only schema change is a default (the stamped
+// agent pin after an agent rebuild) is adopted, and a stored setting
+// that still equals the old default follows the new one; a setting the
+// operator set stays (review of #352).
+func TestManagerAdoptionFollowsAChangedDefault(t *testing.T) {
+	m, store, bundle := newManager(t)
+	kept := install(t, m, "kept", map[string]any{"token": "t"})
+	custom := install(t, m, "custom", map[string]any{"token": "t", "greeting": "yo"})
+	if kept.Config["greeting"] != "hi" {
+		t.Fatalf("install didn't store the default: %+v", kept.Config)
+	}
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dir := fakeDirVersion(t, bundle, "0.2.0", fakeBin2)
+	data, _ := os.ReadFile(filepath.Join(dir, plugins.ManifestFile))
+	if strings.Count(string(data), `"default": "hi"`) != 1 {
+		t.Fatal("the fake's greeting default moved; adjust the test")
+	}
+	changed := strings.Replace(string(data), `"default": "hi"`, `"default": "hello"`, 1)
+	if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m2 := managerOn(t, store, bundle)
+	if err := m2.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	for _, tc := range []struct{ id, label, greeting string }{{kept.ID, "kept", "hello"}, {custom.ID, "custom", "yo"}} {
+		got, err := m2.Get(context.Background(), tc.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Version != "0.2.0" || got.Instance.State != plugins.StateRunning || got.Config["greeting"] != tc.greeting {
+			t.Errorf("%s: version %s %s greeting %v (want %s)", tc.label, got.Version, got.Instance.State, got.Config["greeting"], tc.greeting)
+		}
+		row, _ := store.GetPlugin(context.Background(), tc.id)
+		if row.Config["greeting"] != tc.greeting || row.Secrets["token"] != "t" {
+			t.Errorf("%s row: %+v %v", tc.label, row.Config, row.Secrets)
+		}
+	}
+}
+
+// A sidecar (socket) plugin whose image was bumped is adopted at start
+// the same way, from what it describes itself as (review of #352).
+func TestManagerAdoptsSocketVersionOnStart(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "fake.sock")
+	stop := serveFakeSocket(t, sock)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	m := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, protocol.HostInfo{Version: "test", InstanceID: "inst"}, nil, nil)
+	v, err := m.Install(context.Background(), plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceSocket, Label: "side", Config: map[string]any{"token": "t"}})
+	if err != nil || v.Version != "0.1.0" || v.Instance.State != plugins.StateRunning {
+		t.Fatalf("Install from the socket = %+v, %v", v, err)
+	}
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	// The sidecar comes back as a newer image.
+	fake.Version = "0.2.0"
+	t.Cleanup(func() { fake.Version = "" })
+	stop2 := serveFakeSocket(t, sock)
+	t.Cleanup(stop2)
+	m2 := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, protocol.HostInfo{Version: "test", InstanceID: "inst"}, nil, nil)
+	t.Cleanup(func() { _ = m2.Close(context.Background()) })
+	if err := m2.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	got, err := m2.Get(context.Background(), v.ID)
+	if err != nil || got.Version != "0.2.0" || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
+		t.Errorf("after start = %+v, %v; want 0.2.0 running", got, err)
 	}
 }
 
