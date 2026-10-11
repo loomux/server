@@ -338,3 +338,23 @@ func TestPublishImageNothingNewReportsTheExistingDigest(t *testing.T) {
 		t.Errorf("nothing may be pushed or moved:\n%s", log)
 	}
 }
+
+// The server image's version label must be what the publish step hands
+// publish-image.sh as this run's version label, or a re-run after a
+// partial failure of a run without a version leaves the bare :<short>
+// (labelled one way) alone and pushes a second digest as :sha-<short>
+// (review of #353): every image labels the release, or sha-<short>.
+func TestImageWorkflowServerVersionLabelMatchesThePublishStep(t *testing.T) {
+	data, err := os.ReadFile("../.github/workflows/image.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := string(data)
+	label := "org.opencontainers.image.version=${{ steps.meta.outputs.release || format('sha-{0}', steps.meta.outputs.sha) }}"
+	if !strings.Contains(wf, label) {
+		t.Errorf("image.yml doesn't label the server image %q", label)
+	}
+	if !strings.Contains(wf, `"${VERSION:-sha-${short}}"`) {
+		t.Error("image.yml's publish step doesn't pass ${VERSION:-sha-${short}} as the version label")
+	}
+}
