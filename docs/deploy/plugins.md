@@ -47,7 +47,7 @@ targets, only their start/stop/recreate/destroy pause. **Uninstall**
 asks what to do with its machines: destroy them (data included) or keep
 them as plain hosts.
 
-## Upgrades
+## Upgrades and compatibility
 
 A bundled plugin's available version changes with the image; a
 directory plugin's when you replace its files; a sidecar's with its
@@ -57,6 +57,32 @@ version beside the old one and checks it before switching: if it can't
 start or fails its check, the old version keeps running and the row
 keeps its version (`422` with the reason). It is refused up front if
 the new version drops a capability the plugin's machines rely on.
+
+**Bundled plugins follow the server without an upgrade.** First-party
+plugins are built with the server and carry its version
+(`docs/release/versioning.md`, "Images"), so every server release
+bundles a new plugin version. At startup the server adopts it on its
+own when the new version declares the same capabilities and
+configuration schema as the installed one: the row moves to the new
+version and the new binary runs, nothing to click. When either changed,
+the plugin stays stopped in status `error` with a reason naming the
+new version ("upgrade the plugin"): the old binary is no longer in the
+image, and only `POST /api/v1/plugins/{id}/upgrade`, which re-applies
+the schema's defaults and checks the new version, can move it. A
+sidecar is upgraded by changing its container, then pressing Upgrade.
+
+**`min_host_version` is enforced.** A manifest's `min_host_version` is
+read as a caret range on the server's version: under 0.x the server
+must be on the same `0.Y` line at or above it (`0.3.0` is met by
+`0.3.80`, not by `0.4.0` or `0.2.9`); from 1.0 the same major. A plugin
+the server can't run is still listed by `GET /api/v1/plugins/available`,
+with `incompatible` saying why; installing or upgrading to it answers
+`409`, and an installed one whose minimum the server no longer meets
+stays stopped in status `error` with the same reason. A server built
+without a release version (`dev`, a plain commit build) runs anything.
+Bundled plugins always match, since they are stamped with the server's
+own version; the rule matters for a sidecar or a directory plugin from
+another release.
 
 Whatever a plugin writes (its stderr, an error message, a check
 problem) is scrubbed of the plugin's own secret settings before Loomux
