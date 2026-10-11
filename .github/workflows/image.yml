@@ -260,6 +260,8 @@ jobs:
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             WEB_DIST=.web-dist
+            RELEASE=${{ steps.meta.outputs.release }}
+            AGENT_IMAGE=${{ needs.agent.outputs.image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -274,8 +276,10 @@ jobs:
       # placeholder's own wording (coupled to deploy/web-placeholder/index.html),
       # the other requires the /assets directory that a real Vite build emits.
       - name: Verify the image can actually run
+        env:
+          RELEASE: ${{ steps.meta.outputs.release }}
         run: |
-          docker run --rm --entrypoint /bin/sh "${IMAGE}:${{ steps.meta.outputs.sha }}" -c '
+          docker run --rm -e RELEASE --entrypoint /bin/sh "${IMAGE}:${{ steps.meta.outputs.sha }}" -c '
             set -e
             ssh -V
             tmux -V
@@ -292,7 +296,13 @@ jobs:
               exit 1
             fi
             test -d /srv/loomux/web/assets || { echo "FAIL: no /assets in the bundle - not a real Vite build"; exit 1; }
-            echo "OK: runtime dependencies and web bundle present"
+            # The bundled plugins carry this release (LOOM-194): the
+            # manifest the host reads says the version the run is.
+            for m in /usr/local/lib/loomux/plugins/*/plugin.json; do
+              want="${RELEASE:-0.0.0-dev}"
+              grep -q "\"version\": \"${want}\"" "$m" || { echo "FAIL: $m is not stamped ${want}"; cat "$m"; exit 1; }
+            done
+            echo "OK: runtime dependencies, web bundle and stamped plugin manifests present"
           '
 
       # Handed to the publish job below, which pushes it once every build
