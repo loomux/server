@@ -47,8 +47,12 @@ const staleProvisioningAfter = router.ProvisionTimeout + 5*time.Minute
 // Store for a client-facing layer (api.Server) that needs its own
 // session storage in the same database.
 type App struct {
-	router     *router.Router
-	agentTypes []string
+	// newExecutor builds this instance's target executors (its known_hosts
+	// dir and metrics). Kept on App only for app/knownhosts_test.go; the
+	// app's parts get it at Build.
+	newExecutor orchestrator.ExecutorFactory
+	router      *router.Router
+	agentTypes  []string
 	// cancelTaskDirect cancels a task no dispatch is driving; the router's
 	// CancelTask, a seam for tests.
 	cancelTaskDirect func(ctx context.Context, taskID string) error
@@ -486,8 +490,9 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 	// Pinned host keys (LOOM-114) are written beside the database, on the
 	// data volume; the database is their source, so the files are
-	// rewritten from it as needed.
-	targets.SetKnownHostsDir(filepath.Join(filepath.Dir(cfg.DBPath), "known_hosts.d"))
+	// rewritten from it as needed. Per instance (LOOM-197): two in one
+	// process never share or swap them.
+	knownHostsDir := filepath.Join(filepath.Dir(cfg.DBPath), "known_hosts.d")
 	// Managed targets (LOOM-138): keys decrypted only into in-process
 	// agents, whose sockets (like the ControlMaster ones) live under
 	// TMPDIR, never on the data volume.
@@ -507,7 +512,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 	markerDir := cfg.MarkerDir
 	newExecutor := func(t *registry.Target) (targets.TargetExecutor, error) {
-		return targets.NewExecutorWithMetrics(t, met)
+		return targets.NewExecutorWith(t, targets.ExecutorOptions{KnownHostsDir: knownHostsDir, Metrics: met})
 	}
 	detector := completion.NewDetector(store, newExecutor, agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, newExecutor, detector, orchestrator.WithMetrics(met))
@@ -592,7 +597,9 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// Health probes bypass the metrics-wrapped executor so periodic
 	// liveness checks don't pollute the target operation latency/error
 	// counters (LOOM-105).
-	healthChecker := health.NewChecker(store, targets.NewExecutor, model.Config, health.DefaultSidecarAddr)
+	healthChecker := health.NewChecker(store, func(t *registry.Target) (targets.TargetExecutor, error) {
+		return targets.NewExecutorWith(t, targets.ExecutorOptions{KnownHostsDir: knownHostsDir})
+	}, model.Config, health.DefaultSidecarAddr)
 
 	// The plugin system (LOOM-178): the instance id labels everything a
 	// plugin makes as this server's, generated once and kept in the
@@ -746,6 +753,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	return &App{
 		routerSettings:   routerSettings,
 		router:           rtr,
+		newExecutor:      newExecutor,
 		agentTypes:       dispatchableAgentTypeNames(agentTypes),
 		cancelTaskDirect: rtr.CancelTask,
 		orch:             orch,
