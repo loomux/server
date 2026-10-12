@@ -137,3 +137,39 @@ func TestRedactValues_SystemSecrets(t *testing.T) {
 		t.Fatalf("RedactAll = %q, %v", out, err)
 	}
 }
+
+// Two values that only partly overlap — one's tail is the other's head —
+// are redacted as their union: replacing either first would cut the
+// other's match in two and leave the rest of it in the text (LOOM-184).
+func TestRedactValues_PartiallyOverlappingValues(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		secrets map[string]string
+		in      string
+	}{
+		// Equal length, so neither is "longest first".
+		{"exact", map[string]string{"a": "abcdefGHIJ", "b": "GHIJklmnop"}, "x abcdefGHIJklmnop y"},
+		// Different lengths, the longer second.
+		{"exact uneven", map[string]string{"a": "abcdefGHIJ", "b": "GHIJklmnopqrst"}, "x abcdefGHIJklmnopqrst y"},
+		// Twelve bytes and more, so whitespace-split matching applies,
+		// with the text wrapped inside the overlap.
+		{"split", map[string]string{"a": "sk-AAAAAA-SHARED1", "b": "SHARED1-BBBBBBBB"}, "x sk-AAAAAA-SHA\nRED1-BBBBBBBB y"},
+		// Three in a chain.
+		{"chain", map[string]string{"a": "aaaaa11111", "b": "11111bbbbb", "c": "bbbbbccccc"}, "x aaaaa11111bbbbbccccc y"},
+	} {
+		for i := 0; i < 50; i++ {
+			if got := credentials.RedactValues(tc.in, tc.secrets); got != "x [redacted] y" {
+				t.Fatalf("%s, round %d: RedactValues = %q, want %q", tc.name, i, got, "x [redacted] y")
+			}
+		}
+	}
+}
+
+// A value that overlaps itself in the text (a run longer than the value)
+// leaves nothing of it behind either.
+func TestRedactValues_SelfOverlappingValue(t *testing.T) {
+	got := credentials.RedactValues("x 010101010101 y", map[string]string{"k": "0101010101"})
+	if got != "x [redacted] y" {
+		t.Fatalf("RedactValues = %q, want %q", got, "x [redacted] y")
+	}
+}

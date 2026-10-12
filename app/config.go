@@ -115,6 +115,11 @@ type Config struct {
 	SessionRetention      time.Duration
 	DispatchRetention     time.Duration
 	ConfirmationRetention time.Duration
+
+	// reaperClock, if set, is the time the reaper judges idleness
+	// against instead of time.Now: a test then decides when a task is
+	// idle, however slowly it runs (LOOM-195).
+	reaperClock func() time.Time
 }
 
 // NotifyConfig configures turn notifications (LOOM-102).
