@@ -68,7 +68,12 @@ func (s *Store) resealRouterTiers(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("sqlite: reseal router tiers: %w", err)
 	}
-	resealed := map[string][]byte{}
+	type resealedRow struct {
+		sealed            []byte
+		provider, baseURL string
+	}
+	resealed := map[string]resealedRow{}
+	var relabelled []string
 	unopened := 0
 	for rows.Next() {
 		var tier, provider, baseURL string
@@ -77,23 +82,37 @@ func (s *Store) resealRouterTiers(ctx context.Context) error {
 			rows.Close()
 			return fmt.Errorf("sqlite: reseal router tiers: %w", err)
 		}
+		// Already bound: a migration Down and Up relabels such a row 1.
+		// It only needs its label back.
+		if _, err := open(s.masterKey, sealed, routerTierAAD(tier, provider, baseURL)); err == nil {
+			relabelled = append(relabelled, tier)
+			continue
+		}
 		key, err := open(s.masterKey, sealed, legacyRouterTierAAD(tier))
 		if err != nil {
 			unopened++
 			continue
 		}
-		if resealed[tier], err = seal(s.masterKey, key, routerTierAAD(tier, provider, baseURL)); err != nil {
+		row := resealedRow{provider: provider, baseURL: baseURL}
+		if row.sealed, err = seal(s.masterKey, key, routerTierAAD(tier, provider, baseURL)); err != nil {
 			rows.Close()
 			return fmt.Errorf("sqlite: reseal router tier %q: %w", tier, err)
 		}
+		resealed[tier] = row
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("sqlite: reseal router tiers: %w", err)
 	}
-	for tier, sealed := range resealed {
+	for tier, r := range resealed {
 		if _, err := tx.ExecContext(ctx, `UPDATE router_settings SET api_key = ?, seal_version = ? WHERE tier = ?`,
-			sealed, routerTierSealVersion, tier); err != nil {
+			r.sealed, routerTierSealVersion, tier); err != nil {
+			return fmt.Errorf("sqlite: reseal router tier %q: %w", tier, err)
+		}
+	}
+	for _, tier := range relabelled {
+		if _, err := tx.ExecContext(ctx, `UPDATE router_settings SET seal_version = ? WHERE tier = ?`,
+			routerTierSealVersion, tier); err != nil {
 			return fmt.Errorf("sqlite: reseal router tier %q: %w", tier, err)
 		}
 	}
@@ -105,6 +124,13 @@ func (s *Store) resealRouterTiers(ctx context.Context) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlite: reseal router tiers: %w", err)
+	}
+	// A re-seal binds the key to whatever its row names. Expected once,
+	// at the upgrade past LOOM-189; seen on a server upgraded long ago,
+	// it is a restored or tampered row, so it is said loudly.
+	for tier, r := range resealed {
+		s.logger.Warn("router tier key re-sealed to its provider and base URL; check them in Settings if this isn't the first start after upgrading",
+			"tier", tier, "provider", r.provider, "base_url", r.baseURL)
 	}
 	return nil
 }

@@ -435,6 +435,9 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if cfg.MasterKey != nil {
 		opts = append(opts, sqlite.WithMasterKey(cfg.MasterKey))
 	}
+	if cfg.Logger != nil {
+		opts = append(opts, sqlite.WithLogger(cfg.Logger))
+	}
 	// Before the store opens, so a bad override leaves nothing to clean up.
 	if err := agentTypes.ApplyProfileOverrides(cfg.AgentProfiles); err != nil {
 		return nil, fmt.Errorf("app: %s: %w", envAgentProfiles, err)
