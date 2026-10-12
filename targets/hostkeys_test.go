@@ -19,7 +19,7 @@ import (
 // or authenticating; a pinned key lets the executor in, a different one
 // is a host key change.
 func TestScanAndPinHostKey(t *testing.T) {
-	SetKnownHostsDir(t.TempDir())
+	knownHosts := t.TempDir()
 	server := sshtest.Start(t)
 	ctx := context.Background()
 	target := &registry.Target{ID: "t-pin", Kind: registry.TargetKindRemote, Host: server.Host, User: "loomux-test",
@@ -39,7 +39,7 @@ func TestScanAndPinHostKey(t *testing.T) {
 
 	run := func(hostKeys string) error {
 		target.HostKeys = hostKeys
-		opts, err := remoteOptions(target)
+		opts, err := remoteOptions(target, knownHosts)
 		if err != nil {
 			t.Fatalf("remoteOptions: %v", err)
 		}

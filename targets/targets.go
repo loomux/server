@@ -197,16 +197,32 @@ func (e *PaneExit) Describe() string {
 	}
 }
 
-// NewExecutor constructs the TargetExecutor appropriate for t.Kind.
-// Metrics are disabled; use NewExecutorWithMetrics to instrument calls.
+// NewExecutor constructs the TargetExecutor appropriate for t.Kind, with
+// no metrics and pins written under the default directory; an app uses
+// NewExecutorWith.
 func NewExecutor(t *registry.Target) (TargetExecutor, error) {
-	return NewExecutorWithMetrics(t, nil)
+	return NewExecutorWith(t, ExecutorOptions{})
 }
 
-// NewExecutorWithMetrics constructs the TargetExecutor appropriate for
-// t.Kind and wraps it with Prometheus instrumentation when met is non-nil
-// (LOOM-103).
-func NewExecutorWithMetrics(t *registry.Target, met *metrics.Metrics) (TargetExecutor, error) {
+// ExecutorOptions are what one app instance's executors share (LOOM-197:
+// per instance, never process-wide, so two in one process stay apart).
+type ExecutorOptions struct {
+	// KnownHostsDir is where pinned targets' known_hosts files are
+	// written (the data volume, beside the database); empty is
+	// defaultKnownHostsDir().
+	KnownHostsDir string
+	// Metrics, when set, instruments every call (LOOM-103).
+	Metrics *metrics.Metrics
+}
+
+// NewExecutorWith constructs the TargetExecutor appropriate for t.Kind
+// with o.
+func NewExecutorWith(t *registry.Target, o ExecutorOptions) (TargetExecutor, error) {
+	met := o.Metrics
+	knownHostsDir := o.KnownHostsDir
+	if knownHostsDir == "" {
+		knownHostsDir = defaultKnownHostsDir()
+	}
 	switch t.Kind {
 	case registry.TargetKindLocal:
 		if !LocalTargets {
@@ -214,7 +230,7 @@ func NewExecutorWithMetrics(t *registry.Target, met *metrics.Metrics) (TargetExe
 		}
 		return newMetricsExecutor(NewLocalExecutor(), met, string(t.Kind), t.Name), nil
 	case registry.TargetKindRemote:
-		opts, err := remoteOptions(t)
+		opts, err := remoteOptions(t, knownHostsDir)
 		if err != nil {
 			return nil, err
 		}

@@ -74,7 +74,7 @@ func setupManaged(t *testing.T, proxy string) *managedSetup {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = targets.SetManagedSSH(nil) })
-	targets.SetKnownHostsDir(filepath.Join(base, "known_hosts.d"))
+	managedKnownHosts = filepath.Join(base, "known_hosts.d")
 	tgt := &registry.Target{
 		ID: "managed-" + strconv.Itoa(server.Port), Name: "managed", Kind: registry.TargetKindRemote,
 		Host: server.Host, User: "loomux-test", SSHPort: server.Port, SSHKeyRef: key.ID,
@@ -86,9 +86,12 @@ func setupManaged(t *testing.T, proxy string) *managedSetup {
 	return &managedSetup{server: server, key: key, target: tgt}
 }
 
+// managedKnownHosts is the latest setupManaged's known_hosts dir.
+var managedKnownHosts string
+
 func newManagedExecutor(t *testing.T, tgt *registry.Target) targets.TargetExecutor {
 	t.Helper()
-	e, err := targets.NewExecutor(tgt)
+	e, err := targets.NewExecutorWith(tgt, targets.ExecutorOptions{KnownHostsDir: managedKnownHosts})
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -188,7 +191,7 @@ func TestManagedExecutor_UnauthorizedKey(t *testing.T) {
 func TestManagedExecutor_NotConfigured(t *testing.T) {
 	_ = targets.SetManagedSSH(nil)
 	tgt := &registry.Target{ID: "t", Name: "t", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHKeyRef: "k", HostKeys: "h ssh-ed25519 AAAA"}
-	if _, err := targets.NewExecutor(tgt); err == nil || !strings.Contains(err.Error(), "not configured") {
+	if _, err := targets.NewExecutorWith(tgt, targets.ExecutorOptions{KnownHostsDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Errorf("NewExecutor without managed SSH = %v", err)
 	}
 }

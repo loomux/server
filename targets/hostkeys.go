@@ -23,19 +23,13 @@ import (
 // the mounted known_hosts as before. The database holds the pin; the
 // file is written from it whenever the target's executor is built.
 
-// knownHostsDir is where pinned targets' known_hosts files are written.
-var (
-	knownHostsMu  sync.Mutex
-	knownHostsDir = filepath.Join(os.TempDir(), "loomux", "known_hosts.d")
-)
+// knownHostsMu serializes writing pinned known_hosts files.
+var knownHostsMu sync.Mutex
 
-// SetKnownHostsDir sets where pinned host keys are written (the data
-// volume, beside the database). Call it once at startup.
-func SetKnownHostsDir(dir string) {
-	knownHostsMu.Lock()
-	defer knownHostsMu.Unlock()
-	knownHostsDir = dir
-}
+// defaultKnownHostsDir is where pinned targets' known_hosts files go for
+// a caller that names no directory (ExecutorOptions.KnownHostsDir). The
+// app always names its data dir's.
+func defaultKnownHostsDir() string { return filepath.Join(os.TempDir(), "loomux", "known_hosts.d") }
 
 // HostKey is one host key: its known_hosts line, its type
 // ("ssh-ed25519") and its SHA256 fingerprint as ssh-keygen -l prints it.
@@ -63,15 +57,15 @@ func ParseHostKeys(lines string) ([]HostKey, error) {
 	return out, nil
 }
 
-// pinnedKnownHosts writes t's pinned keys to its known_hosts file, if
-// they aren't there already, and returns the file's path.
-func pinnedKnownHosts(t *registry.Target) (string, error) {
+// pinnedKnownHosts writes t's pinned keys to its known_hosts file in dir,
+// if they aren't there already, and returns the file's path.
+func pinnedKnownHosts(t *registry.Target, dir string) (string, error) {
 	knownHostsMu.Lock()
 	defer knownHostsMu.Unlock()
-	if err := os.MkdirAll(knownHostsDir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("targets: known_hosts dir: %w", err)
 	}
-	path := filepath.Join(knownHostsDir, sanitizeForFilename(t.ID))
+	path := filepath.Join(dir, sanitizeForFilename(t.ID))
 	want := []byte(strings.TrimSpace(t.HostKeys) + "\n")
 	if have, err := os.ReadFile(path); err == nil && bytes.Equal(have, want) {
 		return path, nil
@@ -87,15 +81,16 @@ func pinnedKnownHosts(t *registry.Target) (string, error) {
 }
 
 // remoteOptions are t's per-target SSH overrides (LOOM-114): its port,
-// and its pinned host keys checked strictly and alone; for a managed
-// target (LOOM-138), everything else ssh needs too.
-func remoteOptions(t *registry.Target) ([]RemoteOption, error) {
+// and its pinned host keys (written under knownHostsDir) checked strictly
+// and alone; for a managed target (LOOM-138), everything else ssh needs
+// too.
+func remoteOptions(t *registry.Target, knownHostsDir string) ([]RemoteOption, error) {
 	var opts []RemoteOption
 	if t.SSHPort != 0 {
 		opts = append(opts, WithPort(t.SSHPort))
 	}
 	if strings.TrimSpace(t.HostKeys) != "" {
-		path, err := pinnedKnownHosts(t)
+		path, err := pinnedKnownHosts(t, knownHostsDir)
 		if err != nil {
 			return nil, err
 		}
