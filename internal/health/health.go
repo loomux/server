@@ -49,7 +49,9 @@ type Pinger interface {
 type Checker struct {
 	store       registry.Store
 	newExecutor orchestrator.ExecutorFactory
-	routerCfg   llmrouter.Config
+	// routerCfg is the router configuration in force (LOOM-189): the
+	// router model's, which Settings may replace at any time.
+	routerCfg   func() llmrouter.Config
 	sidecarAddr string
 	// plugins, when set, reports the plugin system (LOOM-178) as the
 	// "plugins" component of Deep.
@@ -61,9 +63,11 @@ func (c *Checker) WithPlugins(report func(ctx context.Context) ComponentResult) 
 	c.plugins = report
 }
 
-// NewChecker constructs a Checker. sidecarAddr is the SOCKS5 proxy address
-// to probe (e.g. "127.0.0.1:1055"); empty disables the sidecar check.
-func NewChecker(store registry.Store, newExecutor orchestrator.ExecutorFactory, routerCfg llmrouter.Config, sidecarAddr string) *Checker {
+// NewChecker constructs a Checker. routerCfg returns the router
+// configuration in force, read at each check. sidecarAddr is the SOCKS5
+// proxy address to probe (e.g. "127.0.0.1:1055"); empty disables the
+// sidecar check.
+func NewChecker(store registry.Store, newExecutor orchestrator.ExecutorFactory, routerCfg func() llmrouter.Config, sidecarAddr string) *Checker {
 	return &Checker{
 		store:       store,
 		newExecutor: newExecutor,
@@ -105,9 +109,9 @@ func (c *Checker) core(ctx context.Context) Result {
 	res := Result{Components: map[string]ComponentResult{}}
 	status := StatusHealthy
 
-	if c.routerCfg.Primary.BaseURL == "" || c.routerCfg.Primary.Model == "" {
+	if err := c.routerCfg().Validate(); err != nil {
 		status = StatusDegraded
-		res.Components["router_model"] = ComponentResult{Status: StatusUnhealthy, Error: "router model not configured"}
+		res.Components["router_model"] = ComponentResult{Status: StatusUnhealthy, Error: "router model not configured: " + err.Error()}
 	} else {
 		res.Components["router_model"] = ComponentResult{Status: StatusHealthy}
 	}

@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,10 +15,99 @@ import (
 )
 
 // Router model tiers set through Settings (LOOM-185). The API key is
-// sealed under the master key with "router_tier:<tier>" as additional
-// data, as ssh_keys binds its private keys to their ids.
+// sealed under the master key, bound to the row's tier, provider and base
+// URL (routerTierAAD).
 
-func routerTierAAD(tier string) []byte { return []byte("router_tier:" + tier) }
+// routerTierSealVersion is what a tier's key is bound to when sealed
+// today (a row's seal_version): 1 was its tier (LOOM-185), 2 its tier,
+// provider and base URL (LOOM-189).
+const routerTierSealVersion = 2
+
+// routerTierAAD is the additional data a tier's key is sealed with: the
+// tier, provider and base URL, each length-prefixed, so the key opens
+// only on that tier for that endpoint. A row pointed at another provider
+// or URL behind the store's back doesn't decrypt.
+func routerTierAAD(tier, provider, baseURL string) []byte {
+	aad := []byte("router_tier/v2")
+	for _, f := range []string{tier, provider, baseURL} {
+		aad = binary.BigEndian.AppendUint32(aad, uint32(len(f)))
+		aad = append(aad, f...)
+	}
+	return aad
+}
+
+// legacyRouterTierAAD is what a seal_version 1 row was sealed with, for
+// resealRouterTiers to open it.
+func legacyRouterTierAAD(tier string) []byte { return []byte("router_tier:" + tier) }
+
+// resealRouterTiers re-seals the tiers sealed by an older release
+// (seal_version below routerTierSealVersion), bound to their tier,
+// provider and base URL. Open runs it when it has the master key. Once
+// every row is re-sealed it records that in router_settings_reseal, and
+// from then on does nothing: nothing the store writes is sealed the old
+// way, and a row set back behind its back isn't read (ListRouterTiers
+// opens with today's binding only). A row the key doesn't open (the wrong
+// key) is left as it is and the re-seal isn't recorded: the row can't be
+// read either way, and the right key re-seals it at a later Open.
+func (s *Store) resealRouterTiers(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: reseal router tiers: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var done int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM router_settings_reseal WHERE seal_version = ?`,
+		routerTierSealVersion).Scan(&done); err != nil {
+		return fmt.Errorf("sqlite: reseal router tiers: %w", err)
+	}
+	if done > 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT tier, provider, base_url, api_key FROM router_settings WHERE seal_version < ?`,
+		routerTierSealVersion)
+	if err != nil {
+		return fmt.Errorf("sqlite: reseal router tiers: %w", err)
+	}
+	resealed := map[string][]byte{}
+	unopened := 0
+	for rows.Next() {
+		var tier, provider, baseURL string
+		var sealed []byte
+		if err := rows.Scan(&tier, &provider, &baseURL, &sealed); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: reseal router tiers: %w", err)
+		}
+		key, err := open(s.masterKey, sealed, legacyRouterTierAAD(tier))
+		if err != nil {
+			unopened++
+			continue
+		}
+		if resealed[tier], err = seal(s.masterKey, key, routerTierAAD(tier, provider, baseURL)); err != nil {
+			rows.Close()
+			return fmt.Errorf("sqlite: reseal router tier %q: %w", tier, err)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite: reseal router tiers: %w", err)
+	}
+	for tier, sealed := range resealed {
+		if _, err := tx.ExecContext(ctx, `UPDATE router_settings SET api_key = ?, seal_version = ? WHERE tier = ?`,
+			sealed, routerTierSealVersion, tier); err != nil {
+			return fmt.Errorf("sqlite: reseal router tier %q: %w", tier, err)
+		}
+	}
+	if unopened == 0 {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO router_settings_reseal (seal_version, done_at) VALUES (?, ?)`,
+			routerTierSealVersion, time.Now().UTC()); err != nil {
+			return fmt.Errorf("sqlite: record router tier reseal: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: reseal router tiers: %w", err)
+	}
+	return nil
+}
 
 // recordRouterChange writes change in tx, stamping it.
 func recordRouterChange(ctx context.Context, tx *sql.Tx, change *registry.RouterSettingsChange, now time.Time) error {
@@ -40,7 +130,7 @@ func (s *Store) SetRouterTier(ctx context.Context, t *registry.RouterTier, chang
 		return fmt.Errorf("sqlite: set router tier: %w", registry.ErrNoMasterKey)
 	}
 	now := time.Now().UTC()
-	sealed, err := seal(s.masterKey, []byte(t.APIKey), routerTierAAD(t.Tier))
+	sealed, err := seal(s.masterKey, []byte(t.APIKey), routerTierAAD(t.Tier, t.Provider, t.BaseURL))
 	if err != nil {
 		return fmt.Errorf("sqlite: encrypt router key: %w", err)
 	}
@@ -51,12 +141,12 @@ func (s *Store) SetRouterTier(ctx context.Context, t *registry.RouterTier, chang
 	defer func() { _ = tx.Rollback() }()
 	t.SetAt = now
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO router_settings (tier, provider, base_url, model, api_key, key_fingerprint, key_last4, set_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO router_settings (tier, provider, base_url, model, api_key, key_fingerprint, key_last4, set_at, seal_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (tier) DO UPDATE SET provider = excluded.provider, base_url = excluded.base_url,
 			model = excluded.model, api_key = excluded.api_key, key_fingerprint = excluded.key_fingerprint,
-			key_last4 = excluded.key_last4, set_at = excluded.set_at`,
-		t.Tier, t.Provider, t.BaseURL, t.Model, sealed, t.KeyFingerprint, t.KeyLast4, t.SetAt); err != nil {
+			key_last4 = excluded.key_last4, set_at = excluded.set_at, seal_version = excluded.seal_version`,
+		t.Tier, t.Provider, t.BaseURL, t.Model, sealed, t.KeyFingerprint, t.KeyLast4, t.SetAt, routerTierSealVersion); err != nil {
 		return fmt.Errorf("sqlite: set router tier: %w", err)
 	}
 	if err := recordRouterChange(ctx, tx, change, now); err != nil {
@@ -89,7 +179,7 @@ func (s *Store) ListRouterTiers(ctx context.Context) ([]*registry.RouterTier, er
 			out = append(out, &t)
 			continue
 		}
-		key, err := open(s.masterKey, sealed, routerTierAAD(t.Tier))
+		key, err := open(s.masterKey, sealed, routerTierAAD(t.Tier, t.Provider, t.BaseURL))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sqlite: router tier %q: %w", t.Tier, err))
 		} else {

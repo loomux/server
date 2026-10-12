@@ -94,6 +94,10 @@ func Open(path string, opts ...Option) (*Store, error) {
 			db.Close()
 			return nil, err
 		}
+		if err := s.resealRouterTiers(context.Background()); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }

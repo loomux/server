@@ -183,7 +183,7 @@ func TestBreaker_HalfOpenLetsOneCallThrough(t *testing.T) {
 	now := time.Now()
 	b.now = func() time.Time { return now }
 	for i := 0; i < breakerThreshold; i++ {
-		b.record(true)
+		b.record(0, true)
 	}
 	if b.allow() || !b.open() {
 		t.Fatal("open breaker let a call through")
@@ -198,11 +198,11 @@ func TestBreaker_HalfOpenLetsOneCallThrough(t *testing.T) {
 	if !b.open() {
 		t.Error("gauge says closed while probing")
 	}
-	b.abandon()
+	b.abandon(0)
 	if !b.allow() {
 		t.Error("a cancelled probe kept the slot")
 	}
-	b.record(true) // the probe failed: open again
+	b.record(0, true) // the probe failed: open again
 	if b.allow() || !b.open() {
 		t.Error("a failed probe didn't reopen the breaker")
 	}
@@ -213,8 +213,44 @@ func TestBreaker_HalfOpenLetsOneCallThrough(t *testing.T) {
 	if !b.allow() {
 		t.Fatal("no probe after the second cooldown")
 	}
-	b.record(false)
+	b.record(0, false)
 	if !b.allow() || !b.allow() || b.open() {
 		t.Error("a good probe didn't close the breaker")
+	}
+}
+
+// LOOM-189: an outcome from a call made on an earlier primary is
+// dropped by the breaker itself, under its own lock: checking the
+// generation before recording left a window in which SetConfig could
+// swap the primary and reset the breaker, and the old call's failure
+// then landed on the new one.
+func TestBreaker_DropsOutcomesOfAnEarlierGeneration(t *testing.T) {
+	b := newBreaker()
+	now := time.Now()
+	b.now = func() time.Time { return now }
+	for range breakerThreshold - 1 {
+		b.record(0, true)
+	}
+	b.reset(1)
+	for range breakerThreshold {
+		b.record(0, true) // calls made on generation 0, reporting late
+	}
+	if b.open() || b.failures != 0 {
+		t.Fatalf("late generation-0 failures counted against generation 1: failures %d", b.failures)
+	}
+	for range breakerThreshold {
+		b.record(1, true)
+	}
+	now = now.Add(breakerCooldown)
+	if !b.allow() {
+		t.Fatal("no probe after the cooldown")
+	}
+	b.abandon(0) // an old call's cancellation doesn't free the probe slot
+	if b.allow() {
+		t.Error("a generation-0 abandon released generation 1's probe")
+	}
+	b.record(0, false) // nor does an old call's success close the breaker
+	if !b.open() {
+		t.Error("a generation-0 success closed generation 1's breaker")
 	}
 }

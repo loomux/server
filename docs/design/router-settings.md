@@ -37,10 +37,13 @@ The same shape describes an env tier, so the owner can tell which key
 is live without seeing it.
 
 **Encrypted like `ssh_keys`.** Table `router_settings`, one row per
-tier, the key AES-256-GCM-sealed under `LOOMUX_MASTER_KEY` with
-`router_tier:<tier>` as additional data (LOOM-138's `ssh_key:<id>`
-scheme), so a ciphertext copied onto the other tier's row doesn't
-decrypt. Without a master key the endpoints that write answer 503, as
+tier, the key AES-256-GCM-sealed under `LOOMUX_MASTER_KEY` with the
+row's tier, provider and base URL as additional data (LOOM-138's
+`ssh_key:<id>` scheme, extended by LOOM-189), so a ciphertext copied
+onto the other tier's row doesn't decrypt, and neither does a row whose
+provider or base URL was changed in the database to send the key
+elsewhere. Rows sealed to their tier alone (before LOOM-189) are
+re-sealed by the first start with the master key (`seal_version` 2). Without a master key the endpoints that write answer 503, as
 `/ssh-keys` does. A row that doesn't decrypt at startup (master key
 changed) is skipped: that tier falls back to the env and `GET` says
 `stored_unreadable: true`, so the owner can re-enter or delete it

@@ -58,15 +58,16 @@ the tag in a manifest works the same way.
 | Secret | How | Effect |
 |---|---|---|
 | Login password (`LOOMUX_AUTH_PASSWORD_HASH`) | `loomuxd -hash-password` for the new one, update the Secret, restart | Existing sessions stay valid until they expire (30 days of inactivity) or are revoked: revoke them under the API's `DELETE /api/v1/sessions/{id}` (list with `GET /api/v1/sessions`) |
-| Router API keys | update the Secret, restart | none |
+| Router API keys | env tiers: update the Secret, restart. Tiers saved in Settings: save a new key there, applied at once. A saved key is bound to its tier, provider and base URL; since LOOM-189 the first start with the master key re-seals older saved tiers that way, and a release from before can't read them, so rolling back past it means saving the tiers again in Settings (until then that release uses the environment's) | none |
 | ntfy token | update the Secret, restart | none |
 | SSH key | update the SSH Secret (and the target's `authorized_keys`), restart | none |
 | Vault master key (`LOOMUX_MASTER_KEY`) | **not rotatable in place**: credentials in the vault are encrypted with it. While the vault is empty (agents mostly use their own logins on the targets) a new key loses nothing. Once any credential row exists, a different key makes reading the vault fail, and then **every** dispatch fails until those rows are deleted: list them with `GET /api/v1/credentials` (it reads no ciphertext, so it works with any key), delete each with `DELETE /api/v1/credentials/{id}`, then add them again under the new key. Since LOOM-175 the first start with the key re-seals older rows bound to their ids, and since LOOM-192 to their ids and scopes (workspace, target and agent type), then records the re-seal as done so later starts skip it; a release from before either can't read the re-sealed rows, so rolling back past it means restoring the pre-upgrade snapshot (or re-adding the credentials) | — |
 
 ## What to watch
 
-- **Health:** `GET /api/v1/health` (unauthenticated: database and router
-  model; the probe to use) and `GET /api/v1/health/deep` (needs a
+- **Health:** `GET /api/v1/health` (unauthenticated: database and the
+  router model configuration in force, Settings' or the environment's;
+  the probe to use) and `GET /api/v1/health/deep` (needs a
   session: every target, and the Tailscale sidecar).
 - **Metrics** on `LOOMUX_METRICS_ADDR` (Prometheus): dispatches by
   outcome and stage timings (`loomux_dispatch_total`,

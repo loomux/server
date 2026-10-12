@@ -585,7 +585,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// Health probes bypass the metrics-wrapped executor so periodic
 	// liveness checks don't pollute the target operation latency/error
 	// counters (LOOM-105).
-	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr)
+	healthChecker := health.NewChecker(store, targets.NewExecutor, model.Config, health.DefaultSidecarAddr)
 
 	// The plugin system (LOOM-178): the instance id labels everything a
 	// plugin makes as this server's, generated once and kept in the
