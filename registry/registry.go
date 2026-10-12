@@ -244,6 +244,12 @@ func (t *Target) Validate() error {
 		if !validManagedHost(t.Host) {
 			return errors.New("host must be a host name (letters, digits and -, dot-separated) or an IP address for a target with a Loomux SSH key")
 		}
+		// A zone names an interface on this server, which means nothing
+		// to the SSH proxy (its relay refuses it): such a host is reached
+		// directly or not at all (LOOM-188 review).
+		if strings.Contains(t.Host, "%") && t.SSHProxy != SSHProxyNone {
+			return errors.New(`a link-local host with a zone (%) must have ssh_proxy "none": the SSH proxy can't reach it`)
+		}
 	}
 	switch {
 	case t.SSHProxy == "":

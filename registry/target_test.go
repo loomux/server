@@ -246,7 +246,7 @@ func TestTargetValidate_TrailingDotAndZone(t *testing.T) {
 		target := func(host string) registry.Target {
 			tgt := registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: host, User: "u"}
 			if managed {
-				tgt.SSHKeyRef = "key-1"
+				tgt.SSHKeyRef, tgt.SSHProxy = "key-1", registry.SSHProxyNone
 			}
 			return tgt
 		}
@@ -260,6 +260,20 @@ func TestTargetValidate_TrailingDotAndZone(t *testing.T) {
 				t.Errorf("managed=%v: host %q accepted", managed, host)
 			}
 		}
+	}
+}
+
+// LOOM-188 review: a zone names an interface on the Loomux server, which
+// means nothing to the SSH proxy (whose relay refuses it), so a managed
+// target with a zone must go straight to the host.
+func TestTargetValidate_ZoneNeedsNoProxy(t *testing.T) {
+	tgt := registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "fe80::1%eth0", User: "u", SSHKeyRef: "k"}
+	if err := tgt.Validate(); err == nil || !strings.Contains(err.Error(), "ssh_proxy") {
+		t.Errorf("zoned host through the proxy: Validate = %v, want refused naming ssh_proxy", err)
+	}
+	tgt.SSHProxy = registry.SSHProxyNone
+	if err := tgt.Validate(); err != nil {
+		t.Errorf("zoned host with ssh_proxy none refused: %v", err)
 	}
 }
 
