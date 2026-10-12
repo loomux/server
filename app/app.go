@@ -567,9 +567,13 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		routerOpts = append(routerOpts, router.WithLateReplyHook(notifier.lateReply))
 	}
 
-	reaper := orchestrator.NewReaper(orch, threshold, orchestrator.WithReaperMetrics(met),
+	reaperOpts := []orchestrator.ReaperOption{orchestrator.WithReaperMetrics(met),
 		orchestrator.WithStaleProvisioningAfter(staleProvisioningAfter), orchestrator.WithTurnRetention(cfg.TurnRetention),
-		orchestrator.WithEventRetention(cfg.EventRetention))
+		orchestrator.WithEventRetention(cfg.EventRetention)}
+	if cfg.reaperClock != nil {
+		reaperOpts = append(reaperOpts, orchestrator.WithReaperClock(cfg.reaperClock))
+	}
+	reaper := orchestrator.NewReaper(orch, threshold, reaperOpts...)
 	reaperCtx, stopReaper := context.WithCancel(context.Background())
 	reaperDone := make(chan struct{})
 	go func() {
