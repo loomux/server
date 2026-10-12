@@ -435,6 +435,9 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if cfg.MasterKey != nil {
 		opts = append(opts, sqlite.WithMasterKey(cfg.MasterKey))
 	}
+	if cfg.Logger != nil {
+		opts = append(opts, sqlite.WithLogger(cfg.Logger))
+	}
 	// Before the store opens, so a bad override leaves nothing to clean up.
 	if err := agentTypes.ApplyProfileOverrides(cfg.AgentProfiles); err != nil {
 		return nil, fmt.Errorf("app: %s: %w", envAgentProfiles, err)
@@ -589,7 +592,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// Health probes bypass the metrics-wrapped executor so periodic
 	// liveness checks don't pollute the target operation latency/error
 	// counters (LOOM-105).
-	healthChecker := health.NewChecker(store, targets.NewExecutor, cfg.Router, health.DefaultSidecarAddr)
+	healthChecker := health.NewChecker(store, targets.NewExecutor, model.Config, health.DefaultSidecarAddr)
 
 	// The plugin system (LOOM-178): the instance id labels everything a
 	// plugin makes as this server's, generated once and kept in the

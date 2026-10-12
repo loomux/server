@@ -82,8 +82,12 @@ func newTestStore(t *testing.T) *sqlite.Store {
 	return store
 }
 
-func routerConfig() llmrouter.Config {
-	return llmrouter.Config{Primary: llmrouter.Tier{BaseURL: "http://router", Model: "m", APIKey: "k"}}
+func routerConfig() func() llmrouter.Config {
+	return fixedRouter(llmrouter.Config{Primary: llmrouter.Tier{BaseURL: "http://router", Model: "m", APIKey: "k"}})
+}
+
+func fixedRouter(cfg llmrouter.Config) func() llmrouter.Config {
+	return func() llmrouter.Config { return cfg }
 }
 
 func TestShallow_Healthy(t *testing.T) {
@@ -131,7 +135,7 @@ func TestShallow_DBFailure(t *testing.T) {
 
 func TestShallow_RouterNotConfigured(t *testing.T) {
 	store := newTestStore(t)
-	checker := health.NewChecker(store, newFakeExecutorFactory(true), llmrouter.Config{}, "")
+	checker := health.NewChecker(store, newFakeExecutorFactory(true), fixedRouter(llmrouter.Config{}), "")
 
 	res := checker.Shallow(context.Background())
 	if res.Status != health.StatusDegraded {
@@ -142,6 +146,26 @@ func TestShallow_RouterNotConfigured(t *testing.T) {
 	}
 	if e := res.Components["router_model"].Error; e != "unavailable" {
 		t.Fatalf("router_model error = %q, want the fixed %q", e, "unavailable")
+	}
+}
+
+// LOOM-189: the router check reads the config in force each time — the
+// one Settings may have replaced since startup — and judges it as the
+// router does: an anthropic tier needs no base URL.
+func TestCore_RouterConfigInForce(t *testing.T) {
+	store := newTestStore(t)
+	live := llmrouter.Config{}
+	checker := health.NewChecker(store, newFakeExecutorFactory(true), func() llmrouter.Config { return live }, "")
+	if got := checker.Shallow(context.Background()).Components["router_model"].Status; got != health.StatusUnhealthy {
+		t.Fatalf("no router config: router_model = %q, want unhealthy", got)
+	}
+	live = llmrouter.Config{Primary: llmrouter.Tier{Provider: llmrouter.ProviderAnthropic, APIKey: "k", Model: "claude"}}
+	if got := checker.Shallow(context.Background()).Components["router_model"].Status; got != health.StatusHealthy {
+		t.Fatalf("anthropic tier on its default URL: router_model = %q, want healthy", got)
+	}
+	live.Escalation = &llmrouter.Tier{Provider: llmrouter.ProviderOpenAI, APIKey: "k", Model: "m"} // no base URL
+	if got := checker.Deep(context.Background()).Components["router_model"]; got.Status != health.StatusUnhealthy || got.Error == "" {
+		t.Fatalf("escalation tier without a base URL: router_model = %+v, want unhealthy with the reason", got)
 	}
 }
 

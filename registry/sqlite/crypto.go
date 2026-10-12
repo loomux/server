@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 )
 
@@ -93,4 +94,14 @@ type Option func(*Store)
 // clear error rather than silently storing plaintext or panicking.
 func WithMasterKey(key []byte) Option {
 	return func(s *Store) { s.masterKey = key }
+}
+
+// WithLogger sets where the store logs what an operator should see, such
+// as a router tier re-sealed at Open (LOOM-189). Default: slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(s *Store) {
+		if l != nil {
+			s.logger = l
+		}
+	}
 }

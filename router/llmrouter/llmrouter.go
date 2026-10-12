@@ -125,7 +125,7 @@ func (m *Model) SetConfig(cfg Config) error {
 	}
 	m.cfg.Store(next)
 	if next.gen != old.gen {
-		m.primaryBreaker.reset()
+		m.primaryBreaker.reset(next.gen)
 	}
 	return nil
 }

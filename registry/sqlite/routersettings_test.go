@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Loomux/server/registry"
@@ -141,5 +143,189 @@ func TestRouterTier_MasterKeyRequired(t *testing.T) {
 	got, err = other.ListRouterTiers(ctx)
 	if err == nil || len(got) != 1 || got[0].APIKey != "" {
 		t.Fatalf("with another master key: %+v, %v", got, err)
+	}
+}
+
+// LOOM-189: a tier's key is bound to the provider and base URL it was
+// set for as well: a row whose provider or base_url is changed behind
+// the store's back (to send the key elsewhere) no longer decrypts.
+func TestRouterTier_BoundToProviderAndBaseURL(t *testing.T) {
+	ctx := context.Background()
+	s := openRouterStore(t, filepath.Join(t.TempDir(), "r.db"), bytes.Repeat([]byte("k"), 32))
+	for _, change := range []string{
+		`UPDATE router_settings SET base_url = 'https://collector.example/v1'`,
+		`UPDATE router_settings SET provider = 'anthropic'`,
+	} {
+		if err := s.SetRouterTier(ctx, routerTier("primary", "PRIMARY-KEY-123456"), nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, change); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.ListRouterTiers(ctx)
+		if err == nil || len(got) != 1 || got[0].APIKey != "" {
+			t.Errorf("after %q: ListRouterTiers = %+v, %v; want the key unreadable", change, got, err)
+		}
+	}
+}
+
+// LOOM-189: a tier sealed before the binding (to its tier alone) is
+// re-sealed to its tier, provider and base URL by the first Open with
+// the master key, which records the re-seal as done. Without the key, or
+// with another, it is left alone and nothing is recorded. A row sealed
+// the old way that appears after that isn't read, nor re-sealed.
+func TestRouterTier_ResealOnOpen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "r.db")
+	key := bytes.Repeat([]byte{7}, 32)
+	count := func(s *Store, query string) int {
+		t.Helper()
+		var n int
+		if err := s.db.QueryRowContext(ctx, query).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	const resealedRows = `SELECT COUNT(*) FROM router_settings WHERE seal_version = 2`
+	const resealDone = `SELECT COUNT(*) FROM router_settings_reseal WHERE seal_version = 2`
+	insertV1 := func(s *Store, tier, apiKey string) {
+		t.Helper()
+		v1, err := seal(key, []byte(apiKey), []byte("router_tier:"+tier))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO router_settings (tier, provider, base_url, model, api_key, key_fingerprint, key_last4, set_at, seal_version)
+			VALUES (?, 'openai', 'https://api.example/v1', 'm', ?, 'sha256:x', 'last', CURRENT_TIMESTAMP, 1)
+			ON CONFLICT (tier) DO UPDATE SET api_key = excluded.api_key, seal_version = 1`, tier, v1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i, opts := range [][]Option{nil, {WithMasterKey(bytes.Repeat([]byte{9}, 32))}} {
+		s, err := Open(dbPath, opts...)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if i == 0 {
+			insertV1(s, "primary", "LOOM-185-PRIMARY-KEY")
+		}
+		if n := count(s, resealedRows); n != 0 {
+			t.Errorf("%d rows re-sealed without the right key; want none", n)
+		}
+		if n := count(s, resealDone); n != 0 {
+			t.Error("re-seal recorded as done without the right key")
+		}
+		s.Close()
+	}
+
+	s, err := Open(dbPath, WithMasterKey(key))
+	if err != nil {
+		t.Fatalf("Open with the key: %v", err)
+	}
+	if n := count(s, resealedRows); n != 1 {
+		t.Errorf("%d rows re-sealed; want 1", n)
+	}
+	if n := count(s, resealDone); n != 1 {
+		t.Error("re-seal not recorded as done")
+	}
+	got, err := s.ListRouterTiers(ctx)
+	if err != nil || len(got) != 1 || got[0].APIKey != "LOOM-185-PRIMARY-KEY" {
+		t.Fatalf("after the re-seal: %+v, %v", got, err)
+	}
+	insertV1(s, "primary", "LATE-OLD-WAY-KEY")
+	if got, err := s.ListRouterTiers(ctx); err == nil || got[0].APIKey != "" {
+		t.Errorf("a row sealed the old way read as %+v; want an error", got)
+	}
+	s.Close()
+
+	s, err = Open(dbPath, WithMasterKey(key))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	if n := count(s, resealedRows); n != 0 {
+		t.Errorf("%d rows at seal_version 2 after a reopen; want 0 (no re-seal once done)", n)
+	}
+}
+
+// LOOM-189 review: after a migration Down and Up, a row sealed to its
+// tier, provider and base URL comes back labelled seal_version 1 with no
+// re-seal recorded. It opens with today's binding, so it is only
+// relabelled, and the re-seal is recorded rather than retried at every
+// Open.
+func TestRouterTier_ResealRelabelsRowsAlreadyBound(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "r.db")
+	key := bytes.Repeat([]byte{7}, 32)
+	s, err := Open(dbPath, WithMasterKey(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRouterTier(ctx, routerTier("primary", "PRIMARY-KEY-123456"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE router_settings SET seal_version = 1; DELETE FROM router_settings_reseal`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	var logs bytes.Buffer
+	s, err = Open(dbPath, WithMasterKey(key), WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var version, done int
+	if err := s.db.QueryRowContext(ctx, `SELECT seal_version FROM router_settings`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM router_settings_reseal`).Scan(&done); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 || done != 1 {
+		t.Errorf("seal_version %d, re-seal recorded %d; want 2 and 1", version, done)
+	}
+	if got, err := s.ListRouterTiers(ctx); err != nil || got[0].APIKey != "PRIMARY-KEY-123456" {
+		t.Errorf("ListRouterTiers = %+v, %v", got, err)
+	}
+	if strings.Contains(logs.String(), "re-sealed") {
+		t.Errorf("a relabel logged as a re-seal: %s", logs.String())
+	}
+}
+
+// LOOM-189 review: re-sealing binds a key to whatever provider and base
+// URL its row names, so each re-seal is logged at WARN with them: one on
+// a server that upgraded long ago is a restored or tampered row to look
+// at.
+func TestRouterTier_ResealIsLogged(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "r.db")
+	key := bytes.Repeat([]byte{7}, 32)
+	s := openRouterStore(t, dbPath, nil)
+	v1, err := seal(key, []byte("OLD-PRIMARY-KEY-1234"), []byte("router_tier:primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO router_settings (tier, provider, base_url, model, api_key, key_fingerprint, key_last4, set_at, seal_version)
+		VALUES ('primary', 'openai', 'https://api.example/v1?key=QUERY-SECRET', 'm', ?, 'sha256:x', '1234', CURRENT_TIMESTAMP, 1)`, v1); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	var logs bytes.Buffer
+	s2, err := Open(dbPath, WithMasterKey(key), WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	out := logs.String()
+	for _, want := range []string{"level=WARN", "tier=primary", "provider=openai", "base_url=https://api.example/v1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("re-seal log %q lacks %q", out, want)
+		}
+	}
+	if strings.Contains(out, "OLD-PRIMARY-KEY") || strings.Contains(out, "QUERY-SECRET") {
+		t.Error("the re-seal log holds the key, or the base URL's query")
 	}
 }

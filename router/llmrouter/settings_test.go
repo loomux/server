@@ -622,7 +622,7 @@ func TestSetConfig_StaleCallDoesNotTripNewBreaker(t *testing.T) {
 	}
 	// Two failures on the old primary, one short of opening.
 	for range breakerThreshold - 1 {
-		m.primaryBreaker.record(true)
+		m.primaryBreaker.record(m.cfg.Load().gen, true)
 	}
 	var wg sync.WaitGroup
 	wg.Go(func() { _, _ = m.Decide(context.Background(), "hi", nil, nil) })
@@ -632,7 +632,7 @@ func TestSetConfig_StaleCallDoesNotTripNewBreaker(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range breakerThreshold - 1 {
-		m.primaryBreaker.record(true)
+		m.primaryBreaker.record(m.cfg.Load().gen, true)
 	}
 	close(release)
 	wg.Wait()
