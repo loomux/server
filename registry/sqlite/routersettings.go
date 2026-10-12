@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -130,7 +131,7 @@ func (s *Store) resealRouterTiers(ctx context.Context) error {
 	// it is a restored or tampered row, so it is said loudly.
 	for tier, r := range resealed {
 		s.logger.Warn("router tier key re-sealed to its provider and base URL; check them in Settings if this isn't the first start after upgrading",
-			"tier", tier, "provider", r.provider, "base_url", r.baseURL)
+			"tier", tier, "provider", r.provider, "base_url", logURL(r.baseURL))
 	}
 	return nil
 }
@@ -266,4 +267,15 @@ func (s *Store) ListRouterSettingsChanges(ctx context.Context, limit int) ([]*re
 		return nil, fmt.Errorf("sqlite: list router settings changes: %w", err)
 	}
 	return out, nil
+}
+
+// logURL is u for a log line, without a query or fragment, which could
+// carry a secret (checkBaseURL refuses userinfo, not those).
+func logURL(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return "(unparseable)"
+	}
+	parsed.RawQuery, parsed.ForceQuery, parsed.Fragment, parsed.RawFragment = "", false, "", ""
+	return parsed.String()
 }

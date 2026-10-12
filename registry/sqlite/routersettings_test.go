@@ -309,7 +309,7 @@ func TestRouterTier_ResealIsLogged(t *testing.T) {
 	}
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO router_settings (tier, provider, base_url, model, api_key, key_fingerprint, key_last4, set_at, seal_version)
-		VALUES ('primary', 'openai', 'https://api.example/v1', 'm', ?, 'sha256:x', '1234', CURRENT_TIMESTAMP, 1)`, v1); err != nil {
+		VALUES ('primary', 'openai', 'https://api.example/v1?key=QUERY-SECRET', 'm', ?, 'sha256:x', '1234', CURRENT_TIMESTAMP, 1)`, v1); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
@@ -325,7 +325,7 @@ func TestRouterTier_ResealIsLogged(t *testing.T) {
 			t.Errorf("re-seal log %q lacks %q", out, want)
 		}
 	}
-	if strings.Contains(out, "OLD-PRIMARY-KEY") {
-		t.Error("the re-seal log holds the key")
+	if strings.Contains(out, "OLD-PRIMARY-KEY") || strings.Contains(out, "QUERY-SECRET") {
+		t.Error("the re-seal log holds the key, or the base URL's query")
 	}
 }
