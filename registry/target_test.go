@@ -220,7 +220,7 @@ func TestTargetValidate_ManagedHost(t *testing.T) {
 		}
 	}
 	for _, host := range []string{"a;id", "$(id)", "`id`", "%d", "a%h", "h'x", `h"x`, "a b", "a\nb", "a|b", "a&b", "-x", "a..b", ".a",
-		"a.", "a_b", "[::1]", "a:22", "é.example", strings.Repeat("a", 64) + ".example", strings.Repeat("a.", 127) + "a"} {
+		"a_b", "[::1]", "a:22", "é.example", strings.Repeat("a", 64) + ".example", strings.Repeat("a.", 127) + "a"} {
 		tgt := managed(host)
 		if err := tgt.Validate(); err == nil {
 			t.Errorf("host %q accepted for a managed target", host)
@@ -231,6 +231,35 @@ func TestTargetValidate_ManagedHost(t *testing.T) {
 	cfg := registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: "a_b", User: "u"}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("config-mode host a_b refused: %v", err)
+	}
+}
+
+// LOOM-188: a fully qualified name with its trailing dot, and a
+// link-local IPv6 address with its zone id, are ssh destinations too.
+// The zone is an interface name or index and nothing else: the host is
+// expanded into a managed target's ProxyCommand, which a shell runs.
+func TestTargetValidate_TrailingDotAndZone(t *testing.T) {
+	ok := []string{"wyzer.example.net.", "a.", "fe80::1%eth0", "fe80::1%2", "FE80::a:b%enp3s0", "fe80::1%br-lan", "fe80::1%eth0.100", "fe80::1%wlan_0"}
+	bad := []string{".", "..", "a..", ".a.", "fe80::1%", "fe80::1%%h", "fe80::1%-x", "fe80::1%eth0;id", "fe80::1%eth 0", "fe80::1%$(id)",
+		"fe80::1%" + strings.Repeat("a", 65), "[fe80::1%eth0]", "::1%lo", "fd7a:115c::1%eth0", "10.0.0.7%eth0", "box%eth0"}
+	for _, managed := range []bool{false, true} {
+		target := func(host string) registry.Target {
+			tgt := registry.Target{Name: "x", Kind: registry.TargetKindRemote, Host: host, User: "u"}
+			if managed {
+				tgt.SSHKeyRef = "key-1"
+			}
+			return tgt
+		}
+		for _, host := range ok {
+			if tgt := target(host); tgt.Validate() != nil {
+				t.Errorf("managed=%v: host %q refused: %v", managed, host, tgt.Validate())
+			}
+		}
+		for _, host := range bad {
+			if tgt := target(host); tgt.Validate() == nil {
+				t.Errorf("managed=%v: host %q accepted", managed, host)
+			}
+		}
 	}
 }
 

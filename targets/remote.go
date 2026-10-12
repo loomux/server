@@ -122,6 +122,13 @@ func NewRemoteExecutor(host, user string, opts ...RemoteOption) *RemoteExecutor 
 	return e
 }
 
+// controlPathOption is the ControlPath option for ssh, which expands
+// %-tokens in it: a "%" in the socket name (a link-local host's zone id,
+// LOOM-188) is escaped as "%%".
+func (e *RemoteExecutor) controlPathOption() string {
+	return "ControlPath=" + strings.ReplaceAll(e.controlPath, "%", "%%")
+}
+
 func controlPathFor(host, user string, port int, tag string) string {
 	dir := filepath.Join(os.TempDir(), "loomux", "ssh-cm")
 	name := fmt.Sprintf("cm-%s-%s-%d.sock", sanitizeForFilename(user), sanitizeForFilename(host), port)
@@ -175,7 +182,7 @@ func (e *RemoteExecutor) baseArgs() []string {
 		"-o", "ServerAliveCountMax="+serverAliveCountMax,
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPersist="+e.controlPersist,
-		"-o", "ControlPath="+e.controlPath,
+		"-o", e.controlPathOption(),
 	)
 	if e.port != 0 {
 		args = append(args, "-p", strconv.Itoa(e.port))
@@ -419,7 +426,7 @@ func (e *RemoteExecutor) RunOnce(ctx context.Context, command string) (string, e
 func (e *RemoteExecutor) ControlMasterAlive(ctx context.Context) (bool, error) {
 	args := append(e.configArgs(),
 		"-O", "check",
-		"-o", "ControlPath="+e.controlPath,
+		"-o", e.controlPathOption(),
 	)
 	if e.port != 0 {
 		args = append(args, "-p", strconv.Itoa(e.port))
@@ -445,7 +452,7 @@ func (e *RemoteExecutor) ControlMasterAlive(ctx context.Context) (bool, error) {
 func (e *RemoteExecutor) Close() error {
 	args := append(e.configArgs(),
 		"-O", "exit",
-		"-o", "ControlPath="+e.controlPath,
+		"-o", e.controlPathOption(),
 	)
 	if e.port != 0 {
 		args = append(args, "-p", strconv.Itoa(e.port))

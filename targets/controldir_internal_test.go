@@ -3,6 +3,7 @@ package targets
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,4 +96,26 @@ func TestRemoteExecutor_ControlDirIsPrivate(t *testing.T) {
 			refused(t, e, "belongs to another user")
 		}
 	})
+}
+
+// LOOM-188: ssh expands %-tokens in ControlPath. A config-mode target's
+// socket name holds its host, and a link-local host's zone id ("%eth0")
+// must reach ssh as itself, not as an unknown token.
+func TestRemoteExecutor_ControlPathEscapesPercent(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("no ssh client")
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	e := NewRemoteExecutor("fe80::1%eth0", "u", WithPort(22))
+	if !strings.Contains(e.controlPath, "%eth0") {
+		t.Fatalf("controlPath %q: want the host's zone in the socket name", e.controlPath)
+	}
+	args := append([]string{"-G"}, e.baseArgs()...)
+	out, err := exec.Command("ssh", append(args, "--", e.destination())...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh -G: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "\ncontrolpath "+e.controlPath+"\n") {
+		t.Fatalf("ssh -G = %s\nwant controlpath %s", out, e.controlPath)
+	}
 }
