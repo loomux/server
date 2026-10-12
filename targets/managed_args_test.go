@@ -46,7 +46,7 @@ func setupManagedArgs(t *testing.T, proxy string) *registry.Target {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = SetManagedSSH(nil) })
-	SetKnownHostsDir(filepath.Join(dir, "known_hosts.d"))
+	t.Setenv("TMPDIR", dir) // pins go under the default known_hosts dir
 	return &registry.Target{ID: "t-args", Name: "args", Kind: registry.TargetKindRemote, Host: "wyzer.example", User: "orski",
 		SSHPort: 2222, SSHKeyRef: key.ID, HostKeys: "[wyzer.example]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"}
 }
