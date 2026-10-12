@@ -76,7 +76,13 @@ type Manager struct {
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
-	jobs  sync.WaitGroup
+	// jobs counts every goroutine the manager starts — machine jobs and
+	// notifies (LOOM-196) — which Close waits for.
+	jobs sync.WaitGroup
+	// life is cancelled by Close: a notify in flight then stops rather
+	// than outlive the store.
+	life    context.Context
+	endLife context.CancelFunc
 	// running is the background job following each machine, if any.
 	running map[string]*job
 	// orphanSeen is when an orphan was first listed, keyed plugin/env.
@@ -93,11 +99,13 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 	if met == nil {
 		met = metrics.NewDiscard()
 	}
+	life, endLife := context.WithCancel(context.Background())
 	return &Manager{
 		store: store, plugins: pm, logger: logger, met: met, instanceID: instanceID,
 		CreateTimeout: DefaultCreateTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
 		Now:   time.Now,
 		locks: map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{},
+		life: life, endLife: endLife,
 	}
 }
 
@@ -1022,8 +1030,18 @@ func (m *Manager) HandleNotify(pluginID, method string, params json.RawMessage) 
 	if err := json.Unmarshal(params, &tc); err != nil || tc.ID == "" {
 		return
 	}
+	// Tracked like a job (LOOM-196): Close cancels it and waits for it,
+	// so it never uses the store after the app has closed it.
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.jobs.Add(1)
+	m.mu.Unlock()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer m.jobs.Done()
+		ctx, cancel := context.WithTimeout(m.life, time.Minute)
 		defer cancel()
 		if env, err := m.store.GetEnvironment(ctx, tc.ID); err == nil && env.PluginID == pluginID {
 			m.reconcileOne(ctx, env)
@@ -1047,7 +1065,8 @@ func (m *Manager) updateGauge(ctx context.Context) {
 	}
 }
 
-// Close cancels the background jobs and waits for them.
+// Close cancels the background jobs and notifies in flight, and waits
+// for them; a notify after that starts nothing.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	m.closed = true
@@ -1056,6 +1075,7 @@ func (m *Manager) Close() {
 		delete(m.running, id)
 	}
 	m.mu.Unlock()
+	m.endLife()
 	m.jobs.Wait()
 }
 
