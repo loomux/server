@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ var migrationsFS embed.FS
 type Store struct {
 	db        *sql.DB
 	masterKey []byte // nil unless WithMasterKey was passed to Open
+	logger    *slog.Logger
 	// retentionBatch is how many rows a retention delete removes per
 	// transaction (deleteInBatches); a test lowers it, and sees each
 	// chunk's count through afterRetentionChunk when that is set.
@@ -85,12 +87,16 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: run migrations: %w", err)
 	}
 
-	s := &Store{db: db, retentionBatch: defaultRetentionBatch}
+	s := &Store{db: db, retentionBatch: defaultRetentionBatch, logger: slog.Default()}
 	for _, opt := range opts {
 		opt(s)
 	}
 	if s.masterKey != nil {
 		if err := s.resealCredentials(context.Background()); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if err := s.resealRouterTiers(context.Background()); err != nil {
 			db.Close()
 			return nil, err
 		}

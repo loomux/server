@@ -28,7 +28,12 @@ type breaker struct {
 	// in flight: until it reports, everything else still skips the
 	// primary (half-open).
 	probing bool
-	now     func() time.Time
+	// gen is the primary generation the breaker is counting for
+	// (configState.gen): an outcome reported for another is dropped here,
+	// under mu, so a call on a primary that reset replaced can't land on
+	// the new one's count between a check and the record (LOOM-189).
+	gen uint64
+	now func() time.Time
 }
 
 func newBreaker() *breaker { return &breaker{now: time.Now} }
@@ -57,11 +62,15 @@ func (b *breaker) open() bool {
 	return b.failures >= breakerThreshold && (b.now().Before(b.openUntil) || b.probing)
 }
 
-// record notes a primary call's outcome and reports whether that call
-// opened the breaker.
-func (b *breaker) record(unavailable bool) (opened bool) {
+// record notes the outcome of a primary call made on generation gen and
+// reports whether that call opened the breaker. A call on another
+// generation's primary is dropped.
+func (b *breaker) record(gen uint64, unavailable bool) (opened bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if gen != b.gen {
+		return false
+	}
 	b.probing = false
 	if !unavailable {
 		b.failures = 0
@@ -76,22 +85,24 @@ func (b *breaker) record(unavailable bool) (opened bool) {
 	return false
 }
 
-// reset closes the breaker, forgetting every failure: for a primary tier
-// that was just replaced (LOOM-185), whose outage says nothing about the
-// new one.
-func (b *breaker) reset() {
+// reset closes the breaker, forgetting every failure, and counts for
+// generation gen from now on: for a primary tier that was just replaced
+// (LOOM-185), whose outage says nothing about the new one.
+func (b *breaker) reset(gen uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.failures, b.openUntil, b.probing = 0, time.Time{}, false
+	b.failures, b.openUntil, b.probing, b.gen = 0, time.Time{}, false, gen
 }
 
-// abandon releases a call that ended without telling anything about the
-// provider (the caller cancelled it), so a half-open breaker lets the
-// next call try instead.
-func (b *breaker) abandon() {
+// abandon releases a call on generation gen that ended without telling
+// anything about the provider (the caller cancelled it), so a half-open
+// breaker lets the next call try instead.
+func (b *breaker) abandon(gen uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.probing = false
+	if gen == b.gen {
+		b.probing = false
+	}
 }
 
 // unavailableError marks a tier call that never got a usable answer
@@ -119,16 +130,14 @@ func (m *Model) skipPrimary(cfg *Config) bool {
 
 // recordPrimary feeds a primary call's outcome to the breaker. A call the
 // caller cancelled says nothing about the provider, and neither does one
-// made on a primary that has since been replaced (gen, LOOM-185).
+// made on a primary that has since been replaced (gen, LOOM-185): the
+// breaker drops those itself.
 func (m *Model) recordPrimary(ctx context.Context, err error, gen uint64) {
-	if m.cfg.Load().gen != gen {
-		return
-	}
 	if ctx.Err() != nil {
-		m.primaryBreaker.abandon()
+		m.primaryBreaker.abandon(gen)
 		return
 	}
-	if m.primaryBreaker.record(err != nil && isUnavailable(err)) {
+	if m.primaryBreaker.record(gen, err != nil && isUnavailable(err)) {
 		slog.Warn("router primary tier failing; skipping it", "consecutive_failures", breakerThreshold, "for", breakerCooldown.String(), "error", scrubKeys(err))
 	}
 }
