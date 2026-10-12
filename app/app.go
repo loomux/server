@@ -48,7 +48,8 @@ const staleProvisioningAfter = router.ProvisionTimeout + 5*time.Minute
 // session storage in the same database.
 type App struct {
 	// newExecutor builds this instance's target executors (its known_hosts
-	// dir and metrics).
+	// dir and metrics). Kept on App only for app/knownhosts_test.go; the
+	// app's parts get it at Build.
 	newExecutor orchestrator.ExecutorFactory
 	router      *router.Router
 	agentTypes  []string
