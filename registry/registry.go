@@ -73,16 +73,20 @@ func (t *Target) Managed() bool { return t.SSHKeyRef != "" }
 
 // hostLabel is one label of a target's host name; aliasLabel is one of a
 // config-mode target's, which may also be an ssh_config alias and so
-// contain "_".
+// contain "_". zoneID is a link-local IPv6 address's zone: an interface
+// name ("eth0", "br-lan", "eth0.100") or index.
 var (
 	hostLabel  = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 	aliasLabel = regexp.MustCompile(`^[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?$`)
+	zoneID     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 )
 
-// validManagedHost reports whether host is an RFC 1123 host name or an
-// IP address. A managed target's host is the real one (no ssh_config
-// alias resolves it) and ssh expands it into the proxy command, so
-// nothing else — no %, quote, shell metacharacter or space — may be in it.
+// validManagedHost reports whether host is an RFC 1123 host name (a fully
+// qualified one may keep its trailing dot) or an IP address (a link-local
+// IPv6 one may carry its zone, LOOM-188). A managed target's host is the
+// real one (no ssh_config alias resolves it) and ssh expands it into the
+// proxy command, so nothing else — no other %, no quote, shell
+// metacharacter or space — may be in it.
 func validManagedHost(host string) bool { return validHost(host, hostLabel) }
 
 // validConfigHost is validManagedHost for a config-mode target (LOOM-175):
@@ -94,6 +98,12 @@ func validHost(host string, label *regexp.Regexp) bool {
 	if net.ParseIP(host) != nil {
 		return true
 	}
+	if addr, zone, ok := strings.Cut(host, "%"); ok {
+		// ssh (getaddrinfo) takes a zone only on a link-local address.
+		ip := net.ParseIP(addr)
+		return ip != nil && ip.To4() == nil && ip.IsLinkLocalUnicast() && zoneID.MatchString(zone)
+	}
+	host = strings.TrimSuffix(host, ".")
 	if len(host) > 253 {
 		return false
 	}
@@ -233,6 +243,12 @@ func (t *Target) Validate() error {
 		}
 		if !validManagedHost(t.Host) {
 			return errors.New("host must be a host name (letters, digits and -, dot-separated) or an IP address for a target with a Loomux SSH key")
+		}
+		// A zone names an interface on this server, which means nothing
+		// to the SSH proxy (its relay refuses it): such a host is reached
+		// directly or not at all (LOOM-188 review).
+		if strings.Contains(t.Host, "%") && t.SSHProxy != SSHProxyNone {
+			return errors.New(`a link-local host with a zone (%) must have ssh_proxy "none": the SSH proxy can't reach it`)
 		}
 	}
 	switch {
