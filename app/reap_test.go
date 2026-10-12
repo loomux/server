@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,19 +92,21 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 		t.Fatalf("Close (seed): %v", err)
 	}
 
+	// The reaper judges idleness by a clock the test moves: it sees the
+	// task idle only once the test has checked the session is there.
+	// With a wall-clock threshold, everything Dispatch does after the
+	// turn ends counted as idle time, and on a loaded CI runner the
+	// reaper tore the session down before the check (LOOM-195).
+	var ahead atomic.Int64
 	cfg := Config{
 		DBPath:    dbPath,
 		MasterKey: []byte("01234567890123456789012345678901"[:32]),
 		Router: llmrouter.Config{
 			Primary: llmrouter.Tier{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"},
 		},
-		// The threshold runs from the turn's end, so it must outlast the
-		// gap between Dispatch returning and the check below that the
-		// session is still there; at 100ms a loaded CI runner lost that
-		// race. Tearing the session down then takes about 2s more, which
-		// the poll after the check allows for generously.
-		ReapIdleThreshold: 500 * time.Millisecond,
+		ReapIdleThreshold: time.Hour,
 		ReapInterval:      30 * time.Millisecond,
+		reaperClock:       func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) },
 	}
 	agentTypes := router.AgentTypeRegistry{
 		"echo-agent": router.AgentType{
@@ -169,7 +172,9 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 
 	// No further Dispatch calls from here — only the real background
 	// reaper goroutine (started inside build/Build) should tear this
-	// down, entirely on its own.
+	// down, entirely on its own, now that its clock is past the
+	// threshold.
+	ahead.Store(int64(2 * time.Hour))
 	deadline := time.After(15 * time.Second)
 	for {
 		exists, err := realExec.HasSession(ctx, task.TmuxSession)
@@ -205,6 +210,9 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+	// Back to real time, so the reaper leaves the follow-up's fresh
+	// session alone.
+	ahead.Store(0)
 	if reaped.Status != registry.TaskStatusAwaitingInput {
 		t.Fatalf("task Status after reap = %q, want unchanged %q", reaped.Status, registry.TaskStatusAwaitingInput)
 	}

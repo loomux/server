@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,11 +52,37 @@ func fakeRouterServer(t *testing.T) *httptest.Server {
 func testConfig(t *testing.T, routerBaseURL string) Config {
 	t.Helper()
 	return Config{
-		DBPath: filepath.Join(t.TempDir(), "test.db"),
+		DBPath: filepath.Join(appDataDir(t), "test.db"),
 		Router: llmrouter.Config{
 			Primary: llmrouter.Tier{BaseURL: routerBaseURL, APIKey: "test-key", Model: "test-model"},
 		},
 	}
+}
+
+// appDataDir is a test's data directory, removed when the test ends,
+// after the app's Close. t.TempDir's cleanup fails on something written
+// there after Close without saying what; this one names what was left
+// (LOOM-195: TestDrainDispatches_StopsSubmits failed that way once in CI
+// and hasn't reproduced since).
+func appDataDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "loomux-app-test-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			var left []string
+			_ = filepath.WalkDir(dir, func(p string, _ fs.DirEntry, _ error) error {
+				if p != dir {
+					left = append(left, p)
+				}
+				return nil
+			})
+			t.Errorf("remove the test's data dir: %v; written after Close: %q", err, left)
+		}
+	})
+	return dir
 }
 
 func TestBuild_EndToEnd_AnswerDirectly(t *testing.T) {
