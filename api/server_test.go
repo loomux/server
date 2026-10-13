@@ -564,24 +564,86 @@ func TestSession_ExpiresAfterTTL(t *testing.T) {
 	}
 }
 
+// stepClock is a clock a test moves by hand: sessions age only when the
+// test says so, however slowly a loaded runner serves each request.
+type stepClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newStepClock() *stepClock { return &stepClock{now: time.Now()} }
+
+func (c *stepClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *stepClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// LOOM-200: on the session clock, not the wall clock. Sleeping 1.2s
+// against a 2s window left 0.8s for a whole request under -race, which a
+// loaded CI runner overran.
 func TestSession_SlidingExpiration_ActivityExtendsSession(t *testing.T) {
-	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(2*time.Second))
+	const ttl = 2 * time.Second
+	clock := newStepClock()
+	srv, dispatcher, _ := newTestServer(t, api.WithSessionTTL(ttl), api.WithClock(clock.Now))
 	dispatcher.DispatchFunc = func(ctx context.Context, conversationID, message, workspaceHint string) (string, error) {
 		return "ok", nil
 	}
 	token, _ := login(t, srv.URL, testPassword)
 	body, _ := json.Marshal(map[string]string{"conversation_id": "c1", "message": "hi"})
-
-	// Two requests spaced less than the TTL apart, each one should reset
-	// the clock — proving activity keeps the session alive well past
-	// what a single fixed expiration from login time would allow.
-	for i := 0; i < 3; i++ {
-		time.Sleep(1200 * time.Millisecond)
+	dispatchStatus := func() int {
 		resp := authedRequest(t, http.MethodPost, srv.URL+"/api/v1/dispatch?wait=true", token, body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("request %d status = %d, want %d (sliding expiration should have kept the session alive)", i, resp.StatusCode, http.StatusOK)
+		return resp.StatusCode
+	}
+
+	// Each request lands just inside the window and resets it, so the
+	// session outlives three windows' worth of time since login — what a
+	// single fixed expiration from login time would not allow.
+	for i := 0; i < 3; i++ {
+		clock.Advance(ttl - time.Millisecond)
+		if status := dispatchStatus(); status != http.StatusOK {
+			t.Fatalf("request %d status = %d, want %d (sliding expiration should have kept the session alive)", i, status, http.StatusOK)
 		}
+	}
+
+	// And the window still closes: idle just past it from the last
+	// request, the session is gone.
+	clock.Advance(ttl + time.Millisecond)
+	if status := dispatchStatus(); status != http.StatusUnauthorized {
+		t.Fatalf("status idle past the window = %d, want %d", status, http.StatusUnauthorized)
+	}
+}
+
+// LOOM-200 guard: a session's lifetime is read off the server's clock
+// alone. With that clock stopped, wall time far past the window changes
+// nothing — for requests and the session list alike — so a test driving
+// the clock can't be undercut by a slow request again.
+func TestSession_Lifetime_ReadsOnlyTheSessionClock(t *testing.T) {
+	const ttl = 20 * time.Millisecond
+	clock := newStepClock()
+	srv, _, _ := newTestServer(t, api.WithSessionTTL(ttl), api.WithSessionMaxAge(ttl), api.WithClock(clock.Now))
+	token, _ := login(t, srv.URL, testPassword)
+
+	time.Sleep(5 * ttl) // wall time only: the session clock stands still
+
+	resp, sessions := listSessions(t, srv.URL, token)
+	resp.Body.Close()
+	if len(sessions) != 1 {
+		t.Fatalf("sessions on a stopped clock = %+v, want the one", sessions)
+	}
+
+	clock.Advance(ttl + time.Millisecond)
+	resp = authedRequest(t, http.MethodGet, srv.URL+"/api/v1/sessions", token, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status once the session clock passes the window = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 }
 

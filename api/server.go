@@ -266,6 +266,9 @@ type Server struct {
 	// session like streams, but not by EndStreams at shutdown, which
 	// leaves them to the HTTP drain as before.
 	waits sessionStreams
+	// now is the clock sessions are stamped and expired by: time.Now,
+	// or a test's fake one (LOOM-200).
+	now func() time.Time
 }
 
 // Option configures a Server constructed via NewServer.
@@ -381,6 +384,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 		passwordHash:       passwordHash,
 		sessionTTL:         defaultSessionTTL,
 		sessionMaxAge:      defaultSessionMaxAge,
+		now:                time.Now,
 		loginThrottle:      newLoginThrottle(defaultLoginBackoffBase, defaultLoginBackoffMax),
 		streamPollInterval: defaultStreamPollInterval,
 		localTargets:       true,
@@ -565,7 +569,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	sess := &registry.Session{ID: uuid.NewString(), TokenHash: tokenHash}
+	sess := &registry.Session{ID: uuid.NewString(), TokenHash: tokenHash, LastUsedAt: s.now().UTC()}
 	if err := s.sessions.CreateSession(r.Context(), sess); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
@@ -629,7 +633,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := sessionFromContext(r.Context())
-	now := time.Now()
+	now := s.now()
 
 	out := make([]sessionSummary, 0, len(sessions))
 	for _, sess := range sessions {
@@ -1618,13 +1622,13 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		if s.sessionExpired(sess, time.Now()) {
+		if s.sessionExpired(sess, s.now()) {
 			_ = s.sessions.DeleteSession(r.Context(), sess.ID) // opportunistic cleanup
 			writeError(w, http.StatusUnauthorized, "invalid or expired session")
 			return
 		}
 
-		now := time.Now().UTC()
+		now := s.now().UTC()
 		if err := s.sessions.TouchSession(r.Context(), sess.ID, now); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not refresh session")
 			return
