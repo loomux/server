@@ -15,6 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/Loomux/server/plugins/protocol"
 )
 
 // fakeProbes puts stub timeout and sleep commands first on PATH for the
@@ -136,5 +138,42 @@ func TestCanaryPersistentReadError(t *testing.T) {
 	}
 	if !strings.Contains(pr, "leader changed") {
 		t.Fatalf("check = %+v", res)
+	}
+}
+
+// A canary left behind (its delete failed while the API server was
+// unavailable, seen on TEST) is removed by the next check; another
+// server's canaries and this server's machines are not touched.
+func TestCanarySweepsStale(t *testing.T) {
+	stale := func(name, instance string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS, Labels: map[string]string{
+			labelManagedBy: managedBy, protocol.LabelInstance: instance, labelRole: roleAgent, labelCanary: "true",
+		}}, Status: corev1.PodStatus{Phase: corev1.PodFailed}}
+	}
+	machine := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "lx-keep", Namespace: testNS, Labels: map[string]string{
+		labelManagedBy: managedBy, protocol.LabelInstance: testInstance, labelRole: roleAgent,
+	}}}
+	cs := fake.NewClientset(stale("lx-netcheck-old1", testInstance), stale("lx-netcheck-other", "another-instance"), machine)
+	canaryExits(cs, exitBlocked)
+	p := configured(t, cs, nil)
+	p.Check(ctx)
+	pods, _ := cs.CoreV1().Pods(testNS).List(ctx, metav1.ListOptions{})
+	var left []string
+	for _, pod := range pods.Items {
+		left = append(left, pod.Name)
+	}
+	if strings.Join(left, ",") != "lx-keep,lx-netcheck-other" {
+		t.Errorf("pods left = %v, want lx-keep and the other server's canary", left)
+	}
+}
+
+// The kubelet's deadline must not end the canary before the plugin stops
+// waiting for it: it counts the image pull (3 min on a cold node on TEST).
+func TestCanaryDeadlineCoversTimeout(t *testing.T) {
+	p := newTestPlugin(fake.NewClientset())
+	p.CanaryTimeout = 3 * time.Minute
+	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", p.CanaryTimeout)
+	if d := pod.Spec.ActiveDeadlineSeconds; d == nil || time.Duration(*d)*time.Second <= p.CanaryTimeout {
+		t.Errorf("activeDeadlineSeconds = %v, want more than the canary timeout %v", d, p.CanaryTimeout)
 	}
 }

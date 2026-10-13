@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 
 	"github.com/Loomux/server/plugins/protocol"
 )
@@ -64,7 +65,7 @@ const (
 
 // canaryAttempts bounds how long a target that answers is tried again
 // (a second apart) before the canary decides it is reachable: well over
-// the engine's start-up gap, well under ActiveDeadlineSeconds.
+// the engine's start-up gap, well under the canary's deadline.
 const canaryAttempts = 15
 
 // netcheck is one run of the canary and its verdict.
@@ -125,7 +126,8 @@ func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface
 func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Interface, apiHost, instance string) (enforcementState, string) {
 	name := "lx-netcheck-" + p.Rand()
 	pods := client.CoreV1().Pods(cfg.Namespace)
-	if _, err := pods.Create(ctx, canaryPod(name, cfg, instance, apiHost), metav1.CreateOptions{}); err != nil {
+	sweepCanaries(ctx, pods, instance)
+	if _, err := pods.Create(ctx, canaryPod(name, cfg, instance, apiHost, p.CanaryTimeout), metav1.CreateOptions{}); err != nil {
 		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err)
 	}
 	defer func() {
@@ -156,6 +158,19 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String()
 		case <-time.After(p.Poll):
 		}
+	}
+}
+
+// sweepCanaries deletes this server's canaries left by an earlier check
+// whose own delete failed (the API server was unavailable). Best effort,
+// like that delete: the next check tries again.
+func sweepCanaries(ctx context.Context, pods corev1client.PodInterface, instance string) {
+	list, err := pods.List(ctx, metav1.ListOptions{LabelSelector: instanceSelector(instance) + "," + labelCanary + "=true"})
+	if err != nil {
+		return
+	}
+	for _, pod := range list.Items {
+		_ = pods.Delete(ctx, pod.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr(int64(0))})
 	}
 }
 
@@ -225,8 +240,10 @@ func canaryScript(apiHost string) string {
 
 // canaryPod is restricted-compliant like every pod the plugin makes,
 // labelled as a confined agent so the policies apply to it, and marked
-// as a canary so nothing lists it as a machine.
-func canaryPod(name string, cfg Config, instance, apiHost string) *corev1.Pod {
+// as a canary so nothing lists it as a machine. Its deadline, which the
+// kubelet counts from scheduling (the image pull included), outlasts the
+// plugin's wait for it, so it only ends a canary nobody reads.
+func canaryPod(name string, cfg Config, instance, apiHost string, timeout time.Duration) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -239,7 +256,7 @@ func canaryPod(name string, cfg Config, instance, apiHost string) *corev1.Pod {
 			AutomountServiceAccountToken: ptr(false),
 			EnableServiceLinks:           ptr(false),
 			RestartPolicy:                corev1.RestartPolicyNever,
-			ActiveDeadlineSeconds:        ptr(int64(60)),
+			ActiveDeadlineSeconds:        ptr(int64((timeout + time.Minute) / time.Second)),
 			SecurityContext:              podSecurity(),
 			Containers: []corev1.Container{{
 				Name:    "netcheck",

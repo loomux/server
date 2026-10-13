@@ -730,7 +730,7 @@ func TestCanaryScript(t *testing.T) {
 			t.Errorf("script lacks %q:\n%s", want, s)
 		}
 	}
-	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "")
+	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", time.Minute)
 	if pod.Labels[labelRole] != "agent" || pod.Labels[labelEgress] != "none" || pod.Labels[labelCanary] != "true" || pod.Spec.RestartPolicy != corev1.RestartPolicyNever || *pod.Spec.AutomountServiceAccountToken || pod.Spec.SecurityContext.RunAsUser == nil || *pod.Spec.SecurityContext.RunAsUser != 10002 || len(pod.Spec.Volumes) != 0 {
 		t.Errorf("canary pod = %+v", pod)
 	}
