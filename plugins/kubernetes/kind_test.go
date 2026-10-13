@@ -38,7 +38,8 @@ import (
 // login part run; without them it is skipped.
 //
 // Plain kind enforces no NetworkPolicy (CI's run proved it: a confined
-// canary reached the API server), so the check must report
+// canary reached the API server; with kube-network-policies too, before
+// the canary retried through an engine's start-up gap), so the check must report
 // network_policy_not_enforced. LOOMUX_KIND_ENFORCED=1 says a policy
 // engine (kube-network-policies) was installed into the cluster and
 // the check must say enforced instead: the canary reaches kube-dns

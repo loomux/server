@@ -19,7 +19,11 @@ import (
 // real as the cluster's policy engine, so the plugin tests enforcement
 // rather than assuming it: a short-lived canary pod, confined like an
 // egress "none" machine by the §10 policies, tries the API server and
-// the internet and exits 10, 11 or 0. Not enforced: egress "none" is
+// the internet and exits 10, 11 or 0. A new pod can be unconfined for a
+// moment while the engine learns its address (about 2 s with
+// kube-network-policies on theWyseKube, measured 2026-10-13), so the
+// canary tries a target that answers again, canaryAttempts times a
+// second apart, before it calls it reachable. Not enforced: egress "none" is
 // withdrawn from describe and check reports it; with
 // require_network_policy, check fails.
 
@@ -57,6 +61,11 @@ const (
 	exitNetReachable = 11
 	exitNoNetwork    = 12
 )
+
+// canaryAttempts bounds how long a target that answers is tried again
+// (a second apart) before the canary decides it is reachable: well over
+// the engine's start-up gap, well under ActiveDeadlineSeconds.
+const canaryAttempts = 15
 
 // netcheck is one run of the canary and its verdict.
 type netcheck struct {
@@ -124,39 +133,55 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 		defer dcancel()
 		_ = pods.Delete(dctx, name, metav1.DeleteOptions{GracePeriodSeconds: ptr(int64(0))})
 	}()
+	var readErr error
 	for {
 		pod, err := pods.Get(ctx, name, metav1.GetOptions{})
 		switch {
 		case kerrors.IsNotFound(err):
 			return enforcementFailed, "the canary pod disappeared"
 		case err != nil:
-			return enforcementFailed, "couldn't read the canary pod: " + safeStatus(err)
-		}
-		if code, reason, done := canaryExit(pod); done {
-			switch code {
-			case exitBlocked:
-				return enforcementEnforced, "a confined pod reached neither the API server nor the internet"
-			case exitAPIReachable:
-				return enforcementNotEnforced, "a confined pod reached the API server"
-			case exitNetReachable:
-				return enforcementNotEnforced, "a confined pod reached the internet"
-			case exitNoNetwork:
-				return enforcementFailed, "a confined pod couldn't reach kube-dns either: pod networking is broken, or the DNS policy of the agents namespace is missing"
-			default:
-				return enforcementFailed, fmt.Sprintf("the canary exited %d: %s", code, reason)
-			}
-		}
-		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Waiting != nil && imageErrors[cs.State.Waiting.Reason] {
-				return enforcementFailed, "the canary can't run the agent image: " + cs.State.Waiting.Reason + " " + oneLine(cs.State.Waiting.Message)
+			// Transient (etcd "leader changed" was seen on TEST): poll
+			// again, and report it only if it outlasts the canary.
+			readErr = err
+		default:
+			if state, detail, done := canaryVerdict(pod); done {
+				return state, detail
 			}
 		}
 		select {
 		case <-ctx.Done():
+			if readErr != nil {
+				return enforcementFailed, "couldn't read the canary pod: " + safeStatus(readErr)
+			}
 			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String()
 		case <-time.After(p.Poll):
 		}
 	}
+}
+
+// canaryVerdict is the verdict a read of the canary pod gives, once it
+// gives one: its exit code, or an image it can't run.
+func canaryVerdict(pod *corev1.Pod) (enforcementState, string, bool) {
+	if code, reason, done := canaryExit(pod); done {
+		switch code {
+		case exitBlocked:
+			return enforcementEnforced, "a confined pod reached neither the API server nor the internet", true
+		case exitAPIReachable:
+			return enforcementNotEnforced, "a confined pod reached the API server", true
+		case exitNetReachable:
+			return enforcementNotEnforced, "a confined pod reached the internet", true
+		case exitNoNetwork:
+			return enforcementFailed, "a confined pod couldn't reach kube-dns either: pod networking is broken, or the DNS policy of the agents namespace is missing", true
+		default:
+			return enforcementFailed, fmt.Sprintf("the canary exited %d: %s", code, reason), true
+		}
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil && imageErrors[cs.State.Waiting.Reason] {
+			return enforcementFailed, "the canary can't run the agent image: " + cs.State.Waiting.Reason + " " + oneLine(cs.State.Waiting.Message), true
+		}
+	}
+	return enforcementUnknown, "", false
 }
 
 // canaryExit is the canary's exit code once it has one.
@@ -173,18 +198,25 @@ func canaryExit(pod *corev1.Pod) (code int, reason string, done bool) {
 }
 
 // canaryScript probes the API server (by the client's address and by
-// its cluster name) and the internet; the first that answers decides.
-// When neither does, kube-dns (the pod's resolver) is the control: a
-// confined pod may reach it, so reaching it says the pod has a network
+// its cluster name) and the internet; the first that still answers
+// after canaryAttempts tries decides. When neither does, kube-dns (the
+// pod's resolver) is the control: a confined pod may reach it, so reaching it says the pod has a network
 // and the policies hold (exit 0), and not reaching it says nothing can
 // be concluded (exit 12).
 func canaryScript(apiHost string) string {
 	script := "probe() { timeout 3 bash -c \"exec 3<>/dev/tcp/$1/$2\" 2>/dev/null; }\n"
+	script += "reached() {\n"
 	if h, port, err := net.SplitHostPort(apiHost); err == nil && h != "" {
-		script += "probe " + h + " " + port + " && exit 10\n"
+		script += "probe " + h + " " + port + " && return 10\n"
 	}
-	script += "probe kubernetes.default.svc.cluster.local 443 && exit 10\n"
-	script += "probe 1.1.1.1 443 && exit 11\n"
+	script += "probe kubernetes.default.svc.cluster.local 443 && return 10\n"
+	script += "probe 1.1.1.1 443 && return 11\n"
+	script += "return 0\n}\n"
+	script += fmt.Sprintf("for i in $(seq 1 %d); do\n", canaryAttempts)
+	script += "reached; code=$?\n"
+	script += "[ $code -eq 0 ] && break\n"
+	script += fmt.Sprintf("[ $i -eq %d ] && exit $code\n", canaryAttempts)
+	script += "sleep 1\ndone\n"
 	script += "dns=$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf)\n"
 	script += "[ -n \"$dns\" ] && probe \"$dns\" 53 || exit 12\n"
 	script += "exit 0\n"

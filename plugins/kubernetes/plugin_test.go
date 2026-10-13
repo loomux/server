@@ -725,7 +725,7 @@ func TestCheck(t *testing.T) {
 
 func TestCanaryScript(t *testing.T) {
 	s := canaryScript("10.96.0.1:443")
-	for _, want := range []string{"probe 10.96.0.1 443 && exit 10", "probe kubernetes.default.svc.cluster.local 443 && exit 10", "probe 1.1.1.1 443 && exit 11", `probe "$dns" 53 || exit 12`, "exit 0"} {
+	for _, want := range []string{"probe 10.96.0.1 443 && return 10", "probe kubernetes.default.svc.cluster.local 443 && return 10", "probe 1.1.1.1 443 && return 11", `probe "$dns" 53 || exit 12`, "exit 0"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q:\n%s", want, s)
 		}

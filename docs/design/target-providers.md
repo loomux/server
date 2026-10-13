@@ -747,7 +747,10 @@ canary pod `lx-netcheck-<rand>` from the agent image, labelled `loomux.io/role=a
 `loomux.io/egress=none` (which the §10 policies confine to kube-dns only), restricted-compliant like every
 other pod, running
 `timeout 3 bash -c 'exec 3<>/dev/tcp/<API server ClusterIP>/443' && exit 10; timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && exit 11; exit 0`,
-then reads the exit code from the pod's status and deletes it. Exit 0 means both were blocked (enforced);
+then reads the exit code from the pod's status and deletes it. A target that answers is tried again, up to
+15 times a second apart, and decides only if it still answers: a policy engine confines a new pod only once
+it has learned its address, and kube-network-policies on theWyseKube left new pods unconfined for about
+2 s (measured 2026-10-13), which made a single try read an enforcing cluster as not enforced. Exit 0 means both were blocked (enforced);
 10 or 11 means a `none` pod could reach the cluster or the internet (not enforced). It runs at install, after
 a configuration change, on `POST /plugins/{id}/check`, and once every six hours. Not enforced:
 
@@ -956,7 +959,7 @@ root (no `go.work` is committed: the root's tooling stays in module mode), and C
   creates a machine end to end: environment `running`, port-forward 2222, connect through the real
   managed-mode `RemoteExecutor` (AgentPool, pinned host key with the forwarded `[127.0.0.1]:port` host), run
   `tmux -V` and the `test` steps, `stop`/`start`/`destroy`, assert nothing is left. plain kind enforces no NetworkPolicy (CI's canary reached the API server on 2026-10-09, and still did with
-  kube-network-policies installed into kind), so the job asserts the enforcement check reports `not enforced`
+  kube-network-policies installed into kind, probably the start-up gap §8's retries now cover), so the job asserts the enforcement check reports `not enforced`
   there; every exit code is pinned by unit tests, and the `enforced` verdict is observed on TEST, where the
   engine runs (the test takes `LOOMUX_KIND_ENFORCED=1` for a cluster that enforces).
 - **Docker plugin.** Unit tests against an in-memory Engine API (with Docker's port reallocation, archive
