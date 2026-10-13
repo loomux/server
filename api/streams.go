@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"time"
 
 	"github.com/Loomux/server/registry"
 )
@@ -90,5 +89,5 @@ func (s *Server) sessionStillValid(ctx context.Context, sess *registry.Session) 
 		// database error is retried at the next heartbeat.
 		return !errors.Is(err, registry.ErrNotFound)
 	}
-	return !s.sessionExpired(cur, time.Now())
+	return !s.sessionExpired(cur, s.now())
 }
