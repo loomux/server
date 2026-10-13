@@ -180,21 +180,19 @@ jobs:
           kubectl apply -f deploy/test/kind/
           sh deploy/test/kind/kubeconfig-for-sa.sh > "${RUNNER_TEMP}/plugin.kubeconfig"
 
-      # Plain kind enforces no NetworkPolicy: the check must say so
-      # (LOOMUX_KIND_ENFORCED=1 expects the opposite, for a cluster
-      # with a working policy engine).
+      # kind's default CNI (kindnetd) enforces NetworkPolicy, so the
+      # check must say enforced: its canary, confined like an egress
+      # "none" machine, reaches kube-dns only. Earlier runs read "not
+      # enforced" because the canary probed before the engine had
+      # learned the new pod's address (LOOM-178, the canary now retries).
       - name: Conformance and end to end on kind
         if: needs.changes.outputs.e2e == 'true'
         working-directory: plugins/kubernetes
         env:
           LOOMUX_KIND_KUBECONFIG: ${{ runner.temp }}/plugin.kubeconfig
           LOOMUX_KIND_AGENT_IMAGE: loomux-agent:test
+          LOOMUX_KIND_ENFORCED: "1"
         run: go test -tags kind -count=1 -timeout 15m -run TestKind -v ./...
-
-      # kube-network-policies installed into kind enforced nothing on the
-      # runner (its canary still reached the API server), so the
-      # "enforced" verdict is pinned by unit tests on the canary's exit
-      # codes and observed for real on TEST, where the engine runs.
 
       - name: What the cluster holds afterwards
         if: always() && needs.changes.outputs.e2e == 'true'
