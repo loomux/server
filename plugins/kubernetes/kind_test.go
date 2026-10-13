@@ -37,13 +37,12 @@ import (
 // port-forward, with its own admin kubeconfig) and ssh make the ssh
 // login part run; without them it is skipped.
 //
-// Plain kind enforces no NetworkPolicy (CI's run proved it: a confined
-// canary reached the API server; with kube-network-policies too, before
-// the canary retried through an engine's start-up gap), so the check must report
-// network_policy_not_enforced. LOOMUX_KIND_ENFORCED=1 says a policy
-// engine (kube-network-policies) was installed into the cluster and
-// the check must say enforced instead: the canary reaches kube-dns
-// only.
+// LOOMUX_KIND_ENFORCED=1 (CI) says the cluster enforces NetworkPolicy,
+// as kind's default CNI does, and the check must say enforced: the
+// canary reaches kube-dns only. Without it the check must report
+// network_policy_not_enforced, for a cluster with no policy engine.
+// (CI once read kind as not enforced: the canary probed before the
+// engine had learned its address; it retries now.)
 func TestKind(t *testing.T) {
 	kcPath := os.Getenv("LOOMUX_KIND_KUBECONFIG")
 	if kcPath == "" {
