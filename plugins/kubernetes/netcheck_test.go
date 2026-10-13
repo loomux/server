@@ -11,8 +11,10 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -120,6 +122,52 @@ func TestCanaryTransientReadError(t *testing.T) {
 	}
 }
 
+// A read error the canary recovers from isn't reported when the canary
+// later times out for another reason (a slow pull): the timeout is.
+func TestCanaryStaleReadErrorNotReported(t *testing.T) {
+	cs := fake.NewClientset()
+	failed := false
+	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if !failed {
+			failed = true
+			return true, nil, errors.New("etcdserver: leader changed")
+		}
+		return false, nil, nil
+	})
+	p := configured(t, cs, nil) // the canary never finishes: no kubelet
+	p.CanaryTimeout = 50 * time.Millisecond
+	res, _ := p.Check(ctx)
+	msg := failedMessage(res)
+	if !failed || !strings.Contains(msg, "didn't finish within") || strings.Contains(msg, "leader changed") {
+		t.Fatalf("check = %+v", res)
+	}
+}
+
+// Forbidden or Unauthorized won't heal by waiting: reported at once.
+func TestCanaryForbiddenReadFailsFast(t *testing.T) {
+	cs := fake.NewClientset()
+	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "lx-netcheck-abcd", errors.New("no"))
+	})
+	p := configured(t, cs, nil)
+	p.CanaryTimeout = time.Minute
+	start := time.Now()
+	res, _ := p.Check(ctx)
+	if !strings.Contains(failedMessage(res), "forbidden") || time.Since(start) > 10*time.Second {
+		t.Fatalf("check = %+v after %v", res, time.Since(start))
+	}
+}
+
+// failedMessage is the network_policy_check_failed problem's message.
+func failedMessage(res protocol.CheckResult) string {
+	for _, x := range res.Problems {
+		if x.Code == ProblemNetworkCheckFailed {
+			return x.Message
+		}
+	}
+	return ""
+}
+
 // One that persists until the canary's time is up is reported, with the
 // last error.
 func TestCanaryPersistentReadError(t *testing.T) {
@@ -142,28 +190,42 @@ func TestCanaryPersistentReadError(t *testing.T) {
 }
 
 // A canary left behind (its delete failed while the API server was
-// unavailable, seen on TEST) is removed by the next check; another
-// server's canaries and this server's machines are not touched.
+// unavailable, seen on TEST) is removed by the next check once it has
+// terminated or outlived any check; a live one, which may be another
+// plugin process's (an old and a new sidecar overlapping in a rollout),
+// is not. Another server's canaries and this server's machines are
+// never touched.
 func TestCanarySweepsStale(t *testing.T) {
-	stale := func(name, instance string) *corev1.Pod {
-		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS, Labels: map[string]string{
+	now := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	canary := func(name, instance string, phase corev1.PodPhase, age time.Duration) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS, CreationTimestamp: metav1.NewTime(now.Add(-age)), Labels: map[string]string{
 			labelManagedBy: managedBy, protocol.LabelInstance: instance, labelRole: roleAgent, labelCanary: "true",
-		}}, Status: corev1.PodStatus{Phase: corev1.PodFailed}}
+		}}, Status: corev1.PodStatus{Phase: phase}}
 	}
 	machine := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "lx-keep", Namespace: testNS, Labels: map[string]string{
 		labelManagedBy: managedBy, protocol.LabelInstance: testInstance, labelRole: roleAgent,
 	}}}
-	cs := fake.NewClientset(stale("lx-netcheck-old1", testInstance), stale("lx-netcheck-other", "another-instance"), machine)
+	cs := fake.NewClientset(
+		canary("lx-netcheck-failed", testInstance, corev1.PodFailed, time.Minute),
+		canary("lx-netcheck-succeeded", testInstance, corev1.PodSucceeded, time.Minute),
+		canary("lx-netcheck-stuck", testInstance, corev1.PodRunning, time.Hour),
+		canary("lx-netcheck-live", testInstance, corev1.PodRunning, 30*time.Second),
+		canary("lx-netcheck-pulling", testInstance, corev1.PodPending, 2*time.Minute),
+		canary("lx-netcheck-other", "another-instance", corev1.PodFailed, time.Hour),
+		machine,
+	)
 	canaryExits(cs, exitBlocked)
 	p := configured(t, cs, nil)
+	p.Now = func() time.Time { return now }
+	p.CanaryTimeout = 3 * time.Minute
 	p.Check(ctx)
 	pods, _ := cs.CoreV1().Pods(testNS).List(ctx, metav1.ListOptions{})
 	var left []string
 	for _, pod := range pods.Items {
 		left = append(left, pod.Name)
 	}
-	if strings.Join(left, ",") != "lx-keep,lx-netcheck-other" {
-		t.Errorf("pods left = %v, want lx-keep and the other server's canary", left)
+	if got, want := strings.Join(left, ","), "lx-keep,lx-netcheck-live,lx-netcheck-other,lx-netcheck-pulling"; got != want {
+		t.Errorf("pods left = %s, want %s", got, want)
 	}
 }
 

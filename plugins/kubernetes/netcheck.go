@@ -126,7 +126,7 @@ func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface
 func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Interface, apiHost, instance string) (enforcementState, string) {
 	name := "lx-netcheck-" + p.Rand()
 	pods := client.CoreV1().Pods(cfg.Namespace)
-	sweepCanaries(ctx, pods, instance)
+	p.sweepCanaries(ctx, pods, instance)
 	if _, err := pods.Create(ctx, canaryPod(name, cfg, instance, apiHost, p.CanaryTimeout), metav1.CreateOptions{}); err != nil {
 		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err)
 	}
@@ -141,11 +141,17 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 		switch {
 		case kerrors.IsNotFound(err):
 			return enforcementFailed, "the canary pod disappeared"
+		case kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err):
+			return enforcementFailed, "couldn't read the canary pod: " + safeStatus(err)
 		case err != nil:
 			// Transient (etcd "leader changed" was seen on TEST): poll
-			// again, and report it only if it outlasts the canary.
-			readErr = err
+			// again, and report it only if it outlasts the canary. The
+			// context's own end is the timeout below, not a read error.
+			if ctx.Err() == nil {
+				readErr = err
+			}
 		default:
+			readErr = nil
 			if state, detail, done := canaryVerdict(pod); done {
 				return state, detail
 			}
@@ -162,15 +168,21 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 }
 
 // sweepCanaries deletes this server's canaries left by an earlier check
-// whose own delete failed (the API server was unavailable). Best effort,
-// like that delete: the next check tries again.
-func sweepCanaries(ctx context.Context, pods corev1client.PodInterface, instance string) {
+// whose own delete failed (the API server was unavailable): those that
+// have terminated, or have outlived any check's wait for them. A live
+// one may be another plugin process's (an old and a new sidecar
+// overlapping in a rollout) and is left alone. Best effort, like that
+// delete: the next check tries again.
+func (p *Plugin) sweepCanaries(ctx context.Context, pods corev1client.PodInterface, instance string) {
 	list, err := pods.List(ctx, metav1.ListOptions{LabelSelector: instanceSelector(instance) + "," + labelCanary + "=true"})
 	if err != nil {
 		return
 	}
 	for _, pod := range list.Items {
-		_ = pods.Delete(ctx, pod.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr(int64(0))})
+		terminated := pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+		if terminated || p.Now().Sub(pod.CreationTimestamp.Time) > p.CanaryTimeout+time.Minute {
+			_ = pods.Delete(ctx, pod.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr(int64(0))})
+		}
 	}
 }
 
@@ -215,9 +227,9 @@ func canaryExit(pod *corev1.Pod) (code int, reason string, done bool) {
 // canaryScript probes the API server (by the client's address and by
 // its cluster name) and the internet; the first that still answers
 // after canaryAttempts tries decides. When neither does, kube-dns (the
-// pod's resolver) is the control: a confined pod may reach it, so reaching it says the pod has a network
-// and the policies hold (exit 0), and not reaching it says nothing can
-// be concluded (exit 12).
+// pod's resolver) is the control: a confined pod may reach it, so
+// reaching it says the pod has a network and the policies hold (exit
+// 0), and not reaching it says nothing can be concluded (exit 12).
 func canaryScript(apiHost string) string {
 	script := "probe() { timeout 3 bash -c \"exec 3<>/dev/tcp/$1/$2\" 2>/dev/null; }\n"
 	script += "reached() {\n"
