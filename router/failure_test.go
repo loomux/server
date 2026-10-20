@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -80,8 +79,10 @@ func TestDispatch_CancelledWait_FailsTaskWithReason(t *testing.T) {
 	// the request is cancelled.
 	h.exec.captureFunc = func() string { return uuid.NewString() }
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel once the turn is under way, i.e. during the wait.
-	h.exec.onSendKeys = func() { time.AfterFunc(100*time.Millisecond, cancel) }
+	// Cancel once the turn is under way, i.e. during the wait. A timer
+	// from the send could fire while the send was still recording
+	// itself, and fail the task as send_failed (CI, #385).
+	h.exec.onWaiting = cancel
 
 	if _, err := h.r.Dispatch(ctx, "conv-1", "go"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Dispatch err = %v, want context.Canceled", err)
