@@ -94,7 +94,7 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 	}
 
 	ex := newExchange(tier, m.systemPrompt(), decideUserPrompt(message, workspaces, targets, o),
-		decideTool(m.agentTypes, workspaceIDs, targetIDs, o.OpenTask != nil))
+		decideTool(m.agentTypes, workspaceIDs, targetIDs, o.OpenTask != nil), m.httpClient)
 	// A tool call that can't be used gets one more try on the same tier,
 	// told what was wrong (LOOM-107): a hallucinated id is usually fixed
 	// by saying so, and cheaper than escalating. Both attempts share the

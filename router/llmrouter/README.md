@@ -143,6 +143,25 @@ LOOMUX_ROUTER_ESCALATION_MODEL=claude-sonnet-5-5
 Use model ids without date suffixes. Mixing providers works too (e.g. a
 free `openai`-protocol primary escalating to `anthropic`).
 
+Claude also answers over Anthropic's **OpenAI-compatible endpoint**
+(LOOM-187): provider `openai`, base URL `https://api.anthropic.com/v1`.
+The `/v1` is required. An `openai` tier on `api.anthropic.com` without it
+would 404 on every call, so it is refused, by `ConfigFromEnv`, `New`,
+`SetConfig` and Settings alike. On that endpoint the request also
+carries `max_completion_tokens` (8192, as on the native provider).
+`strict` is ignored there, so tool calls aren't schema-guaranteed;
+validation and the corrective retry cover that. The tool choice stays
+forced, which the newest models refuse. For those, use the native
+provider. The trial plan, with the endpoint's other differences, is
+`docs/design/router-escalation-trial.md`.
+
+```
+LOOMUX_ROUTER_ESCALATION_PROVIDER=openai
+LOOMUX_ROUTER_ESCALATION_BASE_URL=https://api.anthropic.com/v1
+LOOMUX_ROUTER_ESCALATION_API_KEY=sk-ant-…
+LOOMUX_ROUTER_ESCALATION_MODEL=claude-haiku-5-5
+```
+
 Code that builds a `Config` itself (e.g. a router-settings API, LOOM-185)
 sets `Tier.Provider`, checks a tier with `Tier.Validate()`, parses a
 name with `ParseProvider` and lists the choices with `Providers()`.
@@ -170,6 +189,11 @@ name with `ParseProvider` and lists the choices with `Providers()`.
   `router.RelayResult`).
 - `settings.go` — `Settings` (LOOM-185): stored tiers over env, applied
   through `Model.SetConfig`, audited; `Test`'s one-token call.
+- `llmroutertest/` — a fake of Anthropic's OpenAI-compatible endpoint
+  (LOOM-187), with its known differences; `Client()` sends any host's
+  requests to it.
+- `routereval/` — the evaluation harness (LOOM-187): fixtures, `Run`,
+  reports, comparison. `cmd/loomux-routereval` is its CLI.
 
 ## Testing
 
@@ -211,5 +235,32 @@ LOOMUX_ROUTER_PRIMARY_PROVIDER=… LOOMUX_ROUTER_PRIMARY_BASE_URL=… LOOMUX_ROU
 Calls are paced (`ROUTEREVAL_PACE`, default 20s) for a free-tier
 tokens-per-minute limit; errored calls are retried and reported as
 infrastructure errors, not wrong decisions. `ROUTEREVAL_OUT` writes a
-JSON summary.
+JSON summary. The harness below covers both tiers, with relay cases,
+cost and comparison too; these evals stay as the primary tier's
+regression check.
+
+### Evaluation harness (any tier, offline or live)
+
+`routereval` (LOOM-187) scores one tier on its own against a fixture
+set. The built-in set is `routereval/fixtures/escalation.json`: 24
+routing and 6 relay cases, all synthetic. It reports accuracy (overall,
+on answered calls, and for routing and relay separately), errors by
+class, corrective retries, latency p50/p95 and tokens, with cost at
+list price. It drives `Model` itself, so prompts, validation and the
+corrective retry are production's. A transport passed through
+`WithHTTPClient` meters every HTTP attempt.
+
+```
+go run ./cmd/loomux-routereval run --model claude-haiku-5-5                    # offline: no network, no key
+ROUTEREVAL_API_KEY=… go run ./cmd/loomux-routereval run --model claude-haiku-5-5 --live --budget-usd 0.5 --out r.json
+go run ./cmd/loomux-routereval compare baseline.json r.json
+```
+
+Offline, it runs against the fake with an oracle that gives each case
+its expected answer. That checks the harness end to end (it must score
+100%) and measures request sizes for a live-cost estimate. `--live`
+needs a budget and a price, refuses to start when the estimate is over
+the budget, and stops before a call that could pass it. Its unit tests
+(`go test ./router/llmrouter/routereval/ ./cmd/loomux-routereval/`) run
+only against the fake.
 

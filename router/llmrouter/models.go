@@ -208,7 +208,7 @@ func checkAPIKey(key string) string {
 func listModels(ctx context.Context, t Tier) ([]ModelInfo, error) {
 	var out []ModelInfo
 	if t.Provider == ProviderAnthropic {
-		client := buildAnthropicClient(t)
+		client := buildAnthropicClient(t, nil)
 		pager := client.Models.ListAutoPaging(ctx, anthropic.ModelListParams{Limit: anthropic.Int(maxModels)})
 		for pager.Next() && len(out) < maxModels {
 			m := pager.Current()
@@ -218,7 +218,7 @@ func listModels(ctx context.Context, t Tier) ([]ModelInfo, error) {
 			return nil, err
 		}
 	} else {
-		client := buildClient(t)
+		client := buildClient(t, nil)
 		page, err := client.Models.List(ctx)
 		if err != nil {
 			return nil, err
