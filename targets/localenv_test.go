@@ -107,3 +107,42 @@ func TestScrubLocalTmuxEnv_CleansARunningServer(t *testing.T) {
 		t.Fatalf("ScrubLocalTmuxEnv with no server: %v", err)
 	}
 }
+
+// fakeTmuxServer is a tmux on PATH whose server holds FOO in its global
+// environment and refuses every set-environment; with exitOnSet, the
+// first set-environment finds the server gone (its last session ended
+// in between) and later commands find no server.
+func fakeTmuxServer(t *testing.T, exitOnSet bool) {
+	t.Helper()
+	dir := t.TempDir()
+	gone := filepath.Join(dir, "gone")
+	onSet := "exit 1"
+	if exitOnSet {
+		onSet = "touch '" + gone + "'; echo 'server exited unexpectedly' >&2; exit 1"
+	}
+	script := "#!/bin/sh\n[ -e '" + gone + "' ] && { echo 'no server running' >&2; exit 1; }\n" +
+		"case \"$*\" in\n*show-environment*) echo FOO=1 ;;\n*set-environment*) " + onSet + " ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+}
+
+// A server that exits mid-scrub (its last session ended: another
+// loomuxd's, or a test's in a parallel package) leaves nothing to scrub;
+// the next server starts with localEnv. Build used to fail on it with
+// "scrub tmux environment: FOO: exit status 1".
+func TestScrubLocalTmuxEnv_ServerExitsMidScrub(t *testing.T) {
+	fakeTmuxServer(t, true)
+	if err := ScrubLocalTmuxEnv(context.Background()); err != nil {
+		t.Fatalf("ScrubLocalTmuxEnv: %v", err)
+	}
+}
+
+// A server that's still there and won't unset a variable is an error.
+func TestScrubLocalTmuxEnv_RunningServerRefuses(t *testing.T) {
+	fakeTmuxServer(t, false)
+	if err := ScrubLocalTmuxEnv(context.Background()); err == nil {
+		t.Fatal("ScrubLocalTmuxEnv = nil, want the refused unset")
+	}
+}

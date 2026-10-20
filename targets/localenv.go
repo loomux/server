@@ -48,7 +48,27 @@ var localEnvAllowed = map[string]bool{
 // it and hands it to every new session, so one started by an older
 // loomuxd (with its full environment) would otherwise keep leaking it.
 // No server running is not an error.
+//
+// The server can exit between listing its environment and unsetting a
+// variable, when its last session ends (another loomuxd's, or a test's
+// in a package running alongside). So a failed unset starts the scrub
+// over: with the server gone, the listing fails and there's nothing to
+// scrub; a server started meanwhile is scrubbed in turn.
 func ScrubLocalTmuxEnv(ctx context.Context) error {
+	var err error
+	for range scrubAttempts {
+		if err = scrubLocalTmuxEnvOnce(ctx); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// scrubAttempts bounds ScrubLocalTmuxEnv's starts over.
+const scrubAttempts = 3
+
+// scrubLocalTmuxEnvOnce is one pass of ScrubLocalTmuxEnv.
+func scrubLocalTmuxEnvOnce(ctx context.Context) error {
 	show := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "show-environment", "-g")
 	show.Env = localEnv()
 	out, err := show.Output()
