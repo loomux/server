@@ -100,18 +100,32 @@ func TestLocalTargets_PerInstance(t *testing.T) {
 // variable here needs a reason it isn't.
 var processWideVars = map[string]string{
 	// Fixed at init.
-	"ErrLocalTargetsOff": "error", "ErrTextTooLarge": "error", "ErrUnreachable": "error",
-	"errManagedOff": "error", "errReadOnlyAgent": "error",
-	"localEnvAllowed": "constant table", "sshFailurePatterns": "constant table",
+	"ErrLocalTargetsOff": "error",
+	"ErrTextTooLarge":    "error",
+	"ErrUnreachable":     "error",
+	"errManagedOff":      "error",
+	"errReadOnlyAgent":   "error",
+	"localEnvAllowed":    "constant table",
+	"sshFailurePatterns": "constant table",
 	"socksProxyCommands": "constant table",
-	"relayPath": "regexp", "proxyHostName": "regexp", "keyFileName": "regexp", "sshBanner": "regexp",
-	"sshKeyID": "regexp", "sshKeyName": "regexp", "tmuxSocketName": "regexp", "exitStatusMarker": "regexp",
+	"relayPath":          "regexp",
+	"proxyHostName":      "regexp",
+	"keyFileName":        "regexp",
+	"sshBanner":          "regexp",
+	"sshKeyID":           "regexp",
+	"sshKeyName":         "regexp",
+	"tmuxSocketName":     "regexp",
+	"exitStatusMarker":   "regexp",
 	// Shared by nature: guards and per-ControlMaster limits, keyed by
 	// paths an instance owns.
-	"knownHostsMu": "mutex", "opSlots": "per-ControlMaster semaphores",
+	"knownHostsMu": "mutex",
+	"opSlots":      "per-ControlMaster semaphores",
 	// Test seams, written only by export_test.go or this package's tests.
-	"sshConfigFile": "test seam", "sshDir": "test seam",
-	"deadPaneRecaptureDelay": "test seam", "deadPaneRecaptures": "test seam", "statusPendingWait": "test seam",
+	"sshConfigFile":          "test seam",
+	"sshDir":                 "test seam",
+	"deadPaneRecaptureDelay": "test seam",
+	"deadPaneRecaptures":     "test seam",
+	"statusPendingWait":      "test seam",
 	// Process-wide still: the tmux socket, set once by SetTmuxSocket.
 	// Not LOOM-199's; a follow-up moves it like the rest.
 	"TmuxSocket": "process-wide (follow-up)",
