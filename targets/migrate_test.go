@@ -80,15 +80,12 @@ func TestResolveSSHConfig_MigratesAWorkingTarget(t *testing.T) {
 	// The plan, applied, connects: no config, the imported key, the pin.
 	s := setupManaged(t, "")
 	plan.Key.ID = "imported-" + strconv.Itoa(f.server.Port)
-	m := *targets.CurrentManaged()
+	m := *s.opts.Managed
 	m.Keys = func(context.Context, string) (*registry.SSHKey, error) { return plan.Key, nil }
-	if err := targets.SetManagedSSH(&m); err != nil {
-		t.Fatal(err)
-	}
-	_ = s
+	s.opts.Managed = &m
 	managed := &registry.Target{ID: "t1-managed", Name: "wyzer", Kind: registry.TargetKindRemote, Host: plan.Host, SSHPort: plan.Port,
 		User: plan.User, SSHKeyRef: plan.Key.ID, SSHProxy: plan.SSHProxy, HostKeys: plan.HostKeys}
-	e := newManagedExecutor(t, managed)
+	e := s.executor(t, managed)
 	if out, err := e.RunOnce(context.Background(), "echo migrated"); err != nil || !strings.Contains(out, "migrated") {
 		t.Fatalf("migrated target RunOnce = %q, %v", out, err)
 	}
@@ -164,8 +161,8 @@ func TestResolveSSHConfig_Problems(t *testing.T) {
 			if tc.prepare != nil {
 				tc.prepare(f)
 			}
-			setupManaged(t, "127.0.0.1:1055") // the server's proxy
-			plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
+			s := setupManaged(t, "127.0.0.1:1055") // the server's proxy
+			plan, err := s.opts.ResolveSSHConfig(context.Background(), configTarget, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -180,8 +177,8 @@ func TestResolveSSHConfig_Problems(t *testing.T) {
 func TestResolveSSHConfig_KnownProxy(t *testing.T) {
 	for _, pc := range []string{"nc -X 5 -x 127.0.0.1:1055 %h %p", "/usr/bin/nc -X 5 -x 127.0.0.1:1055 %h %p", "socat - SOCKS5-CONNECT:127.0.0.1:1055:%h:%p"} {
 		newSSHConfigFixture(t, func(f *sshConfigFixture) string { return f.hostBlock("  ProxyCommand " + pc + "\n") })
-		setupManaged(t, "127.0.0.1:1055")
-		plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
+		s := setupManaged(t, "127.0.0.1:1055")
+		plan, err := s.opts.ResolveSSHConfig(context.Background(), configTarget, "")
 		if err != nil || len(plan.Problems) != 0 || plan.SSHProxy != "" {
 			t.Errorf("%q: plan = %+v, %v", pc, plan, err)
 		}
@@ -285,8 +282,8 @@ func TestResolveSSHConfig_HashedKnownHosts(t *testing.T) {
 // No ProxyCommand means no proxy, whatever LOOMUX_SSH_PROXY is.
 func TestResolveSSHConfig_NoProxyCommandWithServerProxy(t *testing.T) {
 	newSSHConfigFixture(t, func(f *sshConfigFixture) string { return f.hostBlock("") })
-	setupManaged(t, "127.0.0.1:1055")
-	plan, err := targets.ResolveSSHConfig(context.Background(), configTarget, "")
+	s := setupManaged(t, "127.0.0.1:1055")
+	plan, err := s.opts.ResolveSSHConfig(context.Background(), configTarget, "")
 	if err != nil || len(plan.Problems) != 0 || plan.SSHProxy != registry.SSHProxyNone {
 		t.Errorf("plan = %+v, %v; want ssh_proxy none", plan, err)
 	}

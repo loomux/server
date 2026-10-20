@@ -39,7 +39,7 @@ func TestScanAndPinHostKey(t *testing.T) {
 
 	run := func(hostKeys string) error {
 		target.HostKeys = hostKeys
-		opts, err := remoteOptions(target, knownHosts)
+		opts, err := remoteOptions(target, knownHosts, nil)
 		if err != nil {
 			t.Fatalf("remoteOptions: %v", err)
 		}

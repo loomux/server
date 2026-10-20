@@ -45,13 +45,12 @@ func TestLocalExecutor_RunOnceDoesNotSeeLoomuxSecrets(t *testing.T) {
 
 // LOOM-141: with local targets off, nothing runs on one.
 func TestNewExecutor_LocalTargetsOff(t *testing.T) {
-	defer SetLocalTargets(LocalTargets)
-	SetLocalTargets(false)
-	_, err := NewExecutor(&registry.Target{Name: "box", Kind: registry.TargetKindLocal})
+	off := ExecutorOptions{LocalTargetsOff: true}
+	_, err := NewExecutorWith(&registry.Target{Name: "box", Kind: registry.TargetKindLocal}, off)
 	if !errors.Is(err, ErrLocalTargetsOff) {
 		t.Fatalf("NewExecutor(local) err = %v, want ErrLocalTargetsOff", err)
 	}
-	if _, err := NewExecutor(&registry.Target{Name: "r", Kind: registry.TargetKindRemote, Host: "h"}); err != nil {
+	if _, err := NewExecutorWith(&registry.Target{Name: "r", Kind: registry.TargetKindRemote, Host: "h"}, off); err != nil {
 		t.Fatalf("NewExecutor(remote) with local off: %v", err)
 	}
 }

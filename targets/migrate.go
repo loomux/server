@@ -84,7 +84,15 @@ var keyFileName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
 // ResolveSSHConfig reads what the SSH config does for t, a config-mode
 // remote target, and plans it as a managed one. keyFile, if not "", is
 // the file in ~/.ssh to import instead of the config's first usable one.
+// Without managed SSH no proxy is the server's: an app uses its own
+// options' ResolveSSHConfig.
 func ResolveSSHConfig(ctx context.Context, t *registry.Target, keyFile string) (*SSHConfigPlan, error) {
+	return ExecutorOptions{}.ResolveSSHConfig(ctx, t, keyFile)
+}
+
+// ResolveSSHConfig is the package's ResolveSSHConfig, planned against
+// o.Managed's proxy.
+func (o ExecutorOptions) ResolveSSHConfig(ctx context.Context, t *registry.Target, keyFile string) (*SSHConfigPlan, error) {
 	if t.Kind != registry.TargetKindRemote || t.Managed() {
 		return nil, errors.New("targets: only a remote target reached through the SSH config can be migrated")
 	}
@@ -106,7 +114,7 @@ func ResolveSSHConfig(ctx context.Context, t *registry.Target, keyFile string) (
 	plan.SSHProxy = registry.SSHProxyNone
 	if pc := first(cfg["proxycommand"]); pc != "" && pc != "none" {
 		addr := socksProxyAddr(pc)
-		m := currentManaged()
+		m := o.Managed
 		switch {
 		case addr == "":
 			problem("the SSH config's ProxyCommand %q isn't a SOCKS5 proxy Loomux can relay", pc)

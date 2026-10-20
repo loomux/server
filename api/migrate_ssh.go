@@ -19,7 +19,8 @@ import (
 // it back as it was if that fails.
 
 // SSHConfigResolver plans a config-mode target as a managed one, with
-// the key file named, if any — targets.ResolveSSHConfig.
+// the key file named, if any — targets.ExecutorOptions.ResolveSSHConfig,
+// an app's own.
 type SSHConfigResolver func(ctx context.Context, t *registry.Target, keyFile string) (*targets.SSHConfigPlan, error)
 
 // WithSSHMigration enables POST /targets/{id}/migrate-ssh.

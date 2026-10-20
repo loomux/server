@@ -41,6 +41,8 @@ type managedSetup struct {
 	server *sshtest.Server
 	key    *registry.SSHKey
 	target *registry.Target
+	// opts are the executor options managed SSH is configured in.
+	opts targets.ExecutorOptions
 }
 
 func setupManaged(t *testing.T, proxy string) *managedSetup {
@@ -58,7 +60,7 @@ func setupManaged(t *testing.T, proxy string) *managedSetup {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = targets.SetManagedSSH(&targets.ManagedSSH{
+	m := &targets.ManagedSSH{
 		Keys: func(_ context.Context, id string) (*registry.SSHKey, error) {
 			if id != key.ID {
 				return nil, registry.ErrNotFound
@@ -69,12 +71,10 @@ func setupManaged(t *testing.T, proxy string) *managedSetup {
 		KeysDir: filepath.Join(base, "keys"),
 		Proxy:   proxy,
 		Relay:   self,
-	})
-	if err != nil {
+	}
+	if err := m.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = targets.SetManagedSSH(nil) })
-	managedKnownHosts = filepath.Join(base, "known_hosts.d")
 	tgt := &registry.Target{
 		ID: "managed-" + strconv.Itoa(server.Port), Name: "managed", Kind: registry.TargetKindRemote,
 		Host: server.Host, User: "loomux-test", SSHPort: server.Port, SSHKeyRef: key.ID,
@@ -83,15 +83,14 @@ func setupManaged(t *testing.T, proxy string) *managedSetup {
 	if proxy == "" {
 		tgt.SSHProxy = registry.SSHProxyNone
 	}
-	return &managedSetup{server: server, key: key, target: tgt}
+	return &managedSetup{server: server, key: key, target: tgt,
+		opts: targets.ExecutorOptions{KnownHostsDir: filepath.Join(base, "known_hosts.d"), Managed: m}}
 }
 
-// managedKnownHosts is the latest setupManaged's known_hosts dir.
-var managedKnownHosts string
-
-func newManagedExecutor(t *testing.T, tgt *registry.Target) targets.TargetExecutor {
+// executor is an executor for tgt with s's options.
+func (s *managedSetup) executor(t *testing.T, tgt *registry.Target) targets.TargetExecutor {
 	t.Helper()
-	e, err := targets.NewExecutorWith(tgt, targets.ExecutorOptions{KnownHostsDir: managedKnownHosts})
+	e, err := targets.NewExecutorWith(tgt, s.opts)
 	if err != nil {
 		t.Fatalf("NewExecutor: %v", err)
 	}
@@ -104,7 +103,7 @@ func newManagedExecutor(t *testing.T, tgt *registry.Target) targets.TargetExecut
 func TestManagedExecutor_Contract(t *testing.T) {
 	s := setupManaged(t, "")
 	executortest.Run(t, func(t *testing.T) targets.TargetExecutor {
-		return newManagedExecutor(t, s.target)
+		return s.executor(t, s.target)
 	})
 }
 
@@ -132,7 +131,7 @@ func TestManagedExecutor_ThroughSOCKS5(t *testing.T) {
 func testThroughSOCKS5(t *testing.T) {
 	socks := startSOCKS5(t)
 	s := setupManaged(t, socks.addr)
-	e := newManagedExecutor(t, s.target)
+	e := s.executor(t, s.target)
 	out, err := e.RunOnce(context.Background(), "echo through-the-proxy")
 	if err != nil || !strings.Contains(out, "through-the-proxy") {
 		t.Fatalf("RunOnce = %q, %v", out, err)
@@ -148,7 +147,7 @@ func testThroughSOCKS5(t *testing.T) {
 func TestManagedExecutor_RequiresAPin(t *testing.T) {
 	s := setupManaged(t, "")
 	s.target.HostKeys = ""
-	_, err := targets.NewExecutor(s.target)
+	_, err := targets.NewExecutorWith(s.target, s.opts)
 	var ue *targets.UnreachableError
 	if !errors.As(err, &ue) || ue.Failure != targets.SSHHostKeyUnknown {
 		t.Fatalf("NewExecutor without a pin = %v, want host_key_unknown", err)
@@ -163,7 +162,7 @@ func TestManagedExecutor_WrongPinRefused(t *testing.T) {
 	s := setupManaged(t, "")
 	other := sshtest.Start(t)
 	s.target.HostKeys = fmt.Sprintf("[%s]:%d %s", s.server.Host, s.server.Port, other.HostKey)
-	e := newManagedExecutor(t, s.target)
+	e := s.executor(t, s.target)
 	_, err := e.RunOnce(context.Background(), "true")
 	var ue *targets.UnreachableError
 	if !errors.As(err, &ue) || ue.Failure != targets.SSHHostKeyChanged {
@@ -177,7 +176,7 @@ func TestManagedExecutor_UnauthorizedKey(t *testing.T) {
 	s := setupManaged(t, "")
 	stranger := sshtest.Start(t) // has never seen s.key
 	s.target.SSHPort, s.target.HostKeys = stranger.Port, stranger.KnownHostsLine()
-	e := newManagedExecutor(t, s.target)
+	e := s.executor(t, s.target)
 	_, err := e.RunOnce(context.Background(), "true")
 	var ue *targets.UnreachableError
 	if !errors.As(err, &ue) || ue.Failure != targets.SSHAuthFailed {
@@ -189,7 +188,6 @@ func TestManagedExecutor_UnauthorizedKey(t *testing.T) {
 }
 
 func TestManagedExecutor_NotConfigured(t *testing.T) {
-	_ = targets.SetManagedSSH(nil)
 	tgt := &registry.Target{ID: "t", Name: "t", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHKeyRef: "k", HostKeys: "h ssh-ed25519 AAAA"}
 	if _, err := targets.NewExecutorWith(tgt, targets.ExecutorOptions{KnownHostsDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Errorf("NewExecutor without managed SSH = %v", err)
@@ -210,7 +208,7 @@ func testScanHostKeyManaged(t *testing.T) {
 	socks := startSOCKS5(t)
 	s := setupManaged(t, socks.addr)
 	s.target.HostKeys = ""
-	keys, err := targets.ScanHostKey(context.Background(), s.target)
+	keys, err := s.opts.ScanHostKey(context.Background(), s.target)
 	if err != nil || len(keys) != 1 || !strings.HasSuffix(keys[0].Line, s.server.HostKey) {
 		t.Fatalf("ScanHostKey = %+v, %v", keys, err)
 	}
@@ -219,8 +217,7 @@ func testScanHostKeyManaged(t *testing.T) {
 	}
 }
 
-func TestSetManagedSSH_Validates(t *testing.T) {
-	defer func() { _ = targets.SetManagedSSH(nil) }()
+func TestManagedSSH_Validate(t *testing.T) {
 	pool := targets.NewAgentPool(shortTempDir(t))
 	base := func() targets.ManagedSSH {
 		return targets.ManagedSSH{Keys: func(context.Context, string) (*registry.SSHKey, error) { return nil, nil },
@@ -237,13 +234,18 @@ func TestSetManagedSSH_Validates(t *testing.T) {
 	} {
 		m := base()
 		mutate(&m)
-		if err := targets.SetManagedSSH(&m); err == nil {
+		if err := m.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+		// Unvetted, it never reaches ssh: an executor refuses it too.
+		tgt := &registry.Target{ID: "t", Name: "t", Kind: registry.TargetKindRemote, Host: "h", User: "u", SSHKeyRef: "k", HostKeys: "h ssh-ed25519 AAAA"}
+		if _, err := targets.NewExecutorWith(tgt, targets.ExecutorOptions{KnownHostsDir: t.TempDir(), Managed: &m}); err == nil {
+			t.Errorf("%s: an executor used it", name)
 		}
 	}
 	m := base()
 	m.Proxy = "127.0.0.1:1055"
-	if err := targets.SetManagedSSH(&m); err != nil {
+	if err := m.Validate(); err != nil {
 		t.Errorf("valid config refused: %v", err)
 	}
 }

@@ -43,7 +43,7 @@ type Config struct {
 	// LocalTargetsOff (LOOMUX_LOCAL_TARGETS=off; the container image sets
 	// it) turns local targets off (LOOM-141): a local target's agents run
 	// as loomuxd's own user, so they're fully trusted. The zero value
-	// leaves them on. See targets.LocalTargets.
+	// leaves them on. See targets.ExecutorOptions.LocalTargetsOff.
 	LocalTargetsOff bool
 	// MasterKey is the credential vault's AES-256 key, or nil if
 	// LOOMUX_MASTER_KEY is unset. Optional at this layer: registry/sqlite
@@ -380,7 +380,7 @@ func retentionFromEnv(name string, def time.Duration) (time.Duration, error) {
 
 // parseSSHProxy reads LOOMUX_SSH_PROXY: socks5://host:port, no
 // credentials, path or query. It returns host:port, which goes into
-// managed targets' ProxyCommand (targets.SetManagedSSH vets it again).
+// managed targets' ProxyCommand (targets.ManagedSSH.Validate vets it again).
 func parseSSHProxy(raw string) (string, error) {
 	if raw == "" {
 		return "", nil
