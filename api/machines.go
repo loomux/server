@@ -113,7 +113,18 @@ func (s *Server) decorateMachine(ctx context.Context, resp *targetResponse, targ
 	if err != nil {
 		return
 	}
+	setMachine(resp, v)
+}
+
+// setMachine sets resp.Plugin from v. While the machine comes up there
+// is no onboarding step to take (design §5): next_step stays null and
+// plugin.status says why the target isn't ready.
+func setMachine(resp *targetResponse, v *providers.MachineView) {
 	resp.Plugin = newTargetPluginResponse(v)
+	switch v.Environment.Status {
+	case registry.EnvironmentCreating, registry.EnvironmentStarting, registry.EnvironmentRecreating:
+		resp.NextStep = nil
+	}
 }
 
 // decorateMachines fills Plugin on a list of targets in one pass.
@@ -127,7 +138,7 @@ func (s *Server) decorateMachines(ctx context.Context, resps []targetResponse) {
 	}
 	for i := range resps {
 		if v := views[resps[i].ID]; v != nil {
-			resps[i].Plugin = newTargetPluginResponse(v)
+			setMachine(&resps[i], v)
 		}
 	}
 }
