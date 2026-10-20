@@ -505,7 +505,7 @@ func (m *Manager) follow(ctx context.Context, envID string) {
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				m.failJob(ctx, envID, "the machine didn't become ready within "+m.CreateTimeout.String())
+				m.failJob(ctx, envID, m.deadlineReason())
 			}
 			return
 		case <-ticker.C:
@@ -593,9 +593,15 @@ func mapStatus(s string) (registry.EnvironmentStatus, bool) {
 // after a shutdown reconcile resumes the machine. Not when the machine
 // is no longer in flight: someone moved it on. The row is re-read under
 // its lock with a fresh context, since the job's own may be the reason.
+// Once the job's deadline has passed, the deadline is the reason: a
+// step that failed because it hit the deadline mid-call (a store write)
+// would otherwise name its own error.
 func (m *Manager) failJob(ctx context.Context, envID, reason string) {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		reason = m.deadlineReason()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1153,4 +1159,9 @@ func (m *Manager) view(ctx context.Context, env *registry.Environment, views map
 		}
 	}
 	return mv
+}
+
+// deadlineReason is the error a job records when CreateTimeout passes.
+func (m *Manager) deadlineReason() string {
+	return "the machine didn't become ready within " + m.CreateTimeout.String()
 }
