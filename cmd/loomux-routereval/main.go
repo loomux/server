@@ -71,6 +71,8 @@ type runFlags struct {
 	cases, fixtures, out, md         string
 	priceIn, priceOut, budget        float64
 	live                             bool
+	// price is the price in use, from the flags or the built-in table.
+	price routereval.Price
 }
 
 func runCmd(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) error {
@@ -111,6 +113,7 @@ func runCmd(ctx context.Context, args []string, getenv func(string) string, stdo
 	if !priced {
 		price, priced = routereval.PriceFor(f.model)
 	}
+	f.price = price
 	opts := routereval.Options{Runs: f.runs, Timeout: f.timeout, BudgetUSD: f.budget, MaxCalls: f.maxCalls,
 		Cases: splitList(f.cases), Log: func(format string, a ...any) { fmt.Fprintf(stderr, format+"\n", a...) }}
 	if priced {
@@ -187,8 +190,13 @@ func printEstimate(w io.Writer, f runFlags, e *routereval.Estimate, priced bool)
 	if e == nil {
 		return
 	}
+	source := "built-in price table, unverified: check Anthropic's pricing page"
+	if f.priceIn > 0 || f.priceOut > 0 {
+		source = "--price-in/--price-out"
+	}
 	fmt.Fprintf(w, "\nLive estimate for %s, %d runs per case: %d calls, ~%d prompt tokens each; expected $%.2f, worst case $%.2f",
 		f.model, f.runs, e.Calls, e.PromptTokensPerCall, e.ExpectedUSD, e.WorstCaseUSD)
+	fmt.Fprintf(w, ", at $%.2f/$%.2f per MTok (%s)", f.price.InputPerMTok, f.price.OutputPerMTok, source)
 	if f.budget > 0 {
 		fmt.Fprintf(w, " (budget $%.2f)", f.budget)
 	}

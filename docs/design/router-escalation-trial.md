@@ -49,14 +49,37 @@ Its doc comment separates Anthropic's documented behaviour from the two
 points it only assumes (a missing token bound is a 400; forced
 `tool_choice` can be refused).
 
+## Prices: to verify before the live run
+
+Every price in this document is **to verify against Anthropic's current
+pricing page before the live run**. None of them is cited from an
+official source. They come from the price table built into the harness
+(`router/llmrouter/routereval/price.go`, `knownPrices`), which was copied
+from a cached model list dated 2026-10-06, not from Anthropic's pricing
+page:
+
+| Model | Input $/MTok | Output $/MTok |
+|---|---|---|
+| `claude-haiku-4-5` | 1.00 | 5.00 |
+| `claude-haiku-5-5` | 0.10 (prompts ≤ 100K tokens) | 0.50 |
+| `claude-sonnet-5-5` | 2.00 | 10.00 |
+
+If the pricing page differs, pass `--price-in`/`--price-out` (they
+override the table) or fix `knownPrices`. Do this before trusting any
+estimate or budget below. The budget stops a run at *these* prices, so a
+stale table also makes the harness's stop wrong. The Console spend limit
+in step 1 is the real cap.
+
 ## Haiku 4.5 or Haiku 5.5?
 
 **Recommendation: trial both, and adopt Claude Haiku 5.5 (`claude-haiku-5-5`) if it passes.**
 
-- Haiku 5.5 is the current Haiku, and list price is a tenth of Haiku
-  4.5's: $0.10/$0.50 per MTok against $1/$5 (prompts up to 100K tokens;
-  a routing call is about 2.4K). It has a 1M-token context and
-  `effort`.
+- Haiku 5.5 is the current Haiku. Per the harness's price table (to
+  verify against the pricing page, see above), it costs a tenth of Haiku
+  4.5: $0.10/$0.50 per MTok against $1/$5, for prompts up to 100K tokens
+  (a routing call is about 2.4K). If the pricing page shows a smaller
+  gap, the recommendation rests on quality and latency alone. It has a
+  1M-token context and `effort`.
 - The risks are specific to this endpoint:
   1. Forced `tool_choice` with thinking on by default may be refused
      (see above).
@@ -101,9 +124,12 @@ before any call that could take the spend past it.
 
 Measured offline: about 2.4K prompt tokens per call. The estimates
 assume 1,024 output tokens per answer. Worst case means every call needs
-the corrective retry.
+the corrective retry. **The dollar figures assume the harness's price
+table** (see Prices above), unverified as of 2026-10-20. Re-run step 0
+after confirming prices (with `--price-in`/`--price-out` if they
+changed) to get current estimates.
 
-| Run (3 runs × 30 cases = 90 calls) | Expected | Worst case | `--budget-usd` |
+| Run (3 runs × 30 cases = 90 calls), at the harness's price table | Expected | Worst case | `--budget-usd` |
 |---|---|---|---|
 | Smoke, per model (`--max-calls 2`) | < $0.01 | < $0.03 | 0.10 |
 | Baseline: current escalation model | depends on model (Sonnet 5.5 ≈ $1.4) | ≈ $3.4 | 2.00 |
@@ -120,7 +146,10 @@ All of these are run by you, from a checkout of `main` once this is
 merged. Steps 1–5 call Anthropic's API from your machine. They touch no
 Loomux instance.
 
-0. **Offline check (free).** This confirms the harness and fixtures and
+0. **Prices.** Check the three prices above against Anthropic's current
+   pricing page. Use `--price-in`/`--price-out` wherever they differ.
+
+   **Offline check (free).** This confirms the harness and fixtures and
    prints a cost estimate. It needs no key and makes no network calls:
 
    ```sh

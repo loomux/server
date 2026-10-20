@@ -245,8 +245,9 @@ regression check.
 set. The built-in set is `routereval/fixtures/escalation.json`: 24
 routing and 6 relay cases, all synthetic. It reports accuracy (overall,
 on answered calls, and for routing and relay separately), errors by
-class, corrective retries, latency p50/p95 and tokens, with cost at
-list price. It drives `Model` itself, so prompts, validation and the
+class, corrective retries, latency p50/p95 and tokens, with cost at a
+built-in price table (copied from a cached model list, not the pricing
+page: verify it before a live run) or the prices you pass. It drives `Model` itself, so prompts, validation and the
 corrective retry are production's. A transport passed through
 `WithHTTPClient` meters every HTTP attempt.
 

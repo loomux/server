@@ -11,12 +11,14 @@ func (p Price) Cost(prompt, completion int64) float64 {
 	return (float64(prompt)*p.InputPerMTok + float64(completion)*p.OutputPerMTok) / 1e6
 }
 
-// knownPrices are Anthropic's first-party list prices (2026-10) for the
-// models the LOOM-187 trial considers. The OpenAI-compatible endpoint
-// bills as the native API does. Claude Haiku 5.5's is for prompts up to
-// 100K tokens ($0.50/$2.50 above), far beyond a routing call's. Check
-// the pricing page before a live run, and pass a price for any other
-// model (the current escalation model's included).
+// knownPrices are list prices for the models the LOOM-187 trial
+// considers, copied from a cached model list dated 2026-10-06, not from
+// Anthropic's pricing page: verify them there before a live run
+// (--price-in/--price-out override them). That the OpenAI-compatible
+// endpoint bills as the native API does is assumed too. Claude Haiku
+// 5.5's is for prompts up to 100K tokens, far beyond a routing call's.
+// Any other model (the current escalation model's included) needs a
+// price passed.
 var knownPrices = map[string]Price{
 	"claude-haiku-4-5":  {InputPerMTok: 1.00, OutputPerMTok: 5.00},
 	"claude-haiku-5-5":  {InputPerMTok: 0.10, OutputPerMTok: 0.50},
