@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -152,8 +153,8 @@ func (p *Plugin) retestNodes(cfg Config, client kubernetes.Interface, instance s
 	return running
 }
 
-// nodeFailure is "not enforced" while some node is open, naming the node
-// (the first by name); "enforced" otherwise.
+// nodeFailure is "not enforced" while some node is open, naming each
+// (by name) and what its canary reached; "enforced" otherwise.
 func (p *Plugin) nodeFailure() (enforcementState, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -167,7 +168,11 @@ func (p *Plugin) nodeFailure() (enforcementState, string) {
 		return enforcementEnforced, ""
 	}
 	sort.Strings(bad)
-	return enforcementNotEnforced, "on node " + bad[0] + ", " + p.nodes[bad[0]].open.detail
+	var detail []string
+	for _, node := range bad {
+		detail = append(detail, "on node "+node+", "+p.nodes[node].open.detail)
+	}
+	return enforcementNotEnforced, strings.Join(detail, "; ")
 }
 
 // knownLeak is "not enforced" while the latest finished canary, or one

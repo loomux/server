@@ -108,7 +108,8 @@ type netcheck struct {
 // ran in the last minute, and waited for up to wait; one still running
 // after that answers pending and finishes in the background for the
 // next call. A node a canary found not enforcing is tried again with
-// one pinned to it, as often, and stands until one says "enforced".
+// one pinned to it, as often, and stands until one says "enforced"; it
+// is the verdict while it stands.
 func (p *Plugin) enforcement(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
 	if state, detail := policyVerdict(ctx, client, cfg.Namespace, instance); state != enforcementEnforced {
 		return state, detail
@@ -125,9 +126,8 @@ func (p *Plugin) enforcement(ctx context.Context, cfg Config, client kubernetes.
 	for _, r := range retests {
 		p.await(ctx, r, time.Until(deadline))
 	}
-	if state != enforcementEnforced {
-		return state, detail
-	}
+	// A node known open is the answer, named, whatever this canary says
+	// (still running, unable to run, or out: then on its own node).
 	if s, d := p.nodeFailure(); s != enforcementEnforced {
 		return s, d
 	}

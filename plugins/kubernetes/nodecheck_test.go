@@ -543,3 +543,50 @@ func TestNoneStoppedNotRenewed(t *testing.T) {
 		})
 	}
 }
+
+// TestNoneOpenNodeOutranksTheCheck: check reports a node known open,
+// naming it, whatever its own canary says: still running (the image
+// pulling), unable to run, or out somewhere else; and its own canary out
+// names the node it ran on (LOOM-208 review).
+func TestNoneOpenNodeOutranksTheCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pending bool
+		n0      int32
+	}{
+		{name: "the check's canary still running", pending: true},
+		{name: "the check's canary can't run", n0: failToRun},
+		{name: "the check's canary out too", n0: exitLinkLocalReach},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitNetReachable})
+			if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
+				t.Fatal(err)
+			}
+			scheduleOn(t, cs, "conf1", "n1")
+			statusSoon(t, p, "conf1", protocol.EnvError)
+			nodes.mu.Lock()
+			if tc.pending {
+				delete(nodes.codes, "n0")
+			} else {
+				nodes.codes["n0"] = tc.n0
+			}
+			nodes.mu.Unlock()
+			p.CanaryWait = 50 * time.Millisecond
+			clock.advance(2 * time.Minute) // the check runs its canary again
+			res, _ := p.Check(ctx)
+			if !hasCode(res, ProblemNetworkPolicyNotEnforced) || !strings.Contains(problemText(res), "n1") {
+				t.Errorf("check = %s; want network_policy_not_enforced naming n1", problemText(res))
+			}
+		})
+	}
+	t.Run("the check's canary out on its node", func(t *testing.T) {
+		_, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked})
+		nodes.set("n0", exitLinkLocalReach)
+		clock.advance(2 * time.Minute)
+		res, _ := p.Check(ctx)
+		if !hasCode(res, ProblemNetworkPolicyNotEnforced) || !strings.Contains(problemText(res), "n0") {
+			t.Errorf("check = %s; want network_policy_not_enforced naming n0", problemText(res))
+		}
+	})
+}
