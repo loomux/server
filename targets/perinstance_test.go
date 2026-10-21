@@ -126,6 +126,7 @@ var processWideVars = map[string]string{
 	"deadPaneRecaptureDelay": "test seam",
 	"deadPaneRecaptures":     "test seam",
 	"statusPendingWait":      "test seam",
+	"awaitMarkerTries":       "test seam", // WrapExitStatus's wait bound (LOOM-198)
 	// Process-wide still: the tmux socket, set once by SetTmuxSocket.
 	// Not LOOM-199's; a follow-up moves it like the rest.
 	"TmuxSocket": "process-wide (follow-up)",
