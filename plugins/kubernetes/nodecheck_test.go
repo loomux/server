@@ -351,40 +351,108 @@ func TestNoneRunsOnlyOnceItsNodeIsChecked(t *testing.T) {
 	})
 }
 
-// TestNoneNodeRenewed: a confirmed machine stays running while its
-// node's verdict ages and is renewed (past half of verdictTTL, when it
-// is asked about); a renewal that finds the node no longer enforcing
-// makes it an error.
+// TestNoneNodeRenewed: a machine's node is checked again in the
+// background past half of verdictTTL, whether or not the host asks
+// about it, so a machine in use keeps running; one whose node has no
+// "enforced" from the last verdictTTL is starting, and a renewal that
+// finds the node no longer enforcing makes it an error.
 func TestNoneNodeRenewed(t *testing.T) {
+	t.Run("in the background", func(t *testing.T) {
+		cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
+		if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
+			t.Fatal(err)
+		}
+		scheduleOn(t, cs, "conf1", "n1")
+		statusSoon(t, p, "conf1", protocol.EnvRunning)
+		clock.advance(6 * time.Minute) // nobody asks about conf1
+		if !nodes.pinnedSoon("n1", 2) {
+			t.Fatalf("canaries pinned to n1 = %d 6 minutes on, nobody asking; want 2: the renewal", nodes.pinnedTo("n1"))
+		}
+		clock.advance(6 * time.Minute)
+		if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvRunning {
+			t.Errorf("12 minutes on, renewed at 6: %s (%s), want running", env.Status, env.Reason)
+		}
+	})
+	t.Run("stuck", func(t *testing.T) {
+		cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
+		p.CanaryTimeout = 10 * time.Second
+		if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
+			t.Fatal(err)
+		}
+		scheduleOn(t, cs, "conf1", "n1")
+		statusSoon(t, p, "conf1", protocol.EnvRunning)
+		nodes.mu.Lock()
+		delete(nodes.codes, "n1") // the renewal won't finish
+		nodes.mu.Unlock()
+		clock.advance(6 * time.Minute)
+		if !nodes.pinnedSoon("n1", 2) {
+			t.Fatalf("canaries pinned to n1 = %d, want 2: the renewal", nodes.pinnedTo("n1"))
+		}
+		if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvRunning {
+			t.Errorf("6 minutes on, the renewal running: %s (%s), want running", env.Status, env.Reason)
+		}
+		clock.advance(6 * time.Minute)
+		if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvStarting || !strings.Contains(env.Reason, "n1") {
+			t.Errorf("12 minutes on, no enforced since: %s (%s), want starting, naming n1", env.Status, env.Reason)
+		}
+		nodes.set("n1", exitAPIReachable)
+		if env := statusSoon(t, p, "conf1", protocol.EnvError); !strings.Contains(env.Reason, "n1") {
+			t.Errorf("reason = %q, want n1", env.Reason)
+		}
+		if noneOffered(t, p) {
+			t.Error("none still offered after the renewal found n1 open")
+		}
+	})
+	t.Run("a renewal that can't run", func(t *testing.T) {
+		cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
+		if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
+			t.Fatal(err)
+		}
+		scheduleOn(t, cs, "conf1", "n1")
+		statusSoon(t, p, "conf1", protocol.EnvRunning)
+		nodes.set("n1", failToRun)
+		clock.advance(6 * time.Minute)
+		if !nodes.pinnedSoon("n1", 2) {
+			t.Fatalf("canaries pinned to n1 = %d, want 2: the renewal", nodes.pinnedTo("n1"))
+		}
+		time.Sleep(50 * time.Millisecond) // it fails at once
+		if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvRunning {
+			t.Errorf("6 minutes on, the renewal couldn't run: %s (%s), want running on the verdict of 6 minutes ago", env.Status, env.Reason)
+		}
+		clock.advance(5 * time.Minute)
+		if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvStarting {
+			t.Errorf("11 minutes on, no enforced since: %s (%s), want starting", env.Status, env.Reason)
+		}
+	})
+}
+
+// TestNoneNodeVerdictLapses: a node's "enforced" lets a machine run
+// within verdictTTL only, a machine new on that node or one already
+// there.
+func TestNoneNodeVerdictLapses(t *testing.T) {
 	cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
+	p.CanaryTimeout = 10 * time.Second
 	if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
 		t.Fatal(err)
 	}
 	scheduleOn(t, cs, "conf1", "n1")
 	statusSoon(t, p, "conf1", protocol.EnvRunning)
-	// The renewal can't finish (n1 has no code): the machine stays
-	// running past verdictTTL on its confirmation.
 	nodes.mu.Lock()
-	delete(nodes.codes, "n1")
+	delete(nodes.codes, "n1") // the renewal won't finish
 	nodes.mu.Unlock()
-	clock.advance(6 * time.Minute)
-	if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvRunning {
-		t.Errorf("6 minutes on: %s (%s), want running", env.Status, env.Reason)
+	clock.advance(11 * time.Minute)
+	if _, err := p.CreateTarget(ctx, confinedSpec("conf2")); err != nil {
+		t.Fatal(err)
 	}
-	if !nodes.pinnedSoon("n1", 2) {
-		t.Fatalf("canaries pinned to n1 = %d, want 2: the renewal", nodes.pinnedTo("n1"))
+	scheduleOn(t, cs, "conf2", "n1")
+	for _, id := range []string{"conf1", "conf2"} {
+		if env, _ := p.GetTarget(ctx, id); env.Status != protocol.EnvStarting {
+			t.Errorf("%s on n1, its verdict 11 minutes old: %s (%s), want starting", id, env.Status, env.Reason)
+		}
 	}
-	clock.advance(6 * time.Minute)
-	if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvRunning {
-		t.Errorf("12 minutes on, the renewal still running: %s (%s), want running", env.Status, env.Reason)
-	}
-	nodes.set("n1", exitAPIReachable)
-	if env := statusSoon(t, p, "conf1", protocol.EnvError); !strings.Contains(env.Reason, "n1") {
-		t.Errorf("reason = %q, want n1", env.Reason)
-	}
-	if noneOffered(t, p) {
-		t.Error("none still offered after the renewal found n1 open")
-	}
+	nodes.set("n1", exitBlocked)
+	statusSoon(t, p, "conf1", protocol.EnvRunning)
+	statusSoon(t, p, "conf2", protocol.EnvRunning)
 }
 
 func hasCode(res protocol.CheckResult, code string) bool {
@@ -402,33 +470,4 @@ func problemText(res protocol.CheckResult) string {
 		b.WriteString(pr.Code + ": " + pr.Message + "\n")
 	}
 	return b.String()
-}
-
-// TestNoneNodeVerdictLapses: a node's "enforced" lets a machine run
-// within verdictTTL only; a machine new on that node after it waits for
-// the renewal, while one already confirmed there keeps running.
-func TestNoneNodeVerdictLapses(t *testing.T) {
-	cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
-	p.CanaryTimeout = 10 * time.Second
-	if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
-		t.Fatal(err)
-	}
-	scheduleOn(t, cs, "conf1", "n1")
-	statusSoon(t, p, "conf1", protocol.EnvRunning)
-	nodes.mu.Lock()
-	delete(nodes.codes, "n1") // the renewal won't finish
-	nodes.mu.Unlock()
-	clock.advance(11 * time.Minute)
-	if _, err := p.CreateTarget(ctx, confinedSpec("conf2")); err != nil {
-		t.Fatal(err)
-	}
-	scheduleOn(t, cs, "conf2", "n1")
-	if env, _ := p.GetTarget(ctx, "conf2"); env.Status != protocol.EnvStarting {
-		t.Errorf("new on n1, its verdict 11 minutes old: %s (%s), want starting", env.Status, env.Reason)
-	}
-	if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvRunning {
-		t.Errorf("confirmed on n1 before: %s (%s), want running", env.Status, env.Reason)
-	}
-	nodes.set("n1", exitBlocked)
-	statusSoon(t, p, "conf2", protocol.EnvRunning)
 }

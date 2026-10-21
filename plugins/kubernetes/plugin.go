@@ -95,6 +95,9 @@ type Plugin struct {
 	// CanaryTimeout bounds the canary itself, the image pull included;
 	// 3 min.
 	CanaryTimeout time.Duration
+	// RenewEvery is how often the nodes of egress "none" machines are
+	// looked at for a verdict to renew (nodecheck.go); 1 min.
+	RenewEvery time.Duration
 
 	// createMu serializes a new machine's quota count and record, so two
 	// creates at once can't both take the last place (LOOM-201).
@@ -110,11 +113,13 @@ type Plugin struct {
 	// finished: describe acts on settled while a new one runs.
 	netcheck *netcheck
 	settled  *netcheck
-	// nodes is each node's canaries, and confirmed each egress "none"
-	// machine's pod (by name: its UID and node) that a canary on its
-	// node has let run (LOOM-208, nodecheck.go).
+	// nodes is each node's canaries, and watch each egress "none"
+	// machine's pod (by name) and its node, whose verdict the renewer
+	// keeps current (LOOM-208, nodecheck.go); stopRenew ends this
+	// configuration's renewer.
 	nodes     map[string]*nodeCheck
-	confirmed map[string]string
+	watch     map[string]string
+	stopRenew chan struct{}
 	// inflight is the canary pods this process is still reading: a
 	// sweep leaves them to their readers.
 	inflight map[string]bool
@@ -131,8 +136,9 @@ func New() *Plugin {
 		DeleteWait:    20 * time.Second,
 		CanaryWait:    15 * time.Second,
 		CanaryTimeout: 3 * time.Minute,
+		RenewEvery:    time.Minute,
 		nodes:         map[string]*nodeCheck{},
-		confirmed:     map[string]string{},
+		watch:         map[string]string{},
 		inflight:      map[string]bool{},
 	}
 }
@@ -163,7 +169,12 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	defer p.mu.Unlock()
 	p.cfg, p.client, p.apiHost, p.host, p.configured = cfg, client, apiHost, cp.Host, true
 	p.netcheck, p.settled = nil, nil
-	p.nodes, p.confirmed = map[string]*nodeCheck{}, map[string]string{}
+	p.nodes, p.watch = map[string]*nodeCheck{}, map[string]string{}
+	if p.stopRenew != nil {
+		close(p.stopRenew)
+	}
+	p.stopRenew = make(chan struct{})
+	go p.renewNodes(p.stopRenew, p.RenewEvery)
 	return nil
 }
 
@@ -245,7 +256,15 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 	return res, nil
 }
 
-func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
+func (p *Plugin) Shutdown(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopRenew != nil {
+		close(p.stopRenew)
+		p.stopRenew = nil
+	}
+	return nil
+}
 
 // safeStatus is an API error's text for a message: the server's
 // status message, truncated. A credential never appears in one.

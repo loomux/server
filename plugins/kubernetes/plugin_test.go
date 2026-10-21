@@ -44,6 +44,7 @@ func newTestPlugin(cs kubernetes.Interface) *Plugin {
 	p.DeleteWait = 200 * time.Millisecond
 	p.CanaryWait = time.Second
 	p.CanaryTimeout = 2 * time.Second
+	p.RenewEvery = 5 * time.Millisecond
 	p.Rand = func() string { return "abcd" }
 	return p
 }

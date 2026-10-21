@@ -142,8 +142,10 @@ func noneRefused(state enforcementState, detail string) error {
 
 // ensurePod is the machine's pod, made if it isn't there. One that is
 // still terminating (a stop or recreate moments ago) is waited for. A
-// "none" pod's policies are read last here, just before it is made:
-// one added after that applies to it, and only the next check sees it.
+// "none" pod's policies are read last here, just before it is made,
+// and a canary that got out since requireNone (on a node, or the
+// check's) refuses it too: a policy added after that applies to it, and
+// only the next check sees it.
 func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg Config, spec protocol.EnvironmentSpec, size protocol.Size, instance string) (*corev1.Pod, error) {
 	pods := client.CoreV1().Pods(cfg.Namespace)
 	name := podName(spec.ID)
@@ -161,6 +163,9 @@ func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg
 		}
 		if spec.Egress == protocol.EgressNone {
 			if err := noneRefused(policyVerdict(ctx, client, cfg.Namespace, instance)); err != nil {
+				return nil, err
+			}
+			if err := noneRefused(p.knownLeak()); err != nil {
 				return nil, err
 			}
 		}
@@ -236,6 +241,7 @@ func (p *Plugin) environment(pod *corev1.Pod, spec protocol.EnvironmentSpec, cfg
 		CreatedAt: createdFrom(sec, p.Now()),
 	}
 	if pod == nil {
+		p.unwatch(podName(spec.ID))
 		env.Status, env.Reason = protocol.EnvStopped, ""
 		return env
 	}
@@ -413,9 +419,7 @@ func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {
 	if err := client.CoreV1().Secrets(cfg.Namespace).Delete(ctx, secretName(id), metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
 		return unavailable(err)
 	}
-	p.mu.Lock()
-	delete(p.confirmed, podName(id))
-	p.mu.Unlock()
+	p.unwatch(podName(id))
 	return nil
 }
 

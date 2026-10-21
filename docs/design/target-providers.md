@@ -779,17 +779,19 @@ by the next check; holding policy edits back would take admission control in the
 
 **Each machine's node (LOOM-208).** The engine runs on each node and the check's canary lands on one, so an engine
 missing from or broken on another node left `none` machines there unconfined and reported running. Now a `none`
-machine is `running` only once a canary bound to its own node (`spec.nodeName`, past the scheduler; no node
+machine is `running` only while a canary bound to its own node (`spec.nodeName`, past the scheduler; no node
 permissions needed) has said "enforced" there within those 10 minutes; the check's canary counts for the node it
 landed on. Until then it is `starting` ("checking network isolation on node …"), the node's canary starting as soon
 as the pod has a node. A canary that gets out on the node makes each `none` machine there `error`, naming the node
 (the pod is left, like any machine in error), withdraws `none` from describe and create, and check reports
 `network_policy_not_enforced` for the node and tries it again with a pinned canary a minute on, until one says
-"enforced". A canary that can't run there proves nothing either way: the machine stays `starting` and the node is
-tried again a minute on. A machine once let run stays `running` as its node's verdict ages: past 5 minutes, asking
-about a machine there (the host's reconcile, every 5 minutes) renews it in the background, and a renewal that gets
-out turns the machine to `error`. The verdicts are in the plugin process: a restarted plugin checks each node again,
-its `none` machines `starting` meanwhile.
+"enforced". A canary that can't run there proves nothing either way: an "enforced" from the last 10 minutes still
+stands, and the node is tried again a minute on. The plugin keeps the verdicts current itself: every minute it runs
+a canary on each node of its `none` machines whose "enforced" is more than 5 minutes old, whether or not the host
+asks, so a machine in use stays `running`; a renewal that gets out turns the machines there to `error`, and with no
+"enforced" for 10 minutes they are `starting`. The last gate before a `none` pod is made also refuses it on any
+canary that got out since the create began. The verdicts are in the plugin process: a restarted plugin checks each
+node again, its `none` machines `starting` meanwhile.
 
 Not enforced:
 

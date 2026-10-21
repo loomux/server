@@ -206,9 +206,10 @@ func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface
 	// Its node's verdict too: a check's canary says as much about the
 	// node it landed on as one pinned there.
 	if n := p.nodes[node]; n != nil && n.running == nc {
-		n.running, n.settled = nil, nc
+		n.running = nil
+		n.record(nc)
 	} else if current && node != "" {
-		p.nodeOf(node).settled = nc
+		p.nodeOf(node).record(nc)
 	}
 	p.mu.Unlock()
 	close(nc.done)
