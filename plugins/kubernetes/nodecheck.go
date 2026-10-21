@@ -22,7 +22,9 @@ import (
 // machine on it an error (its pod is left as it is, like any machine in
 // error: destroy or recreate it) and withdraws "none" from describe and
 // create; check reports it, and tries the node again with a canary
-// pinned there a minute on, until one says "enforced". A canary that
+// pinned there a minute on, until one started after the failure says
+// "enforced" (a node's verdicts go by when their canaries started,
+// seq, not when they were read). A canary that
 // couldn't run there (no room, the image) proves nothing either way: an
 // "enforced" from within verdictTTL still stands, and the node is tried
 // again a minute on.
@@ -33,33 +35,47 @@ import (
 // machines, so a machine in use stays running, and one that gets out
 // turns them to error. What is known is in this process only: a
 // restarted plugin checks each node again, its machines starting until
-// then. Each canary needs room for one more pod in the namespace's
-// quota.
+// then. Each canary is a pod in the namespace's quota while it runs:
+// up to one per node being checked, plus the check's own.
 
-// nodeCheck is one node's canaries: the latest started there, still
-// running; the latest finished; and the latest that said "enforced".
-type nodeCheck struct{ running, settled, enforced *netcheck }
+// nodeCheck is one node's canaries, each the latest by start (seq): the
+// one running there; the last finished; the last that said "enforced";
+// and the last that got out, open until one started after it says
+// "enforced" (one that couldn't run proves nothing and clears nothing).
+type nodeCheck struct{ running, settled, enforced, open *netcheck }
 
-// record is a finished canary's verdict on the node; p.mu is held.
+// record is a finished canary's verdict on the node; one started before
+// a verdict already recorded doesn't undo it. p.mu is held.
 func (n *nodeCheck) record(nc *netcheck) {
-	n.settled = nc
-	if nc.state == enforcementEnforced {
-		n.enforced = nc
+	newer := func(old *netcheck) bool { return old == nil || nc.seq > old.seq }
+	if newer(n.settled) {
+		n.settled = nc
+	}
+	switch nc.state {
+	case enforcementEnforced:
+		if newer(n.enforced) {
+			n.enforced = nc
+		}
+		if n.open != nil && nc.seq > n.open.seq {
+			n.open = nil
+		}
+	case enforcementNotEnforced:
+		if newer(n.open) {
+			n.open = nc
+		}
 	}
 }
 
 // due is whether the node's canary should start now: none is running,
-// the last didn't find it open (that stands until a check), the last
-// couldn't run more than a minute ago if it couldn't, and it has no
-// "enforced" from the last half of verdictTTL. p.mu is held.
+// the node isn't open (that stands until a check), the last couldn't
+// run more than a minute ago if it couldn't, and it has no "enforced"
+// from the last half of verdictTTL. p.mu is held.
 func (p *Plugin) due(n *nodeCheck, now time.Time) bool {
 	switch last := n.settled; {
-	case n.running != nil:
+	case n.running != nil || n.open != nil:
 		return false
 	case last == nil:
 		return true
-	case last.state == enforcementNotEnforced:
-		return false
 	case last.state != enforcementEnforced && now.Sub(last.at) <= time.Minute:
 		return false
 	}
@@ -78,7 +94,8 @@ func (p *Plugin) nodeOf(node string) *nodeCheck {
 
 // startNodeCanary starts a canary pinned to node; p.mu is held.
 func (p *Plugin) startNodeCanary(cfg Config, client kubernetes.Interface, instance, node string) *netcheck {
-	nc := &netcheck{done: make(chan struct{}), state: enforcementPending, node: node}
+	p.seq++
+	nc := &netcheck{done: make(chan struct{}), state: enforcementPending, node: node, seq: p.seq}
 	p.nodeOf(node).running = nc
 	go p.runCanary(nc, cfg, client, p.apiHost, instance)
 	return nc
@@ -117,13 +134,12 @@ func (p *Plugin) unwatch(pod string) {
 	delete(p.watch, pod)
 }
 
-// retestNodes starts a canary on each node found not enforcing more
-// than a minute ago, and returns those running on such nodes; p.mu is
-// held.
+// retestNodes starts a canary on each open node last tried more than a
+// minute ago, and returns those running on open nodes; p.mu is held.
 func (p *Plugin) retestNodes(cfg Config, client kubernetes.Interface, instance string) []*netcheck {
 	var running []*netcheck
 	for node, n := range p.nodes {
-		if n.settled == nil || n.settled.state != enforcementNotEnforced {
+		if n.open == nil {
 			continue
 		}
 		if n.running == nil && p.Now().Sub(n.settled.at) > time.Minute {
@@ -136,14 +152,14 @@ func (p *Plugin) retestNodes(cfg Config, client kubernetes.Interface, instance s
 	return running
 }
 
-// nodeFailure is "not enforced" while a canary's last word on some node
-// is that, naming the node (the first by name); "enforced" otherwise.
+// nodeFailure is "not enforced" while some node is open, naming the node
+// (the first by name); "enforced" otherwise.
 func (p *Plugin) nodeFailure() (enforcementState, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var bad []string
 	for node, n := range p.nodes {
-		if n.settled != nil && n.settled.state == enforcementNotEnforced {
+		if n.open != nil {
 			bad = append(bad, node)
 		}
 	}
@@ -151,7 +167,7 @@ func (p *Plugin) nodeFailure() (enforcementState, string) {
 		return enforcementEnforced, ""
 	}
 	sort.Strings(bad)
-	return enforcementNotEnforced, "on node " + bad[0] + ", " + p.nodes[bad[0]].settled.detail
+	return enforcementNotEnforced, "on node " + bad[0] + ", " + p.nodes[bad[0]].open.detail
 }
 
 // knownLeak is "not enforced" while the latest finished canary, or one
@@ -192,8 +208,8 @@ func (p *Plugin) nodeGate(cfg Config, client kubernetes.Interface, instance stri
 		p.startNodeCanary(cfg, client, instance, node)
 	}
 	switch last := n.settled; {
-	case last != nil && last.state == enforcementNotEnforced:
-		return protocol.EnvError, "egress none isn't enforced on node " + node + " (" + last.detail + "): this machine isn't confined; destroy it, and fix the policy engine there before making another"
+	case n.open != nil:
+		return protocol.EnvError, "egress none isn't enforced on node " + node + " (" + n.open.detail + "): this machine isn't confined; destroy it, and fix the policy engine there before making another"
 	case status != protocol.EnvRunning:
 		return status, reason
 	case n.enforced != nil && now.Sub(n.enforced.at) <= verdictTTL:

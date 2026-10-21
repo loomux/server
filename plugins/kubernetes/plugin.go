@@ -120,6 +120,8 @@ type Plugin struct {
 	nodes     map[string]*nodeCheck
 	watch     map[string]string
 	stopRenew chan struct{}
+	// seq numbers the canaries as they start.
+	seq uint64
 	// inflight is the canary pods this process is still reading: a
 	// sweep leaves them to their readers.
 	inflight map[string]bool

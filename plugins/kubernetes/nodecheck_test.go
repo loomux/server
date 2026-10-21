@@ -252,10 +252,16 @@ func TestNoneRunsOnlyOnceItsNodeIsChecked(t *testing.T) {
 		if !hasCode(res, ProblemNetworkPolicyNotEnforced) || !strings.Contains(problemText(res), "n1") {
 			t.Errorf("check = %+v, want network_policy_not_enforced naming n1", res)
 		}
-		// The engine is mended on n1: a check a minute later tries n1
-		// again, and none is offered again.
+		// The engine is mended on n1. Until a check, n1 stays open:
+		// neither the renewer nor a get tries it again.
 		nodes.set("n1", exitBlocked)
 		clock.advance(2 * time.Minute)
+		time.Sleep(50 * time.Millisecond) // renewer rounds
+		if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvError || nodes.pinnedTo("n1") != 1 || noneOffered(t, p) {
+			t.Errorf("before a check: conf1 %s, canaries pinned to n1 %d, none offered %v; want error, 1, false", env.Status, nodes.pinnedTo("n1"), noneOffered(t, p))
+		}
+		// A check a minute later tries n1 again, and none is offered
+		// again.
 		if res, _ := p.Check(ctx); !res.OK || len(res.Problems) != 0 {
 			t.Errorf("check after n1 is mended = %+v", res)
 		}
@@ -470,4 +476,70 @@ func problemText(res protocol.CheckResult) string {
 		b.WriteString(pr.Code + ": " + pr.Message + "\n")
 	}
 	return b.String()
+}
+
+// TestNoneNodeFailureSticks: a node found open stays so until a canary
+// there says "enforced"; a retry that can't run proves nothing and
+// mustn't clear it, nor let an older "enforced" run the machine again
+// (LOOM-208 review).
+func TestNoneNodeFailureSticks(t *testing.T) {
+	cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
+	if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
+		t.Fatal(err)
+	}
+	scheduleOn(t, cs, "conf1", "n1")
+	statusSoon(t, p, "conf1", protocol.EnvRunning)
+	nodes.set("n1", exitNetReachable)
+	clock.advance(6 * time.Minute) // the renewal finds n1 open
+	statusSoon(t, p, "conf1", protocol.EnvError)
+	nodes.set("n1", failToRun)
+	clock.advance(2 * time.Minute) // the check's retry can't run
+	res, _ := p.Check(ctx)
+	if nodes.pinnedTo("n1") != 3 {
+		t.Fatalf("canaries pinned to n1 = %d, want 3: the first, the renewal, the check's retry", nodes.pinnedTo("n1"))
+	}
+	if !hasCode(res, ProblemNetworkPolicyNotEnforced) || !strings.Contains(problemText(res), "n1") {
+		t.Errorf("check after a retry that couldn't run = %+v, want n1 still not enforced", res)
+	}
+	if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvError {
+		t.Errorf("conf1 after a retry that couldn't run: %s (%s), want error", env.Status, env.Reason)
+	}
+	if noneOffered(t, p) {
+		t.Error("none offered again after a retry that couldn't run")
+	}
+	if _, err := p.CreateTarget(ctx, confinedSpec("conf2")); rpcCode(err) != rpc.CodeInvalidParams || !strings.Contains(err.Error(), "n1") {
+		t.Errorf("create with egress none = %v, want invalid_params naming n1", err)
+	}
+}
+
+// TestNoneStoppedNotRenewed: a stopped machine's node isn't checked for
+// it any more, nor one whose pod is gone (LOOM-208 review).
+func TestNoneStoppedNotRenewed(t *testing.T) {
+	for _, how := range []string{"stop", "pod gone, health asked"} {
+		t.Run(how, func(t *testing.T) {
+			cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
+			if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
+				t.Fatal(err)
+			}
+			scheduleOn(t, cs, "conf1", "n1")
+			statusSoon(t, p, "conf1", protocol.EnvRunning)
+			if how == "stop" {
+				if err := p.StopTarget(ctx, "conf1"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := cs.Tracker().Delete(corev1.SchemeGroupVersion.WithResource("pods"), testNS, podName("conf1")); err != nil {
+					t.Fatal(err)
+				}
+				if h, err := p.TargetHealth(ctx, "conf1"); err != nil || h.Status != protocol.EnvStopped {
+					t.Fatalf("health = %+v, %v", h, err)
+				}
+			}
+			clock.advance(6 * time.Minute)
+			time.Sleep(100 * time.Millisecond) // many renewer rounds
+			if n := nodes.pinnedTo("n1"); n != 1 {
+				t.Errorf("canaries pinned to n1 = %d after the machine went, want still 1", n)
+			}
+		})
+	}
 }

@@ -784,8 +784,9 @@ permissions needed) has said "enforced" there within those 10 minutes; the check
 landed on. Until then it is `starting` ("checking network isolation on node …"), the node's canary starting as soon
 as the pod has a node. A canary that gets out on the node makes each `none` machine there `error`, naming the node
 (the pod is left, like any machine in error), withdraws `none` from describe and create, and check reports
-`network_policy_not_enforced` for the node and tries it again with a pinned canary a minute on, until one says
-"enforced". A canary that can't run there proves nothing either way: an "enforced" from the last 10 minutes still
+`network_policy_not_enforced` for the node and tries it again with a pinned canary a minute on, until one started
+after the failure says "enforced" (verdicts go by when canaries started; a retry that can't run leaves the node
+open). A canary that can't run there proves nothing either way: an "enforced" from the last 10 minutes still
 stands, and the node is tried again a minute on. The plugin keeps the verdicts current itself: every minute it runs
 a canary on each node of its `none` machines whose "enforced" is more than 5 minutes old, whether or not the host
 asks, so a machine in use stays `running`; a renewal that gets out turns the machines there to `error`, and with no
@@ -949,8 +950,8 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
    that may select a `none` pod and allows it more than (c) withdraws `none`, so additions for agents select
    `loomux.io/egress=internet`.
 7. **ResourceQuota** `loomux-agents` (TEST, to tune): `requests.cpu: 4`, `limits.cpu: 8`,
-   `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 8` (the canaries included: one per node checked at once,
-LOOM-208), `persistentvolumeclaims:
+   `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 8` (the canaries included: up to one per node being
+checked plus the check's own, LOOM-208, so at least `max_environments` + nodes + 1), `persistentvolumeclaims:
    6`, `ceph-rbd-sc.storageclass.storage.k8s.io/requests.storage: 100Gi`; a **LimitRange** with the `small`
    defaults so a pod never runs unbounded.
 8. **PBS backup**: `lx-*-data` PVCs are the user's working copies of repositories, not system state; recommend

@@ -98,6 +98,9 @@ type netcheck struct {
 	// node is where it ran: the node it was pinned to, or the one the
 	// scheduler gave it ("" if it never got one).
 	node string
+	// seq orders canaries by when they started: a node's verdicts go by
+	// it, not by when a canary was read.
+	seq uint64
 }
 
 // enforcement is the verdict check reports. The namespace's
@@ -174,7 +177,8 @@ func (p *Plugin) lastCanary(ctx context.Context, cfg Config, client kubernetes.I
 
 // startCanary starts a canary as the current check; p.mu is held.
 func (p *Plugin) startCanary(cfg Config, client kubernetes.Interface, instance string) *netcheck {
-	nc := &netcheck{done: make(chan struct{}), state: enforcementPending}
+	p.seq++
+	nc := &netcheck{done: make(chan struct{}), state: enforcementPending, seq: p.seq}
 	p.netcheck = nc
 	go p.runCanary(nc, cfg, client, p.apiHost, instance)
 	return nc

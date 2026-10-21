@@ -82,3 +82,33 @@ func TestNoneNodeFailureBeforeThePod(t *testing.T) {
 		}
 	})
 }
+
+// A node's verdicts go by when their canaries started, not when they
+// were read: one started earlier and read later (its pod was slow, or
+// the check's canary landed there meanwhile) never undoes a newer one
+// (LOOM-208 review).
+func TestNodeVerdictsByStart(t *testing.T) {
+	check := func(seq uint64, state enforcementState) *netcheck {
+		return &netcheck{seq: seq, state: state, detail: state.String()}
+	}
+	n := &nodeCheck{}
+	n.record(check(2, enforcementNotEnforced))
+	n.record(check(1, enforcementEnforced)) // older, read later
+	if n.open == nil || n.open.seq != 2 {
+		t.Fatalf("an older enforced cleared a newer not enforced: open = %+v", n.open)
+	}
+	if n.settled.seq != 2 {
+		t.Errorf("settled = %d, want the newer 2", n.settled.seq)
+	}
+	n.record(check(4, enforcementFailed))
+	if n.open == nil {
+		t.Error("a canary that couldn't run cleared not enforced")
+	}
+	n.record(check(3, enforcementEnforced)) // older than the failed one, newer than the open
+	if n.open != nil {
+		t.Errorf("an enforced started after the open one left it open: %+v", n.open)
+	}
+	if n.settled.seq != 4 || n.enforced.seq != 3 {
+		t.Errorf("settled %d, enforced %d; want 4, 3", n.settled.seq, n.enforced.seq)
+	}
+}

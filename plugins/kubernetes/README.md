@@ -114,7 +114,9 @@ while sshd comes up. A node where the canary gets out makes each `none`
 machine there `error`, naming the node and what was reached, and
 withdraws `none` from describe and create; check reports
 `network_policy_not_enforced` for that node and tries it again with a
-pinned canary a minute on, until one says "enforced". The pod is left
+pinned canary a minute on, until one started after the failure says
+"enforced"; neither the renewer nor a get tries it before, and a retry
+that can't run leaves it open. The pod is left
 as it is, like any machine in error: destroy it. A canary that can't
 run on the node (no room, the image) proves nothing either way: an
 "enforced" from the last 10 minutes still stands, the machine is
@@ -126,8 +128,13 @@ so a machine in use stays `running`. A renewal that gets out turns the
 machines there to `error`; when none can say "enforced" for 10
 minutes, they are `starting` until one does. The verdicts live in the
 plugin process, so a restarted plugin checks each node again, and its
-`none` machines are `starting` for those few seconds. Each check needs room for one more pod in the
-namespace's quota while it runs (one per node checked at once).
+`none` machines are `starting` for those few seconds. A node's
+verdicts go by when their canaries started, so one read late never
+undoes a newer one. Each canary is a pod in the namespace's quota while
+it runs, up to one per node being checked plus the check's own: leave
+`pods` room for the number of nodes plus one beside `max_environments`
+machines. A canary with no room can't run, which proves nothing, and
+10 minutes on the machines are `starting`.
 
 What it trusts. The canary samples a few destinations; it can't prove
 that none other answers. What proves that is the policies, so the

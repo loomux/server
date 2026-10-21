@@ -335,7 +335,11 @@ func (p *Plugin) StopTarget(ctx context.Context, id string) error {
 	if _, _, _, err := p.machine(ctx, client, cfg, host, id); err != nil {
 		return err
 	}
-	return p.deletePod(ctx, client, cfg, id, 30)
+	if err := p.deletePod(ctx, client, cfg, id, 30); err != nil {
+		return err
+	}
+	p.unwatch(podName(id))
+	return nil
 }
 
 func (p *Plugin) deletePod(ctx context.Context, client kubernetes.Interface, cfg Config, id string, grace int64) error {
@@ -433,6 +437,7 @@ func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.Environm
 		return protocol.EnvironmentHealth{}, err
 	}
 	if pod == nil {
+		p.unwatch(podName(id))
 		return protocol.EnvironmentHealth{Status: protocol.EnvStopped}, nil
 	}
 	h := protocol.EnvironmentHealth{Restarts: restartsOf(pod), ImageDigest: digestOf(pod)}
