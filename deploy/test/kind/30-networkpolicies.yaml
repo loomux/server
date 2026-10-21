@@ -2,7 +2,11 @@
 # engine enforces them: plain kind doesn't (CI's canary reaches the
 # API server there), nor did theWyseKube's Flannel before
 # kube-network-policies was installed, which is why the plugin tests
-# enforcement with a canary instead of assuming it.
+# enforcement with a canary instead of assuming it. The plugin also
+# reads them (LOOM-201): egress "none" is offered only while every
+# policy that may select a confined machine allows it kube-dns on port
+# 53 and nothing else, so a policy added here for agents must leave
+# loomux.io/egress=none pods out (select egress=internet, as (d) does).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

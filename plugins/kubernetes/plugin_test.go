@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/Loomux/server/plugins"
@@ -90,16 +93,20 @@ func spec(id string) protocol.EnvironmentSpec {
 	}
 }
 
-// canaryExits makes every canary pod the fake creates exit with code.
-func canaryExits(cs *fake.Clientset, code int32) {
+// canaryExits makes every canary pod the fake creates exit with code,
+// or with what the returned value is changed to.
+func canaryExits(cs *fake.Clientset, code int32) *atomic.Int32 {
+	exit := new(atomic.Int32)
+	exit.Store(code)
 	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
 		if ok && pod.Labels[labelCanary] == "true" {
 			pod.Status.Phase = corev1.PodSucceeded
-			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "netcheck", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: code}}}}
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "netcheck", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: exit.Load()}}}}
 		}
 		return false, nil, nil
 	})
+	return exit
 }
 
 func rpcCode(err error) string {
@@ -470,6 +477,7 @@ func TestLifecycle(t *testing.T) {
 		"persistentvolumeclaims": {"create": true, "get": true, "list": true, "delete": true},
 		"secrets":                {"create": true, "get": true, "list": true, "update": true, "delete": true},
 		"events":                 {"list": true}, "services": {"get": true},
+		"networkpolicies": {"list": true},
 	}
 	for _, a := range cs.Actions() {
 		res, verb := a.GetResource().Resource, a.GetVerb()
@@ -574,6 +582,90 @@ func TestOtherInstanceIsInvisible(t *testing.T) {
 	}
 }
 
+// TestConcurrentCreatesKeepQuota (LOOM-201): each create counted the
+// machines and then made its record, so two at once with one place
+// left both found it free and the plugin made one more than its
+// max_environments. Counting and making the record are now one step.
+func TestConcurrentCreatesKeepQuota(t *testing.T) {
+	cs := fake.NewClientset()
+	var mu sync.Mutex
+	lists := 0
+	both := make(chan struct{})
+	// Each Secret list waits for the other create's, if it comes: where
+	// two unserialized creates interleave.
+	listed := func() {
+		mu.Lock()
+		lists++
+		if lists == 2 {
+			close(both)
+		}
+		mu.Unlock()
+		select {
+		case <-both:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	p := newTestPlugin(&secretListHook{Clientset: cs, after: listed})
+	if err := p.Configure(ctx, protocol.ConfigureParams{Config: baseConfig(t, map[string]any{"max_environments": 1.0}), Host: protocol.HostInfo{Version: "test", InstanceID: testInstance}}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, id := range []string{"race1", "race2"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = p.CreateTarget(ctx, spec(id))
+		}()
+	}
+	wg.Wait()
+	quota := 0
+	for _, err := range errs {
+		switch {
+		case rpcCode(err) == rpc.CodeQuota:
+			quota++
+		case err != nil:
+			t.Errorf("create: %v", err)
+		}
+	}
+	secrets, _ := cs.CoreV1().Secrets(testNS).List(ctx, metav1.ListOptions{})
+	if len(secrets.Items) != 1 || quota != 1 {
+		t.Errorf("two creates at once with one place: %d machines made, %d refused for quota; want 1 and 1", len(secrets.Items), quota)
+	}
+}
+
+// secretListHook is a fake clientset that calls after once each Secret
+// list has returned: outside the fake's own lock, where concurrent
+// creates can interleave.
+type secretListHook struct {
+	*fake.Clientset
+	after func()
+}
+
+func (c *secretListHook) CoreV1() corev1client.CoreV1Interface {
+	return hookedCore{c.Clientset.CoreV1(), c.after}
+}
+
+type hookedCore struct {
+	corev1client.CoreV1Interface
+	after func()
+}
+
+func (c hookedCore) Secrets(namespace string) corev1client.SecretInterface {
+	return hookedSecrets{c.CoreV1Interface.Secrets(namespace), c.after}
+}
+
+type hookedSecrets struct {
+	corev1client.SecretInterface
+	after func()
+}
+
+func (s hookedSecrets) List(ctx context.Context, opts metav1.ListOptions) (*corev1.SecretList, error) {
+	list, err := s.SecretInterface.List(ctx, opts)
+	s.after()
+	return list, err
+}
+
 func TestCreateRefusesBadSpecs(t *testing.T) {
 	p := configured(t, fake.NewClientset(), nil)
 	cases := map[string]func(s *protocol.EnvironmentSpec){
@@ -609,7 +701,7 @@ func TestCheck(t *testing.T) {
 		return nil
 	}
 	t.Run("enforced", func(t *testing.T) {
-		cs := fake.NewClientset(&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "loomux-agents", Namespace: testNS}})
+		cs := fake.NewClientset(append(kindPolicies(t), &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "loomux-agents", Namespace: testNS}})...)
 		canaryExits(cs, exitBlocked)
 		p := configured(t, cs, nil)
 		res, err := p.Check(ctx)
@@ -628,7 +720,7 @@ func TestCheck(t *testing.T) {
 	})
 	for name, code := range map[string]int32{"api reachable": exitAPIReachable, "internet reachable": exitNetReachable} {
 		t.Run(name, func(t *testing.T) {
-			cs := fake.NewClientset()
+			cs := fake.NewClientset(kindPolicies(t)...)
 			canaryExits(cs, code)
 			p := configured(t, cs, nil)
 			res, _ := p.Check(ctx)
@@ -645,7 +737,7 @@ func TestCheck(t *testing.T) {
 		})
 	}
 	t.Run("required", func(t *testing.T) {
-		cs := fake.NewClientset()
+		cs := fake.NewClientset(kindPolicies(t)...)
 		canaryExits(cs, exitAPIReachable)
 		p := configured(t, cs, map[string]any{"require_network_policy": true})
 		res, _ := p.Check(ctx)
@@ -654,7 +746,7 @@ func TestCheck(t *testing.T) {
 		}
 	})
 	t.Run("no network", func(t *testing.T) {
-		cs := fake.NewClientset()
+		cs := fake.NewClientset(kindPolicies(t)...)
 		canaryExits(cs, exitNoNetwork)
 		p := configured(t, cs, nil)
 		res, _ := p.Check(ctx)
@@ -670,7 +762,7 @@ func TestCheck(t *testing.T) {
 		}
 	})
 	t.Run("canary refused", func(t *testing.T) {
-		cs := fake.NewClientset()
+		cs := fake.NewClientset(kindPolicies(t)...)
 		cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "x", errors.New("no"))
 		})
@@ -681,7 +773,7 @@ func TestCheck(t *testing.T) {
 		}
 	})
 	t.Run("pending", func(t *testing.T) {
-		cs := fake.NewClientset() // the canary never finishes: no kubelet
+		cs := fake.NewClientset(kindPolicies(t)...) // the canary never finishes: no kubelet
 		p := configured(t, cs, nil)
 		p.CanaryWait = 20 * time.Millisecond
 		res, _ := p.Check(ctx)
@@ -693,7 +785,7 @@ func TestCheck(t *testing.T) {
 		}
 	})
 	t.Run("service forbidden", func(t *testing.T) {
-		cs := fake.NewClientset()
+		cs := fake.NewClientset(kindPolicies(t)...)
 		cs.PrependReactor("get", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "services"}, "loomux-agents", errors.New("no"))
 		})
@@ -705,7 +797,7 @@ func TestCheck(t *testing.T) {
 		}
 	})
 	t.Run("forbidden", func(t *testing.T) {
-		cs := fake.NewClientset()
+		cs := fake.NewClientset(kindPolicies(t)...)
 		cs.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("no role"))
 		})
@@ -725,7 +817,7 @@ func TestCheck(t *testing.T) {
 
 func TestCanaryScript(t *testing.T) {
 	s := canaryScript("10.96.0.1:443")
-	for _, want := range []string{"probe 10.96.0.1 443 && return 10", "probe kubernetes.default.svc.cluster.local 443 && return 10", "probe 1.1.1.1 443 && return 11", `probe "$dns" 53 || exit 12`, "exit 0"} {
+	for _, want := range []string{"probe 10.96.0.1 443 &", "probe kubernetes.default.svc.cluster.local 443 &", "probe 169.254.169.254 80 &", "probe 1.1.1.1 443 &", "probe github.com 443 &", `probe "$dns" 53 || exit 12`, "exit 0"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q:\n%s", want, s)
 		}

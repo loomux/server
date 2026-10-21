@@ -22,12 +22,15 @@ import (
 )
 
 // fakeProbes puts stub timeout and sleep commands first on PATH for the
-// canary script: the API server answers its first apiAnswers probes and
-// the internet its first netAnswers, then both are blocked, the way a
+// canary script: each API server address answers its first apiAnswers
+// probes, the metadata address its first linkAnswers and each internet
+// destination its first netAnswers, then they are blocked, the way a
 // policy engine confines a new pod once it has learned its address.
-// kube-dns (port 53) always answers. It returns the PATH and a function
-// reading how many times a class was probed or the script slept.
-func fakeProbes(t *testing.T, apiAnswers, netAnswers int) (path string, count func(string) int) {
+// kube-dns (port 53) always answers. The probes run at once, so each
+// destination counts its own. It returns the PATH and a function
+// reading how many times a destination ("1.1.1.1_443") was probed or
+// the script slept ("sleeps").
+func fakeProbes(t *testing.T, apiAnswers, linkAnswers, netAnswers int) (path string, count func(string) int) {
 	t.Helper()
 	dir := t.TempDir()
 	stub := `#!/bin/bash
@@ -35,11 +38,13 @@ func fakeProbes(t *testing.T, apiAnswers, netAnswers int) (path string, count fu
 dest=${4##*/dev/tcp/}
 case $dest in
   */53) exit 0 ;;
-  1.1.1.1/*) class=net limit=` + strconv.Itoa(netAnswers) + ` ;;
-  *) class=api limit=` + strconv.Itoa(apiAnswers) + ` ;;
+  169.254.169.254/*) limit=` + strconv.Itoa(linkAnswers) + ` ;;
+  1.1.1.1/*|github.com/*) limit=` + strconv.Itoa(netAnswers) + ` ;;
+  *) limit=` + strconv.Itoa(apiAnswers) + ` ;;
 esac
-n=$(cat "` + dir + `/$class" 2>/dev/null || echo 0)
-echo $((n + 1)) > "` + dir + `/$class"
+f="` + dir + `/${dest//\//_}"
+n=$(cat "$f" 2>/dev/null || echo 0)
+echo $((n + 1)) > "$f"
 [ "$n" -lt "$limit" ]
 `
 	if err := os.WriteFile(filepath.Join(dir, "timeout"), []byte(stub), 0o755); err != nil {
@@ -49,8 +54,8 @@ echo $((n + 1)) > "` + dir + `/$class"
 	if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte(sleep), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return dir + ":" + os.Getenv("PATH"), func(class string) int {
-		b, _ := os.ReadFile(filepath.Join(dir, class))
+	return dir + ":" + os.Getenv("PATH"), func(name string) int {
+		b, _ := os.ReadFile(filepath.Join(dir, name))
 		n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
 		return n
 	}
@@ -60,7 +65,8 @@ echo $((n + 1)) > "` + dir + `/$class"
 // be unconfined for a moment while the policy engine learns its address
 // (about 2 s with kube-network-policies on TEST, 2026-10-13), so a
 // target that answers is tried again, and only one still answering
-// after canaryAttempts decides "not enforced".
+// after canaryAttempts decides "not enforced". Every destination is
+// tried on every attempt.
 func TestCanaryScriptSettles(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -69,19 +75,22 @@ func TestCanaryScriptSettles(t *testing.T) {
 	if _, err := os.Stat("/etc/resolv.conf"); err != nil {
 		t.Skip("no /etc/resolv.conf for the kube-dns control")
 	}
+	const never = 1 << 20
 	for _, tc := range []struct {
-		name                   string
-		apiAnswers, netAnswers int
-		exit, sleeps           int
+		name                         string
+		apiAnswers, link, netAnswers int
+		exit, sleeps                 int
 	}{
-		{"enforced from the start", 0, 0, exitBlocked, 0},
-		{"enforced once the engine caught up", 2, 0, exitBlocked, 2},
-		{"both answer at first, then neither", 1, 1, exitBlocked, 2},
-		{"API server never confined", 1 << 20, 0, exitAPIReachable, canaryAttempts - 1},
-		{"internet never confined", 0, 1 << 20, exitNetReachable, canaryAttempts - 1},
+		{"enforced from the start", 0, 0, 0, exitBlocked, 0},
+		{"enforced once the engine caught up", 2, 0, 0, exitBlocked, 2},
+		{"all answer at first, then none", 1, 1, 1, exitBlocked, 1},
+		{"API server never confined", never, 0, 0, exitAPIReachable, canaryAttempts - 1},
+		{"metadata address never confined", 0, never, 0, exitLinkLocalReach, canaryAttempts - 1},
+		{"internet never confined", 0, 0, never, exitNetReachable, canaryAttempts - 1},
+		{"the API server is named first", never, never, never, exitAPIReachable, canaryAttempts - 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path, count := fakeProbes(t, tc.apiAnswers, tc.netAnswers)
+			path, count := fakeProbes(t, tc.apiAnswers, tc.link, tc.netAnswers)
 			cmd := exec.Command(bash, "-c", canaryScript("10.96.0.1:443"))
 			cmd.Env = []string{"PATH=" + path}
 			err := cmd.Run()
@@ -98,6 +107,11 @@ func TestCanaryScriptSettles(t *testing.T) {
 			if got := count("sleeps"); got != tc.sleeps {
 				t.Errorf("slept %d times, want %d", got, tc.sleeps)
 			}
+			for _, dest := range []string{"10.96.0.1_443", "kubernetes.default.svc.cluster.local_443", "169.254.169.254_80", "1.1.1.1_443", "github.com_443"} {
+				if got := count(dest); got != tc.sleeps+1 {
+					t.Errorf("%s probed %d times, want %d", dest, got, tc.sleeps+1)
+				}
+			}
 		})
 	}
 }
@@ -105,7 +119,7 @@ func TestCanaryScriptSettles(t *testing.T) {
 // A transient API error while the canary runs (etcd "leader changed",
 // seen on TEST at install) is retried, not taken as the verdict.
 func TestCanaryTransientReadError(t *testing.T) {
-	cs := fake.NewClientset(&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "loomux-agents", Namespace: testNS}})
+	cs := fake.NewClientset(append(kindPolicies(t), &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "loomux-agents", Namespace: testNS}})...)
 	canaryExits(cs, exitBlocked)
 	failed := false
 	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -125,7 +139,7 @@ func TestCanaryTransientReadError(t *testing.T) {
 // A read error the canary recovers from isn't reported when the canary
 // later times out for another reason (a slow pull): the timeout is.
 func TestCanaryStaleReadErrorNotReported(t *testing.T) {
-	cs := fake.NewClientset()
+	cs := fake.NewClientset(kindPolicies(t)...)
 	failed := false
 	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if !failed {
@@ -145,7 +159,7 @@ func TestCanaryStaleReadErrorNotReported(t *testing.T) {
 
 // Forbidden or Unauthorized won't heal by waiting: reported at once.
 func TestCanaryForbiddenReadFailsFast(t *testing.T) {
-	cs := fake.NewClientset()
+	cs := fake.NewClientset(kindPolicies(t)...)
 	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "lx-netcheck-abcd", errors.New("no"))
 	})
@@ -171,7 +185,7 @@ func failedMessage(res protocol.CheckResult) string {
 // One that persists until the canary's time is up is reported, with the
 // last error.
 func TestCanaryPersistentReadError(t *testing.T) {
-	cs := fake.NewClientset()
+	cs := fake.NewClientset(kindPolicies(t)...)
 	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("etcdserver: leader changed")
 	})
@@ -205,7 +219,7 @@ func TestCanarySweepsStale(t *testing.T) {
 	machine := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "lx-keep", Namespace: testNS, Labels: map[string]string{
 		labelManagedBy: managedBy, protocol.LabelInstance: testInstance, labelRole: roleAgent,
 	}}}
-	cs := fake.NewClientset(
+	cs := fake.NewClientset(append(kindPolicies(t),
 		canary("lx-netcheck-failed", testInstance, corev1.PodFailed, time.Minute),
 		canary("lx-netcheck-succeeded", testInstance, corev1.PodSucceeded, time.Minute),
 		canary("lx-netcheck-stuck", testInstance, corev1.PodRunning, time.Hour),
@@ -213,7 +227,7 @@ func TestCanarySweepsStale(t *testing.T) {
 		canary("lx-netcheck-pulling", testInstance, corev1.PodPending, 2*time.Minute),
 		canary("lx-netcheck-other", "another-instance", corev1.PodFailed, time.Hour),
 		machine,
-	)
+	)...)
 	canaryExits(cs, exitBlocked)
 	p := configured(t, cs, nil)
 	p.Now = func() time.Time { return now }

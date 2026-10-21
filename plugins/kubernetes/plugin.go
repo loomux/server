@@ -60,8 +60,13 @@ const (
 	// credential can't read Services to tell.
 	ProblemServiceMissing = "service_missing"
 	// ProblemNetworkPolicyNotEnforced (warning; error when required): a
-	// confined canary pod reached the API server or the internet.
+	// confined canary pod reached the API server, the metadata address
+	// or the internet.
 	ProblemNetworkPolicyNotEnforced = "network_policy_not_enforced"
+	// ProblemNetworkPolicyAllowsEgress (warning; error when required):
+	// the namespace's NetworkPolicies let an egress "none" machine reach
+	// more than kube-dns, or none isolates it for egress (LOOM-201).
+	ProblemNetworkPolicyAllowsEgress = "network_policy_allows_egress"
 	// ProblemNetworkCheckPending (warning): the canary is still running
 	// (the image may be pulling); the next check has the verdict.
 	ProblemNetworkCheckPending = "network_policy_check_pending"
@@ -91,13 +96,20 @@ type Plugin struct {
 	// 3 min.
 	CanaryTimeout time.Duration
 
+	// createMu serializes a new machine's quota count and record, so two
+	// creates at once can't both take the last place (LOOM-201).
+	createMu sync.Mutex
+
 	mu         sync.Mutex
 	cfg        Config
 	client     kubernetes.Interface
 	apiHost    string
 	host       protocol.HostInfo
 	configured bool
-	netcheck   *netcheck
+	// netcheck is the latest canary started, settled the latest one
+	// finished: describe acts on settled while a new one runs.
+	netcheck *netcheck
+	settled  *netcheck
 }
 
 // New returns the plugin for real use.
@@ -138,7 +150,7 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cfg, p.client, p.apiHost, p.host, p.configured = cfg, client, apiHost, cp.Host, true
-	p.netcheck = nil
+	p.netcheck, p.settled = nil, nil
 	return nil
 }
 
@@ -157,7 +169,7 @@ func (p *Plugin) state() (Config, kubernetes.Interface, protocol.HostInfo, error
 // there), looks for the headless Service, and tests whether
 // NetworkPolicy is enforced with a canary pod (design §8).
 func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
-	cfg, client, _, err := p.state()
+	cfg, client, host, err := p.state()
 	if err != nil {
 		return protocol.CheckResult{}, err
 	}
@@ -186,7 +198,7 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 			Message: fmt.Sprintf("can't read Service %q in namespace %s (the Role lacks services get): whether machine names resolve is unknown", cfg.Subdomain, cfg.Namespace),
 		})
 	}
-	state, detail := p.enforcement(ctx, cfg, client, p.CanaryWait)
+	state, detail := p.enforcement(ctx, cfg, client, host.InstanceID, p.CanaryWait)
 	severity := protocol.SeverityWarning
 	if cfg.RequireNetworkPolicy {
 		severity = protocol.SeverityError
@@ -197,6 +209,11 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		res.Problems = append(res.Problems, protocol.Problem{
 			Code: ProblemNetworkPolicyNotEnforced, Severity: severity,
 			Message: "NetworkPolicy isn't enforced in this cluster (" + detail + "): machines can't be confined; install a policy engine (kube-network-policies, Calico, kube-router) for egress: none",
+		})
+	case enforcementPolicyOpen:
+		res.Problems = append(res.Problems, protocol.Problem{
+			Code: ProblemNetworkPolicyAllowsEgress, Severity: severity,
+			Message: "egress: none isn't offered: " + detail + "; a confined machine may reach kube-dns (UDP and TCP 53) and nothing else (design §10 item 6)",
 		})
 	case enforcementPending:
 		res.Problems = append(res.Problems, protocol.Problem{
