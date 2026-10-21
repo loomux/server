@@ -68,7 +68,7 @@ func TestDispatch_ShutdownCancellation_LeavesTaskRunning(t *testing.T) {
 	h := newRouterHarness(t)
 	h.exec.captureFunc = func() string { return uuid.NewString() }
 	ctx, cancel := context.WithCancelCause(context.Background())
-	h.exec.onSendKeys = func() { time.AfterFunc(100*time.Millisecond, func() { cancel(orchestrator.ErrInterrupted) }) }
+	h.exec.onWaiting = func() { cancel(orchestrator.ErrInterrupted) }
 
 	if _, err := h.r.Dispatch(ctx, "conv-1", "go"); err == nil {
 		t.Fatal("Dispatch succeeded, want the cancellation error")

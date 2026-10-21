@@ -453,8 +453,36 @@ var exitStatusMarker = regexp.MustCompile(`(?m)\n?^\[loomux:exit=(\d+)\]\s*\z`)
 // marker, or the pane, with them. `trap :` makes them carry on. It's a
 // handler, not an ignore: the subshell and anything it execs reset it to
 // the default, so command's own SIGINT and SIGQUIT behaviour is unchanged.
+//
+// The pane then waits for tmux to show the marker before it exits
+// (LOOM-198). tmux 3.4 and 3.5 close a pane's pty as soon as they reap
+// its process, dropping what they hadn't read from it yet: under load,
+// the command's last output (why an agent CLI didn't start) and the
+// marker with it. The pane's output is read in order, so once the marker
+// shows, everything before it has been read. The wait asks tmux about
+// the pane itself ($TMUX_PANE), every 100ms up to awaitMarkerTries
+// times, and stops at once if tmux can't say: no pane, no tmux, a failed
+// capture, or a sleep that won't take a fraction.
 func WrapExitStatus(command string) string {
-	return "trap : INT QUIT\n(\n" + command + "\n)\n__loomux_s=$?\nprintf '\\n[loomux:exit=%d]\\n' \"$__loomux_s\"\nexit \"$__loomux_s\""
+	return "trap : INT QUIT\n(\n" + command + "\n)\n__loomux_s=$?\nprintf '\\n[loomux:exit=%d]\\n' \"$__loomux_s\"\n" +
+		awaitMarker() + "exit \"$__loomux_s\""
+}
+
+// awaitMarkerTries bounds WrapExitStatus's wait for tmux to show the
+// marker: 50 tries, 100ms apart, is 5s.
+var awaitMarkerTries = 50
+
+// awaitMarker is WrapExitStatus's wait for tmux to show the marker.
+func awaitMarker() string {
+	return `if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+__loomux_i=0
+while [ "$__loomux_i" -lt ` + strconv.Itoa(awaitMarkerTries) + ` ] && __loomux_p=$(tmux capture-pane -p -J -t "$TMUX_PANE" 2>/dev/null); do
+case "$__loomux_p" in *"[loomux:exit=$__loomux_s]"*) break ;; esac
+sleep 0.1 2>/dev/null || break
+__loomux_i=$((__loomux_i + 1))
+done
+fi
+`
 }
 
 // exitMarker finds WrapExitStatus's marker as output's last line: the

@@ -1,6 +1,6 @@
 module github.com/Loomux/server/plugins/docker
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/Loomux/server v0.0.0
