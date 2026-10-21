@@ -31,11 +31,12 @@ var localEnvAllowed = map[string]bool{
 }
 
 // ScrubLocalTmuxEnv removes every variable localEnv wouldn't pass from
-// the global environment of a tmux server already running on the local
-// socket. A tmux server keeps the environment of the client that started
-// it and hands it to every new session, so one started by an older
-// loomuxd (with its full environment) would otherwise keep leaking it.
-// No server running is not an error.
+// the global environment of a tmux server already running locally on
+// socket, the instance's ("" is DefaultTmuxSocket). A tmux server keeps
+// the environment of the client that started it and hands it to every
+// new session, so one started by an older loomuxd (with its full
+// environment) would otherwise keep leaking it. No server running is not
+// an error.
 //
 // The server can exit between listing its environment and unsetting a
 // variable, when its last session ends (another loomuxd's, or a test's
@@ -43,10 +44,13 @@ var localEnvAllowed = map[string]bool{
 // over: with the server gone, the listing fails and there's nothing to
 // scrub; a server started meanwhile is scrubbed in turn. A listing ctx
 // cut short is no proof the server is gone, so it's ctx's error.
-func ScrubLocalTmuxEnv(ctx context.Context) error {
-	var err error
+func ScrubLocalTmuxEnv(ctx context.Context, socket string) error {
+	socket, err := tmuxSocketOrDefault(socket)
+	if err != nil {
+		return err
+	}
 	for range scrubAttempts {
-		if err = scrubLocalTmuxEnvOnce(ctx); err == nil {
+		if err = scrubLocalTmuxEnvOnce(ctx, socket); err == nil {
 			return nil
 		}
 	}
@@ -57,8 +61,8 @@ func ScrubLocalTmuxEnv(ctx context.Context) error {
 const scrubAttempts = 3
 
 // scrubLocalTmuxEnvOnce is one pass of ScrubLocalTmuxEnv.
-func scrubLocalTmuxEnvOnce(ctx context.Context) error {
-	show := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "show-environment", "-g")
+func scrubLocalTmuxEnvOnce(ctx context.Context, socket string) error {
+	show := exec.CommandContext(ctx, "tmux", "-L", socket, "show-environment", "-g")
 	show.Env = localEnv()
 	out, err := show.Output()
 	if err != nil {
@@ -72,7 +76,7 @@ func scrubLocalTmuxEnvOnce(ctx context.Context) error {
 		if name == "" || localEnvAllowed[name] || strings.HasPrefix(name, "LC_") {
 			continue
 		}
-		cmd := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "set-environment", "-g", "-u", name)
+		cmd := exec.CommandContext(ctx, "tmux", "-L", socket, "set-environment", "-g", "-u", name)
 		cmd.Env = localEnv()
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("targets: scrub tmux environment: %s: %w", name, err)

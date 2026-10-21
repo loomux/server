@@ -96,3 +96,14 @@ func TestOrphanSweeper_SkipsUnpinnedManagedTarget(t *testing.T) {
 		t.Errorf("sweep built %d executors for an unpinned managed target; logs: %s", built, logs.String())
 	}
 }
+
+// LOOM-202: the sweep lists the sessions on its executor's socket, the
+// instance's own, not a process-wide one.
+func TestOrphanSweeper_ListsTheExecutorsSocket(t *testing.T) {
+	_, _, exec, _, orch := setup(t)
+	exec.socket = "loomux-sweeptest"
+	orchestrator.NewOrphanSweeper(orch, time.Hour, nil).Sweep(context.Background())
+	if want := "tmux -L loomux-sweeptest list-sessions"; !strings.Contains(exec.lastRunOnce, want) {
+		t.Errorf("the sweep ran %q, want %q", exec.lastRunOnce, want)
+	}
+}

@@ -297,7 +297,7 @@ func (s *Server) attachCommandsFor(ctx context.Context, target *registry.Target,
 		}
 	}
 	if target.Kind == registry.TargetKindRemote {
-		out = append(out, attachCommandResponse{Via: "ssh", Command: sshAttachCommand(target, session)})
+		out = append(out, attachCommandResponse{Via: "ssh", Command: sshAttachCommand(target, s.tmuxSocketName(), session)})
 	}
 	return out
 }
@@ -314,14 +314,14 @@ func (s *Server) targetView(ctx context.Context, t *registry.Target) targetRespo
 	return views[0]
 }
 
-// sshAttachCommand is the plain ssh form of attaching to session on a
-// remote target.
-func sshAttachCommand(t *registry.Target, session string) string {
+// sshAttachCommand is the plain ssh form of attaching to session, on
+// tmux socket, on a remote target.
+func sshAttachCommand(t *registry.Target, socket, session string) string {
 	cmd := "ssh "
 	if t.SSHPort != 0 && t.SSHPort != 22 {
 		cmd += fmt.Sprintf("-p %d ", t.SSHPort)
 	}
-	return cmd + t.User + "@" + t.Host + " -t " + shellQuote(targets.AttachCommand(session))
+	return cmd + t.User + "@" + t.Host + " -t " + shellQuote(targets.AttachCommand(socket, session))
 }
 
 // shellQuote single-quotes s for a POSIX shell.

@@ -130,6 +130,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithSessionTTL(apiCfg.SessionTTL),
 		api.WithSessionMaxAge(apiCfg.SessionMaxAge),
 		api.WithLocalTargets(loomux.LocalTargets()),
+		api.WithTmuxSocket(loomux.TmuxSocket()),
 		api.WithTargetProber(loomux),
 		api.WithWorkspaceManager(loomux),
 		api.WithTaskCanceller(loomux),

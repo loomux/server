@@ -2,9 +2,14 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -117,5 +122,90 @@ func TestBuild_ManagedSSHDirsPerInstance(t *testing.T) {
 		if err != nil || len(got) != 1 || !bytes.Equal(got[0].Marshal(), want.Marshal()) {
 			t.Errorf("instance %d's agent holds %v (err %v), want its own key", i, got, err)
 		}
+	}
+}
+
+// LOOM-202: two app instances in one process keep their tmux sockets
+// apart. The socket was process-wide, set by every Build, so the first
+// instance's sessions landed on the second's tmux server, where the
+// second's orphan sweep would reap them as its own.
+func TestBuild_TmuxSocketPerInstance(t *testing.T) {
+	srv := fakeRouterServer(t)
+	sockets := [2]string{fmt.Sprintf("loomux-apptest-a-%d", os.Getpid()), fmt.Sprintf("loomux-apptest-b-%d", os.Getpid())}
+	var apps [2]*App
+	for i, socket := range sockets {
+		t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+		cfg := testConfig(t, srv.URL)
+		cfg.TmuxSocket = socket
+		a, err := Build(cfg)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		t.Cleanup(func() { _ = a.Close() })
+		apps[i] = a
+	}
+
+	local := &registry.Target{Name: "box", Kind: registry.TargetKindLocal}
+	for i, a := range apps {
+		e, err := a.newExecutor(local)
+		if err != nil {
+			t.Fatalf("instance %d: local executor: %v", i, err)
+		}
+		defer e.Close()
+		session := fmt.Sprintf("loomux-apptest-%d", i)
+		if err := e.NewSession(context.Background(), session, "", "sleep 60"); err != nil {
+			t.Fatalf("instance %d: NewSession: %v", i, err)
+		}
+		for j, socket := range sockets {
+			on := exec.Command("tmux", "-L", socket, "has-session", "-t", session).Run() == nil
+			if on != (i == j) {
+				t.Errorf("instance %d's session on socket %s: %v, want %v", i, socket, on, i == j)
+			}
+		}
+	}
+}
+
+// LOOM-202: Build scrubs the environment of its own instance's tmux
+// server (LOOM-141), the socket it was given.
+func TestBuild_ScrubsItsOwnTmuxSocket(t *testing.T) {
+	srv := fakeRouterServer(t)
+	socket := fmt.Sprintf("loomux-apptest-scrub-%d", os.Getpid())
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+	start := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", "first", "sleep 60")
+	start.Env = append(os.Environ(), "LOOMUX_SCRUBTEST_LEAK=1")
+	if out, err := start.CombinedOutput(); err != nil {
+		t.Fatalf("start tmux: %v: %s", err, out)
+	}
+	cfg := testConfig(t, srv.URL)
+	cfg.TmuxSocket = socket
+	a, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	if a.TmuxSocket() != socket {
+		t.Errorf("TmuxSocket() = %q, want %q", a.TmuxSocket(), socket)
+	}
+	env, err := exec.Command("tmux", "-L", socket, "show-environment", "-g").Output()
+	if err != nil {
+		t.Fatalf("show-environment: %v", err)
+	}
+	if strings.Contains(string(env), "LOOMUX_SCRUBTEST_LEAK") {
+		t.Errorf("the instance's tmux server still has the leaked variable:\n%s", env)
+	}
+}
+
+// A socket name tmux's command line can't take is refused before the
+// store opens, so nothing is left to clean up (LOOM-202).
+func TestBuild_RefusesABadTmuxSocket(t *testing.T) {
+	srv := fakeRouterServer(t)
+	cfg := testConfig(t, srv.URL)
+	cfg.TmuxSocket = "bad name"
+	if a, err := Build(cfg); err == nil {
+		_ = a.Close()
+		t.Fatal("Build accepted a tmux socket name with a space")
+	}
+	if _, err := os.Stat(cfg.DBPath); !os.IsNotExist(err) {
+		t.Errorf("the store was opened for a bad socket name: stat %s = %v", cfg.DBPath, err)
 	}
 }

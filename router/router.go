@@ -75,6 +75,9 @@ type Router struct {
 	// onLateReply, if set, is told of each late reply relayed (LOOM-121);
 	// see WithLateReplyHook.
 	onLateReply func(task *registry.Task, reply string)
+	// tmuxSocket is the instance's tmux socket, named in the attach
+	// commands replies give (LOOM-202); see WithTmuxSocket.
+	tmuxSocket string
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -108,6 +111,17 @@ func WithCommandTimeout(d time.Duration) Option {
 func WithMetrics(m *metrics.Metrics) Option {
 	return func(r *Router) {
 		r.metrics = m
+	}
+}
+
+// WithTmuxSocket names the instance's tmux socket (its executors'
+// ExecutorOptions.TmuxSocket) in the attach commands replies give
+// (LOOM-202). Empty keeps targets.DefaultTmuxSocket.
+func WithTmuxSocket(name string) Option {
+	return func(r *Router) {
+		if name != "" {
+			r.tmuxSocket = name
+		}
 	}
 }
 
@@ -157,6 +171,7 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 		markerDir:      markerDir,
 		logger:         slog.New(slog.DiscardHandler),
 		commandTimeout: defaultCommandTimeout,
+		tmuxSocket:     targets.DefaultTmuxSocket,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -1040,7 +1055,7 @@ func (r *Router) compactionLoop(ctx context.Context, task *registry.Task, loop *
 	r.interruptAgent(cleanupCtx, task)
 	return fmt.Errorf("router: dispatch: %s. Loomux interrupted it and kept the pane (attach on %s with `%s`). "+
 		"Ask for a smaller step, or start the conversation over so the agent begins with a fresh context: %w",
-		reason, targetName, targets.AttachCommand(task.TmuxSession), loop)
+		reason, targetName, targets.AttachCommand(r.tmuxSocket, task.TmuxSession), loop)
 }
 
 // turnTimedOut handles a turn that hit its bound (LOOM-76): the task is
@@ -1060,7 +1075,7 @@ func (r *Router) turnTimedOut(ctx context.Context, task *registry.Task, timeout 
 	// (LOOM-117): interrupt it, keeping the pane for a human to inspect.
 	r.interruptAgent(cleanupCtx, task)
 	return fmt.Errorf("router: dispatch: %s. Loomux interrupted it and kept the pane — attach on %s with `%s` to see it: %w",
-		reason, targetName, targets.AttachCommand(task.TmuxSession), timeout)
+		reason, targetName, targets.AttachCommand(r.tmuxSocket, task.TmuxSession), timeout)
 }
 
 // AsksUser reports whether a relayed reply puts a question to the user

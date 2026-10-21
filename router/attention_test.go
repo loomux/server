@@ -21,7 +21,7 @@ const permissionScreen = "PERMISSION PROMPT"
 // attentionHarness: a claude-code (marker-tier) agent whose pane shows
 // permissionScreen until a test changes exec.capture. Its prompt reads
 // as a three-option permission; any other screen as no prompt.
-func attentionHarness(t *testing.T) (registry.Store, *fakeExecutor, *router.Router, *registry.Workspace) {
+func attentionHarness(t *testing.T, opts ...router.Option) (registry.Store, *fakeExecutor, *router.Router, *registry.Workspace) {
 	t.Helper()
 	store := newTestStore(t)
 	exec := newFakeExecutor()
@@ -61,7 +61,7 @@ func attentionHarness(t *testing.T) (registry.Store, *fakeExecutor, *router.Rout
 			return router.RelayResult{Reply: "relayed: " + captured}, nil
 		},
 	}
-	r := router.New(store, orch, exec.factory(), credentials.NewResolver(store), agentTypes, model, markerDir)
+	r := router.New(store, orch, exec.factory(), credentials.NewResolver(store), agentTypes, model, markerDir, opts...)
 	return store, exec, r, ws
 }
 
@@ -236,4 +236,19 @@ func TestDispatch_UsageLimit(t *testing.T) {
 	}
 	task := onlyTask(t, store, ws.ID)
 	assertFailed(t, task, registry.ErrorClassAgentRateLimited, "resets 5pm (Europe/Istanbul)")
+}
+
+// LOOM-202: the attach command a reply gives names the instance's tmux
+// socket, not a process-wide one.
+func TestDispatch_LoginRequiredNamesTheInstancesSocket(t *testing.T) {
+	store, exec, r, ws := attentionHarness(t, router.WithTmuxSocket("loomux-test"))
+	exec.capture = "LOGIN"
+	_, err := r.Dispatch(context.Background(), "conv-1", "hello")
+	if err == nil {
+		t.Fatal("Dispatch: nil error for an agent that isn't signed in")
+	}
+	task := onlyTask(t, store, ws.ID)
+	if want := "tmux -L loomux-test attach -t " + task.TmuxSession; !strings.Contains(err.Error(), want) {
+		t.Errorf("error missing %q: %v", want, err)
+	}
 }

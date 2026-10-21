@@ -101,7 +101,7 @@ func testPasteText(t *testing.T, exec targets.TargetExecutor) {
 		t.Errorf("pane received %q, want %q", got, want)
 	}
 
-	buffers, err := exec.RunOnce(ctx, "tmux -L "+targets.TmuxSocket+" list-buffers -F '#{buffer_name}'")
+	buffers, err := exec.RunOnce(ctx, "tmux -L "+exec.TmuxSocket()+" list-buffers -F '#{buffer_name}'")
 	if err != nil {
 		t.Fatalf("list-buffers: %v", err)
 	}
@@ -124,7 +124,7 @@ func testPasteText(t *testing.T, exec targets.TargetExecutor) {
 	if err := exec.PasteText(ctx, gone, "secret-ish message", true); err == nil {
 		t.Fatalf("PasteText into an exited pane succeeded")
 	}
-	if buffers, _ = exec.RunOnce(ctx, "tmux -L "+targets.TmuxSocket+" list-buffers -F '#{buffer_name}'"); strings.Contains(buffers, "loomux-paste-"+gone) {
+	if buffers, _ = exec.RunOnce(ctx, "tmux -L "+exec.TmuxSocket()+" list-buffers -F '#{buffer_name}'"); strings.Contains(buffers, "loomux-paste-"+gone) {
 		t.Errorf("buffers after a failed paste = %q, want it deleted", buffers)
 	}
 
@@ -144,7 +144,7 @@ func testSessionIsSized(t *testing.T, exec targets.TargetExecutor) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })
-	out, err := exec.RunOnce(ctx, "tmux -L "+targets.TmuxSocket+" display-message -p -t "+posixQuote(session)+
+	out, err := exec.RunOnce(ctx, "tmux -L "+exec.TmuxSocket()+" display-message -p -t "+posixQuote(session)+
 		" '#{window_width}x#{window_height}'")
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)

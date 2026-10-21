@@ -305,6 +305,15 @@ func (a *App) Close() error {
 // (LOOM-141, LOOMUX_LOCAL_TARGETS).
 func (a *App) LocalTargets() bool { return !a.targetOpts.LocalTargetsOff }
 
+// TmuxSocket is this instance's tmux socket (LOOM-93, LOOMUX_TMUX_SOCKET):
+// what its executors run every session on and its attach commands name.
+func (a *App) TmuxSocket() string {
+	if a.targetOpts.TmuxSocket == "" {
+		return targets.DefaultTmuxSocket
+	}
+	return a.targetOpts.TmuxSocket
+}
+
 // ScanHostKey reads the host key t presents, reached the way this
 // instance reaches it (targets.ExecutorOptions.ScanHostKey).
 func (a *App) ScanHostKey(ctx context.Context, t *registry.Target) ([]targets.HostKey, error) {
@@ -463,6 +472,11 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if cfg.Logger != nil {
 		opts = append(opts, sqlite.WithLogger(cfg.Logger))
 	}
+	// This instance's tmux socket (LOOM-93), its own like the rest of
+	// targetOpts (LOOM-202); checked before the store opens, as below.
+	if cfg.TmuxSocket != "" && !targets.ValidTmuxSocket(cfg.TmuxSocket) {
+		return nil, fmt.Errorf("app: tmux socket name %q: letters, digits, '-' and '_' only", cfg.TmuxSocket)
+	}
 	// Before the store opens, so a bad override leaves nothing to clean up.
 	if err := agentTypes.ApplyProfileOverrides(cfg.AgentProfiles); err != nil {
 		return nil, fmt.Errorf("app: %s: %w", envAgentProfiles, err)
@@ -487,24 +501,15 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// exposes them via App.Metrics().Handler() (LOOM-103).
 	met := metrics.NewMetrics(prometheus.NewRegistry())
 
-	// Passed to both the detector and the router, so they agree on where
-	// a TierMarker agent-type's marker files live (LOOM-32): router.
-	// launchAgent tells the launched process the path, completion.Detector
-	// watches it. Empty means each target's per-user default, which both
-	// resolve the same way (completion.ResolveMarkerDir).
-	if cfg.TmuxSocket != "" {
-		if err := targets.SetTmuxSocket(cfg.TmuxSocket); err != nil {
-			return nil, fmt.Errorf("app: %w", err)
-		}
-	}
 	if !cfg.LocalTargetsOff {
 		// Sessions may outlive loomuxd, and with them a tmux server
-		// started with loomuxd's full environment (LOOM-141). After
-		// SetTmuxSocket: it's this instance's socket that's scrubbed.
+		// started with loomuxd's full environment (LOOM-141): this
+		// instance's socket is scrubbed.
 		scrubCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := targets.ScrubLocalTmuxEnv(scrubCtx)
+		err := targets.ScrubLocalTmuxEnv(scrubCtx, cfg.TmuxSocket)
 		cancel()
 		if err != nil {
+			_ = store.Close()
 			return nil, fmt.Errorf("app: %w", err)
 		}
 	}
@@ -534,9 +539,16 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if err := managed.Validate(); err != nil {
 		return nil, fmt.Errorf("app: %w", err)
 	}
-	// Everything this instance's executors share (LOOM-197, LOOM-199):
-	// its own, never process-wide, so two in one process stay apart.
-	targetOpts := targets.ExecutorOptions{KnownHostsDir: knownHostsDir, Managed: managed, LocalTargetsOff: cfg.LocalTargetsOff}
+	// Everything this instance's executors share (LOOM-197, LOOM-199,
+	// LOOM-202): its own, never process-wide, so two in one process stay
+	// apart.
+	targetOpts := targets.ExecutorOptions{TmuxSocket: cfg.TmuxSocket, KnownHostsDir: knownHostsDir, Managed: managed,
+		LocalTargetsOff: cfg.LocalTargetsOff}
+	// Passed to both the detector and the router, so they agree on where
+	// a TierMarker agent-type's marker files live (LOOM-32): router.
+	// launchAgent tells the launched process the path, completion.Detector
+	// watches it. Empty means each target's per-user default, which both
+	// resolve the same way (completion.ResolveMarkerDir).
 	markerDir := cfg.MarkerDir
 	newExecutor := func(t *registry.Target) (targets.TargetExecutor, error) {
 		o := targetOpts
@@ -581,7 +593,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if cfg.Logger != nil {
 		routerOpts = append(routerOpts, router.WithLogger(cfg.Logger))
 	}
-	routerOpts = append(routerOpts, router.WithMetrics(met))
+	routerOpts = append(routerOpts, router.WithMetrics(met), router.WithTmuxSocket(cfg.TmuxSocket))
 	// The notifier (LOOM-102) hears of finished turns from the dispatch
 	// service and of late replies (LOOM-121) from the router.
 	bg := &background{}

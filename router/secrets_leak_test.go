@@ -119,7 +119,7 @@ func TestSecretsNeverLeakIntoCapturedOutputOrSummary(t *testing.T) {
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("ListTasks = %v, %v", tasks, err)
 	}
-	startCmd, err := exec.Command("tmux", "-L", targets.TmuxSocket, "display-message", "-p", "-t",
+	startCmd, err := exec.Command("tmux", "-L", targets.DefaultTmuxSocket, "display-message", "-p", "-t",
 		tasks[0].TmuxSession, "#{pane_start_command}").CombinedOutput()
 	if err != nil {
 		t.Fatalf("tmux display-message: %v: %s", err, startCmd)

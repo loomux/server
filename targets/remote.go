@@ -69,6 +69,8 @@ type RemoteExecutor struct {
 	// controlTag tells this way of reaching user@host:port apart from
 	// others in the ControlMaster path (LOOM-138).
 	controlTag string
+	// socket is the tmux socket on the target (LOOM-202).
+	socket string
 }
 
 // RemoteOption configures a RemoteExecutor. Production's NewExecutor
@@ -105,6 +107,17 @@ func WithExtraSSHArgs(args ...string) RemoteOption {
 	return func(e *RemoteExecutor) { e.extraArgs = append(e.extraArgs, args...) }
 }
 
+// WithTmuxSocket runs every tmux command on the target with -L name
+// instead of DefaultTmuxSocket (LOOM-202); empty keeps the default.
+// NewExecutorWith passes the instance's, checked with ValidTmuxSocket.
+func WithTmuxSocket(name string) RemoteOption {
+	return func(e *RemoteExecutor) {
+		if name != "" {
+			e.socket = name
+		}
+	}
+}
+
 // NewRemoteExecutor constructs a RemoteExecutor for the given host/user.
 func NewRemoteExecutor(host, user string, opts ...RemoteOption) *RemoteExecutor {
 	e := &RemoteExecutor{
@@ -114,6 +127,7 @@ func NewRemoteExecutor(host, user string, opts ...RemoteOption) *RemoteExecutor 
 		controlPersist: defaultControlPersist,
 		opTimeout:      defaultOpTimeout,
 		runOnceTimeout: defaultRunOnceTimeout,
+		socket:         DefaultTmuxSocket,
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -282,7 +296,7 @@ func (e *RemoteExecutor) sshExecWithin(ctx context.Context, timeout time.Duratio
 // shell metacharacters in e.g. send-keys content would be interpreted
 // remotely).
 func (e *RemoteExecutor) run(ctx context.Context, args ...string) (string, error) {
-	remoteCmd := shellQuoteJoin(append([]string{"tmux", "-L", TmuxSocket}, args...))
+	remoteCmd := shellQuoteJoin(append([]string{"tmux", "-L", e.socket}, args...))
 	stdout, stderr, exitCode, err := e.sshExec(ctx, remoteCmd)
 	if err != nil {
 		return "", err
@@ -371,7 +385,7 @@ func (e *RemoteExecutor) PasteText(ctx context.Context, target, text string, ent
 	}
 	buf := pasteBuffer(target)
 	tmux := func(args ...string) string {
-		return shellQuoteJoin(append([]string{"tmux", "-L", TmuxSocket}, args...))
+		return shellQuoteJoin(append([]string{"tmux", "-L", e.socket}, args...))
 	}
 	// -d deletes the buffer only on a paste that worked; a failed one
 	// (an exited pane) mustn't leave the message readable on the tmux
@@ -446,6 +460,8 @@ func (e *RemoteExecutor) ControlMasterAlive(ctx context.Context) (bool, error) {
 	}
 	return false, fmt.Errorf("targets: ssh -O check: %w", err)
 }
+
+func (e *RemoteExecutor) TmuxSocket() string { return e.socket }
 
 // Close proactively tears down the SSH ControlMaster rather than relying
 // solely on ControlPersist's idle timeout.

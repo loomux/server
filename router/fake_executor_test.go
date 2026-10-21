@@ -64,6 +64,8 @@ type fakeExecutor struct {
 	runOnce func(command string) (string, error)
 	// runOnceCommands is every script RunOnce was given, in order.
 	runOnceCommands []string
+	// socket is TmuxSocket's answer; "" is targets.DefaultTmuxSocket.
+	socket string
 	// captureFunc, when set, replaces capture with a fresh value per call
 	// (e.g. output that never goes quiet). onSendKeys, when set, runs
 	// after every successful SendKeys (e.g. to cancel a request mid-turn).
@@ -249,6 +251,13 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 		return e.runOnce(command)
 	}
 	return e.runOnceOutput, e.runOnceErr
+}
+
+func (e *fakeExecutor) TmuxSocket() string {
+	if e.socket != "" {
+		return e.socket
+	}
+	return targets.DefaultTmuxSocket
 }
 
 func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.PaneExit, error) {
