@@ -60,8 +60,8 @@ const (
 	// credential can't read Services to tell.
 	ProblemServiceMissing = "service_missing"
 	// ProblemNetworkPolicyNotEnforced (warning; error when required): a
-	// confined canary pod reached the API server, the metadata address
-	// or the internet.
+	// confined canary pod reached the API server, kube-dns beyond port
+	// 53, the metadata address or the internet.
 	ProblemNetworkPolicyNotEnforced = "network_policy_not_enforced"
 	// ProblemNetworkPolicyAllowsEgress (warning; error when required):
 	// the namespace's NetworkPolicies let an egress "none" machine reach

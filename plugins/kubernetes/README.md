@@ -73,16 +73,20 @@ machine. Then `network_policy_allows_egress` is reported, naming the
 policy, and `egress: none` is withdrawn.
 
 **The canary.** A canary pod from the agent image, labelled as a
-confined agent, tries the API server (by the client's address and by
-its cluster name), the link-local metadata address `169.254.169.254:80`,
-`1.1.1.1:443` and `github.com:443`, all at once. Then it tries kube-dns
-as the control. A target that answers is tried again, 15 times a
-second apart, before it counts: an engine confines a new pod only once
-it has learned its address (about 2 s with kube-network-policies).
-Exit 0: enforced. 10, 13 or 11 (the API server, the metadata address,
-the internet): not enforced, and `network_policy_not_enforced` is
-reported (an error with `require_network_policy`, which then refuses
-machines). 12: not even kube-dns answered, so pod networking is broken
+confined machine, tries all of these at once: the API server (by the
+client's address and by its cluster name), kube-dns on its metrics port
+9153, the link-local metadata address `169.254.169.254:80`,
+`1.1.1.1:443` and `github.com:443`. kube-dns on 9153 is in-cluster:
+no firewall outside the cluster blocks it while letting port 53
+through, so only an engine enforcing (c) keeps it out. Then the canary
+tries kube-dns on port 53 as the control. A target that answers is
+tried again, 15 times a second apart, before it counts: an engine
+confines a new pod only once it has learned its address (about 2 s
+with kube-network-policies). Exit 0: enforced. 10, 14, 13 or 11 (the
+API server, kube-dns beyond 53, the metadata address, the internet):
+not enforced, and `network_policy_not_enforced` is reported (an error
+with `require_network_policy`, which then refuses machines). 12: not
+even kube-dns answered, so pod networking is broken
 or the DNS policy is missing; `network_policy_check_failed` is
 reported and no verdict is claimed. A canary still running after 15 s
 (the image pulling) answers `network_policy_check_pending`; the next
@@ -93,14 +97,20 @@ it: it offers `none` on an "enforced" at most 10 minutes old, and past
 5 minutes it starts the canary in the background, so a cluster in use
 renews the verdict before it lapses. A pod labelled `none` (create,
 start, recreate) is made only while the policies hold and such a
-verdict exists. With none, the canary is run and waited for (15 s).
+verdict exists. With none, the canary is run and waited for (15 s),
+and the policies are read again after it, just before the pod is made.
 Otherwise create refuses it: `invalid_params`, or `unavailable` while
 the canary runs. A machine already running isn't watched: the label
 confines nothing by itself.
 
 What it trusts. The canary samples a few destinations; it can't prove
 that none other answers. What proves that is the policies, so the
-engine must implement NetworkPolicy as specified. Policy APIs the
+engine must implement NetworkPolicy as specified, on every node: the
+canary runs on whichever node it is scheduled to. A policy engine
+DaemonSet missing from or broken on one node leaves machines there
+unconfined, and the canary only notices if it lands there. Policies are
+live: one an admin adds after a machine is made applies to it at once,
+and only the next check reports it. Policy APIs the
 plugin's namespaced Role can't read can allow what NetworkPolicy
 denies: AdminNetworkPolicy, Calico `GlobalNetworkPolicy`, Cilium's
 policies. None of those may let agent pods out. The canary is the only

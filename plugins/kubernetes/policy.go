@@ -26,12 +26,14 @@ import (
 // machine isolates it for egress.
 //
 // What this trusts: that the engine implements NetworkPolicy as
-// specified (the canary samples that it enforces it). Policy APIs the
-// plugin's namespaced Role can't read can allow what NetworkPolicy
-// denies: AdminNetworkPolicy, Calico's and Cilium's own kinds. Nothing
-// of theirs may let agent pods out; the canary's destinations are the
-// backstop for those alone. Whether a pod's traffic to its own node is
-// policed is up to the engine.
+// specified on every node. The canary samples that it enforces it, on
+// the one node it lands on. Policy APIs the plugin's namespaced Role
+// can't read can allow what NetworkPolicy denies: AdminNetworkPolicy,
+// Calico's and Cilium's own kinds. Nothing of theirs may let agent pods
+// out; the canary's destinations are the backstop for those alone.
+// Whether a pod's traffic to its own node is policed is up to the
+// engine. And policies are live: one an admin adds after a machine's
+// pod is made applies to it at once, and only the next check sees it.
 
 // nsNameLabel is the label the API server gives every namespace.
 const nsNameLabel = "kubernetes.io/metadata.name"

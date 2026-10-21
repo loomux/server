@@ -817,12 +817,17 @@ func TestCheck(t *testing.T) {
 
 func TestCanaryScript(t *testing.T) {
 	s := canaryScript("10.96.0.1:443")
-	for _, want := range []string{"probe 10.96.0.1 443 &", "probe kubernetes.default.svc.cluster.local 443 &", "probe 169.254.169.254 80 &", "probe 1.1.1.1 443 &", "probe github.com 443 &", `probe "$dns" 53 || exit 12`, "exit 0"} {
+	for _, want := range []string{"probe 10.96.0.1 443 &", "probe kubernetes.default.svc.cluster.local 443 &", `probe "$dns" 9153 &`, "probe 169.254.169.254 80 &", "probe 1.1.1.1 443 &", "probe github.com 443 &", `probe "$dns" 53 || exit 12`, "exit 0"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script lacks %q:\n%s", want, s)
 		}
 	}
 	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", time.Minute)
+	// Labelled like a machine, so a policy on target or environment
+	// labels applies to it as to one.
+	if pod.Labels[protocol.LabelTarget] == "" || pod.Labels[protocol.LabelEnvironment] == "" {
+		t.Errorf("canary labels = %v, want a target and an environment", pod.Labels)
+	}
 	if pod.Labels[labelRole] != "agent" || pod.Labels[labelEgress] != "none" || pod.Labels[labelCanary] != "true" || pod.Spec.RestartPolicy != corev1.RestartPolicyNever || *pod.Spec.AutomountServiceAccountToken || pod.Spec.SecurityContext.RunAsUser == nil || *pod.Spec.SecurityContext.RunAsUser != 10002 || len(pod.Spec.Volumes) != 0 {
 		t.Errorf("canary pod = %+v", pod)
 	}

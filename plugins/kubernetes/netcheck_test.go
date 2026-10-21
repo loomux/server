@@ -26,23 +26,24 @@ import (
 // probes, the metadata address its first linkAnswers and each internet
 // destination its first netAnswers, then they are blocked, the way a
 // policy engine confines a new pod once it has learned its address.
-// kube-dns (port 53) always answers. The probes run at once, so each
-// destination counts its own. It returns the PATH and a function
-// reading how many times a destination ("1.1.1.1_443") was probed or
-// the script slept ("sleeps").
-func fakeProbes(t *testing.T, apiAnswers, linkAnswers, netAnswers int) (path string, count func(string) int) {
+// kube-dns answers on port 53 always and on 9153 its first dnsAnswers.
+// The probes run at once, so each destination counts its own. It
+// returns the PATH and a function reading how many times a destination
+// ("1.1.1.1_443", "dns_9153") was probed or the script slept ("sleeps").
+func fakeProbes(t *testing.T, apiAnswers, dnsAnswers, linkAnswers, netAnswers int) (path string, count func(string) int) {
 	t.Helper()
 	dir := t.TempDir()
 	stub := `#!/bin/bash
 # timeout 3 bash -c "exec 3<>/dev/tcp/<host>/<port>"
 dest=${4##*/dev/tcp/}
+f="` + dir + `/${dest//\//_}"
 case $dest in
   */53) exit 0 ;;
+  */9153) limit=` + strconv.Itoa(dnsAnswers) + ` f="` + dir + `/dns_9153" ;;
   169.254.169.254/*) limit=` + strconv.Itoa(linkAnswers) + ` ;;
   1.1.1.1/*|github.com/*) limit=` + strconv.Itoa(netAnswers) + ` ;;
   *) limit=` + strconv.Itoa(apiAnswers) + ` ;;
 esac
-f="` + dir + `/${dest//\//_}"
 n=$(cat "$f" 2>/dev/null || echo 0)
 echo $((n + 1)) > "$f"
 [ "$n" -lt "$limit" ]
@@ -77,20 +78,21 @@ func TestCanaryScriptSettles(t *testing.T) {
 	}
 	const never = 1 << 20
 	for _, tc := range []struct {
-		name                         string
-		apiAnswers, link, netAnswers int
-		exit, sleeps                 int
+		name                              string
+		apiAnswers, dns, link, netAnswers int
+		exit, sleeps                      int
 	}{
-		{"enforced from the start", 0, 0, 0, exitBlocked, 0},
-		{"enforced once the engine caught up", 2, 0, 0, exitBlocked, 2},
-		{"all answer at first, then none", 1, 1, 1, exitBlocked, 1},
-		{"API server never confined", never, 0, 0, exitAPIReachable, canaryAttempts - 1},
-		{"metadata address never confined", 0, never, 0, exitLinkLocalReach, canaryAttempts - 1},
-		{"internet never confined", 0, 0, never, exitNetReachable, canaryAttempts - 1},
-		{"the API server is named first", never, never, never, exitAPIReachable, canaryAttempts - 1},
+		{"enforced from the start", 0, 0, 0, 0, exitBlocked, 0},
+		{"enforced once the engine caught up", 2, 0, 0, 0, exitBlocked, 2},
+		{"all answer at first, then none", 1, 1, 1, 1, exitBlocked, 1},
+		{"API server never confined", never, 0, 0, 0, exitAPIReachable, canaryAttempts - 1},
+		{"kube-dns beyond port 53 never confined", 0, never, 0, 0, exitDNSBeyond53, canaryAttempts - 1},
+		{"metadata address never confined", 0, 0, never, 0, exitLinkLocalReach, canaryAttempts - 1},
+		{"internet never confined", 0, 0, 0, never, exitNetReachable, canaryAttempts - 1},
+		{"the API server is named first", never, never, never, never, exitAPIReachable, canaryAttempts - 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path, count := fakeProbes(t, tc.apiAnswers, tc.link, tc.netAnswers)
+			path, count := fakeProbes(t, tc.apiAnswers, tc.dns, tc.link, tc.netAnswers)
 			cmd := exec.Command(bash, "-c", canaryScript("10.96.0.1:443"))
 			cmd.Env = []string{"PATH=" + path}
 			err := cmd.Run()
@@ -107,7 +109,7 @@ func TestCanaryScriptSettles(t *testing.T) {
 			if got := count("sleeps"); got != tc.sleeps {
 				t.Errorf("slept %d times, want %d", got, tc.sleeps)
 			}
-			for _, dest := range []string{"10.96.0.1_443", "kubernetes.default.svc.cluster.local_443", "169.254.169.254_80", "1.1.1.1_443", "github.com_443"} {
+			for _, dest := range []string{"10.96.0.1_443", "kubernetes.default.svc.cluster.local_443", "dns_9153", "169.254.169.254_80", "1.1.1.1_443", "github.com_443"} {
 				if got := count(dest); got != tc.sleeps+1 {
 					t.Errorf("%s probed %d times, want %d", dest, got, tc.sleeps+1)
 				}

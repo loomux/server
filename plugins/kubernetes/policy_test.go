@@ -400,3 +400,26 @@ func TestNonePoliciesForbidden(t *testing.T) {
 		t.Errorf("egress options = %v, want internet only", info.EgressOptions)
 	}
 }
+
+// A policy added while create waits for the canary counts: the policies
+// are read again after the wait, just before the pod is made.
+func TestNonePoliciesReadAfterTheCanary(t *testing.T) {
+	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
+	canaryExits(cs, exitBlocked)
+	open := egressPolicy("allow-metadata", map[string]string{labelRole: roleAgent}, cidr("169.254.169.254/32"))
+	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod); ok && pod.Labels[labelCanary] == "true" {
+			if err := cs.Tracker().Add(open); err != nil {
+				t.Error(err)
+			}
+		}
+		return false, nil, nil
+	})
+	p := configured(t, cs, nil) // no verdict yet: create runs the canary
+	if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); rpcCode(err) != rpc.CodeInvalidParams || !strings.Contains(err.Error(), "allow-metadata") {
+		t.Errorf("create with egress none, a policy added during its canary = %v", err)
+	}
+	if _, err := cs.CoreV1().Pods(testNS).Get(ctx, podName("conf1"), metav1.GetOptions{}); err == nil {
+		t.Error("a pod labelled egress none was made")
+	}
+}

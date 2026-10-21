@@ -746,13 +746,14 @@ block nothing). So `plugin.check` **tests enforcement rather than assuming it**:
 canary pod `lx-netcheck-<rand>` from the agent image, labelled `loomux.io/role=agent` and
 `loomux.io/egress=none` (which the §10 policies confine to kube-dns only), restricted-compliant like every
 other pod, which tries, all at once, the API server (`<API server address>:443` and
-`kubernetes.default.svc.cluster.local:443`: exit 10), the link-local metadata address `169.254.169.254:80`
+`kubernetes.default.svc.cluster.local:443`: exit 10), kube-dns on its metrics port 9153 (exit 14: in-cluster,
+so no outside firewall can stand in for the engine), the link-local metadata address `169.254.169.254:80`
 (exit 13) and the internet (`1.1.1.1:443`, `github.com:443`: exit 11), else exits 0; the plugin reads the
 exit code from the pod's status and deletes it. A target that answers is tried again, up to
 15 times a second apart, and decides only if it still answers: a policy engine confines a new pod only once
 it has learned its address, and kube-network-policies on theWyseKube left new pods unconfined for about
 2 s (measured 2026-10-13), which made a single try read an enforcing cluster as not enforced. Exit 0 means all were blocked (enforced);
-10, 13 or 11 means a `none` pod could reach the cluster, the metadata address or the internet (not enforced). It
+10, 14, 13 or 11 means a `none` pod could reach the cluster, the metadata address or the internet (not enforced). It
 runs at install, after a configuration change, on `POST /plugins/{id}/check`, and once every six hours.
 
 **The policies, too (LOOM-201).** The canary samples a few destinations and can't show that no other one
@@ -766,13 +767,14 @@ or (c) itself). Otherwise check reports `network_policy_allows_egress`, naming t
 `require_network_policy`), and `none` is withdrawn. The canary's "enforced" serves describe and create for 10
 minutes. Describe never waits for a canary; past 5 minutes it starts one in the background, so a cluster in use
 renews the verdict before it lapses. Create, start and recreate refuse a `none` pod unless the policies (read
-then) and such a recent verdict both hold, running and waiting for the canary when there is none; check runs the
-canary again after a minute. The trust
-assumption: the engine implements NetworkPolicy as specified. Policy APIs a namespaced Role can't read
+then, and again after any wait for the canary) and such a recent verdict both hold, running and waiting for the
+canary when there is none; check runs the canary again after a minute. The trust assumption: the engine
+implements NetworkPolicy as specified, on every node (the canary samples the one it lands on). Policy APIs a namespaced Role can't read
 (AdminNetworkPolicy, Calico's `GlobalNetworkPolicy`, Cilium's policies) can allow what NetworkPolicy denies, so
 nothing of theirs may let agent pods out; the canary is the only check on them, and only for its own
-destinations. Whether a pod's traffic to its own node is policed is the engine's choice. A running machine
-isn't re-checked: drift after creation is reported only by the next check.
+destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live and
+a running machine isn't re-checked: a policy an admin adds after creation applies at once and is reported only by
+the next check. A canary pinned to each `none` machine's node is the follow-up.
 
 Not enforced:
 

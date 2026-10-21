@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -19,9 +20,9 @@ import (
 // The network-isolation check (design §8). NetworkPolicy is only as
 // real as the cluster's policy engine, so the plugin tests enforcement
 // rather than assuming it: a short-lived canary pod, confined like an
-// egress "none" machine by the §10 policies, tries the API server, the
-// link-local metadata address and the internet and exits 10, 13, 11 or
-// 0. A new pod can be unconfined for a moment while the engine learns
+// egress "none" machine by the §10 policies, tries the API server,
+// kube-dns beyond port 53, the link-local metadata address and the
+// internet and exits 10, 14, 13, 11 or 0. A new pod can be unconfined for a moment while the engine learns
 // its address (about 2 s with kube-network-policies on theWyseKube,
 // measured 2026-10-13), so the canary tries a target that answers
 // again, canaryAttempts times a second apart, before it calls it
@@ -70,6 +71,7 @@ const (
 	exitNetReachable   = 11
 	exitNoNetwork      = 12
 	exitLinkLocalReach = 13
+	exitDNSBeyond53    = 14
 )
 
 // canaryAttempts bounds how long a target that answers is tried again
@@ -116,11 +118,21 @@ func (p *Plugin) enforcement(ctx context.Context, cfg Config, client kubernetes.
 // finished canary's verdict, "enforced" only within verdictTTL. One
 // older than half that starts the canary in the background; with no
 // usable verdict, a running canary is waited for up to wait. A verdict
-// other than "enforced" stands until a check.
+// other than "enforced" stands until a check. For create the policies
+// are read again after the canary, just before the pod is made.
 func (p *Plugin) confinement(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
 	if state, detail := policyVerdict(ctx, client, cfg.Namespace, instance); state != enforcementEnforced {
 		return state, detail
 	}
+	state, detail := p.lastCanary(ctx, cfg, client, instance, wait)
+	if state != enforcementEnforced || wait == 0 {
+		return state, detail
+	}
+	return policyVerdict(ctx, client, cfg.Namespace, instance)
+}
+
+// lastCanary is confinement's canary half.
+func (p *Plugin) lastCanary(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
 	p.mu.Lock()
 	last, now := p.settled, p.Now()
 	renew := last == nil || (last.state == enforcementEnforced && now.Sub(last.at) > verdictTTL/2)
@@ -243,13 +255,15 @@ func canaryVerdict(pod *corev1.Pod) (enforcementState, string, bool) {
 	if code, reason, done := canaryExit(pod); done {
 		switch code {
 		case exitBlocked:
-			return enforcementEnforced, "a confined pod reached neither the API server, the metadata address nor the internet", true
+			return enforcementEnforced, "a confined pod reached neither the API server, kube-dns beyond port 53, the metadata address nor the internet", true
 		case exitAPIReachable:
 			return enforcementNotEnforced, "a confined pod reached the API server", true
 		case exitNetReachable:
 			return enforcementNotEnforced, "a confined pod reached the internet", true
 		case exitLinkLocalReach:
 			return enforcementNotEnforced, "a confined pod reached the link-local metadata address " + metadataAddr, true
+		case exitDNSBeyond53:
+			return enforcementNotEnforced, "a confined pod reached kube-dns beyond port 53 (its metrics port, 9153)", true
 		case exitNoNetwork:
 			return enforcementFailed, "a confined pod couldn't reach kube-dns either: pod networking is broken, or the DNS policy of the agents namespace is missing", true
 		default:
@@ -282,14 +296,17 @@ func canaryExit(pod *corev1.Pod) (code int, reason string, done bool) {
 const metadataAddr = "169.254.169.254"
 
 // canaryScript probes the API server (by the client's address and by
-// its cluster name), the metadata address and the internet (an address
-// and a name), all at once; one that still answers after canaryAttempts
-// tries decides, the earliest listed first. When none does, kube-dns
-// (the pod's resolver) is the control: a confined pod may reach it, so
-// reaching it says the pod has a network and the policies hold (exit
-// 0), and not reaching it says nothing can be concluded (exit 12).
-// These are samples: what decides that nothing else is reachable either
-// is the policies (policy.go).
+// its cluster name), kube-dns (the pod's resolver) on its metrics port,
+// the metadata address and the internet (an address and a name), all at
+// once; one that still answers after canaryAttempts tries decides, the
+// earliest listed first. kube-dns on 9153 is the in-cluster sample: no
+// firewall outside the cluster stands between it and the pod, and §10's
+// (c) allows port 53 only, so only an engine enforcing that keeps it
+// out. When none answers, kube-dns on port 53 is the control: a
+// confined pod may reach it, so reaching it says the pod has a network
+// and the policies hold (exit 0), and not reaching it says nothing can
+// be concluded (exit 12). These are samples: what decides that nothing
+// else is reachable either is the policies (policy.go).
 func canaryScript(apiHost string) string {
 	type target struct {
 		host, port string
@@ -301,11 +318,13 @@ func canaryScript(apiHost string) string {
 	}
 	targets = append(targets,
 		target{"kubernetes.default.svc.cluster.local", "443", exitAPIReachable},
+		target{`"$dns"`, "9153", exitDNSBeyond53},
 		target{metadataAddr, "80", exitLinkLocalReach},
 		target{"1.1.1.1", "443", exitNetReachable},
 		target{"github.com", "443", exitNetReachable},
 	)
-	script := "probe() { timeout 3 bash -c \"exec 3<>/dev/tcp/$1/$2\" 2>/dev/null; }\n"
+	script := "dns=$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf)\n"
+	script += "probe() { timeout 3 bash -c \"exec 3<>/dev/tcp/$1/$2\" 2>/dev/null; }\n"
 	script += "reached() {\n"
 	for i, t := range targets {
 		script += fmt.Sprintf("probe %s %s & p%d=$!\n", t.host, t.port, i)
@@ -320,15 +339,15 @@ func canaryScript(apiHost string) string {
 	script += "[ $code -eq 0 ] && break\n"
 	script += fmt.Sprintf("[ $i -eq %d ] && exit $code\n", canaryAttempts)
 	script += "sleep 1\ndone\n"
-	script += "dns=$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf)\n"
 	script += "[ -n \"$dns\" ] && probe \"$dns\" 53 || exit 12\n"
 	script += "exit 0\n"
 	return script
 }
 
 // canaryPod is restricted-compliant like every pod the plugin makes,
-// labelled as a confined agent so the policies apply to it, and marked
-// as a canary so nothing lists it as a machine. Its deadline, which the
+// labelled as a confined machine (a target and an environment
+// included) so the policies apply to it as to one, and marked as a
+// canary so nothing lists it as a machine. Its deadline, which the
 // kubelet counts from scheduling (the image pull included), outlasts the
 // plugin's wait for it, so it only ends a canary nobody reads.
 func canaryPod(name string, cfg Config, instance, apiHost string, timeout time.Duration) *corev1.Pod {
@@ -337,6 +356,7 @@ func canaryPod(name string, cfg Config, instance, apiHost string, timeout time.D
 			Name: name,
 			Labels: map[string]string{
 				labelManagedBy: managedBy, protocol.LabelInstance: instance,
+				protocol.LabelTarget: "netcheck", protocol.LabelEnvironment: strings.TrimPrefix(name, "lx-"),
 				labelRole: roleAgent, labelEgress: protocol.EgressNone, labelCanary: "true",
 			},
 		},
