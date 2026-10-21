@@ -119,7 +119,7 @@ func (p *Plugin) enforcement(ctx context.Context, cfg Config, client kubernetes.
 // older than half that starts the canary in the background; with no
 // usable verdict, a running canary is waited for up to wait. A verdict
 // other than "enforced" stands until a check. For create the policies
-// are read again after the canary, just before the pod is made.
+// are read again after the canary (and ensurePod reads them last).
 func (p *Plugin) confinement(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
 	if state, detail := policyVerdict(ctx, client, cfg.Namespace, instance); state != enforcementEnforced {
 		return state, detail

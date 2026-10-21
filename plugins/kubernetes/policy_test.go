@@ -423,3 +423,32 @@ func TestNonePoliciesReadAfterTheCanary(t *testing.T) {
 		t.Error("a pod labelled egress none was made")
 	}
 }
+
+// The last read is just before the pod is made: one added while a
+// recreate waits for the old pod to go counts.
+func TestNonePoliciesReadBeforeThePod(t *testing.T) {
+	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
+	canaryExits(cs, exitBlocked)
+	p := configured(t, cs, nil)
+	if res, _ := p.Check(ctx); !res.OK || len(res.Problems) != 0 {
+		t.Fatalf("check = %+v", res)
+	}
+	if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
+		t.Fatal(err)
+	}
+	open := egressPolicy("allow-metadata", map[string]string{labelRole: roleAgent}, cidr("169.254.169.254/32"))
+	cs.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if action.(k8stesting.DeleteAction).GetName() == podName("conf1") {
+			if err := cs.Tracker().Add(open); err != nil && !strings.Contains(err.Error(), "exists") {
+				t.Error(err)
+			}
+		}
+		return false, nil, nil
+	})
+	if _, err := p.RecreateTarget(ctx, "conf1", confinedSpec("conf1")); rpcCode(err) != rpc.CodeInvalidParams || !strings.Contains(err.Error(), "allow-metadata") {
+		t.Errorf("recreate with egress none, a policy added while the old pod went = %v", err)
+	}
+	if _, err := cs.CoreV1().Pods(testNS).Get(ctx, podName("conf1"), metav1.GetOptions{}); err == nil {
+		t.Error("a pod labelled egress none was made")
+	}
+}

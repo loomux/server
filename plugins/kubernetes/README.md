@@ -97,8 +97,9 @@ it: it offers `none` on an "enforced" at most 10 minutes old, and past
 5 minutes it starts the canary in the background, so a cluster in use
 renews the verdict before it lapses. A pod labelled `none` (create,
 start, recreate) is made only while the policies hold and such a
-verdict exists. With none, the canary is run and waited for (15 s),
-and the policies are read again after it, just before the pod is made.
+verdict exists. With none, the canary is run and waited for (15 s).
+The policies are read before anything is made and once more, last,
+just before the pod is.
 Otherwise create refuses it: `invalid_params`, or `unavailable` while
 the canary runs. A machine already running isn't watched: the label
 confines nothing by itself.
@@ -109,9 +110,12 @@ engine must implement NetworkPolicy as specified, on every node: the
 canary runs on whichever node it is scheduled to. A policy engine
 DaemonSet missing from or broken on one node leaves machines there
 unconfined, and the canary only notices if it lands there. Policies are
-live: one an admin adds after a machine is made applies to it at once,
-and only the next check reports it. Policy APIs the
-plugin's namespaced Role can't read can allow what NetworkPolicy
+live, and no list is atomic with making a pod: one an admin adds after
+that last read, even in the same moment, applies to the machine at
+once, and only the next check reports it. Holding policy edits back
+while a pod is made would take admission control in the cluster, which
+the plugin can't set up. Policy APIs the plugin's namespaced Role can't
+read can allow what NetworkPolicy
 denies: AdminNetworkPolicy, Calico `GlobalNetworkPolicy`, Cilium's
 policies. None of those may let agent pods out. The canary is the only
 check on them, and only for its own destinations. Whether a pod's

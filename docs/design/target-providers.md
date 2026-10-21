@@ -767,14 +767,15 @@ or (c) itself). Otherwise check reports `network_policy_allows_egress`, naming t
 `require_network_policy`), and `none` is withdrawn. The canary's "enforced" serves describe and create for 10
 minutes. Describe never waits for a canary; past 5 minutes it starts one in the background, so a cluster in use
 renews the verdict before it lapses. Create, start and recreate refuse a `none` pod unless the policies (read
-then, and again after any wait for the canary) and such a recent verdict both hold, running and waiting for the
+before anything is made, and last just before the pod is) and such a recent verdict both hold, running and waiting for the
 canary when there is none; check runs the canary again after a minute. The trust assumption: the engine
 implements NetworkPolicy as specified, on every node (the canary samples the one it lands on). Policy APIs a namespaced Role can't read
 (AdminNetworkPolicy, Calico's `GlobalNetworkPolicy`, Cilium's policies) can allow what NetworkPolicy denies, so
 nothing of theirs may let agent pods out; the canary is the only check on them, and only for its own
-destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live and
-a running machine isn't re-checked: a policy an admin adds after creation applies at once and is reported only by
-the next check. A canary pinned to each `none` machine's node is the follow-up.
+destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live, no
+list is atomic with making a pod, and a running machine isn't re-checked: a policy an admin adds after that last read
+applies at once and is reported only by the next check; holding policy edits back would take admission control in
+the cluster. A canary pinned to each `none` machine's node, before it is reported running, is the follow-up.
 
 Not enforced:
 

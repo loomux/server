@@ -32,8 +32,9 @@ import (
 // Calico's and Cilium's own kinds. Nothing of theirs may let agent pods
 // out; the canary's destinations are the backstop for those alone.
 // Whether a pod's traffic to its own node is policed is up to the
-// engine. And policies are live: one an admin adds after a machine's
-// pod is made applies to it at once, and only the next check sees it.
+// engine. And policies are live, and no list is atomic with making a
+// pod: ensurePod reads them last, just before the pod, and one an admin
+// adds after that applies to it at once; only the next check sees it.
 
 // nsNameLabel is the label the API server gives every namespace.
 const nsNameLabel = "kubernetes.io/metadata.name"

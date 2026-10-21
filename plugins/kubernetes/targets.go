@@ -119,12 +119,18 @@ func (p *Plugin) createRecord(ctx context.Context, client kubernetes.Interface, 
 // requireNone refuses to make a pod labelled egress "none" unless that
 // holds now (LOOM-201): the policies as read now, and a canary's
 // "enforced" at most verdictTTL old (with none, the canary is run and
-// waited for). The label confines nothing by itself.
+// waited for). The label confines nothing by itself. It is asked before
+// anything is made; ensurePod reads the policies once more, last.
 func (p *Plugin) requireNone(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, spec protocol.EnvironmentSpec) error {
 	if spec.Egress != protocol.EgressNone {
 		return nil
 	}
-	switch state, detail := p.confinement(ctx, cfg, client, instance, p.CanaryWait); state {
+	return noneRefused(p.confinement(ctx, cfg, client, instance, p.CanaryWait))
+}
+
+// noneRefused is the error for a "none" pod the verdict doesn't allow.
+func noneRefused(state enforcementState, detail string) error {
+	switch state {
 	case enforcementEnforced:
 		return nil
 	case enforcementPending:
@@ -135,7 +141,9 @@ func (p *Plugin) requireNone(ctx context.Context, cfg Config, client kubernetes.
 }
 
 // ensurePod is the machine's pod, made if it isn't there. One that is
-// still terminating (a stop or recreate moments ago) is waited for.
+// still terminating (a stop or recreate moments ago) is waited for. A
+// "none" pod's policies are read last here, just before it is made:
+// one added after that applies to it, and only the next check sees it.
 func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg Config, spec protocol.EnvironmentSpec, size protocol.Size, instance string) (*corev1.Pod, error) {
 	pods := client.CoreV1().Pods(cfg.Namespace)
 	name := podName(spec.ID)
@@ -150,6 +158,11 @@ func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg
 			}
 		case !kerrors.IsNotFound(err):
 			return nil, unavailable(err)
+		}
+		if spec.Egress == protocol.EgressNone {
+			if err := noneRefused(policyVerdict(ctx, client, cfg.Namespace, instance)); err != nil {
+				return nil, err
+			}
 		}
 		pod, err = pods.Create(ctx, podFor(spec, size, cfg, instance), metav1.CreateOptions{})
 		if err == nil {
