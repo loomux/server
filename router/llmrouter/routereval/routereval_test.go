@@ -248,11 +248,23 @@ func TestRun_UnknownPrice(t *testing.T) {
 	fx := fixtures(t)
 	fake := llmroutertest.NewAnthropicCompat("sk-ant-test-0000", Oracle(fx))
 	defer fake.Close()
-	rep := offline(t, fake, "some-other-model", Options{Cases: []string{"finished"}, BudgetUSD: 0.01})
+	rep := offline(t, fake, "some-other-model", Options{Cases: []string{"finished"}})
 	var md bytes.Buffer
 	rep.WriteMarkdown(&md)
 	if rep.Price != nil || rep.Summary.CostUSD != 0 || !strings.Contains(md.String(), "unknown (no price") {
 		t.Errorf("price %v cost %v\n%s", rep.Price, rep.Summary.CostUSD, md.String())
+	}
+}
+
+// A budget needs a price to count against: without one, Run refuses to
+// start rather than run with the budget never checked.
+func TestRun_BudgetNeedsAPrice(t *testing.T) {
+	fx := fixtures(t)
+	fake := llmroutertest.NewAnthropicCompat("sk-ant-test-0000", Oracle(fx))
+	defer fake.Close()
+	o := Options{Tier: liveTier("some-other-model"), HTTPClient: fake.Client(), Offline: true, MaxCalls: 1, BudgetUSD: 0.01}
+	if _, err := Run(context.Background(), fx, o); err == nil {
+		t.Fatal("Run started with a budget and no price")
 	}
 }
 

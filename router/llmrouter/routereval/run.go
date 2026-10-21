@@ -36,7 +36,8 @@ type Options struct {
 	// plus the dearest call so far would pass it. It's a soft cap: the
 	// first call, and any call dearer than all before it, can take the
 	// spend past it by up to that call's own cost. The provider's spend
-	// limit is the hard cap.
+	// limit is the hard cap. It needs a price: Run refuses a budget for an
+	// unpriced model.
 	BudgetUSD float64
 	// MaxCalls, if positive, stops the run after that many calls.
 	MaxCalls int
@@ -85,6 +86,9 @@ func Run(ctx context.Context, fx *Fixtures, o Options) (*Report, error) {
 	price, priced := o.Price, o.Price != (Price{})
 	if !priced {
 		price, priced = PriceFor(o.Tier.Model)
+	}
+	if o.BudgetUSD > 0 && !priced {
+		return nil, fmt.Errorf("routereval: a budget needs a price, and %q has no built-in one: set Options.Price", o.Tier.Model)
 	}
 	// Errors are scrubbed of the key before they reach the report.
 	credentials.AddSystemSecret(o.Tier.APIKey)

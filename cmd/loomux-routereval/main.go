@@ -88,8 +88,8 @@ func runCmd(ctx context.Context, args []string, getenv func(string) string, stdo
 	fs.DurationVar(&f.timeout, "timeout", 45*time.Second, "per-call timeout, corrective retry included (the escalation tier's)")
 	fs.StringVar(&f.cases, "cases", "", "comma-separated case-name prefixes to run (default: all)")
 	fs.StringVar(&f.fixtures, "fixtures", "", "fixture file (default: the built-in set)")
-	fs.Float64Var(&f.priceIn, "price-in", 0, "input price, USD per million tokens (default: built-in for known models)")
-	fs.Float64Var(&f.priceOut, "price-out", 0, "output price, USD per million tokens")
+	fs.Float64Var(&f.priceIn, "price-in", 0, "input price, USD per million tokens; with --price-out, overrides the built-in price for known models")
+	fs.Float64Var(&f.priceOut, "price-out", 0, "output price, USD per million tokens (with --price-in)")
 	fs.Float64Var(&f.budget, "budget-usd", 0, "soft cap: stop before a call once the spend plus the dearest call so far would pass this; the provider's spend limit is the hard cap (required with --live)")
 	fs.IntVar(&f.maxCalls, "max-calls", 0, "stop after this many calls (0: no cap)")
 	fs.StringVar(&f.out, "out", "", "write the JSON report here")
@@ -100,6 +100,14 @@ func runCmd(ctx context.Context, args []string, getenv func(string) string, stdo
 	}
 	if f.model == "" {
 		return errors.New("--model is required")
+	}
+	// One side of a price alone would count the other side's tokens as
+	// free (and override a built-in price). Asked for by name, so a zero
+	// rate on one side can still be given.
+	set := map[string]bool{}
+	fs.Visit(func(fl *flag.Flag) { set[fl.Name] = true })
+	if set["price-in"] != set["price-out"] {
+		return errors.New("--price-in and --price-out go together: with one alone, the other side's tokens would count as free")
 	}
 	// Before a zero price falls back to the table, which would hide a
 	// negative one.
