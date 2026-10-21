@@ -3,12 +3,16 @@ package app
 import (
 	"context"
 	"log/slog"
+	"net"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/registry/sqlite"
 )
 
 // LOOM-163: Close waits for the store's background users before it
@@ -44,6 +48,97 @@ func TestBuild_CloseWaitsForBackgroundWork(t *testing.T) {
 	if a.bg.Go(func() {}) {
 		t.Error("background accepted work after Close")
 	}
+}
+
+// LOOM-195: Close waits for startup task reconciliation even while it
+// is reaching a target. It used to run on a context of its own that
+// Close neither cancelled nor waited for, so it went on using the store
+// after Close: TestDrainDispatches_StopsSubmits failed in CI when its
+// connection, opened after Close, recreated test.db in the data dir the
+// test was removing ("directory not empty").
+func TestBuild_CloseWaitsForStartupReconciliation(t *testing.T) {
+	// A target that accepts SSH connections and never answers holds
+	// reconciliation in its has-session check.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+
+	srv := fakeRouterServer(t)
+	cfg := testConfig(t, srv.URL)
+	ctx := context.Background()
+	seed, err := sqlite.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("sqlite.Open (seed): %v", err)
+	}
+	if err := seed.CreateTarget(ctx, &registry.Target{ID: "silent", Name: "silent", Kind: registry.TargetKindRemote,
+		Host: "127.0.0.1", SSHPort: ln.Addr().(*net.TCPAddr).Port, User: "loomux-test"}); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	if err := seed.CreateWorkspace(ctx, &registry.Workspace{ID: "ws", Name: "ws", Path: "/srv/ws", TargetID: "silent",
+		Status: registry.WorkspaceStatusIdle}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := seed.CreateTask(ctx, &registry.Task{ID: "left-running", WorkspaceID: "ws", Kind: registry.TaskKindCommand,
+		TmuxSession: "loomux-left-running", Status: registry.TaskStatusRunning, ConversationID: "c"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("Close (seed): %v", err)
+	}
+
+	a, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); goroutinesIn("ReconcileTasks", "HasSession") == ""; {
+		if time.Now().After(deadline) {
+			_ = a.Close()
+			t.Fatal("startup reconciliation never reached the target")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if left := goroutinesIn("ReconcileTasks"); left != "" {
+		t.Fatalf("startup reconciliation still running after Close:\n%s", left)
+	}
+}
+
+// goroutinesIn returns the stacks of the goroutines whose stack names
+// every one of funcs.
+func goroutinesIn(funcs ...string) string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	var match []string
+next:
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		for _, f := range funcs {
+			if !strings.Contains(g, f) {
+				continue next
+			}
+		}
+		match = append(match, g)
+	}
+	return strings.Join(match, "\n\n")
 }
 
 // blockingNotifier delivers once release is closed.
