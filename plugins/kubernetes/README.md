@@ -137,4 +137,9 @@ at create, start and recreate.
 conformance suite and an end-to-end run against a kind cluster with
 `deploy/test/kind/` applied, as the plugin's ServiceAccount: create,
 wait for running, ssh in through a port-forward with the pinned host
-key, stop, start, destroy.
+key, stop, start, destroy. It needs `KUBECONFIG` set to kind's own
+kubeconfig (`kind create cluster --kubeconfig FILE`), current context
+`kind-loomux`, the plugin's cluster; otherwise it fails before it
+starts. Every kubectl it runs names that file and context, so none
+falls back to the default context, which can be a real cluster
+(`kindguard_test.go` tests the check).

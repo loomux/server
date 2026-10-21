@@ -160,7 +160,9 @@ jobs:
       # none of those. The release binary is pinned by version and by
       # its sha256 (kind-linux-amd64.sha256sum of that release); the
       # cluster is deploy/test/kind/cluster/kind.yaml, its node image
-      # pinned by digest. kubectl is the runner's.
+      # pinned by digest. kubectl is the runner's. Its kubeconfig is
+      # kind's own file, KUBECONFIG for the later steps, and each kubectl
+      # names kind's context, as TestKind requires (kindKubectl).
       - name: Bring up kind
         if: needs.changes.outputs.e2e == 'true'
         env:
@@ -171,13 +173,14 @@ jobs:
           echo "${KIND_SHA256}  kind" | sha256sum -c -
           sudo install -m 0755 kind /usr/local/bin/kind
           kind version
-          kind create cluster --config deploy/test/kind/cluster/kind.yaml --wait 120s
+          kind create cluster --config deploy/test/kind/cluster/kind.yaml --kubeconfig "${RUNNER_TEMP}/kind.kubeconfig" --wait 120s
+          echo "KUBECONFIG=${RUNNER_TEMP}/kind.kubeconfig" >> "${GITHUB_ENV}"
 
       - name: Load the agent image and apply the manifests
         if: needs.changes.outputs.e2e == 'true'
         run: |
           kind load docker-image loomux-agent:test --name loomux
-          kubectl apply -f deploy/test/kind/
+          kubectl --context kind-loomux apply -f deploy/test/kind/
           sh deploy/test/kind/kubeconfig-for-sa.sh > "${RUNNER_TEMP}/plugin.kubeconfig"
 
       # kind's default CNI (kindnetd) enforces NetworkPolicy, so the
@@ -197,8 +200,8 @@ jobs:
       - name: What the cluster holds afterwards
         if: always() && needs.changes.outputs.e2e == 'true'
         run: |
-          kubectl -n loomux-agents get pods,pvc,secrets -o wide || true
-          kubectl -n loomux-agents get events --sort-by=.lastTimestamp | tail -n 40 || true
+          kubectl --context kind-loomux -n loomux-agents get pods,pvc,secrets -o wide || true
+          kubectl --context kind-loomux -n loomux-agents get events --sort-by=.lastTimestamp | tail -n 40 || true
 
       # Its own labels (version, revision, source, and its own title and
       # description), as the agent image's (LOOM-194).
