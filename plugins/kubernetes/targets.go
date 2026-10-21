@@ -88,7 +88,7 @@ func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec
 	if err != nil {
 		return protocol.Environment{}, err
 	}
-	return p.environment(pod, spec, cfg, sec), nil
+	return p.environment(pod, spec, cfg, client, instance, sec), nil
 }
 
 // createRecord makes a new machine's Secret, its record, if the quota
@@ -228,8 +228,9 @@ func (p *Plugin) machine(ctx context.Context, client kubernetes.Interface, cfg C
 	return sec, spec, pod, nil
 }
 
-// environment is a machine as the host sees it.
-func (p *Plugin) environment(pod *corev1.Pod, spec protocol.EnvironmentSpec, cfg Config, sec *corev1.Secret) protocol.Environment {
+// environment is a machine as the host sees it: an egress "none" one
+// running only once its node is known to confine it (nodeGate).
+func (p *Plugin) environment(pod *corev1.Pod, spec protocol.EnvironmentSpec, cfg Config, client kubernetes.Interface, instance string, sec *corev1.Secret) protocol.Environment {
 	env := protocol.Environment{
 		ID: spec.ID, Address: cfg.address(spec.ID), Size: spec.Size, Persistent: spec.Persistent, Egress: spec.Egress,
 		CreatedAt: createdFrom(sec, p.Now()),
@@ -239,6 +240,9 @@ func (p *Plugin) environment(pod *corev1.Pod, spec protocol.EnvironmentSpec, cfg
 		return env
 	}
 	env.Status, env.Reason = statusOf(pod)
+	if spec.Egress == protocol.EgressNone {
+		env.Status, env.Reason = p.nodeGate(cfg, client, instance, pod, env.Status, env.Reason)
+	}
 	env.ImageDigest = digestOf(pod)
 	return env
 }
@@ -252,7 +256,7 @@ func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment
 	if err != nil {
 		return protocol.Environment{}, err
 	}
-	return p.environment(pod, spec, cfg, sec), nil
+	return p.environment(pod, spec, cfg, client, host.InstanceID, sec), nil
 }
 
 // listSecrets is this server's machines' records.
@@ -288,7 +292,7 @@ func (p *Plugin) ListTargets(ctx context.Context) ([]protocol.Environment, error
 			p.Logger.Printf("skipping %s: %v", secrets[i].Name, err)
 			continue
 		}
-		out = append(out, p.environment(pods[podName(spec.ID)], spec, cfg, &secrets[i]))
+		out = append(out, p.environment(pods[podName(spec.ID)], spec, cfg, client, host.InstanceID, &secrets[i]))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -379,7 +383,7 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	if err != nil {
 		return protocol.Environment{}, err
 	}
-	return p.environment(pod, spec, cfg, sec), nil
+	return p.environment(pod, spec, cfg, client, instance, sec), nil
 }
 
 func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {
@@ -409,6 +413,9 @@ func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {
 	if err := client.CoreV1().Secrets(cfg.Namespace).Delete(ctx, secretName(id), metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
 		return unavailable(err)
 	}
+	p.mu.Lock()
+	delete(p.confirmed, podName(id))
+	p.mu.Unlock()
 	return nil
 }
 
@@ -417,7 +424,7 @@ func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.Environm
 	if err != nil {
 		return protocol.EnvironmentHealth{}, err
 	}
-	_, _, pod, err := p.machine(ctx, client, cfg, host, id)
+	_, spec, pod, err := p.machine(ctx, client, cfg, host, id)
 	if err != nil {
 		return protocol.EnvironmentHealth{}, err
 	}
@@ -430,6 +437,9 @@ func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.Environm
 		if ev := p.lastEvent(ctx, client, cfg, podName(id)); ev != "" {
 			h.Reason = truncate(h.Reason+" ("+ev+")", 500)
 		}
+	}
+	if spec.Egress == protocol.EgressNone {
+		h.Status, h.Reason = p.nodeGate(cfg, client, host.InstanceID, pod, h.Status, h.Reason)
 	}
 	return h, nil
 }

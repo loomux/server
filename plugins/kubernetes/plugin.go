@@ -110,6 +110,14 @@ type Plugin struct {
 	// finished: describe acts on settled while a new one runs.
 	netcheck *netcheck
 	settled  *netcheck
+	// nodes is each node's canaries, and confirmed each egress "none"
+	// machine's pod (by name: its UID and node) that a canary on its
+	// node has let run (LOOM-208, nodecheck.go).
+	nodes     map[string]*nodeCheck
+	confirmed map[string]string
+	// inflight is the canary pods this process is still reading: a
+	// sweep leaves them to their readers.
+	inflight map[string]bool
 }
 
 // New returns the plugin for real use.
@@ -123,6 +131,9 @@ func New() *Plugin {
 		DeleteWait:    20 * time.Second,
 		CanaryWait:    15 * time.Second,
 		CanaryTimeout: 3 * time.Minute,
+		nodes:         map[string]*nodeCheck{},
+		confirmed:     map[string]string{},
+		inflight:      map[string]bool{},
 	}
 }
 
@@ -137,7 +148,8 @@ func (p *Plugin) Describe(ctx context.Context) (*plugins.Manifest, error) {
 }
 
 // Configure parses the configuration and makes the client. A change
-// forgets the last network-isolation verdict: the host checks again.
+// forgets the network-isolation verdicts, the nodes' too: the host
+// checks again.
 func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) error {
 	cfg, err := parseConfig(cp.Config)
 	if err != nil {
@@ -151,6 +163,7 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	defer p.mu.Unlock()
 	p.cfg, p.client, p.apiHost, p.host, p.configured = cfg, client, apiHost, cp.Host, true
 	p.netcheck, p.settled = nil, nil
+	p.nodes, p.confirmed = map[string]*nodeCheck{}, map[string]string{}
 	return nil
 }
 

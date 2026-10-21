@@ -245,12 +245,37 @@ func TestCanarySweepsStale(t *testing.T) {
 	}
 }
 
+// With a canary per node (LOOM-208) several run at once, and one that
+// has exited may not be read yet: another's sweep must leave it to its
+// own reader, or that check fails with "the canary pod disappeared".
+func TestCanarySweepSparesItsOwn(t *testing.T) {
+	canary := func(name string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS, CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)), Labels: map[string]string{
+			labelManagedBy: managedBy, protocol.LabelInstance: testInstance, labelRole: roleAgent, labelCanary: "true",
+		}}, Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}
+	}
+	cs := fake.NewClientset(canary("lx-netcheck-mine"), canary("lx-netcheck-left"))
+	p := configured(t, cs, nil)
+	p.mu.Lock()
+	p.inflight["lx-netcheck-mine"] = true
+	p.mu.Unlock()
+	p.sweepCanaries(ctx, cs.CoreV1().Pods(testNS), testInstance)
+	pods, _ := cs.CoreV1().Pods(testNS).List(ctx, metav1.ListOptions{})
+	var left []string
+	for _, pod := range pods.Items {
+		left = append(left, pod.Name)
+	}
+	if got := strings.Join(left, ","); got != "lx-netcheck-mine" {
+		t.Errorf("pods left = %s, want lx-netcheck-mine, still being read", got)
+	}
+}
+
 // The kubelet's deadline must not end the canary before the plugin stops
 // waiting for it: it counts the image pull (3 min on a cold node on TEST).
 func TestCanaryDeadlineCoversTimeout(t *testing.T) {
 	p := newTestPlugin(fake.NewClientset())
 	p.CanaryTimeout = 3 * time.Minute
-	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", p.CanaryTimeout)
+	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", p.CanaryTimeout, "")
 	if d := pod.Spec.ActiveDeadlineSeconds; d == nil || time.Duration(*d)*time.Second <= p.CanaryTimeout {
 		t.Errorf("activeDeadlineSeconds = %v, want more than the canary timeout %v", d, p.CanaryTimeout)
 	}

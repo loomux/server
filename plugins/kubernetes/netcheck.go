@@ -30,7 +30,9 @@ import (
 // (policy.go): the namespace's NetworkPolicies deny a confined machine
 // all but kube-dns. Not enforced: egress "none" is withdrawn from
 // describe and refused at create, and check reports it; with
-// require_network_policy, check fails.
+// require_network_policy, check fails. The canary samples one node; a
+// "none" machine runs only once one has said "enforced" on its own
+// node (nodecheck.go, LOOM-208).
 
 type enforcementState int
 
@@ -93,35 +95,55 @@ type netcheck struct {
 	state  enforcementState
 	detail string
 	at     time.Time
+	// node is where it ran: the node it was pinned to, or the one the
+	// scheduler gave it ("" if it never got one).
+	node string
 }
 
 // enforcement is the verdict check reports. The namespace's
 // NetworkPolicies are read every time; the canary is started when none
 // ran in the last minute, and waited for up to wait; one still running
 // after that answers pending and finishes in the background for the
-// next call.
+// next call. A node a canary found not enforcing is tried again with
+// one pinned to it, as often, and stands until one says "enforced".
 func (p *Plugin) enforcement(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
 	if state, detail := policyVerdict(ctx, client, cfg.Namespace, instance); state != enforcementEnforced {
 		return state, detail
 	}
+	deadline := time.Now().Add(wait)
 	p.mu.Lock()
 	nc := p.netcheck
 	if nc == nil || (nc.state != enforcementPending && p.Now().Sub(nc.at) > time.Minute) {
 		nc = p.startCanary(cfg, client, instance)
 	}
+	retests := p.retestNodes(cfg, client, instance)
 	p.mu.Unlock()
-	return p.await(ctx, nc, wait)
+	state, detail := p.await(ctx, nc, wait)
+	for _, r := range retests {
+		p.await(ctx, r, time.Until(deadline))
+	}
+	if state != enforcementEnforced {
+		return state, detail
+	}
+	if s, d := p.nodeFailure(); s != enforcementEnforced {
+		return s, d
+	}
+	return state, detail
 }
 
 // confinement is the verdict describe (wait 0: it never blocks) and
-// create (wait CanaryWait) act on: the policies, read now, and the last
-// finished canary's verdict, "enforced" only within verdictTTL. One
-// older than half that starts the canary in the background; with no
-// usable verdict, a running canary is waited for up to wait. A verdict
-// other than "enforced" stands until a check. For create the policies
-// are read again after the canary (and ensurePod reads them last).
+// create (wait CanaryWait) act on: the policies, read now, no node a
+// canary found not enforcing, and the last finished canary's verdict,
+// "enforced" only within verdictTTL. One older than half that starts
+// the canary in the background; with no usable verdict, a running
+// canary is waited for up to wait. A verdict other than "enforced"
+// stands until a check. For create the policies are read again after
+// the canary (and ensurePod reads them last).
 func (p *Plugin) confinement(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
 	if state, detail := policyVerdict(ctx, client, cfg.Namespace, instance); state != enforcementEnforced {
+		return state, detail
+	}
+	if state, detail := p.nodeFailure(); state != enforcementEnforced {
 		return state, detail
 	}
 	state, detail := p.lastCanary(ctx, cfg, client, instance, wait)
@@ -174,24 +196,42 @@ func (p *Plugin) await(ctx context.Context, nc *netcheck, wait time.Duration) (e
 func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface, apiHost, instance string) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.CanaryTimeout)
 	defer cancel()
-	state, detail := p.canary(ctx, cfg, client, apiHost, instance)
+	state, detail, node := p.canary(ctx, cfg, client, apiHost, instance, nc.node)
 	p.mu.Lock()
-	nc.state, nc.detail, nc.at = state, detail, p.Now()
-	if p.netcheck == nc { // not overtaken by a configure
+	nc.state, nc.detail, nc.at, nc.node = state, detail, p.Now(), node
+	current := p.netcheck == nc // not overtaken by a configure
+	if current {
 		p.settled = nc
+	}
+	// Its node's verdict too: a check's canary says as much about the
+	// node it landed on as one pinned there.
+	if n := p.nodes[node]; n != nil && n.running == nc {
+		n.running, n.settled = nil, nc
+	} else if current && node != "" {
+		p.nodeOf(node).settled = nc
 	}
 	p.mu.Unlock()
 	close(nc.done)
-	p.Logger.Printf("network isolation in %s: %s (%s)", cfg.Namespace, state, detail)
+	p.Logger.Printf("network isolation in %s on node %s: %s (%s)", cfg.Namespace, node, state, detail)
 }
 
-// canary runs the pod and reads its exit code.
-func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Interface, apiHost, instance string) (enforcementState, string) {
+// canary runs the pod, pinned to node unless that is "", and reads its
+// exit code; ranOn is the node it ran on, as far as it got one.
+func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Interface, apiHost, instance, node string) (state enforcementState, detail, ranOn string) {
 	name := "lx-netcheck-" + p.Rand()
 	pods := client.CoreV1().Pods(cfg.Namespace)
 	p.sweepCanaries(ctx, pods, instance)
-	if _, err := pods.Create(ctx, canaryPod(name, cfg, instance, apiHost, p.CanaryTimeout), metav1.CreateOptions{}); err != nil {
-		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err)
+	p.mu.Lock()
+	p.inflight[name] = true
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.inflight, name)
+		p.mu.Unlock()
+	}()
+	ranOn = node
+	if _, err := pods.Create(ctx, canaryPod(name, cfg, instance, apiHost, p.CanaryTimeout, node), metav1.CreateOptions{}); err != nil {
+		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err), ranOn
 	}
 	defer func() {
 		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -203,9 +243,9 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 		pod, err := pods.Get(ctx, name, metav1.GetOptions{})
 		switch {
 		case kerrors.IsNotFound(err):
-			return enforcementFailed, "the canary pod disappeared"
+			return enforcementFailed, "the canary pod disappeared", ranOn
 		case kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err):
-			return enforcementFailed, "couldn't read the canary pod: " + safeStatus(err)
+			return enforcementFailed, "couldn't read the canary pod: " + safeStatus(err), ranOn
 		case err != nil:
 			// Transient (etcd "leader changed" was seen on TEST): poll
 			// again, and report it only if it outlasts the canary. The
@@ -215,16 +255,19 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 			}
 		default:
 			readErr = nil
+			if ranOn == "" {
+				ranOn = pod.Spec.NodeName
+			}
 			if state, detail, done := canaryVerdict(pod); done {
-				return state, detail
+				return state, detail, ranOn
 			}
 		}
 		select {
 		case <-ctx.Done():
 			if readErr != nil {
-				return enforcementFailed, "couldn't read the canary pod: " + safeStatus(readErr)
+				return enforcementFailed, "couldn't read the canary pod: " + safeStatus(readErr), ranOn
 			}
-			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String()
+			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String(), ranOn
 		case <-time.After(p.Poll):
 		}
 	}
@@ -234,14 +277,21 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 // whose own delete failed (the API server was unavailable): those that
 // have terminated, or have outlived any check's wait for them. A live
 // one may be another plugin process's (an old and a new sidecar
-// overlapping in a rollout) and is left alone. Best effort, like that
-// delete: the next check tries again.
+// overlapping in a rollout) and is left alone, as is one this process
+// is still reading (canaries run at once, one per node). Best effort,
+// like that delete: the next check tries again.
 func (p *Plugin) sweepCanaries(ctx context.Context, pods corev1client.PodInterface, instance string) {
 	list, err := pods.List(ctx, metav1.ListOptions{LabelSelector: instanceSelector(instance) + "," + labelCanary + "=true"})
 	if err != nil {
 		return
 	}
 	for _, pod := range list.Items {
+		p.mu.Lock()
+		reading := p.inflight[pod.Name]
+		p.mu.Unlock()
+		if reading {
+			continue
+		}
 		terminated := pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 		if terminated || p.Now().Sub(pod.CreationTimestamp.Time) > p.CanaryTimeout+time.Minute {
 			_ = pods.Delete(ctx, pod.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr(int64(0))})
@@ -349,8 +399,9 @@ func canaryScript(apiHost string) string {
 // included) so the policies apply to it as to one, and marked as a
 // canary so nothing lists it as a machine. Its deadline, which the
 // kubelet counts from scheduling (the image pull included), outlasts the
-// plugin's wait for it, so it only ends a canary nobody reads.
-func canaryPod(name string, cfg Config, instance, apiHost string, timeout time.Duration) *corev1.Pod {
+// plugin's wait for it, so it only ends a canary nobody reads. With a
+// node it is bound there (spec.nodeName), past the scheduler.
+func canaryPod(name string, cfg Config, instance, apiHost string, timeout time.Duration, node string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -361,6 +412,7 @@ func canaryPod(name string, cfg Config, instance, apiHost string, timeout time.D
 			},
 		},
 		Spec: corev1.PodSpec{
+			NodeName:                     node,
 			AutomountServiceAccountToken: ptr(false),
 			EnableServiceLinks:           ptr(false),
 			RestartPolicy:                corev1.RestartPolicyNever,

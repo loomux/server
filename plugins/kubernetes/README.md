@@ -101,15 +101,40 @@ verdict exists. With none, the canary is run and waited for (15 s).
 The policies are read before anything is made and once more, last,
 just before the pod is.
 Otherwise create refuses it: `invalid_params`, or `unavailable` while
-the canary runs. A machine already running isn't watched: the label
-confines nothing by itself.
+the canary runs.
+
+**Each machine's node** (LOOM-208). NetworkPolicy is enforced by an
+engine on each node, and the check's canary runs on one. So a `none`
+machine is reported `running` only once a canary bound to its own node
+(`spec.nodeName`, past the scheduler) has said "enforced" there, at
+most 10 minutes ago. The check's canary counts for the node it landed
+on. Until then the machine is `starting` ("checking network isolation
+on node …"); the node's canary starts as soon as the pod has a node,
+while sshd comes up. A node where the canary gets out makes each `none`
+machine there `error`, naming the node and what was reached, and
+withdraws `none` from describe and create; check reports
+`network_policy_not_enforced` for that node and tries it again with a
+pinned canary a minute on, until one says "enforced". The pod is left
+as it is, like any machine in error: destroy it. A canary that can't
+run on the node (no room, the image) proves nothing either way: the
+machine stays `starting`, and the node is tried again a minute on. A
+machine once let run stays `running` while its node's verdict ages:
+past 5 minutes, when the host asks about a machine there, a canary
+renews it in the background, and one that gets out turns the machine
+to `error`. The host's reconcile asks about every machine every 5
+minutes by default, so a node with `none` machines is checked again
+every 5 to 10 minutes. The verdicts live in the plugin process, so a restarted
+plugin checks each node again, and its `none` machines are `starting`
+for those few seconds. Each check needs room for one more pod in the
+namespace's quota while it runs (one per node checked at once).
 
 What it trusts. The canary samples a few destinations; it can't prove
 that none other answers. What proves that is the policies, so the
-engine must implement NetworkPolicy as specified, on every node: the
-canary runs on whichever node it is scheduled to. A policy engine
-DaemonSet missing from or broken on one node leaves machines there
-unconfined, and the canary only notices if it lands there. Policies are
+engine must implement NetworkPolicy as specified on each node; the
+canary on a machine's node shows it does there, for its destinations,
+when the machine comes up and at each renewal. An engine that breaks on
+that node between renewals leaves the machine unconfined until the
+next one. Policies are
 live, and no list is atomic with making a pod: one an admin adds after
 that last read, even in the same moment, applies to the machine at
 once, and only the next check reports it. Holding policy edits back
@@ -133,6 +158,9 @@ policies and against policies that let a confined machine out (a CIDR,
 a LAN service, kube-dns on another port, one machine by its label);
 the verdict's expiry for describe and create; the policies read again
 at create, start and recreate.
+`nodecheck_test.go`: a `none` machine runs only once a canary pinned to
+its node says "enforced"; a node that lets one out, or can't run one;
+two nodes; renewal and lapse.
 `kind_test.go` (`-tags kind`, CI's `plugin-kubernetes` job): the
 conformance suite and an end-to-end run against a kind cluster with
 `deploy/test/kind/` applied, as the plugin's ServiceAccount: create,

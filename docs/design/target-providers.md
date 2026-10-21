@@ -769,13 +769,27 @@ minutes. Describe never waits for a canary; past 5 minutes it starts one in the 
 renews the verdict before it lapses. Create, start and recreate refuse a `none` pod unless the policies (read
 before anything is made, and last just before the pod is) and such a recent verdict both hold, running and waiting for the
 canary when there is none; check runs the canary again after a minute. The trust assumption: the engine
-implements NetworkPolicy as specified, on every node (the canary samples the one it lands on). Policy APIs a namespaced Role can't read
+implements NetworkPolicy as specified on each node; the per-node check below shows it does on a machine's node,
+for the canary's destinations, when the machine comes up and at each renewal. Policy APIs a namespaced Role can't read
 (AdminNetworkPolicy, Calico's `GlobalNetworkPolicy`, Cilium's policies) can allow what NetworkPolicy denies, so
 nothing of theirs may let agent pods out; the canary is the only check on them, and only for its own
-destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live, no
-list is atomic with making a pod, and a running machine isn't re-checked: a policy an admin adds after that last read
-applies at once and is reported only by the next check; holding policy edits back would take admission control in
-the cluster. A canary pinned to each `none` machine's node, before it is reported running, is the follow-up.
+destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live and no
+list is atomic with making a pod: a policy an admin adds after that last read applies at once and is reported only
+by the next check; holding policy edits back would take admission control in the cluster.
+
+**Each machine's node (LOOM-208).** The engine runs on each node and the check's canary lands on one, so an engine
+missing from or broken on another node left `none` machines there unconfined and reported running. Now a `none`
+machine is `running` only once a canary bound to its own node (`spec.nodeName`, past the scheduler; no node
+permissions needed) has said "enforced" there within those 10 minutes; the check's canary counts for the node it
+landed on. Until then it is `starting` ("checking network isolation on node …"), the node's canary starting as soon
+as the pod has a node. A canary that gets out on the node makes each `none` machine there `error`, naming the node
+(the pod is left, like any machine in error), withdraws `none` from describe and create, and check reports
+`network_policy_not_enforced` for the node and tries it again with a pinned canary a minute on, until one says
+"enforced". A canary that can't run there proves nothing either way: the machine stays `starting` and the node is
+tried again a minute on. A machine once let run stays `running` as its node's verdict ages: past 5 minutes, asking
+about a machine there (the host's reconcile, every 5 minutes) renews it in the background, and a renewal that gets
+out turns the machine to `error`. The verdicts are in the plugin process: a restarted plugin checks each node again,
+its `none` machines `starting` meanwhile.
 
 Not enforced:
 
@@ -933,7 +947,8 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
    that may select a `none` pod and allows it more than (c) withdraws `none`, so additions for agents select
    `loomux.io/egress=internet`.
 7. **ResourceQuota** `loomux-agents` (TEST, to tune): `requests.cpu: 4`, `limits.cpu: 8`,
-   `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 8` (the canary included), `persistentvolumeclaims:
+   `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 8` (the canaries included: one per node checked at once,
+LOOM-208), `persistentvolumeclaims:
    6`, `ceph-rbd-sc.storageclass.storage.k8s.io/requests.storage: 100Gi`; a **LimitRange** with the `small`
    defaults so a pod never runs unbounded.
 8. **PBS backup**: `lx-*-data` PVCs are the user's working copies of repositories, not system state; recommend

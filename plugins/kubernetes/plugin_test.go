@@ -822,7 +822,7 @@ func TestCanaryScript(t *testing.T) {
 			t.Errorf("script lacks %q:\n%s", want, s)
 		}
 	}
-	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", time.Minute)
+	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", time.Minute, "")
 	// Labelled like a machine, so a policy on target or environment
 	// labels applies to it as to one.
 	if pod.Labels[protocol.LabelTarget] == "" || pod.Labels[protocol.LabelEnvironment] == "" {
