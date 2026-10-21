@@ -275,11 +275,12 @@ What reaches the target:
 - **The key** never touches the disk in the clear. It is stored
   encrypted with `LOOMUX_MASTER_KEY` (so managed targets need it), and
   decrypted into an in-process ssh-agent that serves only that key, on a
-  socket in a 0700 directory under `$TMPDIR/loomux/agents`. ssh is told
-  `IdentityAgent=<socket>`, `IdentitiesOnly=yes` and the key's public
-  half, so the mounted key, if any, is never offered. Password and
-  keyboard-interactive authentication, and agent and port forwarding,
-  are off.
+  socket in a 0700 directory of the server instance's own,
+  `$TMPDIR/loomux/agents-<tag>` (`<tag>`: a digest of the database
+  path). ssh is told `IdentityAgent=<socket>`, `IdentitiesOnly=yes` and
+  the key's public half, so the mounted key, if any, is never offered.
+  Password and keyboard-interactive authentication, and agent and port
+  forwarding, are off.
 - **The proxy** is `LOOMUX_SSH_PROXY` (`socks5://127.0.0.1:1055` for the
   userspace Tailscale sidecar). The `ProxyCommand` is loomuxd itself,
   relaying through it (`loomuxd -ssh-proxy-connect PROXY HOST PORT`), so

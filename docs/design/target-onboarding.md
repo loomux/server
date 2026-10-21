@@ -61,8 +61,9 @@ from then on a non-empty value means `managed`. No new column for the host —
 - Without a master key, managed-mode endpoints answer `503 "SSH key storage needs LOOMUX_MASTER_KEY"`;
   `config`-mode targets are unaffected.
 - **Never on disk in plaintext.** Each managed key is served by its own in-process SSH agent
-  (`golang.org/x/crypto/ssh/agent`) on a unix socket in a 0700 directory under `$TMPDIR/loomux/agents/`;
-  ssh gets `-o IdentityAgent=<socket> -o IdentitiesOnly=yes -i <public key file>`. The agent is read-only
+  (`golang.org/x/crypto/ssh/agent`) on a unix socket in a 0700 directory of the server instance's own,
+  `$TMPDIR/loomux/agents-<tag>/` (`<tag>`: a digest of the database path; LOOM-199); ssh gets
+  `-o IdentityAgent=<socket> -o IdentitiesOnly=yes -i <public key file>`. The agent is read-only
   (list and sign; add/remove/lock refused). Keys are decrypted once at first use and dropped when the key is
   deleted.
 - Default: **one key per target**, generated with the target and named after it (comment

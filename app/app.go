@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
@@ -513,8 +515,11 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	knownHostsDir := filepath.Join(filepath.Dir(cfg.DBPath), "known_hosts.d")
 	// Managed targets (LOOM-138): keys decrypted only into in-process
 	// agents, whose sockets (like the ControlMaster ones) live under
-	// TMPDIR, never on the data volume.
-	sshAgents := targets.NewAgentPool(filepath.Join(os.TempDir(), "loomux", "agents"))
+	// TMPDIR, never on the data volume. Per instance (LOOM-199), named
+	// for its database like knownHostsDir: a pool clears its directory
+	// of sockets on first use, and two stores can hold the same key id.
+	tmpTag := instanceTmpTag(cfg.DBPath)
+	sshAgents := targets.NewAgentPool(filepath.Join(os.TempDir(), "loomux", "agents-"+tmpTag))
 	relay, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("app: find loomuxd's own path for the SSH proxy relay: %w", err)
@@ -522,7 +527,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	managed := &targets.ManagedSSH{
 		Keys:    store.GetSSHKey,
 		Agents:  sshAgents,
-		KeysDir: filepath.Join(os.TempDir(), "loomux", "keys"),
+		KeysDir: filepath.Join(os.TempDir(), "loomux", "keys-"+tmpTag),
 		Proxy:   cfg.SSHProxy,
 		Relay:   relay,
 	}
@@ -803,6 +808,18 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		machines:      machines,
 		sshAgents:     sshAgents,
 	}, nil
+}
+
+// instanceTmpTag names an instance's directories in the shared temp dir:
+// a digest of its database's path, the same on every start (so a pool's
+// first-use sweep clears what this instance's last process left) and
+// short enough for a unix socket path under it.
+func instanceTmpTag(dbPath string) string {
+	if abs, err := filepath.Abs(dbPath); err == nil {
+		dbPath = abs
+	}
+	sum := sha256.Sum256([]byte(dbPath))
+	return hex.EncodeToString(sum[:4])
 }
 
 // instanceIDFor reads the server's instance id from the settings table,
