@@ -69,6 +69,13 @@ type fakeExecutor struct {
 	// after every successful SendKeys (e.g. to cancel a request mid-turn).
 	captureFunc func() string
 	onSendKeys  func()
+	// onWaiting, when set, runs once, at the first CapturePane,
+	// FileExists or PaneExited after a SendKeys: the turn's message is
+	// in and its wait has begun (e.g. to cancel a request during the
+	// wait, not while the send is still recording itself).
+	onWaiting func()
+	sent      bool
+	waited    bool
 	// unreachableFor makes the next that many HasSession calls fail as
 	// unreachable (a target that comes back).
 	unreachableFor int
@@ -142,6 +149,7 @@ func (e *fakeExecutor) SendKeys(ctx context.Context, target, keys string, enter 
 		return fmt.Errorf("fakeExecutor: no such session %q", target)
 	}
 	s.keys = append(s.keys, keys)
+	e.sent = true
 	if e.onSendKeys != nil {
 		defer e.onSendKeys()
 	}
@@ -162,7 +170,23 @@ func (e *fakeExecutor) SendKey(ctx context.Context, target, key string) error {
 	return nil
 }
 
+// waiting runs onWaiting the first time the wait asks about the pane.
+// Outside e.mu: a cancellation may interrupt the agent through e.
+func (e *fakeExecutor) waiting() {
+	e.mu.Lock()
+	run := e.onWaiting != nil && e.sent && !e.waited
+	if run {
+		e.waited = true
+	}
+	f := e.onWaiting
+	e.mu.Unlock()
+	if run {
+		f()
+	}
+}
+
 func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, error) {
+	e.waiting()
 	if e.unreachable {
 		return "", targets.ErrUnreachable
 	}
@@ -204,6 +228,7 @@ func (e *fakeExecutor) Close() error { return nil }
 // TierIdle via shortIdleAgentTypes and never poll FileExists at all).
 // RemoveFile is a trivial stub; no test needs to observe its effect.
 func (e *fakeExecutor) FileExists(ctx context.Context, path string) (bool, error) {
+	e.waiting()
 	if e.unreachable {
 		return false, targets.ErrUnreachable
 	}
@@ -227,6 +252,7 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 }
 
 func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.PaneExit, error) {
+	e.waiting()
 	if e.unreachable {
 		return nil, targets.ErrUnreachable
 	}
