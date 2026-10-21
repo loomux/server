@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -33,8 +32,9 @@ import (
 // loomuxd -ssh-proxy-connect PROXY HOST PORT.
 const RelayFlag = "-ssh-proxy-connect"
 
-// ManagedSSH is how managed targets are reached. Set once at startup
-// with SetManagedSSH.
+// ManagedSSH is how managed targets are reached: one app instance's,
+// passed to its executors in ExecutorOptions.Managed (LOOM-199: per
+// instance, never process-wide).
 type ManagedSSH struct {
 	// Keys loads a key with its private key (registry GetSSHKey).
 	Keys func(ctx context.Context, id string) (*registry.SSHKey, error)
@@ -50,11 +50,6 @@ type ManagedSSH struct {
 	// ProxyCommand.
 	Relay string
 }
-
-var (
-	managedMu sync.RWMutex
-	managed   *ManagedSSH
-)
 
 // relayPath and proxyAddr are what can go into the ProxyCommand, which
 // ssh hands to a shell after expanding %-tokens: nothing a shell or ssh
@@ -72,54 +67,49 @@ func validHostPort(host, port string) bool {
 		proxyHostName.MatchString(host) && !strings.HasPrefix(host, "-")
 }
 
-// SetManagedSSH configures how managed targets are reached; nil turns
-// them off (they then fail to connect, saying so).
-func SetManagedSSH(m *ManagedSSH) error {
-	if m != nil {
-		switch {
-		case m.Keys == nil || m.Agents == nil || m.KeysDir == "":
-			return errors.New("targets: managed SSH needs a key loader, an agent pool and a keys directory")
-		case !relayPath.MatchString(m.Relay):
-			return fmt.Errorf("targets: relay %q must be an absolute path of letters, digits and /._+-", m.Relay)
-		}
-		if m.Proxy != "" {
-			host, port, err := net.SplitHostPort(m.Proxy)
-			if err != nil || !validHostPort(host, port) {
-				return fmt.Errorf("targets: SSH proxy %q must be host:port", m.Proxy)
-			}
+// Validate checks m is complete and that its relay and proxy can go
+// into a ProxyCommand. Every use checks it again (managedConfig), so a
+// configuration never reaches ssh unvetted.
+func (m *ManagedSSH) Validate() error {
+	switch {
+	case m.Keys == nil || m.Agents == nil || m.KeysDir == "":
+		return errors.New("targets: managed SSH needs a key loader, an agent pool and a keys directory")
+	case !relayPath.MatchString(m.Relay):
+		return fmt.Errorf("targets: relay %q must be an absolute path of letters, digits and /._+-", m.Relay)
+	}
+	if m.Proxy != "" {
+		host, port, err := net.SplitHostPort(m.Proxy)
+		if err != nil || !validHostPort(host, port) {
+			return fmt.Errorf("targets: SSH proxy %q must be host:port", m.Proxy)
 		}
 	}
-	managedMu.Lock()
-	defer managedMu.Unlock()
-	managed = m
 	return nil
 }
 
-// ResetManagedSSH turns managed SSH off if it is the configuration using
-// agents: their owner is closing them.
-func ResetManagedSSH(agents *AgentPool) {
-	managedMu.Lock()
-	defer managedMu.Unlock()
-	if managed != nil && managed.Agents == agents {
-		managed = nil
-	}
-}
+// errManagedOff is what a managed target gets from options without
+// managed SSH.
+var errManagedOff = errors.New("targets: this target uses a Loomux SSH key, but managed SSH is not configured on this server (is LOOMUX_MASTER_KEY set?)")
 
-func currentManaged() *ManagedSSH {
-	managedMu.RLock()
-	defer managedMu.RUnlock()
-	return managed
+// managedConfig is m, vetted, or why a managed target can't use it.
+func managedConfig(m *ManagedSSH) (*ManagedSSH, error) {
+	if m == nil {
+		return nil, errManagedOff
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // managedKeyTimeout bounds loading and decrypting a key.
 const managedKeyTimeout = 10 * time.Second
 
-// managedOptions are a managed target's options on top of its port and
-// pin (remoteOptions).
-func managedOptions(t *registry.Target) ([]RemoteOption, error) {
-	m := currentManaged()
-	if m == nil {
-		return nil, errors.New("targets: this target uses a Loomux SSH key, but managed SSH is not configured on this server (is LOOMUX_MASTER_KEY set?)")
+// managedOptions are a managed target's options, reached with m, on top
+// of its port and pin (remoteOptions).
+func managedOptions(t *registry.Target, m *ManagedSSH) ([]RemoteOption, error) {
+	m, err := managedConfig(m)
+	if err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(t.HostKeys) == "" {
 		return nil, &UnreachableError{Host: t.Host, Failure: SSHHostKeyUnknown, Detail: "no host key is pinned for this target", Managed: true}
@@ -172,7 +162,7 @@ func managedIdentity(m *ManagedSSH, id string) (socket, pub string, err error) {
 }
 
 // managedProxyArgs is the ProxyCommand for t, if it goes through the
-// server's proxy. The relay and proxy were vetted by SetManagedSSH, and
+// server's proxy. The relay and proxy were vetted by managedConfig, and
 // %h is t's host, which Target.Validate holds to a host name or address.
 func managedProxyArgs(m *ManagedSSH, t *registry.Target) []string {
 	if m.Proxy == "" || t.SSHProxy == registry.SSHProxyNone {

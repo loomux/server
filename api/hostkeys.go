@@ -22,7 +22,7 @@ import (
 // decides which machine every later command on that target reaches.
 
 // HostKeyScanner reads the host key a target presents, without trusting
-// it — targets.ScanHostKey.
+// it — targets.ExecutorOptions.ScanHostKey, an app's own.
 type HostKeyScanner func(ctx context.Context, t *registry.Target) ([]targets.HostKey, error)
 
 // HostKeyStore is where pins are kept — satisfied by any registry.Store.

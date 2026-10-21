@@ -198,14 +198,15 @@ func (e *PaneExit) Describe() string {
 }
 
 // NewExecutor constructs the TargetExecutor appropriate for t.Kind, with
-// no metrics and pins written under the default directory; an app uses
-// NewExecutorWith.
+// no metrics, pins written under the default directory, local targets on
+// and managed SSH off; an app uses NewExecutorWith.
 func NewExecutor(t *registry.Target) (TargetExecutor, error) {
 	return NewExecutorWith(t, ExecutorOptions{})
 }
 
-// ExecutorOptions are what one app instance's executors share (LOOM-197:
-// per instance, never process-wide, so two in one process stay apart).
+// ExecutorOptions are what one app instance's executors share (LOOM-197,
+// LOOM-199: per instance, never process-wide, so two in one process stay
+// apart). The zero value is NewExecutor's defaults.
 type ExecutorOptions struct {
 	// KnownHostsDir is where pinned targets' known_hosts files are
 	// written (the data volume, beside the database); empty is
@@ -213,6 +214,16 @@ type ExecutorOptions struct {
 	KnownHostsDir string
 	// Metrics, when set, instruments every call (LOOM-103).
 	Metrics *metrics.Metrics
+	// Managed is how managed targets are reached (LOOM-138); nil turns
+	// them off (they then fail to connect, saying so).
+	Managed *ManagedSSH
+	// LocalTargetsOff refuses local targets (LOOM-141). A local target's
+	// agents run as loomuxd's own user on loomuxd's own machine: whatever
+	// they run can read loomuxd's database (and with it the vault), its
+	// SSH keys and its process environment. That's only acceptable where
+	// the person running loomuxd means it, so the container image turns
+	// them off (LOOMUX_LOCAL_TARGETS=off) and a bare binary leaves them on.
+	LocalTargetsOff bool
 }
 
 // NewExecutorWith constructs the TargetExecutor appropriate for t.Kind
@@ -225,12 +236,12 @@ func NewExecutorWith(t *registry.Target, o ExecutorOptions) (TargetExecutor, err
 	}
 	switch t.Kind {
 	case registry.TargetKindLocal:
-		if !LocalTargets {
+		if o.LocalTargetsOff {
 			return nil, ErrLocalTargetsOff
 		}
 		return newMetricsExecutor(NewLocalExecutor(), met, string(t.Kind), t.Name), nil
 	case registry.TargetKindRemote:
-		opts, err := remoteOptions(t, knownHostsDir)
+		opts, err := remoteOptions(t, knownHostsDir, o.Managed)
 		if err != nil {
 			return nil, err
 		}

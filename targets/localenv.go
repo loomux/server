@@ -9,20 +9,8 @@ import (
 	"strings"
 )
 
-// LocalTargets says whether local targets may run at all (LOOM-141). A
-// local target's agents run as loomuxd's own user on loomuxd's own
-// machine: whatever they run can read loomuxd's database (and with it
-// the vault), its SSH keys and its process environment. That's only
-// acceptable where the person running loomuxd means it, so the
-// container image turns it off (LOOMUX_LOCAL_TARGETS=off) and a bare
-// binary leaves it on. Set once at startup, with SetLocalTargets.
-var LocalTargets = true
-
-// SetLocalTargets sets LocalTargets. Call it once at startup.
-func SetLocalTargets(on bool) { LocalTargets = on }
-
 // ErrLocalTargetsOff is what running anything on a local target returns
-// while local targets are turned off.
+// while local targets are turned off (ExecutorOptions.LocalTargetsOff).
 var ErrLocalTargetsOff = errors.New("local targets are turned off on this server (LOOMUX_LOCAL_TARGETS=off): their agents would run as the server's own user, with access to its database and keys")
 
 // localEnvAllowed are the variables a local target's processes inherit

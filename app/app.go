@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
@@ -51,8 +53,12 @@ type App struct {
 	// dir and metrics). Kept on App only for app/knownhosts_test.go; the
 	// app's parts get it at Build.
 	newExecutor orchestrator.ExecutorFactory
-	router      *router.Router
-	agentTypes  []string
+	// targetOpts are this instance's executor options without metrics:
+	// its known_hosts dir, managed SSH and local-target switch (LOOM-197,
+	// LOOM-199), for what reaches targets outside an executor.
+	targetOpts targets.ExecutorOptions
+	router     *router.Router
+	agentTypes []string
 	// cancelTaskDirect cancels a task no dispatch is driving; the router's
 	// CancelTask, a seam for tests.
 	cancelTaskDirect func(ctx context.Context, taskID string) error
@@ -284,7 +290,6 @@ func (a *App) Close() error {
 		a.bg.close()
 	}
 	if a.sshAgents != nil {
-		targets.ResetManagedSSH(a.sshAgents)
 		a.sshAgents.Close()
 	}
 	if a.machines != nil {
@@ -294,6 +299,22 @@ func (a *App) Close() error {
 		_ = a.plugins.Close(context.Background())
 	}
 	return a.store.Close()
+}
+
+// LocalTargets says whether this instance runs local targets at all
+// (LOOM-141, LOOMUX_LOCAL_TARGETS).
+func (a *App) LocalTargets() bool { return !a.targetOpts.LocalTargetsOff }
+
+// ScanHostKey reads the host key t presents, reached the way this
+// instance reaches it (targets.ExecutorOptions.ScanHostKey).
+func (a *App) ScanHostKey(ctx context.Context, t *registry.Target) ([]targets.HostKey, error) {
+	return a.targetOpts.ScanHostKey(ctx, t)
+}
+
+// ResolveSSHConfig plans t's migration to a managed target against this
+// instance's SSH proxy (targets.ExecutorOptions.ResolveSSHConfig).
+func (a *App) ResolveSSHConfig(ctx context.Context, t *registry.Target, keyFile string) (*targets.SSHConfigPlan, error) {
+	return a.targetOpts.ResolveSSHConfig(ctx, t, keyFile)
 }
 
 // DropSSHKey stops serving a managed SSH key (LOOM-138): the key was
@@ -476,7 +497,6 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 			return nil, fmt.Errorf("app: %w", err)
 		}
 	}
-	targets.SetLocalTargets(!cfg.LocalTargetsOff)
 	if !cfg.LocalTargetsOff {
 		// Sessions may outlive loomuxd, and with them a tmux server
 		// started with loomuxd's full environment (LOOM-141). After
@@ -495,24 +515,33 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	knownHostsDir := filepath.Join(filepath.Dir(cfg.DBPath), "known_hosts.d")
 	// Managed targets (LOOM-138): keys decrypted only into in-process
 	// agents, whose sockets (like the ControlMaster ones) live under
-	// TMPDIR, never on the data volume.
-	sshAgents := targets.NewAgentPool(filepath.Join(os.TempDir(), "loomux", "agents"))
+	// TMPDIR, never on the data volume. Per instance (LOOM-199), named
+	// for its database like knownHostsDir: a pool clears its directory
+	// of sockets on first use, and two stores can hold the same key id.
+	tmpTag := instanceTmpTag(cfg.DBPath)
+	sshAgents := targets.NewAgentPool(filepath.Join(os.TempDir(), "loomux", "agents-"+tmpTag))
 	relay, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("app: find loomuxd's own path for the SSH proxy relay: %w", err)
 	}
-	if err := targets.SetManagedSSH(&targets.ManagedSSH{
+	managed := &targets.ManagedSSH{
 		Keys:    store.GetSSHKey,
 		Agents:  sshAgents,
-		KeysDir: filepath.Join(os.TempDir(), "loomux", "keys"),
+		KeysDir: filepath.Join(os.TempDir(), "loomux", "keys-"+tmpTag),
 		Proxy:   cfg.SSHProxy,
 		Relay:   relay,
-	}); err != nil {
+	}
+	if err := managed.Validate(); err != nil {
 		return nil, fmt.Errorf("app: %w", err)
 	}
+	// Everything this instance's executors share (LOOM-197, LOOM-199):
+	// its own, never process-wide, so two in one process stay apart.
+	targetOpts := targets.ExecutorOptions{KnownHostsDir: knownHostsDir, Managed: managed, LocalTargetsOff: cfg.LocalTargetsOff}
 	markerDir := cfg.MarkerDir
 	newExecutor := func(t *registry.Target) (targets.TargetExecutor, error) {
-		return targets.NewExecutorWith(t, targets.ExecutorOptions{KnownHostsDir: knownHostsDir, Metrics: met})
+		o := targetOpts
+		o.Metrics = met
+		return targets.NewExecutorWith(t, o)
 	}
 	detector := completion.NewDetector(store, newExecutor, agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, newExecutor, detector, orchestrator.WithMetrics(met))
@@ -598,7 +627,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// liveness checks don't pollute the target operation latency/error
 	// counters (LOOM-105).
 	healthChecker := health.NewChecker(store, func(t *registry.Target) (targets.TargetExecutor, error) {
-		return targets.NewExecutorWith(t, targets.ExecutorOptions{KnownHostsDir: knownHostsDir})
+		return targets.NewExecutorWith(t, targetOpts)
 	}, model.Config, health.DefaultSidecarAddr)
 
 	// The plugin system (LOOM-178): the instance id labels everything a
@@ -754,6 +783,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		routerSettings:   routerSettings,
 		router:           rtr,
 		newExecutor:      newExecutor,
+		targetOpts:       targetOpts,
 		agentTypes:       dispatchableAgentTypeNames(agentTypes),
 		cancelTaskDirect: rtr.CancelTask,
 		orch:             orch,
@@ -778,6 +808,18 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		machines:      machines,
 		sshAgents:     sshAgents,
 	}, nil
+}
+
+// instanceTmpTag names an instance's directories in the shared temp dir:
+// a digest of its database's path, the same on every start (so a pool's
+// first-use sweep clears what this instance's last process left) and
+// short enough for a unix socket path under it.
+func instanceTmpTag(dbPath string) string {
+	if abs, err := filepath.Abs(dbPath); err == nil {
+		dbPath = abs
+	}
+	sum := sha256.Sum256([]byte(dbPath))
+	return hex.EncodeToString(sum[:4])
 }
 
 // instanceIDFor reads the server's instance id from the settings table,

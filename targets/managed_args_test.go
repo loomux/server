@@ -26,7 +26,7 @@ func recordingSSH(t *testing.T) (argv func() []string) {
 	}
 }
 
-func setupManagedArgs(t *testing.T, proxy string) *registry.Target {
+func setupManagedArgs(t *testing.T, proxy string) (*registry.Target, ExecutorOptions) {
 	t.Helper()
 	key, err := GenerateSSHKey("key-args", "args")
 	if err != nil {
@@ -39,16 +39,17 @@ func setupManagedArgs(t *testing.T, proxy string) *registry.Target {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	pool := NewAgentPool(filepath.Join(dir, "agents"))
 	t.Cleanup(func() { pool.Close() })
-	if err := SetManagedSSH(&ManagedSSH{
+	m := &ManagedSSH{
 		Keys:   func(context.Context, string) (*registry.SSHKey, error) { return key, nil },
 		Agents: pool, KeysDir: filepath.Join(dir, "keys"), Proxy: proxy, Relay: "/usr/local/bin/loomuxd",
-	}); err != nil {
+	}
+	if err := m.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = SetManagedSSH(nil) })
 	t.Setenv("TMPDIR", dir) // pins go under the default known_hosts dir
 	return &registry.Target{ID: "t-args", Name: "args", Kind: registry.TargetKindRemote, Host: "wyzer.example", User: "orski",
-		SSHPort: 2222, SSHKeyRef: key.ID, HostKeys: "[wyzer.example]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"}
+			SSHPort: 2222, SSHKeyRef: key.ID, HostKeys: "[wyzer.example]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"},
+		ExecutorOptions{Managed: m}
 }
 
 func optionValue(argv []string, name string) (string, bool) {
@@ -65,9 +66,9 @@ func optionValue(argv []string, name string) (string, bool) {
 // forwarded, the pin alone decides the host key, and the destination
 // comes after "--".
 func TestManagedArgs(t *testing.T) {
-	tgt := setupManagedArgs(t, "127.0.0.1:1055")
+	tgt, opts := setupManagedArgs(t, "127.0.0.1:1055")
 	argv := recordingSSH(t)
-	e, err := NewExecutor(tgt)
+	e, err := NewExecutorWith(tgt, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,10 +109,10 @@ func TestManagedArgs(t *testing.T) {
 }
 
 func TestManagedArgs_NoProxy(t *testing.T) {
-	tgt := setupManagedArgs(t, "127.0.0.1:1055")
+	tgt, opts := setupManagedArgs(t, "127.0.0.1:1055")
 	tgt.SSHProxy = registry.SSHProxyNone
 	argv := recordingSSH(t)
-	e, err := NewExecutor(tgt)
+	e, err := NewExecutorWith(tgt, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,10 +128,10 @@ func TestManagedArgs_NoProxy(t *testing.T) {
 // reached through the SSH config (or with another key): a master
 // authenticated one way must not carry the other's commands.
 func TestManagedArgs_OwnControlPath(t *testing.T) {
-	tgt := setupManagedArgs(t, "")
+	tgt, opts := setupManagedArgs(t, "")
 	argv := recordingSSH(t)
 	run := func(tgt *registry.Target) string {
-		e, err := NewExecutor(tgt)
+		e, err := NewExecutorWith(tgt, opts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,8 +166,8 @@ func TestManagedArgs_OwnControlPath(t *testing.T) {
 // The public key files' directory gets the same checks as the agents':
 // a symlink planted there is refused (#294 review).
 func TestManaged_KeysDirMustBeOurs(t *testing.T) {
-	tgt := setupManagedArgs(t, "")
-	m := currentManaged()
+	tgt, opts := setupManagedArgs(t, "")
+	m := opts.Managed
 	base := t.TempDir()
 	elsewhere := filepath.Join(base, "elsewhere")
 	if err := os.Mkdir(elsewhere, 0o755); err != nil {
@@ -178,10 +179,8 @@ func TestManaged_KeysDirMustBeOurs(t *testing.T) {
 	}
 	mm := *m
 	mm.KeysDir = link
-	if err := SetManagedSSH(&mm); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewExecutor(tgt); err == nil {
+	opts.Managed = &mm
+	if _, err := NewExecutorWith(tgt, opts); err == nil {
 		t.Error("NewExecutor wrote the public key into a symlinked directory")
 	}
 }
@@ -189,10 +188,10 @@ func TestManaged_KeysDirMustBeOurs(t *testing.T) {
 // A long host name still makes a ControlPath ssh can create its
 // temporary socket beside (it adds ~17 bytes).
 func TestManaged_ControlPathBoundedForLongHosts(t *testing.T) {
-	tgt := setupManagedArgs(t, "")
+	tgt, opts := setupManagedArgs(t, "")
 	tgt.Host = strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + ".example"
 	argv := recordingSSH(t)
-	e, err := NewExecutor(tgt)
+	e, err := NewExecutorWith(tgt, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,8 +207,8 @@ func TestManaged_ControlPathBoundedForLongHosts(t *testing.T) {
 // Once a key's agent runs, building another executor for the target
 // doesn't load and decrypt the key again (#294 review).
 func TestManaged_KeyLoadedOnce(t *testing.T) {
-	tgt := setupManagedArgs(t, "")
-	m := currentManaged()
+	tgt, opts := setupManagedArgs(t, "")
+	m := opts.Managed
 	calls := 0
 	mm := *m
 	inner := m.Keys
@@ -217,11 +216,9 @@ func TestManaged_KeyLoadedOnce(t *testing.T) {
 		calls++
 		return inner(ctx, id)
 	}
-	if err := SetManagedSSH(&mm); err != nil {
-		t.Fatal(err)
-	}
+	opts.Managed = &mm
 	for i := 0; i < 3; i++ {
-		if _, err := NewExecutor(tgt); err != nil {
+		if _, err := NewExecutorWith(tgt, opts); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -229,20 +226,7 @@ func TestManaged_KeyLoadedOnce(t *testing.T) {
 		t.Errorf("key loaded %d times, want once", calls)
 	}
 	mm.Agents.Drop(tgt.SSHKeyRef)
-	if _, err := NewExecutor(tgt); err != nil || calls != 2 {
+	if _, err := NewExecutorWith(tgt, opts); err != nil || calls != 2 {
 		t.Errorf("after Drop: %v, %d loads; want the key loaded again", err, calls)
-	}
-}
-
-func TestResetManagedSSH(t *testing.T) {
-	setupManagedArgs(t, "")
-	m := currentManaged()
-	ResetManagedSSH(NewAgentPool(t.TempDir()))
-	if currentManaged() != m {
-		t.Error("another pool's reset cleared the config")
-	}
-	ResetManagedSSH(m.Agents)
-	if currentManaged() != nil {
-		t.Error("the owning pool's reset left the config in place")
 	}
 }

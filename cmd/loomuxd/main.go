@@ -129,14 +129,14 @@ func runServer(ctx context.Context, loomux *app.App) {
 	opts := []api.Option{
 		api.WithSessionTTL(apiCfg.SessionTTL),
 		api.WithSessionMaxAge(apiCfg.SessionMaxAge),
-		api.WithLocalTargets(targets.LocalTargets), // set by app.Build from LOOMUX_LOCAL_TARGETS
+		api.WithLocalTargets(loomux.LocalTargets()),
 		api.WithTargetProber(loomux),
 		api.WithWorkspaceManager(loomux),
 		api.WithTaskCanceller(loomux),
 		api.WithAgentTypes(loomux.AgentTypeNames()),
 		api.WithTaskTurns(loomux.Store()),
 		api.WithEvents(loomux.Store()),
-		api.WithHostKeyPinning(targets.ScanHostKey, loomux.Store()),
+		api.WithHostKeyPinning(loomux.ScanHostKey, loomux.Store()),
 		api.WithHealthChecker(loomux.HealthChecker()),
 		api.WithCredentials(loomux.Store()),
 		api.WithSSHKeys(loomux.Store()),
@@ -144,7 +144,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithPlugins(loomux.Plugins()),
 		api.WithMachines(loomux.Machines()),
 		api.WithSSHKeyDropper(loomux.DropSSHKey),
-		api.WithSSHMigration(targets.ResolveSSHConfig),
+		api.WithSSHMigration(loomux.ResolveSSHConfig),
 	}
 	if apiCfg.StaticDir != "" {
 		opts = append(opts, webOption(apiCfg))

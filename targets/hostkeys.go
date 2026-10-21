@@ -83,8 +83,8 @@ func pinnedKnownHosts(t *registry.Target, dir string) (string, error) {
 // remoteOptions are t's per-target SSH overrides (LOOM-114): its port,
 // and its pinned host keys (written under knownHostsDir) checked strictly
 // and alone; for a managed target (LOOM-138), everything else ssh needs
-// too.
-func remoteOptions(t *registry.Target, knownHostsDir string) ([]RemoteOption, error) {
+// too, from managed.
+func remoteOptions(t *registry.Target, knownHostsDir string, managed *ManagedSSH) ([]RemoteOption, error) {
 	var opts []RemoteOption
 	if t.SSHPort != 0 {
 		opts = append(opts, WithPort(t.SSHPort))
@@ -98,7 +98,7 @@ func remoteOptions(t *registry.Target, knownHostsDir string) ([]RemoteOption, er
 			"-o", "GlobalKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=yes"))
 	}
 	if t.Managed() {
-		more, err := managedOptions(t)
+		more, err := managedOptions(t, managed)
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +118,16 @@ func remoteOptions(t *registry.Target, knownHostsDir string) ([]RemoteOption, er
 // Loomux has one user today. If it ever has several, scanning and
 // pinning must become admin-only: whoever pins decides which machine
 // every later command reaches.
+//
+// A managed target can't be scanned without managed SSH: an app uses
+// its own options' ScanHostKey.
 func ScanHostKey(ctx context.Context, t *registry.Target) ([]HostKey, error) {
+	return ExecutorOptions{}.ScanHostKey(ctx, t)
+}
+
+// ScanHostKey is the package's ScanHostKey, a managed target reached
+// with o.Managed.
+func (o ExecutorOptions) ScanHostKey(ctx context.Context, t *registry.Target) ([]HostKey, error) {
 	if t.Kind != registry.TargetKindRemote {
 		return nil, errors.New("targets: only a remote target has a host key")
 	}
@@ -132,9 +141,9 @@ func ScanHostKey(ctx context.Context, t *registry.Target) ([]HostKey, error) {
 	if t.Managed() {
 		// Reached the way a managed target is: no ssh_config, the
 		// server's proxy (LOOM-138).
-		m := currentManaged()
-		if m == nil {
-			return nil, errors.New("targets: this target uses a Loomux SSH key, but managed SSH is not configured on this server")
+		m, err := managedConfig(o.Managed)
+		if err != nil {
+			return nil, err
 		}
 		args = append(args, "-F", "/dev/null")
 		args = append(args, managedProxyArgs(m, t)...)
