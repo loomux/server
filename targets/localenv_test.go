@@ -109,19 +109,23 @@ func TestScrubLocalTmuxEnv_CleansARunningServer(t *testing.T) {
 }
 
 // fakeTmuxServer is a tmux on PATH whose server holds FOO in its global
-// environment and refuses every set-environment; with exitOnSet, the
-// first set-environment finds the server gone (its last session ended
-// in between) and later commands find no server.
-func fakeTmuxServer(t *testing.T, exitOnSet bool) {
+// environment. Its set-environment does as onSet says: "refuse" fails;
+// "exit" finds the server gone (its last session ended in between), and
+// later commands find no server; "hang" doesn't return.
+func fakeTmuxServer(t *testing.T, onSet string) {
 	t.Helper()
 	dir := t.TempDir()
 	gone := filepath.Join(dir, "gone")
-	onSet := "exit 1"
-	if exitOnSet {
-		onSet = "touch '" + gone + "'; echo 'server exited unexpectedly' >&2; exit 1"
+	set, ok := map[string]string{
+		"refuse": "exit 1",
+		"exit":   "touch '" + gone + "'; echo 'server exited unexpectedly' >&2; exit 1",
+		"hang":   "exec sleep 60",
+	}[onSet]
+	if !ok {
+		t.Fatalf("fakeTmuxServer: no %q", onSet)
 	}
 	script := "#!/bin/sh\n[ -e '" + gone + "' ] && { echo 'no server running' >&2; exit 1; }\n" +
-		"case \"$*\" in\n*show-environment*) echo FOO=1 ;;\n*set-environment*) " + onSet + " ;;\nesac\n"
+		"case \"$*\" in\n*show-environment*) echo FOO=1 ;;\n*set-environment*) " + set + " ;;\nesac\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +137,7 @@ func fakeTmuxServer(t *testing.T, exitOnSet bool) {
 // the next server starts with localEnv. Build used to fail on it with
 // "scrub tmux environment: FOO: exit status 1".
 func TestScrubLocalTmuxEnv_ServerExitsMidScrub(t *testing.T) {
-	fakeTmuxServer(t, true)
+	fakeTmuxServer(t, "exit")
 	if err := ScrubLocalTmuxEnv(context.Background()); err != nil {
 		t.Fatalf("ScrubLocalTmuxEnv: %v", err)
 	}
@@ -141,8 +145,21 @@ func TestScrubLocalTmuxEnv_ServerExitsMidScrub(t *testing.T) {
 
 // A server that's still there and won't unset a variable is an error.
 func TestScrubLocalTmuxEnv_RunningServerRefuses(t *testing.T) {
-	fakeTmuxServer(t, false)
+	fakeTmuxServer(t, "refuse")
 	if err := ScrubLocalTmuxEnv(context.Background()); err == nil {
 		t.Fatal("ScrubLocalTmuxEnv = nil, want the refused unset")
+	}
+}
+
+// A scrub its deadline cuts short is an error, not "no server": the
+// server may still hold what was being removed. The retry's listing
+// fails at once on the expired context, which used to read as the
+// server being gone, and Build went on.
+func TestScrubLocalTmuxEnv_DeadlineIsAnError(t *testing.T) {
+	fakeTmuxServer(t, "hang")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := ScrubLocalTmuxEnv(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ScrubLocalTmuxEnv = %v, want the deadline", err)
 	}
 }

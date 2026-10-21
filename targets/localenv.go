@@ -53,7 +53,8 @@ var localEnvAllowed = map[string]bool{
 // variable, when its last session ends (another loomuxd's, or a test's
 // in a package running alongside). So a failed unset starts the scrub
 // over: with the server gone, the listing fails and there's nothing to
-// scrub; a server started meanwhile is scrubbed in turn.
+// scrub; a server started meanwhile is scrubbed in turn. A listing ctx
+// cut short is no proof the server is gone, so it's ctx's error.
 func ScrubLocalTmuxEnv(ctx context.Context) error {
 	var err error
 	for range scrubAttempts {
@@ -73,6 +74,9 @@ func scrubLocalTmuxEnvOnce(ctx context.Context) error {
 	show.Env = localEnv()
 	out, err := show.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("targets: scrub tmux environment: %w", ctx.Err())
+		}
 		return nil // no server: the next one starts with localEnv
 	}
 	for _, line := range strings.Split(string(out), "\n") {
