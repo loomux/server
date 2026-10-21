@@ -318,7 +318,10 @@ func testPaneSurvivesCommandExit(t *testing.T, exec targets.TargetExecutor) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			session := uniqueSessionName(t)
-			if err := exec.NewSession(ctx, session, "", "sh -c '"+strings.ReplaceAll(tc.command, "'", `'\''`)+"'"); err != nil {
+			// Wrapped, as every pane Loomux starts with a command is: a
+			// bare command's last output can be lost to tmux under load
+			// (LOOM-198).
+			if err := exec.NewSession(ctx, session, "", targets.WrapExitStatus(tc.command)); err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
 			t.Cleanup(func() { _ = exec.KillSession(context.Background(), session) })

@@ -62,8 +62,9 @@ func testConfig(t *testing.T, routerBaseURL string) Config {
 // appDataDir is a test's data directory, removed when the test ends,
 // after the app's Close. t.TempDir's cleanup fails on something written
 // there after Close without saying what; this one names what was left
-// (LOOM-195: TestDrainDispatches_StopsSubmits failed that way once in CI
-// and hasn't reproduced since).
+// (LOOM-195: TestDrainDispatches_StopsSubmits failed that way once in CI,
+// when startup reconciliation recreated test.db after Close; see
+// TestBuild_CloseWaitsForStartupReconciliation).
 func appDataDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "loomux-app-test-")

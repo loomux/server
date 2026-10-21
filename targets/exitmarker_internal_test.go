@@ -2,7 +2,9 @@ package targets
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -74,6 +76,92 @@ func TestPaneExitedFindsALateMarker(t *testing.T) {
 	exit, err := paneExited(context.Background(), run, "s")
 	if err != nil || exit.Status != 0 || exit.Output != "working" {
 		t.Fatalf("exit = %+v, %v", exit, err)
+	}
+}
+
+// fakePaneTmux is a tmux for a wrapped command run outside tmux: each
+// call is logged to calls, and capture-pane prints what the pane shows
+// on that call, screens[min(call, len-1)]; an empty screen fails, as a
+// capture of a pane that's gone does.
+func fakePaneTmux(t *testing.T, screens ...string) (bin, calls string) {
+	t.Helper()
+	dir := t.TempDir()
+	calls = filepath.Join(dir, "calls")
+	var cases strings.Builder
+	for i, s := range screens {
+		pat := strconv.Itoa(i)
+		if i == len(screens)-1 {
+			pat = "*"
+		}
+		body := "printf '%s\\n' " + shellQuoteJoin([]string{s})
+		if s == "" {
+			body = "exit 1"
+		}
+		cases.WriteString(pat + ") " + body + " ;;\n")
+	}
+	script := "#!/bin/sh\nn=$(wc -l < " + shellQuoteJoin([]string{calls}) + " 2>/dev/null || echo 0)\n" +
+		"echo \"$*\" >> " + shellQuoteJoin([]string{calls}) + "\ncase $n in\n" + cases.String() + "esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, calls
+}
+
+// runWrapped runs WrapExitStatus(command) with sh, as a pane would, and
+// returns its exit status and the tmux calls it made.
+func runWrapped(t *testing.T, command, tmuxPane, bin, calls string) (int, []string) {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", WrapExitStatus(command))
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TMUX_PANE="+tmuxPane)
+	err := cmd.Run()
+	status := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		status = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	b, _ := os.ReadFile(calls)
+	return status, strings.Fields(strings.ReplaceAll(strings.TrimSpace(string(b)), " ", "_"))
+}
+
+// LOOM-198: the wrapped command doesn't exit until tmux shows the marker
+// in its pane. tmux 3.4 and 3.5 close a pane's pty as soon as they reap
+// its process, dropping whatever they hadn't read from it yet: under
+// load, the command's last output (why an agent failed to launch) and
+// the marker itself. Everything before the marker is read once it is.
+func TestWrapExitStatusWaitsForTmuxToShowTheMarker(t *testing.T) {
+	bin, calls := fakePaneTmux(t, "sh: 1:", "sh: 1: loomux-no-such-cli: not found", "sh: 1: loomux-no-such-cli: not found\n\n[loomux:exit=127]")
+	status, got := runWrapped(t, "loomux-no-such-cli", "%7", bin, calls)
+	if status != 127 {
+		t.Errorf("status = %d, want 127", status)
+	}
+	want := "capture-pane_-p_-J_-t_%7"
+	if len(got) != 3 || got[0] != want || got[2] != want {
+		t.Errorf("tmux calls = %q, want 3 × %q: until the marker shows", got, want)
+	}
+}
+
+// It waits only while tmux can show the pane: no pane, no tmux, or a
+// capture that fails, and it exits at once with the command's status.
+func TestWrapExitStatusDoesNotWaitWithoutAPane(t *testing.T) {
+	bin, calls := fakePaneTmux(t, "")
+	if status, got := runWrapped(t, "exit 3", "%7", bin, calls); status != 3 || len(got) != 1 {
+		t.Errorf("failing capture: status %d, tmux calls %q; want 3 and one call", status, got)
+	}
+	bin, calls = fakePaneTmux(t, "never the marker")
+	if status, got := runWrapped(t, "exit 4", "", bin, calls); status != 4 || len(got) != 0 {
+		t.Errorf("no TMUX_PANE: status %d, tmux calls %q; want 4 and none", status, got)
+	}
+}
+
+// It gives up waiting after a bound if tmux never shows the marker.
+func TestWrapExitStatusWaitIsBounded(t *testing.T) {
+	old := awaitMarkerTries
+	awaitMarkerTries = 4
+	t.Cleanup(func() { awaitMarkerTries = old })
+	bin, calls := fakePaneTmux(t, "never the marker")
+	if status, got := runWrapped(t, "exit 5", "%7", bin, calls); status != 5 || len(got) != 4 {
+		t.Errorf("status %d after %d tmux calls; want 5 after 4", status, len(got))
 	}
 }
 
