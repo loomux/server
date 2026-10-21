@@ -745,14 +745,39 @@ theWyseKube has none today (Talos-default Flannel, no policy controller: a deny-
 block nothing). So `plugin.check` **tests enforcement rather than assuming it**: it creates a short-lived
 canary pod `lx-netcheck-<rand>` from the agent image, labelled `loomux.io/role=agent` and
 `loomux.io/egress=none` (which the §10 policies confine to kube-dns only), restricted-compliant like every
-other pod, running
-`timeout 3 bash -c 'exec 3<>/dev/tcp/<API server ClusterIP>/443' && exit 10; timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' && exit 11; exit 0`,
-then reads the exit code from the pod's status and deletes it. A target that answers is tried again, up to
+other pod, which tries, all at once, the API server (`<API server address>:443` and
+`kubernetes.default.svc.cluster.local:443`: exit 10), kube-dns on its metrics port 9153 (exit 14: in-cluster,
+so no outside firewall can stand in for the engine), the link-local metadata address `169.254.169.254:80`
+(exit 13) and the internet (`1.1.1.1:443`, `github.com:443`: exit 11), else exits 0; the plugin reads the
+exit code from the pod's status and deletes it. A target that answers is tried again, up to
 15 times a second apart, and decides only if it still answers: a policy engine confines a new pod only once
 it has learned its address, and kube-network-policies on theWyseKube left new pods unconfined for about
-2 s (measured 2026-10-13), which made a single try read an enforcing cluster as not enforced. Exit 0 means both were blocked (enforced);
-10 or 11 means a `none` pod could reach the cluster or the internet (not enforced). It runs at install, after
-a configuration change, on `POST /plugins/{id}/check`, and once every six hours. Not enforced:
+2 s (measured 2026-10-13), which made a single try read an enforcing cluster as not enforced. Exit 0 means all were blocked (enforced);
+10, 14, 13 or 11 means a `none` pod could reach the cluster, the metadata address or the internet (not enforced). It
+runs at install, after a configuration change, on `POST /plugins/{id}/check`, and once every six hours.
+
+**The policies, too (LOOM-201).** The canary samples a few destinations and can't show that no other one
+answers: NetworkPolicies are additive, and one more that lets agents reach `169.254.169.254` or a LAN service
+passed the canary while every `none` machine could reach it. So `none` also rests on the policies, which the
+plugin lists (`networkpolicies list`) on every check, describe and create. Every policy in the namespace that
+may select a `none` machine (by its role, egress or instance label, or by anything one machine's target or
+environment label could match) must allow it §10's (c) and nothing else: pods `k8s-app=kube-dns` in
+`kube-system`, UDP or TCP 53. And one that selects every `none` machine must isolate it for egress (§10's (a),
+or (c) itself). Otherwise check reports `network_policy_allows_egress`, naming the policy (warning; error with
+`require_network_policy`), and `none` is withdrawn. The canary's "enforced" serves describe and create for 10
+minutes. Describe never waits for a canary; past 5 minutes it starts one in the background, so a cluster in use
+renews the verdict before it lapses. Create, start and recreate refuse a `none` pod unless the policies (read
+before anything is made, and last just before the pod is) and such a recent verdict both hold, running and waiting for the
+canary when there is none; check runs the canary again after a minute. The trust assumption: the engine
+implements NetworkPolicy as specified, on every node (the canary samples the one it lands on). Policy APIs a namespaced Role can't read
+(AdminNetworkPolicy, Calico's `GlobalNetworkPolicy`, Cilium's policies) can allow what NetworkPolicy denies, so
+nothing of theirs may let agent pods out; the canary is the only check on them, and only for its own
+destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live, no
+list is atomic with making a pod, and a running machine isn't re-checked: a policy an admin adds after that last read
+applies at once and is reported only by the next check; holding policy edits back would take admission control in
+the cluster. A canary pinned to each `none` machine's node, before it is reported running, is the follow-up.
+
+Not enforced:
 
 - `check` returns the problem `network_policy_not_enforced` with severity `warning`, shown on the plugin
   and as a warning on every machine it makes;
@@ -773,9 +798,11 @@ hint.
 **RBAC it needs** (the plugin's ServiceAccount, in the agents namespace only): `pods` (create, get, list,
 watch, delete), `pods/log` (get), `persistentvolumeclaims` (create, get, list, delete), `secrets` (create,
 get, list, update, delete; update carries a recreate's new spec), `events` (list), `services` (get: `check`
-warns when the headless Service is missing, or when it can't tell). theWyseKube's manifests (its PR #25)
-grant exactly this, and so does the kind Role CI runs the plugin under (`deploy/test/kind/`), so a verb it
-needs and the Role lacks fails the integration test.
+warns when the headless Service is missing, or when it can't tell), `networking.k8s.io` `networkpolicies` (list:
+the deny-all check, LOOM-201). theWyseKube's manifests (its PR #25) grant all but `networkpolicies list`,
+which they must gain before a plugin with the deny-all check is deployed (without it `none` is withdrawn and
+check reports `network_policy_check_failed`). The kind Role CI runs the plugin under (`deploy/test/kind/`)
+grants exactly this, so a verb it needs and the Role lacks fails the integration test.
 
 ## 9. The Docker plugin (LOOM-180)
 
@@ -873,7 +900,8 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
 2. **ServiceAccount** `loomux-plugin-kubernetes` in `loomux`, set as the loomuxd pod's `serviceAccountName`
    with `automountServiceAccountToken: false` on the pod; its token is a `projected` volume
    (`serviceAccountToken`, `expirationSeconds: 3600`) **mounted only into the plugin container**. A **Role**
-   in `loomux-agents` with the verbs of §8 and a **RoleBinding** to it. No ClusterRole, no `pods/exec`,
+   in `loomux-agents` with the verbs of §8 (`networkpolicies list` included, LOOM-201) and a **RoleBinding**
+   to it. No ClusterRole, no `pods/exec`,
    nothing in `loomux` itself.
 3. **The plugin sidecar** in the loomuxd Deployment: container `plugin-kubernetes`, image
    `ghcr.io/loomux/plugin-kubernetes@sha256:…` (pinned like the server image), args
@@ -901,7 +929,9 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
    (d) for `loomux.io/egress=internet` pods, allow egress to `0.0.0.0/0` **except** `10.0.0.0/8` (covers the
    pod CIDR `10.244.0.0/16` and the service CIDR `10.96.0.0/12`, listed anyway for readability),
    `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (the Tailscale CGNAT range), `169.254.0.0/16`,
-   `127.0.0.0/8`; `none` pods match only (a)–(c).
+   `127.0.0.0/8`; `none` pods match only (a)–(c). The plugin reads these (§8, LOOM-201): any other policy
+   that may select a `none` pod and allows it more than (c) withdraws `none`, so additions for agents select
+   `loomux.io/egress=internet`.
 7. **ResourceQuota** `loomux-agents` (TEST, to tune): `requests.cpu: 4`, `limits.cpu: 8`,
    `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 8` (the canary included), `persistentvolumeclaims:
    6`, `ceph-rbd-sc.storageclass.storage.k8s.io/requests.storage: 100Gi`; a **LimitRange** with the `small`

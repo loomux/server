@@ -32,7 +32,7 @@ func (p *Plugin) DescribeTargets(ctx context.Context) (protocol.TargetsInfo, err
 		return protocol.TargetsInfo{}, err
 	}
 	egress := []string{protocol.EgressInternet}
-	if state, _ := p.verdict(); state == enforcementEnforced {
+	if state, _ := p.confinement(ctx, cfg, client, host.InstanceID, 0); state == enforcementEnforced {
 		egress = append(egress, protocol.EgressNone)
 	}
 	return protocol.TargetsInfo{
@@ -57,25 +57,17 @@ func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec
 	if err := validateSpec(spec, cfg, host); err != nil {
 		return protocol.Environment{}, err
 	}
+	if err := p.requireNone(ctx, cfg, client, host.InstanceID, spec); err != nil {
+		return protocol.Environment{}, err
+	}
 	size, _ := cfg.size(spec.Size)
 	instance := host.InstanceID
 	secrets := client.CoreV1().Secrets(cfg.Namespace)
 	sec, err := secrets.Get(ctx, secretName(spec.ID), metav1.GetOptions{})
 	switch {
 	case kerrors.IsNotFound(err):
-		existing, err := p.listSecrets(ctx, client, cfg, instance)
-		if err != nil {
+		if sec, err = p.createRecord(ctx, client, cfg, spec, instance); err != nil {
 			return protocol.Environment{}, err
-		}
-		if len(existing) >= cfg.MaxEnvironments {
-			return protocol.Environment{}, &rpc.Error{Code: rpc.CodeQuota, Message: "this plugin already has its " + itoa(cfg.MaxEnvironments) + " machines"}
-		}
-		sec, err = secrets.Create(ctx, secretFor(spec, instance, p.Now()), metav1.CreateOptions{})
-		if kerrors.IsAlreadyExists(err) {
-			sec, err = secrets.Get(ctx, secretName(spec.ID), metav1.GetOptions{})
-		}
-		if err != nil {
-			return protocol.Environment{}, unavailable(err)
 		}
 	case err != nil:
 		return protocol.Environment{}, unavailable(err)
@@ -99,8 +91,59 @@ func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec
 	return p.environment(pod, spec, cfg, sec), nil
 }
 
+// createRecord makes a new machine's Secret, its record, if the quota
+// has room. Creates are serialized from the count to the Secret, so two
+// at once can't both take the last place; two plugin processes (a
+// rollout's overlap) still could, and the host counts too.
+func (p *Plugin) createRecord(ctx context.Context, client kubernetes.Interface, cfg Config, spec protocol.EnvironmentSpec, instance string) (*corev1.Secret, error) {
+	p.createMu.Lock()
+	defer p.createMu.Unlock()
+	existing, err := p.listSecrets(ctx, client, cfg, instance)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) >= cfg.MaxEnvironments {
+		return nil, &rpc.Error{Code: rpc.CodeQuota, Message: "this plugin already has its " + itoa(cfg.MaxEnvironments) + " machines"}
+	}
+	secrets := client.CoreV1().Secrets(cfg.Namespace)
+	sec, err := secrets.Create(ctx, secretFor(spec, instance, p.Now()), metav1.CreateOptions{})
+	if kerrors.IsAlreadyExists(err) {
+		sec, err = secrets.Get(ctx, secretName(spec.ID), metav1.GetOptions{})
+	}
+	if err != nil {
+		return nil, unavailable(err)
+	}
+	return sec, nil
+}
+
+// requireNone refuses to make a pod labelled egress "none" unless that
+// holds now (LOOM-201): the policies as read now, and a canary's
+// "enforced" at most verdictTTL old (with none, the canary is run and
+// waited for). The label confines nothing by itself. It is asked before
+// anything is made; ensurePod reads the policies once more, last.
+func (p *Plugin) requireNone(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, spec protocol.EnvironmentSpec) error {
+	if spec.Egress != protocol.EgressNone {
+		return nil
+	}
+	return noneRefused(p.confinement(ctx, cfg, client, instance, p.CanaryWait))
+}
+
+// noneRefused is the error for a "none" pod the verdict doesn't allow.
+func noneRefused(state enforcementState, detail string) error {
+	switch state {
+	case enforcementEnforced:
+		return nil
+	case enforcementPending:
+		return &rpc.Error{Code: rpc.CodeUnavailable, Message: "egress none: the network-isolation check is still running; try again shortly"}
+	default:
+		return invalidParams("egress none can't be confined now (%s); use egress internet, or fix the cluster and check the plugin again", detail)
+	}
+}
+
 // ensurePod is the machine's pod, made if it isn't there. One that is
-// still terminating (a stop or recreate moments ago) is waited for.
+// still terminating (a stop or recreate moments ago) is waited for. A
+// "none" pod's policies are read last here, just before it is made:
+// one added after that applies to it, and only the next check sees it.
 func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg Config, spec protocol.EnvironmentSpec, size protocol.Size, instance string) (*corev1.Pod, error) {
 	pods := client.CoreV1().Pods(cfg.Namespace)
 	name := podName(spec.ID)
@@ -115,6 +158,11 @@ func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg
 			}
 		case !kerrors.IsNotFound(err):
 			return nil, unavailable(err)
+		}
+		if spec.Egress == protocol.EgressNone {
+			if err := noneRefused(policyVerdict(ctx, client, cfg.Namespace, instance)); err != nil {
+				return nil, err
+			}
 		}
 		pod, err = pods.Create(ctx, podFor(spec, size, cfg, instance), metav1.CreateOptions{})
 		if err == nil {
@@ -262,6 +310,9 @@ func (p *Plugin) StartTarget(ctx context.Context, id string) error {
 	if !ok {
 		return invalidParams("the machine's size %q is no longer offered; recreate it with one of %s", spec.Size, cfg.sizeNames())
 	}
+	if err := p.requireNone(ctx, cfg, client, host.InstanceID, spec); err != nil {
+		return err
+	}
 	_, err = p.ensurePod(ctx, client, cfg, spec, size, sec.Labels[protocol.LabelInstance])
 	return err
 }
@@ -305,6 +356,9 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	}
 	if spec.Persistent != old.Persistent {
 		return protocol.Environment{}, invalidParams("a machine can't change between persistent and ephemeral")
+	}
+	if err := p.requireNone(ctx, cfg, client, host.InstanceID, spec); err != nil {
+		return protocol.Environment{}, err
 	}
 	size, _ := cfg.size(spec.Size)
 	instance := sec.Labels[protocol.LabelInstance]

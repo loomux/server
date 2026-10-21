@@ -29,13 +29,17 @@ import (
 // TestKind runs the plugin binary against a real cluster (CI's kind,
 // .github/workflows/plugins.yml):
 //
-//	LOOMUX_KIND_KUBECONFIG=plugin.kubeconfig LOOMUX_KIND_AGENT_IMAGE=loomux-agent:test \
+//	kind create cluster --config deploy/test/kind/cluster/kind.yaml --kubeconfig kind.kubeconfig
+//	KUBECONFIG=kind.kubeconfig LOOMUX_KIND_KUBECONFIG=plugin.kubeconfig LOOMUX_KIND_AGENT_IMAGE=loomux-agent:test \
 //	  go test -tags kind -count=1 -timeout 15m -run TestKind -v ./...
 //
-// The kubeconfig is the plugin ServiceAccount's (deploy/test/kind), so
-// the Role's verbs are exactly what the plugin gets. kubectl (for a
-// port-forward, with its own admin kubeconfig) and ssh make the ssh
-// login part run; without them it is skipped.
+// LOOMUX_KIND_KUBECONFIG is the plugin ServiceAccount's (deploy/test/kind),
+// so the Role's verbs are exactly what the plugin gets. kubectl (for a
+// port-forward, as kind's admin) and ssh make the ssh login part run;
+// without them it is skipped. KUBECONFIG must be kind's alone, current
+// context kind-loomux, the plugin's cluster (kindKubectl), or the test
+// fails before it starts; every kubectl gets that file and context
+// spelled out, so none can reach the default context's cluster.
 //
 // LOOMUX_KIND_ENFORCED=1 (CI) says the cluster enforces NetworkPolicy,
 // as kind's default CNI does, and the check must say enforced: the
@@ -49,6 +53,10 @@ func TestKind(t *testing.T) {
 		t.Skip("LOOMUX_KIND_KUBECONFIG not set")
 	}
 	kubeconfig, err := os.ReadFile(kcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kubectl, err := kindKubectl(os.Getenv("KUBECONFIG"), kubeconfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,10 +96,10 @@ func TestKind(t *testing.T) {
 		CallTimeout: 60 * time.Second,
 	}
 	t.Run("Conformance", func(t *testing.T) { plugintest.Run(t, launch, opts) })
-	t.Run("EndToEnd", func(t *testing.T) { endToEnd(t, launch, opts) })
+	t.Run("EndToEnd", func(t *testing.T) { endToEnd(t, launch, opts, kubectl) })
 }
 
-func endToEnd(t *testing.T, launch plugintest.Launch, o plugintest.Options) {
+func endToEnd(t *testing.T, launch plugintest.Launch, o plugintest.Options, kubectl []string) {
 	conn, stop := launch(t)
 	defer stop()
 	call := func(method string, params, result any) error {
@@ -179,7 +187,7 @@ func endToEnd(t *testing.T, launch plugintest.Launch, o plugintest.Options) {
 		t.Errorf("health = %+v, %v", health, err)
 	}
 
-	sshIn(t, o, id, tgtBlock, hostSSHPub)
+	sshIn(t, kubectl, id, tgtBlock, hostSSHPub)
 
 	if err := call(protocol.MethodTargetsStop, protocol.IDParams{ID: id}, nil); err != nil {
 		t.Fatalf("stop: %v", err)
@@ -248,8 +256,9 @@ func waitStatus(t *testing.T, call func(string, any, any) error, id, want string
 var forwarding = regexp.MustCompile(`Forwarding from 127\.0\.0\.1:(\d+)`)
 
 // sshIn logs in the way Loomux does: the target's key, the host key
-// pinned, through a kubectl port-forward to the pod.
-func sshIn(t *testing.T, o plugintest.Options, id string, key *pem.Block, hostPub ssh.PublicKey) {
+// pinned, through a kubectl port-forward to the pod. kubectl is
+// kindKubectl's flags.
+func sshIn(t *testing.T, kubectl []string, id string, key *pem.Block, hostPub ssh.PublicKey) {
 	t.Helper()
 	if _, err := exec.LookPath("kubectl"); err != nil {
 		t.Log("no kubectl: skipping the ssh login")
@@ -261,7 +270,7 @@ func sshIn(t *testing.T, o plugintest.Options, id string, key *pem.Block, hostPu
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pf := exec.CommandContext(ctx, "kubectl", "-n", "loomux-agents", "port-forward", "pod/lx-"+id, ":2222")
+	pf := exec.CommandContext(ctx, "kubectl", append(kubectl, "-n", "loomux-agents", "port-forward", "pod/lx-"+id, ":2222")...)
 	out, err := pf.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
