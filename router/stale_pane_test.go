@@ -93,7 +93,7 @@ func TestDispatch_AfterTimeout_StalePaneRetiredBeforeLaunch(t *testing.T) {
 func TestDispatch_UserCancel_InterruptsAndFailsCancelled(t *testing.T) {
 	store, exec, r, _, ws := timeoutHarness(t)
 	ctx, cancel := context.WithCancelCause(context.Background())
-	exec.onSendKeys = func() { time.AfterFunc(30*time.Millisecond, func() { cancel(orchestrator.ErrCancelled) }) }
+	exec.onWaiting = func() { cancel(orchestrator.ErrCancelled) }
 
 	start := time.Now()
 	if _, err := r.Dispatch(ctx, "conv-1", "do something long"); err == nil {
@@ -119,7 +119,7 @@ func TestDispatch_UserCancel_InterruptsAndFailsCancelled(t *testing.T) {
 func TestCancelTask_WithoutDispatch(t *testing.T) {
 	store, exec, r, _, ws := timeoutHarness(t)
 	ctx, cancel := context.WithCancelCause(context.Background())
-	exec.onSendKeys = func() { time.AfterFunc(30*time.Millisecond, func() { cancel(orchestrator.ErrInterrupted) }) }
+	exec.onWaiting = func() { cancel(orchestrator.ErrInterrupted) }
 	_, _ = r.Dispatch(ctx, "conv-1", "do something long")
 	task := onlyTask(t, store, ws.ID)
 	if task.Status != registry.TaskStatusRunning {
@@ -146,7 +146,7 @@ func TestCancelTask_WithoutDispatch(t *testing.T) {
 func TestCancelTask_RefusesHumanTakeover(t *testing.T) {
 	store, exec, r, _, ws := timeoutHarness(t)
 	ctx, cancel := context.WithCancelCause(context.Background())
-	exec.onSendKeys = func() { time.AfterFunc(30*time.Millisecond, func() { cancel(orchestrator.ErrInterrupted) }) }
+	exec.onWaiting = func() { cancel(orchestrator.ErrInterrupted) }
 	_, _ = r.Dispatch(ctx, "conv-1", "do something long")
 	task := onlyTask(t, store, ws.ID)
 	task.Status = registry.TaskStatusHumanTakeover
