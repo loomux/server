@@ -1,6 +1,7 @@
 package llmrouter
 
 import (
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,8 @@ type Model struct {
 	primaryBreaker *breaker
 	// setMu serializes SetConfig, so generations only ever go up.
 	setMu sync.Mutex
+	// httpClient carries Decide/Relay requests; nil is the SDKs' default.
+	httpClient *http.Client
 }
 
 // Option configures a Model constructed via New.
@@ -61,6 +64,13 @@ func WithEscalationTimeout(d time.Duration) Option {
 // one is listed by name only.
 func WithAgentDescriptions(d map[string]string) Option {
 	return func(m *Model) { m.agentDescriptions = d }
+}
+
+// WithHTTPClient has Decide and Relay send their requests through hc —
+// for the evaluation harness (LOOM-187), which measures each attempt
+// and, offline, answers them from a fake without any network.
+func WithHTTPClient(hc *http.Client) Option {
+	return func(m *Model) { m.httpClient = hc }
 }
 
 // WithMetrics sets the Prometheus metrics bundle the model should record

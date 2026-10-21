@@ -8,7 +8,9 @@ package llmrouter
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 )
 
 // ErrConfigInvalid is wrapped by any error ConfigFromEnv or New returns due
@@ -46,7 +48,40 @@ func (t Tier) Validate() error {
 	case t.Model == "":
 		return fmt.Errorf("%w: no model", ErrConfigInvalid)
 	}
+	if reason := checkProviderBaseURL(p, t.BaseURL); reason != "" {
+		return fmt.Errorf("%w: %s", ErrConfigInvalid, reason)
+	}
 	return nil
+}
+
+// anthropicHost is Anthropic's API host. An openai tier pointed at it
+// speaks Anthropic's OpenAI SDK compatibility endpoint (LOOM-187).
+const anthropicHost = "api.anthropic.com"
+
+// anthropicCompat reports whether t is an openai tier on Anthropic's
+// OpenAI-compatible endpoint, which takes a few request fields
+// differently (see client.go).
+func (t Tier) anthropicCompat() bool {
+	if p, err := ParseProvider(string(t.Provider)); err != nil || p != ProviderOpenAI {
+		return false
+	}
+	u, err := url.Parse(t.BaseURL)
+	return err == nil && strings.EqualFold(u.Hostname(), anthropicHost)
+}
+
+// checkProviderBaseURL says what's wrong with baseURL for provider p, ""
+// if nothing. Only one case is known to fail every call: an openai tier
+// on Anthropic's host must name the compatible endpoint's /v1 root (the
+// SDK adds /chat/completions), where the native provider takes the bare
+// API root.
+func checkProviderBaseURL(p Provider, baseURL string) string {
+	if !(Tier{Provider: p, BaseURL: baseURL}).anthropicCompat() {
+		return ""
+	}
+	if u, _ := url.Parse(baseURL); strings.TrimSuffix(u.Path, "/") != "/v1" {
+		return fmt.Sprintf("Anthropic's OpenAI-compatible endpoint is https://%s/v1 (for its native API, use provider %q)", anthropicHost, ProviderAnthropic)
+	}
+	return ""
 }
 
 // Config is the full primary+escalation configuration for a Model.
@@ -101,15 +136,21 @@ func ConfigFromEnv() (Config, error) {
 
 	set := boolCount(os.Getenv(envEscalationProvider) != "", os.Getenv(envEscalationBaseURL) != "",
 		os.Getenv(envEscalationAPIKey) != "", os.Getenv(envEscalationModel) != "")
-	if set == 0 {
-		return Config{Primary: primary}, nil
+	cfg := Config{Primary: primary}
+	if set > 0 {
+		escalation, err := tierFromEnv(envEscalationProvider, envEscalationBaseURL, envEscalationAPIKey, envEscalationModel)
+		if err != nil {
+			return Config{}, fmt.Errorf("%w (partial escalation-tier configuration: set all of %s/%s/%s, or none)",
+				err, envEscalationBaseURL, envEscalationAPIKey, envEscalationModel)
+		}
+		cfg.Escalation = &escalation
 	}
-	escalation, err := tierFromEnv(envEscalationProvider, envEscalationBaseURL, envEscalationAPIKey, envEscalationModel)
-	if err != nil {
-		return Config{}, fmt.Errorf("%w (partial escalation-tier configuration: set all of %s/%s/%s, or none)",
-			err, envEscalationBaseURL, envEscalationAPIKey, envEscalationModel)
+	// What a tier needs beyond being set (e.g. the right base URL for
+	// its provider) fails here, at start-up, not on the first call.
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
 	}
-	return Config{Primary: primary, Escalation: &escalation}, nil
+	return cfg, nil
 }
 
 func tierFromEnv(providerVar, baseURLVar, apiKeyVar, modelVar string) (Tier, error) {

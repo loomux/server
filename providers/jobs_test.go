@@ -3,6 +3,7 @@ package providers_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,45 @@ func TestDeadlineRecordsError(t *testing.T) {
 	e := h.waitStatus(t, target.ID, registry.EnvironmentError)
 	if !strings.Contains(e.StatusReason, "didn't become ready within 300ms") {
 		t.Errorf("reason = %q", e.StatusReason)
+	}
+}
+
+// deadlineStore holds a job's environment write until the job's
+// deadline passes, then fails it with the context's error, as sqlite
+// does: the deadline lands inside the write.
+type deadlineStore struct{ registry.Store }
+
+func (s deadlineStore) UpdateEnvironment(ctx context.Context, e *registry.Environment) error {
+	if _, ok := ctx.Deadline(); ok && e.Status != registry.EnvironmentError {
+		<-ctx.Done()
+		return fmt.Errorf("sqlite: update environment: %w", ctx.Err())
+	}
+	return s.Store.UpdateEnvironment(ctx, e)
+}
+
+// A deadline that passes during a write is still the deadline: the
+// reason says the machine wasn't ready in time, not that the write
+// failed (seen on TEST 2026-10-20, a cold image pull past 10 minutes).
+func TestDeadlineDuringWriteRecordsTheDeadline(t *testing.T) {
+	h := slowHarness(t)
+	m := providers.NewManager(deadlineStore{h.store}, h.pm, "inst", nil, nil)
+	defer m.Close()
+	m.PollInterval = 20 * time.Millisecond
+	m.CreateTimeout = 300 * time.Millisecond
+	p := true
+	target, _, err := m.Create(context.Background(), providers.CreateRequest{
+		Target: registry.Target{Name: "late-write"}, PluginID: h.pluginID, Size: "small", Persistent: &p,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m.WaitJobsForTest()
+	e, err := m.Get(context.Background(), target.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if e.Status != registry.EnvironmentError || !strings.Contains(e.StatusReason, "didn't become ready within 300ms") {
+		t.Errorf("after the deadline = %s (%q), want error naming the deadline", e.Status, e.StatusReason)
 	}
 }
 
