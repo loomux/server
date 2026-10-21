@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -93,12 +94,13 @@ type answer struct {
 	prompt, completion, total int64
 }
 
-// newExchange starts an exchange in tier's protocol.
-func newExchange(tier Tier, system, user string, tool toolSpec) exchange {
+// newExchange starts an exchange in tier's protocol, its requests
+// carried by hc (nil: the SDK's default).
+func newExchange(tier Tier, system, user string, tool toolSpec, hc *http.Client) exchange {
 	if tier.Provider == ProviderAnthropic {
-		return newAnthropicExchange(tier, system, user, tool)
+		return newAnthropicExchange(tier, system, user, tool, hc)
 	}
-	return newOpenAIExchange(tier, system, user, tool)
+	return newOpenAIExchange(tier, system, user, tool, hc)
 }
 
 // converse runs one tier's round trip for op: ask, hand the tool call to

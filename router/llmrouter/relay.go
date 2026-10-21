@@ -57,7 +57,7 @@ func (m *Model) relayWith(ctx context.Context, tierName string, tier Tier, timeo
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ex := newExchange(tier, relaySystemPrompt, relayUserPrompt(in), relayTool())
+	ex := newExchange(tier, relaySystemPrompt, relayUserPrompt(in), relayTool(), m.httpClient)
 	var result router.RelayResult
 	err := m.converse(ctx, metrics.RouterOpRelay, tierName, ex, relayToolName, relayCorrectionPrompt, func(raw json.RawMessage) error {
 		var args relayArguments

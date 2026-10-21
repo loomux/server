@@ -418,7 +418,7 @@ func TestAnthropic_CorrectiveRetry_AnswersToolCall(t *testing.T) {
 // Prompt tokens include cache reads and writes.
 func TestAnthropic_TokenUsage(t *testing.T) {
 	srv, _ := newFakeServer(t, anthropicToolCallHandler(t, relayToolName, map[string]any{"reply": "r", "done": false}))
-	ex := newAnthropicExchange(Tier{Provider: ProviderAnthropic, BaseURL: srv.URL, APIKey: "test-key", Model: "claude-haiku-4-5"}, "sys", "user", relayTool())
+	ex := newAnthropicExchange(Tier{Provider: ProviderAnthropic, BaseURL: srv.URL, APIKey: "test-key", Model: "claude-haiku-4-5"}, "sys", "user", relayTool(), nil)
 	a, err := ex.ask(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -486,5 +486,46 @@ func TestTierValidate(t *testing.T) {
 		if (err == nil) != tc.ok || (err != nil && !errors.Is(err, ErrConfigInvalid)) {
 			t.Errorf("%+v.Validate() = %v, want ok=%v", tc.tier, err, tc.ok)
 		}
+	}
+}
+
+// An openai tier on Anthropic's host speaks its OpenAI-compatible
+// endpoint (LOOM-187), which lives under /v1: without it every call
+// would 404.
+func TestTierValidate_AnthropicCompatBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		tier Tier
+		ok   bool
+	}{
+		{Tier{BaseURL: "https://api.anthropic.com/v1", APIKey: "k", Model: "claude-haiku-5-5"}, true},
+		{Tier{BaseURL: "https://api.anthropic.com/v1/", APIKey: "k", Model: "claude-haiku-5-5"}, true},
+		{Tier{BaseURL: "https://API.Anthropic.com/v1", APIKey: "k", Model: "claude-haiku-5-5"}, true},
+		{Tier{BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "claude-haiku-5-5"}, false},
+		{Tier{BaseURL: "https://api.anthropic.com/", APIKey: "k", Model: "claude-haiku-5-5"}, false},
+		{Tier{BaseURL: "https://api.anthropic.com/v1/chat/completions", APIKey: "k", Model: "claude-haiku-5-5"}, false},
+		// The native provider takes the API root (and trims /v1 itself).
+		{Tier{Provider: ProviderAnthropic, BaseURL: "https://api.anthropic.com", APIKey: "k", Model: "m"}, true},
+		{Tier{Provider: ProviderAnthropic, BaseURL: "https://api.anthropic.com/v1", APIKey: "k", Model: "m"}, true},
+		// Any other host is left alone.
+		{Tier{BaseURL: "https://proxy.example.com", APIKey: "k", Model: "m"}, true},
+	} {
+		err := tc.tier.Validate()
+		if (err == nil) != tc.ok || (err != nil && !errors.Is(err, ErrConfigInvalid)) {
+			t.Errorf("%+v.Validate() = %v, want ok=%v", tc.tier, err, tc.ok)
+		}
+	}
+}
+
+func TestConfigFromEnv_AnthropicCompatNeedsV1(t *testing.T) {
+	setEnv(t, map[string]string{
+		envPrimaryBaseURL:    "https://api.groq.com/openai/v1",
+		envPrimaryAPIKey:     "primary-key",
+		envPrimaryModel:      "llama-3.1-8b-instant",
+		envEscalationBaseURL: "https://api.anthropic.com",
+		envEscalationAPIKey:  "escalation-key",
+		envEscalationModel:   "claude-haiku-5-5",
+	})
+	if _, err := ConfigFromEnv(); !errors.Is(err, ErrConfigInvalid) || !strings.Contains(err.Error(), "/v1") {
+		t.Fatalf("ConfigFromEnv = %v, want ErrConfigInvalid naming /v1", err)
 	}
 }

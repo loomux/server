@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -39,7 +40,7 @@ type anthropicExchange struct {
 	lastToolUseID string
 }
 
-func newAnthropicExchange(tier Tier, system, user string, tool toolSpec) *anthropicExchange {
+func newAnthropicExchange(tier Tier, system, user string, tool toolSpec, hc *http.Client) *anthropicExchange {
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(tier.Model),
 		MaxTokens: anthropicMaxTokens,
@@ -66,16 +67,19 @@ func newAnthropicExchange(tier Tier, system, user string, tool toolSpec) *anthro
 		// (and latency) down.
 		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortLow}
 	}
-	return &anthropicExchange{client: buildAnthropicClient(tier), params: params, toolName: tool.name}
+	return &anthropicExchange{client: buildAnthropicClient(tier, hc), params: params, toolName: tool.name}
 }
 
 // buildAnthropicClient is the Messages-API counterpart of buildClient.
 // A base URL ending in /v1 (as an OpenAI-style one would) is trimmed:
 // the SDK adds /v1/messages itself.
-func buildAnthropicClient(tier Tier) anthropic.Client {
+func buildAnthropicClient(tier Tier, hc *http.Client) anthropic.Client {
 	opts := []aoption.RequestOption{
 		aoption.WithAPIKey(tier.APIKey),
 		aoption.WithMaxRetries(anthropicMaxRetries),
+	}
+	if hc != nil {
+		opts = append(opts, aoption.WithHTTPClient(hc))
 	}
 	if base := strings.TrimSuffix(strings.TrimSuffix(tier.BaseURL, "/"), "/v1"); base != "" {
 		opts = append(opts, aoption.WithBaseURL(base))

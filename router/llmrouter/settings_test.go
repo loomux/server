@@ -238,6 +238,7 @@ func TestSettings_Validation(t *testing.T) {
 		{Provider: "openai", BaseURL: "", Model: "m", APIKey: "a-long-enough-key"},
 		{BaseURL: "not a url", Model: "m", APIKey: "a-long-enough-key"},
 		{BaseURL: "https://user:pw@host/v1", Model: "m", APIKey: "a-long-enough-key"},
+		{Provider: "openai", BaseURL: "https://api.anthropic.com", Model: "claude-haiku-5-5", APIKey: "a-long-enough-key"},
 		{BaseURL: srv.url, Model: "", APIKey: "a-long-enough-key"},
 		{BaseURL: srv.url, Model: "m\x01x", APIKey: "a-long-enough-key"},
 		{BaseURL: srv.url, Model: strings.Repeat("m", 201), APIKey: "a-long-enough-key"},

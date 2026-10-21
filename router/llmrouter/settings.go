@@ -307,6 +307,9 @@ func validateUpdate(u *TierUpdate) error {
 	if reason := checkBaseURL(u.BaseURL); reason != "" {
 		return &InvalidSettingError{reason}
 	}
+	if reason := checkProviderBaseURL(provider, u.BaseURL); reason != "" {
+		return &InvalidSettingError{"base_url: " + reason}
+	}
 	if u.Model == "" {
 		return &InvalidSettingError{"model is required"}
 	}
@@ -481,7 +484,7 @@ func (s *Settings) Test(ctx context.Context, tier string) (TestResult, error) {
 // reply of at most one token, in the tier's protocol.
 func pingTier(ctx context.Context, t Tier) error {
 	if t.Provider == ProviderAnthropic {
-		client := buildAnthropicClient(t)
+		client := buildAnthropicClient(t, nil)
 		_, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 			Model:     anthropic.Model(t.Model),
 			MaxTokens: 1,
@@ -489,7 +492,7 @@ func pingTier(ctx context.Context, t Tier) error {
 		})
 		return err
 	}
-	client := buildClient(t)
+	client := buildClient(t, nil)
 	_, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model:     t.Model,
 		Messages:  []openai.ChatCompletionMessageParamUnion{openai.UserMessage("ping")},
