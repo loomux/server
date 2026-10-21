@@ -151,6 +151,42 @@ func TestMachines_CreateViaTargets(t *testing.T) {
 	}
 }
 
+// next_step stays null while the machine comes up (design §5): there is
+// nothing to do yet, and plugin.status says why it isn't ready.
+func TestMachines_NoNextStepWhileComingUp(t *testing.T) {
+	base, token, stub, _ := machineServer(t)
+	status, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{
+		"name": "builds", "plugin": map[string]any{"id": "p1", "size": "small"},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create machine: %d %s", status, body)
+	}
+	var resp struct {
+		ID       string
+		Ready    bool    `json:"ready"`
+		NextStep *string `json:"next_step"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Ready || resp.NextStep != nil {
+		t.Errorf("created: %s, want ready false and next_step null", body)
+	}
+	for _, s := range []registry.EnvironmentStatus{registry.EnvironmentCreating, registry.EnvironmentStarting, registry.EnvironmentRecreating} {
+		stub.envs[resp.ID].Status = s
+		for _, path := range []string{"/api/v1/targets/" + resp.ID, "/api/v1/targets"} {
+			if _, body := doJSON(t, "GET", base+path, token, nil); !strings.Contains(body, `"next_step":null`) {
+				t.Errorf("%s while %s: %s", path, s, body)
+			}
+		}
+	}
+	// Once it runs, the usual onboarding applies: not probed yet.
+	stub.envs[resp.ID].Status = registry.EnvironmentRunning
+	if _, body := doJSON(t, "GET", base+"/api/v1/targets/"+resp.ID, token, nil); !strings.Contains(body, `"next_step":"test_connection"`) {
+		t.Errorf("running, unprobed: %s", body)
+	}
+}
+
 func TestMachines_CreateRefusesConnectionFields(t *testing.T) {
 	base, token, stub, _ := machineServer(t)
 	for field, value := range map[string]any{"host": "x", "user": "u", "ssh_port": 22, "ssh_key_id": "k", "generate_ssh_key": true, "ssh_proxy": "none", "workspace_root": "/w"} {
