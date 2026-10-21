@@ -118,9 +118,14 @@ scored on the decision the router acts on, after `router.ApplyAffinity`.
 
 ## Budget
 
-**Cap: $5 for the whole trial.** Each live run takes `--budget-usd`. The
-run refuses to start if its expected cost is over that budget, and stops
-before any call that could take the spend past it.
+**Cap: $5 for the whole trial**, enforced by the Console spend limit
+(step 1). Each live run also takes `--budget-usd`, a soft cap of its own.
+The run refuses to start if its expected cost is over that budget. It
+then stops before a call once the spend plus the dearest call so far
+would pass it. The first call, and any call dearer than all before it,
+can still take the spend past the budget, by at most that call's own
+cost: cents at these prices (the worst-case column below, divided by
+90 calls).
 
 Measured offline: about 2.4K prompt tokens per call. The estimates
 assume 1,024 output tokens per answer. Worst case means every call needs

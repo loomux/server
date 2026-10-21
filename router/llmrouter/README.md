@@ -261,7 +261,10 @@ Offline, it runs against the fake with an oracle that gives each case
 its expected answer. That checks the harness end to end (it must score
 100%) and measures request sizes for a live-cost estimate. `--live`
 needs a budget and a price, refuses to start when the estimate is over
-the budget, and stops before a call that could pass it. Its unit tests
+the budget, and stops before a call once the spend plus the dearest call
+so far would pass it. That's a soft cap: a call dearer than all before
+it can still go over, by up to its own cost; the provider's spend limit
+is the hard one. Its unit tests
 (`go test ./router/llmrouter/routereval/ ./cmd/loomux-routereval/`) run
 only against the fake.
 

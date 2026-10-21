@@ -32,8 +32,11 @@ type Options struct {
 	// Price prices the tokens; zero looks the model up (PriceFor), and
 	// an unknown model's cost isn't reported.
 	Price Price
-	// BudgetUSD, if positive, stops the run before a call that could
-	// take the spend past it (judged by the dearest call so far).
+	// BudgetUSD, if positive, stops the run before a call once the spend
+	// plus the dearest call so far would pass it. It's a soft cap: the
+	// first call, and any call dearer than all before it, can take the
+	// spend past it by up to that call's own cost. The provider's spend
+	// limit is the hard cap.
 	BudgetUSD float64
 	// MaxCalls, if positive, stops the run after that many calls.
 	MaxCalls int
@@ -60,6 +63,12 @@ type Options struct {
 func Run(ctx context.Context, fx *Fixtures, o Options) (*Report, error) {
 	if err := o.Tier.Validate(); err != nil {
 		return nil, err
+	}
+	if err := o.Price.Validate(); err != nil {
+		return nil, err
+	}
+	if !ValidUSD(o.BudgetUSD) {
+		return nil, fmt.Errorf("routereval: budget %v: must be a finite number, 0 or more", o.BudgetUSD)
 	}
 	if o.Runs <= 0 {
 		o.Runs = 1
@@ -174,7 +183,7 @@ func (r *runner) next(ctx context.Context) bool {
 	case r.o.MaxCalls > 0 && r.calls >= r.o.MaxCalls:
 		r.rep.Summary.StoppedEarly = fmt.Sprintf("call cap (%d) reached", r.o.MaxCalls)
 	case r.o.BudgetUSD > 0 && r.priced && r.spent+r.dearest > r.o.BudgetUSD:
-		r.rep.Summary.StoppedEarly = fmt.Sprintf("budget: $%.4f spent, the next call could pass $%.2f", r.spent, r.o.BudgetUSD)
+		r.rep.Summary.StoppedEarly = fmt.Sprintf("budget: $%.4f spent, a call like the dearest so far would pass $%.2f", r.spent, r.o.BudgetUSD)
 	case r.o.Pace > 0 && r.o.sleep(ctx, r.o.Pace) != nil:
 		r.rep.Summary.StoppedEarly = "interrupted"
 	}

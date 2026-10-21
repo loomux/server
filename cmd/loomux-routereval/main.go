@@ -90,7 +90,7 @@ func runCmd(ctx context.Context, args []string, getenv func(string) string, stdo
 	fs.StringVar(&f.fixtures, "fixtures", "", "fixture file (default: the built-in set)")
 	fs.Float64Var(&f.priceIn, "price-in", 0, "input price, USD per million tokens (default: built-in for known models)")
 	fs.Float64Var(&f.priceOut, "price-out", 0, "output price, USD per million tokens")
-	fs.Float64Var(&f.budget, "budget-usd", 0, "stop before the spend could pass this (required with --live)")
+	fs.Float64Var(&f.budget, "budget-usd", 0, "soft cap: stop before a call once the spend plus the dearest call so far would pass this; the provider's spend limit is the hard cap (required with --live)")
 	fs.IntVar(&f.maxCalls, "max-calls", 0, "stop after this many calls (0: no cap)")
 	fs.StringVar(&f.out, "out", "", "write the JSON report here")
 	fs.StringVar(&f.md, "md", "", "write the Markdown report here (default: stdout)")
@@ -100,6 +100,14 @@ func runCmd(ctx context.Context, args []string, getenv func(string) string, stdo
 	}
 	if f.model == "" {
 		return errors.New("--model is required")
+	}
+	// Before a zero price falls back to the table, which would hide a
+	// negative one.
+	if err := (routereval.Price{InputPerMTok: f.priceIn, OutputPerMTok: f.priceOut}).Validate(); err != nil {
+		return fmt.Errorf("--price-in/--price-out: %w", err)
+	}
+	if !routereval.ValidUSD(f.budget) {
+		return fmt.Errorf("--budget-usd %v: must be a finite number, 0 or more", f.budget)
 	}
 	provider, err := llmrouter.ParseProvider(f.provider)
 	if err != nil {

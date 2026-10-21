@@ -56,6 +56,8 @@ func TestRun_LiveGuards(t *testing.T) {
 		{"no price", map[string]string{"ROUTEREVAL_API_KEY": "k"}, []string{"--model", "mystery", "--live", "--budget-usd", "1"}, "--price-in"},
 		{"over budget", map[string]string{"ROUTEREVAL_API_KEY": "k"}, []string{"--model", "claude-sonnet-5-5", "--runs", "50", "--live", "--budget-usd", "0.01"}, "over the budget"},
 		{"bad base URL", map[string]string{"ROUTEREVAL_API_KEY": "k"}, []string{"--model", "claude-haiku-5-5", "--base-url", "https://api.anthropic.com", "--live", "--budget-usd", "1"}, "/v1"},
+		{"negative price", nil, []string{"--model", "claude-haiku-5-5", "--price-in", "-1", "--price-out", "5"}, "--price-in"},
+		{"NaN budget", nil, []string{"--model", "claude-haiku-5-5", "--live", "--budget-usd", "NaN"}, "--budget-usd"},
 		{"anthropic offline", nil, []string{"--model", "claude-haiku-5-5", "--provider", "anthropic"}, "--live"},
 		{"no model", nil, nil, "--model is required"},
 	} {

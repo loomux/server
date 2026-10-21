@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -181,6 +183,51 @@ func TestRun_BudgetStopsEarly(t *testing.T) {
 	rep := offline(t, fake, "custom-model", Options{Price: Price{InputPerMTok: 1}, BudgetUSD: 3.5})
 	if s := rep.Summary; s.Calls != 3 || s.CostUSD != 3 || !strings.HasPrefix(s.StoppedEarly, "budget") {
 		t.Errorf("summary = %+v", s)
+	}
+}
+
+// The budget is a soft cap, judged by the dearest call so far: a call
+// dearer than any before it can take the spend past it, by at most its
+// own cost. The provider's spend limit is the hard cap.
+func TestRun_BudgetIsSoft(t *testing.T) {
+	fx := fixtures(t)
+	var n atomic.Int32
+	fake := llmroutertest.NewAnthropicCompat("sk-ant-test-0000", func(r llmroutertest.Request) llmroutertest.Reply {
+		rep := Oracle(fx)(r)
+		rep.PromptTokens, rep.CompletionTokens = 1_000_000, 0 // $1 a call at $1/MTok
+		if n.Add(1) == 3 {
+			rep.PromptTokens = 3_000_000 // the third costs $3
+		}
+		return rep
+	})
+	defer fake.Close()
+	rep := offline(t, fake, "custom-model", Options{Price: Price{InputPerMTok: 1}, BudgetUSD: 3.5})
+	// $1, $1, then the third starts at $2 spent + $1 dearest ≤ $3.5 and
+	// ends at $5: past the budget by $1.5, less than the call's own $3.
+	if s := rep.Summary; s.Calls != 3 || s.CostUSD != 5 || !strings.HasPrefix(s.StoppedEarly, "budget") {
+		t.Errorf("summary = %+v", s)
+	}
+}
+
+// A negative, NaN or infinite price or budget would defeat the budget
+// (a negative price lowers the spend, NaN never compares over it): Run
+// refuses to start.
+func TestRun_RefusesBadPriceOrBudget(t *testing.T) {
+	fx := fixtures(t)
+	fake := llmroutertest.NewAnthropicCompat("sk-ant-test-0000", Oracle(fx))
+	defer fake.Close()
+	for name, o := range map[string]Options{
+		"negative input price": {Price: Price{InputPerMTok: -1, OutputPerMTok: 5}},
+		"NaN output price":     {Price: Price{InputPerMTok: 1, OutputPerMTok: math.NaN()}},
+		"infinite input price": {Price: Price{InputPerMTok: math.Inf(1)}},
+		"negative budget":      {BudgetUSD: -1},
+		"NaN budget":           {BudgetUSD: math.NaN()},
+		"infinite budget":      {BudgetUSD: math.Inf(1)},
+	} {
+		o.Tier, o.HTTPClient, o.Offline, o.MaxCalls = liveTier("claude-haiku-5-5"), fake.Client(), true, 1
+		if _, err := Run(context.Background(), fx, o); err == nil {
+			t.Errorf("%s: Run started", name)
+		}
 	}
 }
 
