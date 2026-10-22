@@ -203,6 +203,10 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		return protocol.CheckResult{}, err
 	}
 	res := protocol.CheckResult{OK: true, Problems: []protocol.Problem{}}
+	severity := protocol.SeverityWarning
+	if cfg.RequireNetworkPolicy {
+		severity = protocol.SeverityError
+	}
 	if _, err := client.CoreV1().Pods(cfg.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector, Limit: 1}); err != nil {
 		code := ProblemClusterUnreachable
 		if kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err) {
@@ -213,6 +217,7 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 			Code: code, Severity: protocol.SeverityError,
 			Message: "can't list pods in namespace " + cfg.Namespace + ": " + safeStatus(err),
 		})
+		res.Problems = append(res.Problems, p.openNodes(severity)...)
 		return res, nil
 	}
 	switch _, err := client.CoreV1().Services(cfg.Namespace).Get(ctx, cfg.Subdomain, metav1.GetOptions{}); {
@@ -228,17 +233,10 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		})
 	}
 	state, detail := p.enforcement(ctx, cfg, client, host.InstanceID, p.CanaryWait)
-	severity := protocol.SeverityWarning
-	if cfg.RequireNetworkPolicy {
-		severity = protocol.SeverityError
-	}
 	switch state {
 	case enforcementEnforced:
 	case enforcementNotEnforced:
-		res.Problems = append(res.Problems, protocol.Problem{
-			Code: ProblemNetworkPolicyNotEnforced, Severity: severity,
-			Message: "NetworkPolicy isn't enforced in this cluster (" + detail + "): machines can't be confined; install a policy engine (kube-network-policies, Calico, kube-router) for egress: none",
-		})
+		res.Problems = append(res.Problems, notEnforced(severity, detail))
 	case enforcementPolicyOpen:
 		res.Problems = append(res.Problems, protocol.Problem{
 			Code: ProblemNetworkPolicyAllowsEgress, Severity: severity,
@@ -258,17 +256,29 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 	// A node known open, if that isn't the verdict already: a policy
 	// error or open policies answered first (LOOM-208).
 	if state != enforcementNotEnforced {
-		if s, d := p.nodeFailure(); s == enforcementNotEnforced {
-			res.Problems = append(res.Problems, protocol.Problem{
-				Code: ProblemNetworkPolicyNotEnforced, Severity: severity,
-				Message: "NetworkPolicy isn't enforced in this cluster (" + d + "): machines can't be confined; install a policy engine (kube-network-policies, Calico, kube-router) for egress: none",
-			})
-		}
+		res.Problems = append(res.Problems, p.openNodes(severity)...)
 	}
 	if severity == protocol.SeverityError && state != enforcementEnforced {
 		res.OK = false
 	}
 	return res, nil
+}
+
+// notEnforced is the problem of a canary that got out.
+func notEnforced(severity, detail string) protocol.Problem {
+	return protocol.Problem{
+		Code: ProblemNetworkPolicyNotEnforced, Severity: severity,
+		Message: "NetworkPolicy isn't enforced in this cluster (" + detail + "): machines can't be confined; install a policy engine (kube-network-policies, Calico, kube-router) for egress: none",
+	}
+}
+
+// openNodes is the problem of the nodes known open, if any: check
+// reports them whatever else it can't do (LOOM-208).
+func (p *Plugin) openNodes(severity string) []protocol.Problem {
+	if state, detail := p.nodeFailure(); state == enforcementNotEnforced {
+		return []protocol.Problem{notEnforced(severity, detail)}
+	}
+	return nil
 }
 
 func (p *Plugin) Shutdown(ctx context.Context) error {

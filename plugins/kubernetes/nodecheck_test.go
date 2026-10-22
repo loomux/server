@@ -604,8 +604,8 @@ func TestNoneOpenNodeOutranksTheCheck(t *testing.T) {
 }
 
 // TestNoneOpenNodeOutlivesAPolicyError: a check whose policy read
-// fails, or finds the policies open, still reports a node known open,
-// besides that (LOOM-208 review).
+// fails, or finds the policies open, or that can't list pods at all,
+// still reports a node known open, besides that (LOOM-208 review).
 func TestNoneOpenNodeOutlivesAPolicyError(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -621,6 +621,7 @@ func TestNoneOpenNodeOutlivesAPolicyError(t *testing.T) {
 		{"policies open", func() (runtime.Object, error) {
 			return &networkingv1.NetworkPolicyList{}, nil
 		}, ProblemNetworkPolicyAllowsEgress},
+		{"pods unlisted", nil, ProblemForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cs, _, p, _ := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitNetReachable})
@@ -629,10 +630,17 @@ func TestNoneOpenNodeOutlivesAPolicyError(t *testing.T) {
 			}
 			scheduleOn(t, cs, "conf1", "n1")
 			statusSoon(t, p, "conf1", protocol.EnvError)
-			cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
-				obj, err := tc.list()
-				return true, obj, err
-			})
+			if tc.list != nil {
+				cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
+					obj, err := tc.list()
+					return true, obj, err
+				})
+			} else {
+				// Check's first read: it stops there.
+				cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+					return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("no"))
+				})
+			}
 			res, _ := p.Check(ctx)
 			if !hasCode(res, tc.code) || !hasCode(res, ProblemNetworkPolicyNotEnforced) || !strings.Contains(problemText(res), "n1") {
 				t.Errorf("check = %s; want %s and n1 not enforced", problemText(res), tc.code)
