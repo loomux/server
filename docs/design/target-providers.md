@@ -783,7 +783,7 @@ machine is `running` only while a canary bound to its own node (`spec.nodeName`,
 permissions needed) has said "enforced" there within those 10 minutes; the check's canary counts for the node it
 landed on. Until then it is `starting` ("checking network isolation on node …"), the node's canary starting as soon
 as the pod has a node. A canary that gets out on the node makes each `none` machine there `error`, naming the node
-(the pod is left, like any machine in error), withdraws `none` from describe and create, and check reports
+(the pod is left, like any machine in error), withdraws `none` from describe and create (a start of a `none` machine still on the node is refused too), and check reports
 `network_policy_not_enforced` for the node (whatever its own canary says) and tries it again with a pinned canary a minute on, until one started
 after the failure says "enforced" (verdicts go by when canaries started; a retry that can't run leaves the node
 open). A canary that can't run there proves nothing either way: an "enforced" from the last 10 minutes still

@@ -112,7 +112,8 @@ on. Until then the machine is `starting` ("checking network isolation
 on node …"); the node's canary starts as soon as the pod has a node,
 while sshd comes up. A node where the canary gets out makes each `none`
 machine there `error`, naming the node and what was reached, and
-withdraws `none` from describe and create; check reports
+withdraws `none` from describe and create (a start of a `none` machine
+still on that node is refused too); check reports
 `network_policy_not_enforced` for that node, whatever its own canary
 says, and tries it again with a
 pinned canary a minute on, until one started after the failure says

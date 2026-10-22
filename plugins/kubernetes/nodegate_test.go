@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/plugins/rpc"
 )
 
@@ -62,6 +63,22 @@ func TestNoneNodeFailureBeforeThePod(t *testing.T) {
 		refused(t, p.StartTarget(ctx, "conf1"), "start")
 		if _, err := cs.CoreV1().Pods(testNS).Get(ctx, podName("conf1"), metav1.GetOptions{}); err == nil {
 			t.Error("a pod labelled egress none was made")
+		}
+	})
+	t.Run("start, the pod still there", func(t *testing.T) {
+		cs, _, p, _ := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitNetReachable})
+		for _, id := range []string{"conf1", "conf2"} {
+			if _, err := p.CreateTarget(ctx, confinedSpec(id)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		scheduleOn(t, cs, "conf2", "n0")
+		statusSoon(t, p, "conf2", protocol.EnvRunning)
+		scheduleOn(t, cs, "conf1", "n1")
+		statusSoon(t, p, "conf1", protocol.EnvError)
+		refused(t, p.StartTarget(ctx, "conf1"), "start")
+		if err := p.StartTarget(ctx, "conf2"); err != nil {
+			t.Errorf("start of a running machine on an enforced node = %v, want nil", err)
 		}
 	})
 	t.Run("recreate", func(t *testing.T) {

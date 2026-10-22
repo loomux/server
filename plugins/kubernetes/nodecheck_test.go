@@ -517,9 +517,10 @@ func TestNoneNodeFailureSticks(t *testing.T) {
 }
 
 // TestNoneStoppedNotRenewed: a stopped machine's node isn't checked for
-// it any more, nor one whose pod is gone (LOOM-208 review).
+// it any more, nor one whose pod is gone, nor one recreated with egress
+// internet (LOOM-208 review).
 func TestNoneStoppedNotRenewed(t *testing.T) {
-	for _, how := range []string{"stop", "pod gone, health asked"} {
+	for _, how := range []string{"stop", "pod gone, health asked", "recreated with egress internet"} {
 		t.Run(how, func(t *testing.T) {
 			cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
 			if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
@@ -527,11 +528,18 @@ func TestNoneStoppedNotRenewed(t *testing.T) {
 			}
 			scheduleOn(t, cs, "conf1", "n1")
 			statusSoon(t, p, "conf1", protocol.EnvRunning)
-			if how == "stop" {
+			switch how {
+			case "stop":
 				if err := p.StopTarget(ctx, "conf1"); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			case "recreated with egress internet":
+				if _, err := p.RecreateTarget(ctx, "conf1", spec("conf1")); err != nil {
+					t.Fatal(err)
+				}
+				scheduleOn(t, cs, "conf1", "n1")
+				statusSoon(t, p, "conf1", protocol.EnvRunning)
+			default:
 				if err := cs.Tracker().Delete(corev1.SchemeGroupVersion.WithResource("pods"), testNS, podName("conf1")); err != nil {
 					t.Fatal(err)
 				}

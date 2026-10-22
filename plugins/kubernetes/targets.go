@@ -314,6 +314,13 @@ func (p *Plugin) StartTarget(ctx context.Context, id string) error {
 		return err
 	}
 	if pod != nil && pod.DeletionTimestamp == nil {
+		// Already there; a "none" one on a node known not to confine it
+		// is refused, not reported started (LOOM-208).
+		if spec.Egress == protocol.EgressNone {
+			if detail, open := p.openNode(pod.Spec.NodeName); open {
+				return noneRefused(enforcementNotEnforced, "on node "+pod.Spec.NodeName+", "+detail)
+			}
+		}
 		return nil
 	}
 	size, ok := cfg.size(spec.Size)
@@ -389,6 +396,9 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	if err := p.deletePod(ctx, client, cfg, id, 5); err != nil {
 		return protocol.Environment{}, err
 	}
+	// The old pod's node is no longer this machine's; the new pod's is
+	// watched once it has one, if it is still "none".
+	p.unwatch(podName(id))
 	pod, err := p.ensurePod(ctx, client, cfg, spec, size, instance)
 	if err != nil {
 		return protocol.Environment{}, err

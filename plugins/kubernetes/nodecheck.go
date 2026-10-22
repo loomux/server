@@ -186,6 +186,17 @@ func (p *Plugin) nodeFailure() (enforcementState, string) {
 	return enforcementNotEnforced, strings.Join(detail, "; ")
 }
 
+// openNode is what a canary that got out on node reached, while node
+// is open.
+func (p *Plugin) openNode(node string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if n := p.nodes[node]; node != "" && n != nil && n.open != nil {
+		return n.open.detail, true
+	}
+	return "", false
+}
+
 // knownLeak is "not enforced" while the latest finished canary, or one
 // on some node, found a confined pod getting out; "enforced" otherwise:
 // the last word before a "none" pod is made (ensurePod).
