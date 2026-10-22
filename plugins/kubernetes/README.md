@@ -132,10 +132,17 @@ plugin process, so a restarted plugin checks each node again, and its
 `none` machines are `starting` for those few seconds. A node's
 verdicts go by when their canaries started, so one read late never
 undoes a newer one. Each canary is a pod in the namespace's quota while
-it runs, up to one per node being checked plus the check's own: leave
-`pods` room for the number of nodes plus one beside `max_environments`
-machines. A canary with no room can't run, which proves nothing, and
-10 minutes on the machines are `starting`.
+it runs, up to one per node being checked plus the check's own, for each
+plugin configuration whose canaries are still live. A restart, a
+rollout (old and new sidecar overlapping) or a configure starts a fresh
+set while the last one's may still run: a canary lives at most 4
+minutes (its 3-minute timeout plus a minute's active deadline, should
+its plugin die first), and the new process doesn't adopt them. So leave
+`pods` room for `max_environments` machines plus (nodes + 1) × the
+configurations that can overlap: 2 for a restart or a rollout, one more
+for each further restart within 4 minutes. A canary with no room can't
+run, which proves nothing: the node is tried again a minute on, and 10
+minutes on the machines are `starting`, never `running` unchecked.
 
 What it trusts. The canary samples a few destinations; it can't prove
 that none other answers. What proves that is the policies, so the

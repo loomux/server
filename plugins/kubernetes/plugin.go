@@ -252,6 +252,16 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 			Message: "the network-isolation check didn't run: " + detail,
 		})
 	}
+	// A node known open, if that isn't the verdict already: a policy
+	// error or open policies answered first (LOOM-208).
+	if state != enforcementNotEnforced {
+		if s, d := p.nodeFailure(); s == enforcementNotEnforced {
+			res.Problems = append(res.Problems, protocol.Problem{
+				Code: ProblemNetworkPolicyNotEnforced, Severity: severity,
+				Message: "NetworkPolicy isn't enforced in this cluster (" + d + "): machines can't be confined; install a policy engine (kube-network-policies, Calico, kube-router) for egress: none",
+			})
+		}
+	}
 	if severity == protocol.SeverityError && state != enforcementEnforced {
 		res.OK = false
 	}

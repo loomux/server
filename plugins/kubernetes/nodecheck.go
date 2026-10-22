@@ -23,9 +23,9 @@ import (
 // machine on it an error (its pod is left as it is, like any machine in
 // error: destroy or recreate it) and withdraws "none" from describe and
 // create; check reports it, and tries the node again with a canary
-// pinned there a minute on, until one started after the failure says
-// "enforced" (a node's verdicts go by when their canaries started,
-// seq, not when they were read). A canary that
+// pinned there a minute on, until one started after that finding says
+// "enforced" (a node's verdicts go by when their canaries started and
+// finished, not when they were read). A canary that
 // couldn't run there (no room, the image) proves nothing either way: an
 // "enforced" from within verdictTTL still stands, and the node is tried
 // again a minute on.
@@ -37,16 +37,24 @@ import (
 // turns them to error. What is known is in this process only: a
 // restarted plugin checks each node again, its machines starting until
 // then. Each canary is a pod in the namespace's quota while it runs:
-// up to one per node being checked, plus the check's own.
+// up to one per node being checked, plus the check's own, for each
+// configuration (a restart, a rollout, a configure) whose canaries are
+// still live; one lives at most CanaryTimeout plus a minute (its
+// active deadline, should this process die first). Too little room
+// costs only time: a canary that can't be made proves nothing.
 
-// nodeCheck is one node's canaries, each the latest by start (seq): the
-// one running there; the last finished; the last that said "enforced";
-// and the last that got out, open until one started after it says
-// "enforced" (one that couldn't run proves nothing and clears nothing).
+// nodeCheck is one node's canaries: the one running there; the last
+// finished and the last that said "enforced", each the latest to start
+// (seq); and the last that got out, open until a canary started after
+// it finished (doneSeq) says "enforced". A canary that got out is
+// evidence of an escape during its run; one that ran alongside it,
+// started after it, sampled the same time and proves no recovery, and
+// one that couldn't run proves nothing. One that got out but started
+// before the last "enforced" did is older news than that and opens
+// nothing.
 type nodeCheck struct{ running, settled, enforced, open *netcheck }
 
-// record is a finished canary's verdict on the node; one started before
-// a verdict already recorded doesn't undo it. p.mu is held.
+// record is a finished canary's verdict on the node; p.mu is held.
 func (n *nodeCheck) record(nc *netcheck) {
 	newer := func(old *netcheck) bool { return old == nil || nc.seq > old.seq }
 	if newer(n.settled) {
@@ -57,11 +65,14 @@ func (n *nodeCheck) record(nc *netcheck) {
 		if newer(n.enforced) {
 			n.enforced = nc
 		}
-		if n.open != nil && nc.seq > n.open.seq {
+		if n.open != nil && nc.seq > n.open.doneSeq {
 			n.open = nil
 		}
 	case enforcementNotEnforced:
-		if newer(n.open) {
+		if n.enforced != nil && nc.seq < n.enforced.seq {
+			break
+		}
+		if n.open == nil || nc.doneSeq > n.open.doneSeq {
 			n.open = nc
 		}
 	}

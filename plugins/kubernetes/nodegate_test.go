@@ -83,32 +83,57 @@ func TestNoneNodeFailureBeforeThePod(t *testing.T) {
 	})
 }
 
-// A node's verdicts go by when their canaries started, not when they
-// were read: one started earlier and read later (its pod was slow, or
-// the check's canary landed there meanwhile) never undoes a newer one
-// (LOOM-208 review).
+// A node found open stays open until a canary started after that
+// finding (after the open one finished) says "enforced": one that got
+// out is evidence of an escape during its run, and a canary that ran
+// alongside it, started after it, only sampled the same time. One that
+// got out but started before the latest "enforced" did is older news
+// and opens nothing, however late it is read. One that couldn't run
+// clears nothing (LOOM-208 review).
 func TestNodeVerdictsByStart(t *testing.T) {
-	check := func(seq uint64, state enforcementState) *netcheck {
-		return &netcheck{seq: seq, state: state, detail: state.String()}
+	check := func(seq, done uint64, state enforcementState) *netcheck {
+		return &netcheck{seq: seq, doneSeq: done, state: state, detail: state.String()}
 	}
 	n := &nodeCheck{}
-	n.record(check(2, enforcementNotEnforced))
-	n.record(check(1, enforcementEnforced)) // older, read later
+	n.record(check(2, 3, enforcementNotEnforced))
+	n.record(check(1, 4, enforcementEnforced)) // started before, read after
 	if n.open == nil || n.open.seq != 2 {
-		t.Fatalf("an older enforced cleared a newer not enforced: open = %+v", n.open)
+		t.Fatalf("an enforced started before the open one cleared it: open = %+v", n.open)
 	}
 	if n.settled.seq != 2 {
 		t.Errorf("settled = %d, want the newer 2", n.settled.seq)
 	}
-	n.record(check(4, enforcementFailed))
+
+	n = &nodeCheck{}
+	n.record(check(2, 3, enforcementEnforced))
+	n.record(check(1, 4, enforcementNotEnforced)) // started before, out, read after
+	if n.open != nil {
+		t.Fatalf("an escape started before a newer enforced reopened the node: open = %+v", n.open)
+	}
+	if n.enforced.seq != 2 || n.settled.seq != 2 {
+		t.Errorf("enforced %d, settled %d; want 2, 2", n.enforced.seq, n.settled.seq)
+	}
+	n.record(check(5, 6, enforcementNotEnforced)) // started after the enforced one
+	if n.open == nil || n.open.seq != 5 {
+		t.Fatalf("an escape started after the last enforced was dropped: open = %+v", n.open)
+	}
+	n.record(check(4, 7, enforcementNotEnforced)) // older start, but out and done later
+	if n.open == nil || n.open.doneSeq != 7 {
+		t.Errorf("open = %+v; want the later-finished escape, 7", n.open)
+	}
+	n.record(check(6, 8, enforcementEnforced)) // started while the open one ran
+	if n.open == nil {
+		t.Error("an enforced started before the open one finished cleared it")
+	}
+	n.record(check(9, 10, enforcementFailed))
 	if n.open == nil {
 		t.Error("a canary that couldn't run cleared not enforced")
 	}
-	n.record(check(3, enforcementEnforced)) // older than the failed one, newer than the open
+	n.record(check(8, 11, enforcementEnforced)) // started after the open one finished (7)
 	if n.open != nil {
-		t.Errorf("an enforced started after the open one left it open: %+v", n.open)
+		t.Errorf("an enforced started after the open one finished left it open: %+v", n.open)
 	}
-	if n.settled.seq != 4 || n.enforced.seq != 3 {
-		t.Errorf("settled %d, enforced %d; want 4, 3", n.settled.seq, n.enforced.seq)
+	if n.settled.seq != 9 || n.enforced.seq != 8 {
+		t.Errorf("settled %d, enforced %d; want 9, 8", n.settled.seq, n.enforced.seq)
 	}
 }

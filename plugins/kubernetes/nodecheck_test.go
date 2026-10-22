@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,8 +11,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -589,4 +593,42 @@ func TestNoneOpenNodeOutranksTheCheck(t *testing.T) {
 			t.Errorf("check = %s; want network_policy_not_enforced naming n0", problemText(res))
 		}
 	})
+}
+
+// TestNoneOpenNodeOutlivesAPolicyError: a check whose policy read
+// fails, or finds the policies open, still reports a node known open,
+// besides that (LOOM-208 review).
+func TestNoneOpenNodeOutlivesAPolicyError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		list func() (runtime.Object, error)
+		code string
+	}{
+		{"forbidden", func() (runtime.Object, error) {
+			return nil, kerrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "networkpolicies"}, "", errors.New("no"))
+		}, ProblemNetworkCheckFailed},
+		{"transient", func() (runtime.Object, error) {
+			return nil, kerrors.NewServerTimeout(schema.GroupResource{Group: "networking.k8s.io", Resource: "networkpolicies"}, "list", 1)
+		}, ProblemNetworkCheckFailed},
+		{"policies open", func() (runtime.Object, error) {
+			return &networkingv1.NetworkPolicyList{}, nil
+		}, ProblemNetworkPolicyAllowsEgress},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs, _, p, _ := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitNetReachable})
+			if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
+				t.Fatal(err)
+			}
+			scheduleOn(t, cs, "conf1", "n1")
+			statusSoon(t, p, "conf1", protocol.EnvError)
+			cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
+				obj, err := tc.list()
+				return true, obj, err
+			})
+			res, _ := p.Check(ctx)
+			if !hasCode(res, tc.code) || !hasCode(res, ProblemNetworkPolicyNotEnforced) || !strings.Contains(problemText(res), "n1") {
+				t.Errorf("check = %s; want %s and n1 not enforced", problemText(res), tc.code)
+			}
+		})
+	}
 }
