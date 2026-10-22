@@ -57,6 +57,8 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 	return "tmux 3.4", nil
 }
 
+func (e *fakeExecutor) TmuxSocket() string { return targets.DefaultTmuxSocket }
+
 func (e *fakeExecutor) PaneExited(ctx context.Context, target string) (*targets.PaneExit, error) {
 	return nil, nil
 }

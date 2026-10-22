@@ -1756,3 +1756,48 @@ func TestRequireAuth_BearerScheme(t *testing.T) {
 		}
 	}
 }
+
+// LOOM-202: attach-info names the instance's tmux socket, in the socket
+// field, the attach command and the plain ssh form.
+func TestAttachInfo_NamesTheInstancesSocket(t *testing.T) {
+	srv, _, store := newTestServer(t, api.WithTmuxSocket("loomux-test"))
+	ctx := context.Background()
+	target := &registry.Target{ID: "remote-1", Name: "remote-1", Kind: registry.TargetKindRemote, Host: "jet01.example.com", User: "orski"}
+	ws := &registry.Workspace{ID: "ws-remote", Name: "ws-remote", Path: "/srv/app", TargetID: target.ID, Status: registry.WorkspaceStatusActive}
+	task := &registry.Task{ID: "task-attach", WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "loomux-task-attach", Status: registry.TaskStatusRunning, ConversationID: "conv-attach"}
+	if err := store.CreateTarget(ctx, target); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	if err := store.CreateWorkspace(ctx, ws); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := store.CreateTask(ctx, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	token, _ := login(t, srv.URL, testPassword)
+	resp := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/tasks/task-attach/attach-info", token, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var out struct {
+		TmuxSocket     string `json:"tmux_socket"`
+		AttachCommand  string `json:"attach_command"`
+		AttachCommands []struct {
+			Via     string `json:"via"`
+			Command string `json:"command"`
+		} `json:"attach_commands"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := "tmux -L loomux-test attach -t loomux-task-attach"
+	if out.TmuxSocket != "loomux-test" || out.AttachCommand != want {
+		t.Errorf("tmux_socket %q, attach_command %q; want loomux-test, %q", out.TmuxSocket, out.AttachCommand, want)
+	}
+	if len(out.AttachCommands) != 1 || out.AttachCommands[0].Via != "ssh" || !strings.Contains(out.AttachCommands[0].Command, want) {
+		t.Errorf("attach_commands = %+v, want the ssh form running %q", out.AttachCommands, want)
+	}
+}

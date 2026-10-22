@@ -11,15 +11,26 @@ import (
 )
 
 // LocalExecutor runs tmux operations directly on the local machine.
-type LocalExecutor struct{}
+type LocalExecutor struct {
+	// socket is the tmux socket; empty is DefaultTmuxSocket.
+	socket string
+}
 
-// NewLocalExecutor constructs a LocalExecutor.
+// NewLocalExecutor constructs a LocalExecutor on DefaultTmuxSocket; an
+// app's come from NewExecutorWith, on its own socket.
 func NewLocalExecutor() *LocalExecutor {
 	return &LocalExecutor{}
 }
 
+func (e *LocalExecutor) TmuxSocket() string {
+	if e.socket == "" {
+		return DefaultTmuxSocket
+	}
+	return e.socket
+}
+
 func (e *LocalExecutor) run(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-L", TmuxSocket}, args...)...)
+	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-L", e.TmuxSocket()}, args...)...)
 	cmd.Env = localEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -40,7 +51,7 @@ func (e *LocalExecutor) PaneExited(ctx context.Context, target string) (*PaneExi
 }
 
 func (e *LocalExecutor) HasSession(ctx context.Context, session string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "has-session", "-t", session)
+	cmd := exec.CommandContext(ctx, "tmux", "-L", e.TmuxSocket(), "has-session", "-t", session)
 	cmd.Env = localEnv()
 	err := cmd.Run()
 	if err == nil {
@@ -79,7 +90,7 @@ func (e *LocalExecutor) PasteText(ctx context.Context, target, text string, ente
 		return err
 	}
 	buf := pasteBuffer(target)
-	load := exec.CommandContext(ctx, "tmux", "-L", TmuxSocket, "load-buffer", "-b", buf, "-")
+	load := exec.CommandContext(ctx, "tmux", "-L", e.TmuxSocket(), "load-buffer", "-b", buf, "-")
 	load.Env = localEnv()
 	load.Stdin = strings.NewReader(text)
 	var stderr bytes.Buffer

@@ -34,6 +34,8 @@ type fakeExecutor struct {
 	runOnceOut string
 	// lastRunOnce is the last command RunOnce was given.
 	lastRunOnce string
+	// socket is TmuxSocket's answer; "" is targets.DefaultTmuxSocket.
+	socket string
 	// paneExit, if set, is every pane's exit: a paste is refused, as tmux
 	// refuses one into a dead pane.
 	paneExit *targets.PaneExit
@@ -155,6 +157,13 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 	e.lastRunOnce = command
 	e.mu.Unlock()
 	return e.runOnceOut, nil
+}
+
+func (e *fakeExecutor) TmuxSocket() string {
+	if e.socket != "" {
+		return e.socket
+	}
+	return targets.DefaultTmuxSocket
 }
 
 // PaneExited always reports the pane still running: this package's tests

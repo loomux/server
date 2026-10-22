@@ -245,3 +245,23 @@ func TestDispatch_RecordsLongTurnMessageRuneSafe(t *testing.T) {
 		t.Errorf("stored message is not a valid, marked cut of the start (%d bytes)", len(msg))
 	}
 }
+
+// LOOM-202: the transcript's scrollback is captured on the executor's
+// tmux socket, the instance's own.
+func TestDispatch_TurnTranscriptOnTheExecutorsSocket(t *testing.T) {
+	h := newLastMessageHarness(t)
+	h.exec.socket = "loomux-turntest"
+	h.done = true
+	h.payload = hookPayload(t, "last_assistant_message", "the answer")
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.commands {
+		if strings.HasPrefix(c, "tmux -L loomux-turntest capture-pane ") {
+			return
+		}
+	}
+	t.Errorf("no capture-pane on the executor's socket among %q", h.commands)
+}

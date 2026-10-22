@@ -56,7 +56,7 @@ const (
 func (r *Router) recordTurn(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, userMessage, agentMessage string) {
 	log := r.logger.With("task_id", task.ID)
 	pane, err := exec.RunOnce(ctx, fmt.Sprintf("tmux -L %s capture-pane -p -J -S -%d -t %s",
-		targets.TmuxSocket, turnPaneHistoryLines, shellQuote(task.TmuxSession)))
+		exec.TmuxSocket(), turnPaneHistoryLines, shellQuote(task.TmuxSession)))
 	if err != nil {
 		log.Warn("turn's pane not captured for its transcript", "error", err)
 		pane = ""

@@ -269,6 +269,9 @@ type Server struct {
 	// now is the clock sessions are stamped and expired by: time.Now,
 	// or a test's fake one (LOOM-200).
 	now func() time.Time
+	// tmuxSocket is the instance's tmux socket attach-info names
+	// (LOOM-202); "" is targets.DefaultTmuxSocket. See WithTmuxSocket.
+	tmuxSocket string
 }
 
 // Option configures a Server constructed via NewServer.
@@ -313,6 +316,21 @@ func WithStreamPollInterval(d time.Duration) Option {
 // registered (LOOM-141; app.Config.LocalTargetsOff). On by default.
 func WithLocalTargets(on bool) Option {
 	return func(s *Server) { s.localTargets = on }
+}
+
+// WithTmuxSocket names the instance's tmux socket (its executors'
+// ExecutorOptions.TmuxSocket) in attach-info (LOOM-202). Without it,
+// targets.DefaultTmuxSocket.
+func WithTmuxSocket(name string) Option {
+	return func(s *Server) { s.tmuxSocket = name }
+}
+
+// tmuxSocketName is the socket attach-info names.
+func (s *Server) tmuxSocketName() string {
+	if s.tmuxSocket == "" {
+		return targets.DefaultTmuxSocket
+	}
+	return s.tmuxSocket
 }
 
 // WithStreamHeartbeat overrides the stream's heartbeat interval, which is
@@ -1206,8 +1224,8 @@ func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, attachInfoResponse{
 		TaskID:         task.ID,
 		TmuxSession:    task.TmuxSession,
-		TmuxSocket:     targets.TmuxSocket,
-		AttachCommand:  targets.AttachCommand(task.TmuxSession),
+		TmuxSocket:     s.tmuxSocketName(),
+		AttachCommand:  targets.AttachCommand(s.tmuxSocketName(), task.TmuxSession),
 		AttachCommands: s.attachCommandsFor(r.Context(), target, task.TmuxSession),
 		Target: attachTargetInfo{
 			ID:   target.ID,

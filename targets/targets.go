@@ -22,21 +22,15 @@ import (
 // operation failing on an otherwise-reachable target.
 var ErrUnreachable = errors.New("targets: target unreachable")
 
-// TargetExecutor runs tmux operations against a single target. session and
-// target parameters are plain tmux target-spec strings (a session name, or
-// "session:window.pane") — this package doesn't model window/pane
-// semantics beyond that; that belongs to the orchestrator.
-// TmuxSocket is the tmux server Loomux runs every session on (LOOM-93):
-// `tmux -L loomux`, never the user's default one, so the user's tmux
-// config and plugins don't apply to agents, Loomux sessions don't show
-// in their `tmux ls`, and the orphan sweep can only ever see Loomux's
-// own sessions. Two Loomux instances driving the same target (test and
-// production) each need their own, or each one's orphan sweep would reap
-// the other's sessions: set it with SetTmuxSocket (LOOMUX_TMUX_SOCKET)
-// before anything runs.
-var TmuxSocket = DefaultTmuxSocket
-
-// DefaultTmuxSocket is TmuxSocket unless configured otherwise.
+// DefaultTmuxSocket is the tmux server Loomux runs every session on
+// (LOOM-93) unless an instance names its own: `tmux -L loomux`, never
+// the user's default one, so the user's tmux config and plugins don't
+// apply to agents, Loomux sessions don't show in their `tmux ls`, and
+// the orphan sweep can only ever see Loomux's own sessions. Two Loomux
+// instances driving the same target (test and production) each need
+// their own, or each one's orphan sweep would reap the other's sessions:
+// ExecutorOptions.TmuxSocket (LOOMUX_TMUX_SOCKET), per instance
+// (LOOM-202), never process-wide.
 const DefaultTmuxSocket = "loomux"
 
 // tmuxSocketName is what a socket name may be: it goes into shell
@@ -46,14 +40,16 @@ var tmuxSocketName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 // ValidTmuxSocket reports whether name can be a socket name.
 func ValidTmuxSocket(name string) bool { return tmuxSocketName.MatchString(name) }
 
-// SetTmuxSocket sets TmuxSocket. Call it once at startup, before any
-// session is created or swept.
-func SetTmuxSocket(name string) error {
-	if !ValidTmuxSocket(name) {
-		return fmt.Errorf("targets: tmux socket name %q: letters, digits, '-' and '_' only", name)
+// tmuxSocketOrDefault is name, or DefaultTmuxSocket for "", refusing a
+// name ValidTmuxSocket doesn't accept.
+func tmuxSocketOrDefault(name string) (string, error) {
+	if name == "" {
+		return DefaultTmuxSocket, nil
 	}
-	TmuxSocket = name
-	return nil
+	if !ValidTmuxSocket(name) {
+		return "", fmt.Errorf("targets: tmux socket name %q: letters, digits, '-' and '_' only", name)
+	}
+	return name, nil
 }
 
 // SessionPrefix starts the name of every session Loomux creates.
@@ -96,12 +92,20 @@ func checkPaste(text string) (string, error) {
 }
 
 // AttachCommand is the command a human runs on a target to attach to a
-// Loomux session.
-func AttachCommand(session string) string {
-	return "tmux -L " + TmuxSocket + " attach -t " + session
+// Loomux session on socket, the instance's tmux socket.
+func AttachCommand(socket, session string) string {
+	return "tmux -L " + socket + " attach -t " + session
 }
 
+// TargetExecutor runs tmux operations against a single target. session and
+// target parameters are plain tmux target-spec strings (a session name, or
+// "session:window.pane") — this package doesn't model window/pane
+// semantics beyond that; that belongs to the orchestrator.
 type TargetExecutor interface {
+	// TmuxSocket is the tmux socket every operation uses: the one a raw
+	// tmux command through RunOnce must name too (LOOM-202).
+	TmuxSocket() string
+
 	// NewSession creates a new detached tmux session. dir may be empty to
 	// use the default working directory; command may be empty to start
 	// the pane's default shell. A non-empty command is POSIX sh, run as
@@ -198,16 +202,20 @@ func (e *PaneExit) Describe() string {
 }
 
 // NewExecutor constructs the TargetExecutor appropriate for t.Kind, with
-// no metrics, pins written under the default directory, local targets on
-// and managed SSH off; an app uses NewExecutorWith.
+// no metrics, pins written under the default directory, local targets on,
+// managed SSH off and the default tmux socket; an app uses
+// NewExecutorWith.
 func NewExecutor(t *registry.Target) (TargetExecutor, error) {
 	return NewExecutorWith(t, ExecutorOptions{})
 }
 
 // ExecutorOptions are what one app instance's executors share (LOOM-197,
-// LOOM-199: per instance, never process-wide, so two in one process stay
-// apart). The zero value is NewExecutor's defaults.
+// LOOM-199, LOOM-202: per instance, never process-wide, so two in one
+// process stay apart). The zero value is NewExecutor's defaults.
 type ExecutorOptions struct {
+	// TmuxSocket is the tmux socket the instance's sessions run on
+	// (LOOMUX_TMUX_SOCKET); empty is DefaultTmuxSocket.
+	TmuxSocket string
 	// KnownHostsDir is where pinned targets' known_hosts files are
 	// written (the data volume, beside the database); empty is
 	// defaultKnownHostsDir().
@@ -234,17 +242,22 @@ func NewExecutorWith(t *registry.Target, o ExecutorOptions) (TargetExecutor, err
 	if knownHostsDir == "" {
 		knownHostsDir = defaultKnownHostsDir()
 	}
+	socket, err := tmuxSocketOrDefault(o.TmuxSocket)
+	if err != nil {
+		return nil, err
+	}
 	switch t.Kind {
 	case registry.TargetKindLocal:
 		if o.LocalTargetsOff {
 			return nil, ErrLocalTargetsOff
 		}
-		return newMetricsExecutor(NewLocalExecutor(), met, string(t.Kind), t.Name), nil
+		return newMetricsExecutor(&LocalExecutor{socket: socket}, met, string(t.Kind), t.Name), nil
 	case registry.TargetKindRemote:
 		opts, err := remoteOptions(t, knownHostsDir, o.Managed)
 		if err != nil {
 			return nil, err
 		}
+		opts = append(opts, WithTmuxSocket(socket))
 		return newMetricsExecutor(NewRemoteExecutor(t.Host, t.User, opts...), met, string(t.Kind), t.Name), nil
 	default:
 		return nil, fmt.Errorf("targets: unknown target kind %q", t.Kind)

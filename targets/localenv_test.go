@@ -62,25 +62,21 @@ func TestScrubLocalTmuxEnv_CleansARunningServer(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("no tmux")
 	}
-	old := TmuxSocket
-	TmuxSocket = fmt.Sprintf("loomux-scrubtest-%d", os.Getpid())
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "-L", TmuxSocket, "kill-server").Run()
-		TmuxSocket = old
-	})
+	socket := fmt.Sprintf("loomux-scrubtest-%d", os.Getpid())
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
 	ctx := context.Background()
 
-	start := exec.Command("tmux", "-L", TmuxSocket, "new-session", "-d", "-s", "first", "sleep 60")
+	start := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", "first", "sleep 60")
 	start.Env = append(os.Environ(), "LOOMUX_MASTER_KEY=leak")
 	if out, err := start.CombinedOutput(); err != nil {
 		t.Fatalf("start tmux: %v: %s", err, out)
 	}
-	if err := ScrubLocalTmuxEnv(ctx); err != nil {
+	if err := ScrubLocalTmuxEnv(ctx, socket); err != nil {
 		t.Fatalf("ScrubLocalTmuxEnv: %v", err)
 	}
 
 	envFile := filepath.Join(t.TempDir(), "env")
-	if err := NewLocalExecutor().NewSession(ctx, "second", t.TempDir(), "env > "+envFile+"; sleep 60"); err != nil {
+	if err := (&LocalExecutor{socket: socket}).NewSession(ctx, "second", t.TempDir(), "env > "+envFile+"; sleep 60"); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	var got []byte
@@ -101,8 +97,8 @@ func TestScrubLocalTmuxEnv_CleansARunningServer(t *testing.T) {
 	}
 
 	// Nothing running is fine.
-	_ = exec.Command("tmux", "-L", TmuxSocket, "kill-server").Run()
-	if err := ScrubLocalTmuxEnv(ctx); err != nil {
+	_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
+	if err := ScrubLocalTmuxEnv(ctx, socket); err != nil {
 		t.Fatalf("ScrubLocalTmuxEnv with no server: %v", err)
 	}
 }
@@ -137,7 +133,7 @@ func fakeTmuxServer(t *testing.T, onSet string) {
 // "scrub tmux environment: FOO: exit status 1".
 func TestScrubLocalTmuxEnv_ServerExitsMidScrub(t *testing.T) {
 	fakeTmuxServer(t, "exit")
-	if err := ScrubLocalTmuxEnv(context.Background()); err != nil {
+	if err := ScrubLocalTmuxEnv(context.Background(), ""); err != nil {
 		t.Fatalf("ScrubLocalTmuxEnv: %v", err)
 	}
 }
@@ -145,7 +141,7 @@ func TestScrubLocalTmuxEnv_ServerExitsMidScrub(t *testing.T) {
 // A server that's still there and won't unset a variable is an error.
 func TestScrubLocalTmuxEnv_RunningServerRefuses(t *testing.T) {
 	fakeTmuxServer(t, "refuse")
-	if err := ScrubLocalTmuxEnv(context.Background()); err == nil {
+	if err := ScrubLocalTmuxEnv(context.Background(), ""); err == nil {
 		t.Fatal("ScrubLocalTmuxEnv = nil, want the refused unset")
 	}
 }
@@ -158,7 +154,16 @@ func TestScrubLocalTmuxEnv_DeadlineIsAnError(t *testing.T) {
 	fakeTmuxServer(t, "hang")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if err := ScrubLocalTmuxEnv(ctx); !errors.Is(err, context.DeadlineExceeded) {
+	if err := ScrubLocalTmuxEnv(ctx, ""); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("ScrubLocalTmuxEnv = %v, want the deadline", err)
+	}
+}
+
+// The socket goes on tmux's command line: a name ValidTmuxSocket refuses
+// is refused before tmux runs (LOOM-202).
+func TestScrubLocalTmuxEnv_RefusesABadSocket(t *testing.T) {
+	fakeTmuxServer(t, "refuse")
+	if err := ScrubLocalTmuxEnv(context.Background(), "-S /tmp/x"); err == nil || !strings.Contains(err.Error(), "socket name") {
+		t.Fatalf("ScrubLocalTmuxEnv(bad socket) = %v, want the name refused", err)
 	}
 }

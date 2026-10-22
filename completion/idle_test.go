@@ -43,6 +43,8 @@ func (e *scriptedExecutor) FileExists(context.Context, string) (bool, error) { r
 func (e *scriptedExecutor) RemoveFile(context.Context, string) error         { return nil }
 func (e *scriptedExecutor) RunOnce(context.Context, string) (string, error)  { return "", nil }
 
+func (e *scriptedExecutor) TmuxSocket() string { return targets.DefaultTmuxSocket }
+
 // PaneExited reports the pane still running — IdleWatcher's own tests
 // are about output going quiet, not the process exiting.
 func (e *scriptedExecutor) PaneExited(context.Context, string) (*targets.PaneExit, error) {

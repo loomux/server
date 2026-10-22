@@ -127,14 +127,12 @@ var processWideVars = map[string]string{
 	"deadPaneRecaptures":     "test seam",
 	"statusPendingWait":      "test seam",
 	"awaitMarkerTries":       "test seam", // WrapExitStatus's wait bound (LOOM-198)
-	// Process-wide still: the tmux socket, set once by SetTmuxSocket.
-	// Not LOOM-199's; a follow-up moves it like the rest.
-	"TmuxSocket": "process-wide (follow-up)",
 }
 
-// LOOM-199: no package-level state holds an instance's configuration —
-// the managed SSH setup and the local-target switch are gone, and any
-// new variable has to be named in processWideVars.
+// LOOM-199, LOOM-202: no package-level state holds an instance's
+// configuration — the managed SSH setup, the local-target switch and the
+// tmux socket are gone, and any new variable has to be named in
+// processWideVars.
 func TestNoProcessWideInstanceConfig(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
@@ -160,9 +158,9 @@ func TestNoProcessWideInstanceConfig(t *testing.T) {
 			t.Errorf("package-level var %s: per-instance configuration goes in ExecutorOptions; if it isn't that, add it to processWideVars with why", name)
 		}
 	}
-	for _, gone := range []string{"managed", "managedMu", "LocalTargets"} {
+	for _, gone := range []string{"managed", "managedMu", "LocalTargets", "TmuxSocket"} {
 		if slices.Contains(found, gone) {
-			t.Errorf("package-level var %s is back (LOOM-199)", gone)
+			t.Errorf("package-level var %s is back (LOOM-199, LOOM-202)", gone)
 		}
 	}
 }

@@ -43,7 +43,7 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 		return "", &classedError{class: registry.ErrorClassLoginRequired, msg: fmt.Sprintf(
 			"router: dispatch: %s (it shows %q). Loomux doesn't sign agents in: attach on %s with "+
 				"`%s` and finish the login there, or store an API key credential for %s, then send your message again",
-			reason, a.Detail, targetName, targets.AttachCommand(task.TmuxSession), task.AgentType)}
+			reason, a.Detail, targetName, targets.AttachCommand(r.tmuxSocket, task.TmuxSession), task.AgentType)}
 	}
 	if a.Kind == registry.AttentionUsageLimit {
 		reason := fmt.Sprintf("agent %q on %s hit its usage limit", task.AgentType, targetName)

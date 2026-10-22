@@ -12,16 +12,16 @@ import (
 	"github.com/Loomux/server/targets/sshtest"
 )
 
-func newTestRemoteExecutor(t *testing.T, server *sshtest.Server) *targets.RemoteExecutor {
+func newTestRemoteExecutor(t *testing.T, server *sshtest.Server, opts ...targets.RemoteOption) *targets.RemoteExecutor {
 	t.Helper()
-	exec := targets.NewRemoteExecutor(server.Host, "loomux-test",
+	exec := targets.NewRemoteExecutor(server.Host, "loomux-test", append([]targets.RemoteOption{
 		targets.WithPort(server.Port),
 		targets.WithIdentityFile(server.IdentityFile),
 		targets.WithExtraSSHArgs(
 			"-o", "StrictHostKeyChecking=no",
 			"-o", "UserKnownHostsFile=/dev/null",
 		),
-	)
+	}, opts...)...)
 	t.Cleanup(func() {
 		if err := exec.Close(); err != nil {
 			t.Errorf("Close: %v", err)

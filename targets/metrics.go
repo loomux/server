@@ -45,6 +45,8 @@ func newMetricsExecutor(inner TargetExecutor, m *metrics.Metrics, kind, name str
 	return &metricsExecutor{inner: inner, metrics: m, kind: kind, name: name}
 }
 
+func (e *metricsExecutor) TmuxSocket() string { return e.inner.TmuxSocket() }
+
 func (e *metricsExecutor) NewSession(ctx context.Context, session, dir, command string) error {
 	start := time.Now()
 	err := e.inner.NewSession(ctx, session, dir, command)
