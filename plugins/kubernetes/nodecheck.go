@@ -59,7 +59,8 @@ import (
 // started or read: a canary may wait on its image pull and run after
 // one started later. A canary that got out is evidence of an escape
 // during its probe. It opens the node unless the latest "enforced"
-// probe began after it began; without both kubelet times it opens it.
+// probe began after it had ended (one that overlapped it may have missed
+// what it saw); without both kubelet times it opens it.
 // An open node clears only for an "enforced" probe known to have begun
 // after the escapes' probes ended: by the kubelet's times, or because
 // its canary started after the last escape was read. One that ran
@@ -85,8 +86,8 @@ func (n *nodeCheck) record(nc *netcheck) {
 			n.open, n.openUntil = nil, time.Time{}
 		}
 	case enforcementNotEnforced:
-		if n.enforced != nil && nc.probe.known() && n.enforced.probe.known() && nc.probe.from.Before(n.enforced.probe.from) {
-			break // probed before the latest "enforced" did: older news
+		if n.enforced != nil && nc.probe.known() && n.enforced.probe.known() && nc.probe.until.Before(n.enforced.probe.from) {
+			break // probed wholly before the latest "enforced" did: older news
 		}
 		switch {
 		case n.open == nil:

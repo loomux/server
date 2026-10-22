@@ -108,12 +108,14 @@ engine on each node, and the check's canary runs on one. So a `none`
 machine is reported `running` only while a canary bound to its own node
 (`spec.nodeName`, past the scheduler) has said "enforced" there within
 the last 10 minutes. The check's canary counts for the node it landed
-on. Until then the machine is `starting` ("checking network isolation
-on node …"); the node's canary starts when a get, list or health first
-sees the pod on its node, usually while sshd comes up. The renewer only
-knows pods it has seen on a node, so one the scheduler hadn't placed at
-the host's last ask stays `starting` until the host asks again. A node where the canary gets out makes each `none`
-machine there `error`, naming the node and what was reached, and
+on. Until then a machine whose pod is up is `starting` ("checking
+network isolation on node …"), and one whose pod isn't up yet keeps its
+own status, such as `creating`. The node's canary starts when a get,
+list or health first sees the pod on its node, usually while sshd
+comes up. The renewer only knows pods it has seen on a node, so one the
+scheduler hadn't placed at the host's last ask isn't checked until the
+host asks again (and can't be `running` before). A node where the
+canary gets out makes each `none` machine there `error`, naming the node and what was reached, and
 withdraws `none` from describe and create (a start of a `none` machine
 still on that node is refused too); check reports
 `network_policy_not_enforced` for that node, whatever its own canary
@@ -141,8 +143,8 @@ configure neither reads nor records the new configuration's verdicts
 verdicts go by when their probes ran, by the kubelet's container
 times, not when their canaries were started or read (one may wait on
 its image and run after one started later): an escape counts unless
-the latest "enforced" probe began after it began, and without both
-times it counts. Each canary is a pod in the namespace's quota while
+the latest "enforced" probe began after it had ended, so one that
+overlapped it counts, and without both times it counts. Each canary is a pod in the namespace's quota while
 it runs, up to one per node being checked plus the check's own, for each
 plugin configuration whose canaries are still live. A restart, a
 rollout (old and new sidecar overlapping) or a configure starts a fresh

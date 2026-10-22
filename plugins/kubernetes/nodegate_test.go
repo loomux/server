@@ -107,7 +107,8 @@ func TestNoneNodeFailureBeforeThePod(t *testing.T) {
 // not by when their canaries were started or read: a canary may wait on
 // its image and run after one started later (LOOM-208 review round 10).
 // An escape opens the node unless the latest "enforced" probe began
-// after it began; without both times it opens it (fail closed). An open
+// after it had ended; overlapping it, or without both times, it opens
+// it (fail closed). An open
 // node clears only for an "enforced" probe that began after the escapes'
 // probes ended, by the kubelet's times or because its canary started
 // after the last escape was read; one that couldn't run clears nothing.
@@ -132,21 +133,27 @@ func TestNodeVerdictsByProbe(t *testing.T) {
 		}
 	})
 
-	t.Run("probed in the same second: recorded", func(t *testing.T) {
-		n := &nodeCheck{}
-		n.record(check(2, 3, 5, 6, enforcementEnforced))
-		n.record(check(1, 4, 5, 7, enforcementNotEnforced)) // the kubelet's times are whole seconds
-		if n.open == nil {
-			t.Fatal("an escape that began with the latest enforced was dropped")
+	t.Run("probed alongside an enforced: recorded", func(t *testing.T) {
+		for name, escape := range map[string]*netcheck{
+			"began before, ended after it began": check(1, 4, 0, 8, enforcementNotEnforced),
+			"ended as it began":                  check(1, 4, 1, 5, enforcementNotEnforced), // the kubelet's times are whole seconds
+			"began with it":                      check(1, 4, 5, 7, enforcementNotEnforced),
+		} {
+			n := &nodeCheck{}
+			n.record(check(2, 3, 5, 10, enforcementEnforced))
+			n.record(escape)
+			if n.open == nil {
+				t.Errorf("%s: an escape overlapping the latest enforced was dropped", name)
+			}
 		}
 	})
 
 	t.Run("a stale escape is dropped", func(t *testing.T) {
 		n := &nodeCheck{}
 		n.record(check(2, 3, 5, 6, enforcementEnforced))
-		n.record(check(1, 4, 1, 2, enforcementNotEnforced)) // read late
+		n.record(check(1, 4, 1, 4, enforcementNotEnforced)) // ended before it, read late
 		if n.open != nil {
-			t.Fatalf("an escape probed before the latest enforced opened the node: %+v", n.open)
+			t.Fatalf("an escape probed wholly before the latest enforced opened the node: %+v", n.open)
 		}
 		if n.enforced.seq != 2 || n.settled.seq != 2 {
 			t.Errorf("enforced %d, settled %d; want 2, 2", n.enforced.seq, n.settled.seq)
