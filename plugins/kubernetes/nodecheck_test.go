@@ -174,14 +174,16 @@ func statusSoon(t *testing.T, p *Plugin, id, want string) protocol.Environment {
 
 // nodeSetup is a checked plugin over the kind manifests' policies whose
 // canaries run on the given nodes; the check's own lands on scheduled.
-func nodeSetup(t *testing.T, scheduled string, codes map[string]int32) (*fake.Clientset, *canaryNodes, *Plugin, *testClock) {
+func nodeSetup(t *testing.T, scheduled string, codes map[string]int32, setup ...func(*Plugin)) (*fake.Clientset, *canaryNodes, *Plugin, *testClock) {
 	t.Helper()
 	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
 	nodes := nodeCanaries(t, cs, scheduled, codes)
-	p := configured(t, cs, nil)
 	var n atomic.Int64
-	p.Rand = func() string { return strconv.FormatInt(n.Add(1), 10) }
-	clock := newClock(p)
+	var clock *testClock
+	p := configured(t, cs, nil, append([]func(*Plugin){func(p *Plugin) {
+		p.Rand = func() string { return strconv.FormatInt(n.Add(1), 10) }
+		clock = newClock(p)
+	}}, setup...)...)
 	if res, _ := p.Check(ctx); !res.OK || len(res.Problems) != 0 {
 		t.Fatalf("check = %+v", res)
 	}
@@ -384,8 +386,7 @@ func TestNoneNodeRenewed(t *testing.T) {
 		}
 	})
 	t.Run("stuck", func(t *testing.T) {
-		cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
-		p.CanaryTimeout = 10 * time.Second
+		cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked}, func(p *Plugin) { p.CanaryTimeout = 10 * time.Second })
 		if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
 			t.Fatal(err)
 		}
@@ -440,8 +441,7 @@ func TestNoneNodeRenewed(t *testing.T) {
 // within verdictTTL only, a machine new on that node or one already
 // there.
 func TestNoneNodeVerdictLapses(t *testing.T) {
-	cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
-	p.CanaryTimeout = 10 * time.Second
+	cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked}, func(p *Plugin) { p.CanaryTimeout = 10 * time.Second })
 	if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
 		t.Fatal(err)
 	}

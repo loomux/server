@@ -798,7 +798,8 @@ cluster's, namespace's or API server's canary can't certify a node for it. A nod
 latest "enforced" did is older news and opens nothing. Each canary is a pod in the agents namespace's quota while it
 runs: up to one per node being checked plus the check's own, for each plugin configuration (a restart, a rollout's
 old and new sidecar, a configure) whose canaries are still live. They aren't adopted across processes; one lives at
-most 4 minutes (the 3-minute timeout plus a minute's active deadline), so the quota needs `max_environments` +
+most 4 minutes (the 3-minute timeout plus a minute's active deadline; one that never got a node has no deadline,
+the kubelet keeping it, and the plugin sweeps those left behind past that age at configure and once a minute), so the quota needs `max_environments` +
 (nodes + 1) × the configurations that can overlap: 2 for one restart or rollout, one more per further restart within
 4 minutes. Too little room costs only time: a canary that can't be made proves nothing, and the machines stay
 `starting`.

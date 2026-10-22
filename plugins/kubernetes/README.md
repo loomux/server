@@ -141,7 +141,11 @@ plugin configuration whose canaries are still live. A restart, a
 rollout (old and new sidecar overlapping) or a configure starts a fresh
 set while the last one's may still run: a canary lives at most 4
 minutes (its 3-minute timeout plus a minute's active deadline, should
-its plugin die first), and the new process doesn't adopt them. So leave
+its plugin die first), and the new process doesn't adopt them. One that
+never got a node (pinned to a node whose kubelet is gone, or
+unschedulable) has no deadline, as the kubelet keeps it: a running
+plugin sweeps those left behind past that age at configure and once a
+minute, so it holds its place up to about a minute longer. So leave
 `pods` room for `max_environments` machines plus (nodes + 1) × the
 configurations that can overlap: 2 for a restart or a rollout, one more
 for each further restart within 4 minutes. A canary with no room can't

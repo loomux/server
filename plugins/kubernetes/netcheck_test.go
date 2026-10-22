@@ -150,8 +150,7 @@ func TestCanaryStaleReadErrorNotReported(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	p := configured(t, cs, nil) // the canary never finishes: no kubelet
-	p.CanaryTimeout = 50 * time.Millisecond
+	p := configured(t, cs, nil, func(p *Plugin) { p.CanaryTimeout = 50 * time.Millisecond }) // the canary never finishes: no kubelet
 	res, _ := p.Check(ctx)
 	msg := failedMessage(res)
 	if !failed || !strings.Contains(msg, "didn't finish within") || strings.Contains(msg, "leader changed") {
@@ -165,8 +164,7 @@ func TestCanaryForbiddenReadFailsFast(t *testing.T) {
 	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "lx-netcheck-abcd", errors.New("no"))
 	})
-	p := configured(t, cs, nil)
-	p.CanaryTimeout = time.Minute
+	p := configured(t, cs, nil, func(p *Plugin) { p.CanaryTimeout = time.Minute })
 	start := time.Now()
 	res, _ := p.Check(ctx)
 	if !strings.Contains(failedMessage(res), "forbidden") || time.Since(start) > 10*time.Second {
@@ -191,8 +189,7 @@ func TestCanaryPersistentReadError(t *testing.T) {
 	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("etcdserver: leader changed")
 	})
-	p := configured(t, cs, nil)
-	p.CanaryTimeout = 50 * time.Millisecond
+	p := configured(t, cs, nil, func(p *Plugin) { p.CanaryTimeout = 50 * time.Millisecond })
 	res, _ := p.Check(ctx)
 	var pr string
 	for _, x := range res.Problems {
@@ -231,9 +228,10 @@ func TestCanarySweepsStale(t *testing.T) {
 		machine,
 	)...)
 	canaryExits(cs, exitBlocked)
-	p := configured(t, cs, nil)
-	p.Now = func() time.Time { return now }
-	p.CanaryTimeout = 3 * time.Minute
+	p := configured(t, cs, nil, func(p *Plugin) {
+		p.Now = func() time.Time { return now }
+		p.CanaryTimeout = 3 * time.Minute
+	})
 	p.Check(ctx)
 	pods, _ := cs.CoreV1().Pods(testNS).List(ctx, metav1.ListOptions{})
 	var left []string
@@ -278,5 +276,48 @@ func TestCanaryDeadlineCoversTimeout(t *testing.T) {
 	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", p.CanaryTimeout, "")
 	if d := pod.Spec.ActiveDeadlineSeconds; d == nil || time.Duration(*d)*time.Second <= p.CanaryTimeout {
 		t.Errorf("activeDeadlineSeconds = %v, want more than the canary timeout %v", d, p.CanaryTimeout)
+	}
+}
+
+// A canary left by a plugin that died before deleting it, and that
+// never got a node (its deadline is the kubelet's, so nothing ends it),
+// is swept once it outlives any check's wait, without another canary
+// starting: at configure, and later once a minute (LOOM-208 review).
+func TestCanaryLeftUnscheduledIsSwept(t *testing.T) {
+	base := time.Date(2026, 10, 22, 1, 0, 0, 0, time.UTC) // newClock's
+	canary := func(name string, created time.Time) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS, CreationTimestamp: metav1.NewTime(created), Labels: map[string]string{
+			labelManagedBy: managedBy, protocol.LabelInstance: testInstance, labelRole: roleAgent, labelCanary: "true",
+		}}, Spec: corev1.PodSpec{NodeName: "no-such-node"}, Status: corev1.PodStatus{Phase: corev1.PodPending}}
+	}
+	cs := fake.NewClientset(canary("lx-netcheck-old", base.Add(-10*time.Minute)), canary("lx-netcheck-young", base))
+	var clock *testClock
+	p := configured(t, cs, nil, func(p *Plugin) { clock = newClock(p) })
+	gone := func(name string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := cs.CoreV1().Pods(testNS).Get(ctx, name, metav1.GetOptions{}); kerrors.IsNotFound(err) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the canary left unscheduled, %s, was never swept", name)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	gone("lx-netcheck-old")
+	time.Sleep(50 * time.Millisecond) // renewer rounds, within the minute
+	if _, err := cs.CoreV1().Pods(testNS).Get(ctx, "lx-netcheck-young", metav1.GetOptions{}); err != nil {
+		t.Fatalf("a live canary, maybe another process's, was swept: %v", err)
+	}
+	// Left by a plugin that died just before this one started: it goes
+	// once it outlives any check's wait, at the next sweep.
+	clock.advance(p.CanaryTimeout + 2*time.Minute)
+	gone("lx-netcheck-young")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.netcheck != nil || len(p.nodes) != 0 {
+		t.Error("a canary was started: the sweep must not need one")
 	}
 }

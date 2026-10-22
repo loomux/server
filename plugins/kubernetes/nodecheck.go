@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -42,7 +43,10 @@ import (
 // up to one per node being checked, plus the check's own, for each
 // configuration (a restart, a rollout, a configure) whose canaries are
 // still live; one lives at most CanaryTimeout plus a minute (its
-// active deadline, should this process die first). Too little room
+// active deadline, should this process die first). One that never got
+// a node has no deadline (the kubelet keeps it); the renewer's sweep,
+// at configure and once a minute, takes those a dead plugin left past
+// that age. Too little room
 // costs only time: a canary that can't be made proves nothing.
 
 // nodeCheck is one node's canaries: the one running there; the last
@@ -124,11 +128,20 @@ const reconfigured = "the plugin was reconfigured meanwhile; ask again"
 // nor writes this one's verdicts, nor starts its canaries. p.mu is held.
 func (p *Plugin) stale(cfg Config) bool { return cfg.gen != p.gen }
 
-// renewNodes is the renewer of one configuration, until stop.
+// renewNodes is the renewer of one configuration, until stop. It also
+// sweeps the canaries left behind, at once and then once a minute: one
+// that never got a node isn't ended by its deadline (the kubelet's), and
+// a plugin that died before deleting it would otherwise leave it in the
+// quota until some later canary's own sweep.
 func (p *Plugin) renewNodes(stop <-chan struct{}, every time.Duration) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
+	var swept time.Time
 	for {
+		if now := p.Now(); swept.IsZero() || now.Sub(swept) >= time.Minute {
+			p.sweepLeft()
+			swept = now
+		}
 		select {
 		case <-stop:
 			return
@@ -147,6 +160,16 @@ func (p *Plugin) renewNodes(stop <-chan struct{}, every time.Duration) {
 		}
 		p.mu.Unlock()
 	}
+}
+
+// sweepLeft is sweepCanaries for the configuration now.
+func (p *Plugin) sweepLeft() {
+	p.mu.Lock()
+	cfg, client, instance := p.cfg, p.client, p.host.InstanceID
+	p.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	p.sweepCanaries(ctx, client.CoreV1().Pods(cfg.Namespace), instance)
 }
 
 // unwatch forgets a machine's pod, gone or going: its node is no longer

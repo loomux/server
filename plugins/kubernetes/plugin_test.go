@@ -72,9 +72,15 @@ func baseConfig(t *testing.T, extra map[string]any) map[string]any {
 }
 
 // configured is a plugin over a fresh fake clientset, configured.
-func configured(t *testing.T, cs *fake.Clientset, extra map[string]any) *Plugin {
+// configured is a test plugin over cs, configured; setup sets its
+// fields first, as a host would: the renewer reads them from configure
+// on.
+func configured(t *testing.T, cs *fake.Clientset, extra map[string]any, setup ...func(*Plugin)) *Plugin {
 	t.Helper()
 	p := newTestPlugin(cs)
+	for _, f := range setup {
+		f(p)
+	}
 	if err := p.Configure(ctx, protocol.ConfigureParams{Config: baseConfig(t, extra), Host: protocol.HostInfo{Version: "test", InstanceID: testInstance}}); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
