@@ -109,15 +109,17 @@ machine is reported `running` only while a canary bound to its own node
 (`spec.nodeName`, past the scheduler) has said "enforced" there within
 the last 10 minutes. The check's canary counts for the node it landed
 on. Until then the machine is `starting` ("checking network isolation
-on node …"); the node's canary starts as soon as the pod has a node,
-while sshd comes up. A node where the canary gets out makes each `none`
+on node …"); the node's canary starts when a get, list or health first
+sees the pod on its node, usually while sshd comes up. The renewer only
+knows pods it has seen on a node, so one the scheduler hadn't placed at
+the host's last ask stays `starting` until the host asks again. A node where the canary gets out makes each `none`
 machine there `error`, naming the node and what was reached, and
 withdraws `none` from describe and create (a start of a `none` machine
 still on that node is refused too); check reports
 `network_policy_not_enforced` for that node, whatever its own canary
 says, and tries it again with a
-pinned canary a minute on, until one started after the failure says
-"enforced"; neither the renewer nor a get tries it before, and a retry
+pinned canary a minute on, until one whose probe began after the
+failure's ended says "enforced"; neither the renewer nor a get tries it before, and a retry
 that can't run leaves it open. The pod is left
 as it is, like any machine in error: destroy it. A canary that can't
 run on the node (no room, the image) proves nothing either way: an
@@ -130,12 +132,17 @@ so a machine in use stays `running`. A renewal that gets out turns the
 machines there to `error`; when none can say "enforced" for 10
 minutes, they are `starting` until one does. The verdicts live in the
 plugin process, so a restarted plugin checks each node again, and its
-`none` machines are `starting` for those few seconds; so does a
+`none` machines are `starting` until it says "enforced": seconds when the
+agent image is on the node, up to the canary's 3-minute timeout when it
+is pulled, and a minute more for each try that can't run; so does a
 reconfigured one, and a request still under way from before the
 configure neither reads nor records the new configuration's verdicts
 (a `none` create or start from it is refused: try again). A node's
-verdicts go by when their canaries started, so one read late never
-undoes a newer one. Each canary is a pod in the namespace's quota while
+verdicts go by when their probes ran, by the kubelet's container
+times, not when their canaries were started or read (one may wait on
+its image and run after one started later): an escape counts unless
+the latest "enforced" probe began after it began, and without both
+times it counts. Each canary is a pod in the namespace's quota while
 it runs, up to one per node being checked plus the check's own, for each
 plugin configuration whose canaries are still live. A restart, a
 rollout (old and new sidecar overlapping) or a configure starts a fresh

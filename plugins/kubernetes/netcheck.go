@@ -99,8 +99,25 @@ type netcheck struct {
 	// scheduler gave it ("" if it never got one).
 	node string
 	// seq and doneSeq number when it started and finished, on one
-	// count: a node's verdicts go by them, not by when a canary was read.
+	// count; probe is when its probe ran, as the kubelet says.
 	seq, doneSeq uint64
+	probe        probe
+}
+
+// probe is when a canary's container ran, by the kubelet: zero unless
+// both times are there and in order.
+type probe struct{ from, until time.Time }
+
+func (pr probe) known() bool { return !pr.from.IsZero() }
+
+// probeOf is when the canary pod's container ran, once it has ended.
+func probeOf(pod *corev1.Pod) probe {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if t := cs.State.Terminated; t != nil && !t.StartedAt.IsZero() && !t.FinishedAt.IsZero() && !t.FinishedAt.Before(&t.StartedAt) {
+			return probe{from: t.StartedAt.Time, until: t.FinishedAt.Time}
+		}
+	}
+	return probe{}
 }
 
 // enforcement is the verdict check reports. The namespace's
@@ -208,10 +225,10 @@ func (p *Plugin) await(ctx context.Context, nc *netcheck, wait time.Duration) (e
 func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface, instance string) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.CanaryTimeout)
 	defer cancel()
-	state, detail, node := p.canary(ctx, cfg, client, cfg.apiHost, instance, nc.node)
+	state, detail, node, ran := p.canary(ctx, cfg, client, cfg.apiHost, instance, nc.node)
 	p.mu.Lock()
 	p.seq++
-	nc.state, nc.detail, nc.at, nc.node, nc.doneSeq = state, detail, p.Now(), node, p.seq
+	nc.state, nc.detail, nc.at, nc.node, nc.doneSeq, nc.probe = state, detail, p.Now(), node, p.seq, ran
 	// One of an earlier configuration (another cluster, namespace or
 	// API server) says nothing about this one's.
 	fresh := !p.stale(cfg)
@@ -235,8 +252,9 @@ func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface
 }
 
 // canary runs the pod, pinned to node unless that is "", and reads its
-// exit code; ranOn is the node it ran on, as far as it got one.
-func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Interface, apiHost, instance, node string) (state enforcementState, detail, ranOn string) {
+// exit code; ranOn is the node it ran on, as far as it got one, and ran
+// when its probe ran.
+func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Interface, apiHost, instance, node string) (state enforcementState, detail, ranOn string, ran probe) {
 	name := "lx-netcheck-" + p.Rand()
 	pods := client.CoreV1().Pods(cfg.Namespace)
 	p.sweepCanaries(ctx, pods, instance)
@@ -250,7 +268,7 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 	}()
 	ranOn = node
 	if _, err := pods.Create(ctx, canaryPod(name, cfg, instance, apiHost, p.CanaryTimeout, node), metav1.CreateOptions{}); err != nil {
-		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err), ranOn
+		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err), ranOn, probe{}
 	}
 	defer func() {
 		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -262,9 +280,9 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 		pod, err := pods.Get(ctx, name, metav1.GetOptions{})
 		switch {
 		case kerrors.IsNotFound(err):
-			return enforcementFailed, "the canary pod disappeared", ranOn
+			return enforcementFailed, "the canary pod disappeared", ranOn, probe{}
 		case kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err):
-			return enforcementFailed, "couldn't read the canary pod: " + safeStatus(err), ranOn
+			return enforcementFailed, "couldn't read the canary pod: " + safeStatus(err), ranOn, probe{}
 		case err != nil:
 			// Transient (etcd "leader changed" was seen on TEST): poll
 			// again, and report it only if it outlasts the canary. The
@@ -278,15 +296,15 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 				ranOn = pod.Spec.NodeName
 			}
 			if state, detail, done := canaryVerdict(pod); done {
-				return state, detail, ranOn
+				return state, detail, ranOn, probeOf(pod)
 			}
 		}
 		select {
 		case <-ctx.Done():
 			if readErr != nil {
-				return enforcementFailed, "couldn't read the canary pod: " + safeStatus(readErr), ranOn
+				return enforcementFailed, "couldn't read the canary pod: " + safeStatus(readErr), ranOn, probe{}
 			}
-			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String(), ranOn
+			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String(), ranOn, probe{}
 		case <-time.After(p.Poll):
 		}
 	}

@@ -781,12 +781,13 @@ by the next check; holding policy edits back would take admission control in the
 missing from or broken on another node left `none` machines there unconfined and reported running. Now a `none`
 machine is `running` only while a canary bound to its own node (`spec.nodeName`, past the scheduler; no node
 permissions needed) has said "enforced" there within those 10 minutes; the check's canary counts for the node it
-landed on. Until then it is `starting` ("checking network isolation on node …"), the node's canary starting as soon
-as the pod has a node. A canary that gets out on the node makes each `none` machine there `error`, naming the node
+landed on. Until then it is `starting` ("checking network isolation on node …"), the node's canary starting when a
+get, list or health first sees the pod on its node (the renewer knows only pods seen on a node, so one unplaced at
+the host's last ask stays `starting` until it asks again). A canary that gets out on the node makes each `none` machine there `error`, naming the node
 (the pod is left, like any machine in error), withdraws `none` from describe and create (a start of a `none` machine still on the node is refused too), and check reports
-`network_policy_not_enforced` for the node (whatever its own canary says) and tries it again with a pinned canary a minute on, until one started
-after the failure says "enforced" (verdicts go by when canaries started; a retry that can't run leaves the node
-open). A canary that can't run there proves nothing either way: an "enforced" from the last 10 minutes still
+`network_policy_not_enforced` for the node (whatever its own canary says) and tries it again with a pinned canary a minute on, until one whose
+probe began after the failure's ended says "enforced" (verdicts go by when the probes ran, by the kubelet's
+container times, or else by when canaries were started and read; a retry that can't run leaves the node open). A canary that can't run there proves nothing either way: an "enforced" from the last 10 minutes still
 stands, and the node is tried again a minute on. The plugin keeps the verdicts current itself: every minute it runs
 a canary on each node of its `none` machines whose "enforced" is more than 5 minutes old, whether or not the host
 asks, so a machine in use stays `running`; a renewal that gets out turns the machines there to `error`, and with no
@@ -794,8 +795,8 @@ asks, so a machine in use stays `running`; a renewal that gets out turns the mac
 canary that got out since the create began. The verdicts are in the plugin process: a restarted plugin checks each
 node again, its `none` machines `starting` meanwhile, and so does a reconfigured one. A request still under way from
 the earlier configuration neither reads nor records the new one's verdicts nor starts its canaries, so another
-cluster's, namespace's or API server's canary can't certify a node for it. A node's "not enforced" from a canary that started before its
-latest "enforced" did is older news and opens nothing. Each canary is a pod in the agents namespace's quota while it
+cluster's, namespace's or API server's canary can't certify a node for it. A node's "not enforced" whose probe began before its latest
+"enforced" probe began, by the kubelet's times, is older news and opens nothing; without both times it counts. Each canary is a pod in the agents namespace's quota while it
 runs: up to one per node being checked plus the check's own, for each plugin configuration (a restart, a rollout's
 old and new sidecar, a configure) whose canaries are still live. They aren't adopted across processes; one lives at
 most 4 minutes (the 3-minute timeout plus a minute's active deadline; one that never got a node has no deadline,

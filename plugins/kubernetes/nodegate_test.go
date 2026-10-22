@@ -4,7 +4,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
@@ -101,58 +103,196 @@ func TestNoneNodeFailureBeforeThePod(t *testing.T) {
 	})
 }
 
-// A node found open stays open until a canary started after that
-// finding (after the open one finished) says "enforced": one that got
-// out is evidence of an escape during its run, and a canary that ran
-// alongside it, started after it, only sampled the same time. One that
-// got out but started before the latest "enforced" did is older news
-// and opens nothing, however late it is read. One that couldn't run
-// clears nothing (LOOM-208 review).
-func TestNodeVerdictsByStart(t *testing.T) {
-	check := func(seq, done uint64, state enforcementState) *netcheck {
-		return &netcheck{seq: seq, doneSeq: done, state: state, detail: state.String()}
-	}
-	n := &nodeCheck{}
-	n.record(check(2, 3, enforcementNotEnforced))
-	n.record(check(1, 4, enforcementEnforced)) // started before, read after
-	if n.open == nil || n.open.seq != 2 {
-		t.Fatalf("an enforced started before the open one cleared it: open = %+v", n.open)
-	}
-	if n.settled.seq != 2 {
-		t.Errorf("settled = %d, want the newer 2", n.settled.seq)
+// A node's verdicts go by when their probes ran, as the kubelet says,
+// not by when their canaries were started or read: a canary may wait on
+// its image and run after one started later (LOOM-208 review round 10).
+// An escape opens the node unless the latest "enforced" probe began
+// after it began; without both times it opens it (fail closed). An open
+// node clears only for an "enforced" probe that began after the escapes'
+// probes ended, by the kubelet's times or because its canary started
+// after the last escape was read; one that couldn't run clears nothing.
+func TestNodeVerdictsByProbe(t *testing.T) {
+	at := func(s int) time.Time { return time.Date(2026, 10, 23, 1, 0, s, 0, time.UTC) }
+	// check is a canary started seq, read done, whose probe ran from..until
+	// (seconds; -1 for no kubelet times).
+	check := func(seq, done uint64, from, until int, state enforcementState) *netcheck {
+		nc := &netcheck{seq: seq, doneSeq: done, state: state, detail: state.String()}
+		if from >= 0 {
+			nc.probe = probe{from: at(from), until: at(until)}
+		}
+		return nc
 	}
 
-	n = &nodeCheck{}
-	n.record(check(2, 3, enforcementEnforced))
-	n.record(check(1, 4, enforcementNotEnforced)) // started before, out, read after
-	if n.open != nil {
-		t.Fatalf("an escape started before a newer enforced reopened the node: open = %+v", n.open)
+	t.Run("started first, probed after an enforced: recorded", func(t *testing.T) {
+		n := &nodeCheck{}
+		n.record(check(2, 3, 5, 6, enforcementEnforced))
+		n.record(check(1, 4, 10, 11, enforcementNotEnforced)) // its image pulled late
+		if n.open == nil || n.open.seq != 1 {
+			t.Fatalf("an escape probed after the latest enforced was dropped: open = %+v", n.open)
+		}
+	})
+
+	t.Run("probed in the same second: recorded", func(t *testing.T) {
+		n := &nodeCheck{}
+		n.record(check(2, 3, 5, 6, enforcementEnforced))
+		n.record(check(1, 4, 5, 7, enforcementNotEnforced)) // the kubelet's times are whole seconds
+		if n.open == nil {
+			t.Fatal("an escape that began with the latest enforced was dropped")
+		}
+	})
+
+	t.Run("a stale escape is dropped", func(t *testing.T) {
+		n := &nodeCheck{}
+		n.record(check(2, 3, 5, 6, enforcementEnforced))
+		n.record(check(1, 4, 1, 2, enforcementNotEnforced)) // read late
+		if n.open != nil {
+			t.Fatalf("an escape probed before the latest enforced opened the node: %+v", n.open)
+		}
+		if n.enforced.seq != 2 || n.settled.seq != 2 {
+			t.Errorf("enforced %d, settled %d; want 2, 2", n.enforced.seq, n.settled.seq)
+		}
+	})
+
+	t.Run("a missing time fails closed", func(t *testing.T) {
+		for _, tc := range []struct {
+			name           string
+			enforced, open *netcheck
+		}{
+			{"the escape's", check(2, 3, 5, 6, enforcementEnforced), check(1, 4, -1, -1, enforcementNotEnforced)},
+			{"the enforced one's", check(2, 3, -1, -1, enforcementEnforced), check(1, 4, 1, 2, enforcementNotEnforced)},
+		} {
+			n := &nodeCheck{}
+			n.record(tc.enforced)
+			n.record(tc.open)
+			if n.open == nil {
+				t.Errorf("without %s time, an escape read after an enforced was dropped", tc.name)
+			}
+		}
+		// An escape without times clears only for a canary started after
+		// it was read: none probed later by the kubelet's times does.
+		n := &nodeCheck{}
+		n.record(check(1, 4, -1, -1, enforcementNotEnforced))
+		n.record(check(2, 5, 30, 31, enforcementEnforced))
+		if n.open == nil {
+			t.Fatal("an escape without times was cleared by kubelet times")
+		}
+		n.record(check(6, 7, -1, -1, enforcementEnforced))
+		if n.open != nil {
+			t.Error("an enforced started after the escape was read left it open")
+		}
+	})
+
+	t.Run("cleared by probe times", func(t *testing.T) {
+		n := &nodeCheck{}
+		n.record(check(1, 4, 10, 11, enforcementNotEnforced))
+		n.record(check(2, 5, 11, 12, enforcementEnforced)) // began as the escape ended
+		if n.open == nil {
+			t.Fatal("an enforced probe that began alongside the escape cleared it")
+		}
+		n.record(check(3, 6, 12, 13, enforcementEnforced)) // started before the escape was read, probed after it
+		if n.open != nil {
+			t.Errorf("an enforced probed after the escape left it open: %+v", n.open)
+		}
+	})
+
+	t.Run("every escape must have ended", func(t *testing.T) {
+		// The enforced canaries start before the escapes are read, so
+		// only the kubelet's times can clear the node.
+		n := &nodeCheck{}
+		n.record(check(1, 5, 10, 20, enforcementNotEnforced))
+		n.record(check(2, 6, 12, 15, enforcementNotEnforced)) // read later, ended sooner
+		n.record(check(3, 7, 18, 19, enforcementEnforced))
+		if n.open == nil {
+			t.Fatal("an enforced probed before the first escape ended cleared the node")
+		}
+		n.record(check(4, 8, 21, 22, enforcementEnforced))
+		if n.open != nil {
+			t.Errorf("an enforced probed after both escapes left the node open: %+v", n.open)
+		}
+		n = &nodeCheck{}
+		n.record(check(1, 4, 10, 20, enforcementNotEnforced))
+		n.record(check(3, 6, -1, -1, enforcementNotEnforced))
+		n.record(check(2, 7, 30, 31, enforcementEnforced))
+		if n.open == nil {
+			t.Error("with an escape without times, kubelet times cleared the node")
+		}
+	})
+
+	t.Run("launch order without times", func(t *testing.T) {
+		n := &nodeCheck{}
+		n.record(check(2, 3, -1, -1, enforcementNotEnforced))
+		n.record(check(1, 4, -1, -1, enforcementEnforced)) // started before, read after
+		if n.open == nil || n.open.seq != 2 {
+			t.Fatalf("an enforced started before the open one cleared it: open = %+v", n.open)
+		}
+		n.record(check(3, 5, -1, -1, enforcementEnforced)) // started while the open one ran
+		if n.open == nil {
+			t.Error("an enforced started before the open one was read cleared it")
+		}
+		n.record(check(6, 7, -1, -1, enforcementFailed))
+		if n.open == nil {
+			t.Error("a canary that couldn't run cleared not enforced")
+		}
+		n.record(check(4, 8, -1, -1, enforcementEnforced)) // started after it was read (3)
+		if n.open != nil {
+			t.Errorf("an enforced started after the open one was read left it open: %+v", n.open)
+		}
+		if n.settled.seq != 6 || n.enforced.seq != 4 {
+			t.Errorf("settled %d, enforced %d; want 6, 4", n.settled.seq, n.enforced.seq)
+		}
+	})
+}
+
+// A canary's probe times are the kubelet's, from its container's end,
+// and reach the node's verdict; missing or out of order, they are none.
+func TestCanaryProbeTimes(t *testing.T) {
+	from, until := time.Date(2026, 10, 23, 1, 0, 5, 0, time.UTC), time.Date(2026, 10, 23, 1, 0, 9, 0, time.UTC)
+	ended := func(started, finished time.Time) *corev1.Pod {
+		return &corev1.Pod{Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "netcheck", State: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{StartedAt: metav1.NewTime(started), FinishedAt: metav1.NewTime(finished)},
+		}}}}}
 	}
-	if n.enforced.seq != 2 || n.settled.seq != 2 {
-		t.Errorf("enforced %d, settled %d; want 2, 2", n.enforced.seq, n.settled.seq)
+	if got := probeOf(ended(from, until)); got.from != from || got.until != until {
+		t.Errorf("probe = %v, want %v..%v", got, from, until)
 	}
-	n.record(check(5, 6, enforcementNotEnforced)) // started after the enforced one
-	if n.open == nil || n.open.seq != 5 {
-		t.Fatalf("an escape started after the last enforced was dropped: open = %+v", n.open)
+	for name, pod := range map[string]*corev1.Pod{
+		"no start":     ended(time.Time{}, until),
+		"no finish":    ended(from, time.Time{}),
+		"out of order": ended(until, from),
+		"running":      {Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "netcheck"}}}},
+	} {
+		if got := probeOf(pod); got.known() {
+			t.Errorf("%s: probe = %v, want none", name, got)
+		}
 	}
-	n.record(check(4, 7, enforcementNotEnforced)) // older start, but out and done later
-	if n.open == nil || n.open.doneSeq != 7 {
-		t.Errorf("open = %+v; want the later-finished escape, 7", n.open)
+
+	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
+	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		obj, err := cs.Tracker().Get(corev1.SchemeGroupVersion.WithResource("pods"), testNS, action.(k8stesting.GetAction).GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		pod := obj.(*corev1.Pod).DeepCopy()
+		if pod.Labels[labelCanary] == "true" {
+			pod.Spec.NodeName = "n1"
+			pod.Status = ended(from, until).Status
+			pod.Status.ContainerStatuses[0].State.Terminated.ExitCode = exitBlocked
+		}
+		return true, pod, nil
+	})
+	p := configured(t, cs, nil)
+	p.mu.Lock()
+	nc := p.startNodeCanary(p.cfg, cs, testInstance, "n1")
+	p.mu.Unlock()
+	select {
+	case <-nc.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the canary never finished")
 	}
-	n.record(check(6, 8, enforcementEnforced)) // started while the open one ran
-	if n.open == nil {
-		t.Error("an enforced started before the open one finished cleared it")
-	}
-	n.record(check(9, 10, enforcementFailed))
-	if n.open == nil {
-		t.Error("a canary that couldn't run cleared not enforced")
-	}
-	n.record(check(8, 11, enforcementEnforced)) // started after the open one finished (7)
-	if n.open != nil {
-		t.Errorf("an enforced started after the open one finished left it open: %+v", n.open)
-	}
-	if n.settled.seq != 9 || n.enforced.seq != 8 {
-		t.Errorf("settled %d, enforced %d; want 9, 8", n.settled.seq, n.enforced.seq)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if nc.state != enforcementEnforced || nc.probe.from != from || nc.probe.until != until {
+		t.Errorf("canary = %s, probe %v; want enforced, %v..%v", nc.state, nc.probe, from, until)
 	}
 }
 

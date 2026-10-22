@@ -172,6 +172,21 @@ func statusSoon(t *testing.T, p *Plugin, id, want string) protocol.Environment {
 	}
 }
 
+// nodeConfigured is a test plugin over cs, configured after setup sets
+// its fields. It is this file's own, built on what main has too, so the
+// file runs against main's code (where its node cases fail).
+func nodeConfigured(t *testing.T, cs *fake.Clientset, setup ...func(*Plugin)) *Plugin {
+	t.Helper()
+	p := newTestPlugin(cs)
+	for _, f := range setup {
+		f(p)
+	}
+	if err := p.Configure(ctx, protocol.ConfigureParams{Config: baseConfig(t, nil), Host: protocol.HostInfo{Version: "test", InstanceID: testInstance}}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	return p
+}
+
 // nodeSetup is a checked plugin over the kind manifests' policies whose
 // canaries run on the given nodes; the check's own lands on scheduled.
 func nodeSetup(t *testing.T, scheduled string, codes map[string]int32, setup ...func(*Plugin)) (*fake.Clientset, *canaryNodes, *Plugin, *testClock) {
@@ -180,7 +195,7 @@ func nodeSetup(t *testing.T, scheduled string, codes map[string]int32, setup ...
 	nodes := nodeCanaries(t, cs, scheduled, codes)
 	var n atomic.Int64
 	var clock *testClock
-	p := configured(t, cs, nil, append([]func(*Plugin){func(p *Plugin) {
+	p := nodeConfigured(t, cs, append([]func(*Plugin){func(p *Plugin) {
 		p.Rand = func() string { return strconv.FormatInt(n.Add(1), 10) }
 		clock = newClock(p)
 	}}, setup...)...)

@@ -19,15 +19,15 @@ import (
 // reported running only while a canary bound to its own node
 // (spec.nodeName, past the scheduler) has said "enforced" there within
 // verdictTTL; the check's canary counts for the node it landed on.
-// Otherwise it is starting, and its node's canary starts as soon as
-// the pod has a node. A node found not enforcing makes each "none"
+// Otherwise it is starting, and its node's canary starts when a get,
+// list or health first sees the pod on its node (the renewer knows only
+// pods seen on a node). A node found not enforcing makes each "none"
 // machine on it an error (its pod is left as it is, like any machine in
 // error: destroy or recreate it) and withdraws "none" from describe and
 // create; check reports it, and tries the node again with a canary
-// pinned there a minute on, until one started after that finding says
-// "enforced" (a node's verdicts go by when their canaries started and
-// finished, not when they were read). A canary that
-// couldn't run there (no room, the image) proves nothing either way: an
+// pinned there a minute on, until one whose probe began after that
+// finding's ended says "enforced" (a node's verdicts go by when their
+// probes ran: nodeCheck). A canary that couldn't run there (no room, the image) proves nothing either way: an
 // "enforced" from within verdictTTL still stands, and the node is tried
 // again a minute on.
 //
@@ -39,26 +39,36 @@ import (
 // restarted plugin checks each node again, its machines starting until
 // then, and so does a configure: a request that took the configuration
 // before it neither reads nor records the new one's verdicts, nor
-// starts its canaries (stale). Each canary is a pod in the namespace's quota while it runs:
-// up to one per node being checked, plus the check's own, for each
-// configuration (a restart, a rollout, a configure) whose canaries are
-// still live; one lives at most CanaryTimeout plus a minute (its
-// active deadline, should this process die first). One that never got
-// a node has no deadline (the kubelet keeps it); the renewer's sweep,
-// at configure and once a minute, takes those a dead plugin left past
-// that age. Too little room
-// costs only time: a canary that can't be made proves nothing.
+// starts its canaries (stale). Each canary is a pod in the namespace's
+// quota while it runs: up to one per node being checked, plus the
+// check's own, for each configuration (a restart, a rollout, a
+// configure) whose canaries are still live; one lives at most
+// CanaryTimeout plus a minute (its active deadline, should this process
+// die first). One that never got a node has no deadline (the kubelet
+// keeps it); the renewer's sweep, at configure and once a minute, takes
+// those a dead plugin left past that age. Too little room costs only
+// time: a canary that can't be made proves nothing.
 
 // nodeCheck is one node's canaries: the one running there; the last
 // finished and the last that said "enforced", each the latest to start
-// (seq); and the last that got out, open until a canary started after
-// it finished (doneSeq) says "enforced". A canary that got out is
-// evidence of an escape during its run; one that ran alongside it,
-// started after it, sampled the same time and proves no recovery, and
-// one that couldn't run proves nothing. One that got out but started
-// before the last "enforced" did is older news than that and opens
-// nothing.
-type nodeCheck struct{ running, settled, enforced, open *netcheck }
+// (seq); and the last that got out (open), with when the escapes since
+// the node opened had all finished probing (openUntil, by the kubelet;
+// zero if any time is missing).
+//
+// Verdicts go by when the probes ran, not when their canaries were
+// started or read: a canary may wait on its image pull and run after
+// one started later. A canary that got out is evidence of an escape
+// during its probe. It opens the node unless the latest "enforced"
+// probe began after it began; without both kubelet times it opens it.
+// An open node clears only for an "enforced" probe known to have begun
+// after the escapes' probes ended: by the kubelet's times, or because
+// its canary started after the last escape was read. One that ran
+// alongside an escape proves no recovery, and one that couldn't run
+// proves nothing.
+type nodeCheck struct {
+	running, settled, enforced, open *netcheck
+	openUntil                        time.Time
+}
 
 // record is a finished canary's verdict on the node; p.mu is held.
 func (n *nodeCheck) record(nc *netcheck) {
@@ -71,17 +81,36 @@ func (n *nodeCheck) record(nc *netcheck) {
 		if newer(n.enforced) {
 			n.enforced = nc
 		}
-		if n.open != nil && nc.seq > n.open.doneSeq {
-			n.open = nil
+		if n.open != nil && n.clearedBy(nc) {
+			n.open, n.openUntil = nil, time.Time{}
 		}
 	case enforcementNotEnforced:
-		if n.enforced != nil && nc.seq < n.enforced.seq {
-			break
+		if n.enforced != nil && nc.probe.known() && n.enforced.probe.known() && nc.probe.from.Before(n.enforced.probe.from) {
+			break // probed before the latest "enforced" did: older news
+		}
+		switch {
+		case n.open == nil:
+			n.openUntil = nc.probe.until
+		case !n.openUntil.IsZero() && nc.probe.known():
+			if nc.probe.until.After(n.openUntil) {
+				n.openUntil = nc.probe.until
+			}
+		default:
+			n.openUntil = time.Time{}
 		}
 		if n.open == nil || nc.doneSeq > n.open.doneSeq {
 			n.open = nc
 		}
 	}
+}
+
+// clearedBy is whether an "enforced" canary's probe surely began after
+// the open node's escapes ended; p.mu is held.
+func (n *nodeCheck) clearedBy(nc *netcheck) bool {
+	if nc.seq > n.open.doneSeq {
+		return true // started after the last escape was read
+	}
+	return !n.openUntil.IsZero() && nc.probe.known() && nc.probe.from.After(n.openUntil)
 }
 
 // due is whether the node's canary should start now: none is running,
