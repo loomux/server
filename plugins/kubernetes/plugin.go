@@ -126,6 +126,9 @@ type Plugin struct {
 	// inflight is the canary pods this process is still reading: a
 	// sweep leaves them to their readers.
 	inflight map[string]bool
+	// verdictHook, if set, runs once check has its verdict, before it
+	// reports the nodes known open (tests: a node canary finishing then).
+	verdictHook func()
 }
 
 // New returns the plugin for real use.
@@ -233,6 +236,9 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		})
 	}
 	state, detail := p.enforcement(ctx, cfg, client, host.InstanceID, p.CanaryWait)
+	if p.verdictHook != nil {
+		p.verdictHook()
+	}
 	switch state {
 	case enforcementEnforced:
 	case enforcementNotEnforced:
@@ -257,6 +263,14 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 	// error or open policies answered first (LOOM-208).
 	if state != enforcementNotEnforced {
 		res.Problems = append(res.Problems, p.openNodes(severity)...)
+	}
+	// Not OK on any error, a node found open since the verdict too, and
+	// on any verdict but "enforced" when the policy is required (pending
+	// is only a warning).
+	for _, pr := range res.Problems {
+		if pr.Severity == protocol.SeverityError {
+			res.OK = false
+		}
 	}
 	if severity == protocol.SeverityError && state != enforcementEnforced {
 		res.OK = false

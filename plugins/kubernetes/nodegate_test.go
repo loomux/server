@@ -7,6 +7,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/Loomux/server/plugins/protocol"
@@ -152,5 +153,34 @@ func TestNodeVerdictsByStart(t *testing.T) {
 	}
 	if n.settled.seq != 9 || n.enforced.seq != 8 {
 		t.Errorf("settled %d, enforced %d; want 9, 8", n.settled.seq, n.enforced.seq)
+	}
+}
+
+// A node found open after check has its "enforced" verdict, before it
+// reports the nodes known open, is reported, and with the policy
+// required the check isn't OK: the verdict alone decided OK before
+// (LOOM-208 review round 8).
+func TestCheckNotOKOnANodeFoundOpenMeanwhile(t *testing.T) {
+	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
+	nodeCanaries(t, cs, "n0", map[string]int32{"n0": exitBlocked})
+	p := configured(t, cs, map[string]any{"require_network_policy": true})
+	p.verdictHook = func() { leakOn(p, "n1") }
+	res, _ := p.Check(ctx)
+	if !hasCode(res, ProblemNetworkPolicyNotEnforced) || !strings.Contains(problemText(res), "n1") {
+		t.Fatalf("check = %s; want n1 not enforced", problemText(res))
+	}
+	if res.OK {
+		t.Errorf("check OK with an error-severity problem: %s", problemText(res))
+	}
+}
+
+// With the policy required, a check whose canary is still running isn't
+// OK, though "pending" is only a warning.
+func TestCheckNotOKWhilePendingIfRequired(t *testing.T) {
+	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...) // canaries never finish
+	p := configured(t, cs, map[string]any{"require_network_policy": true})
+	res, _ := p.Check(ctx)
+	if !hasCode(res, ProblemNetworkCheckPending) || res.OK {
+		t.Errorf("check = OK %v, %s; want not OK, pending", res.OK, problemText(res))
 	}
 }

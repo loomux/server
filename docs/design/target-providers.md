@@ -959,10 +959,12 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
    that may select a `none` pod and allows it more than (c) withdraws `none`, so additions for agents select
    `loomux.io/egress=internet`.
 7. **ResourceQuota** `loomux-agents` (TEST, to tune): `requests.cpu: 4`, `limits.cpu: 8`,
-   `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 8` (the canaries included: up to one per node being
-checked plus the check's own, LOOM-208, so at least `max_environments` + nodes + 1), `persistentvolumeclaims:
-   6`, `ceph-rbd-sc.storageclass.storage.k8s.io/requests.storage: 100Gi`; a **LimitRange** with the `small`
-   defaults so a pod never runs unbounded.
+   `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 10`, `persistentvolumeclaims: 6`,
+   `ceph-rbd-sc.storageclass.storage.k8s.io/requests.storage: 100Gi`; a **LimitRange** with the `small`
+   defaults so a pod never runs unbounded. `pods` includes the canaries (LOOM-208, §8): up to one per node being
+   checked plus the check's own, for each plugin configuration whose canaries are still live, so at least
+   `max_environments` + 2 × (nodes + 1) for a restart or rollout, plus (nodes + 1) per further restart within
+   4 minutes. 10 is 5 + 2 × (1 + 1) = 9 for one node, and a spare; recompute it for the cluster's node count.
 8. **PBS backup**: `lx-*-data` PVCs are the user's working copies of repositories, not system state; recommend
    **not** adding them to the nightly PBS set in v1 (git remotes are the backup), stated in the handoff so it
    is a decision, not an omission.
