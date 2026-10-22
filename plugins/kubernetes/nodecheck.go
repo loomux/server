@@ -36,7 +36,9 @@ import (
 // machines, so a machine in use stays running, and one that gets out
 // turns them to error. What is known is in this process only: a
 // restarted plugin checks each node again, its machines starting until
-// then. Each canary is a pod in the namespace's quota while it runs:
+// then, and so does a configure: a request that took the configuration
+// before it neither reads nor records the new one's verdicts, nor
+// starts its canaries (stale). Each canary is a pod in the namespace's quota while it runs:
 // up to one per node being checked, plus the check's own, for each
 // configuration (a restart, a rollout, a configure) whose canaries are
 // still live; one lives at most CanaryTimeout plus a minute (its
@@ -109,9 +111,18 @@ func (p *Plugin) startNodeCanary(cfg Config, client kubernetes.Interface, instan
 	p.seq++
 	nc := &netcheck{done: make(chan struct{}), state: enforcementPending, node: node, seq: p.seq}
 	p.nodeOf(node).running = nc
-	go p.runCanary(nc, cfg, client, p.apiHost, instance)
+	go p.runCanary(nc, cfg, client, instance)
 	return nc
 }
+
+// reconfigured is the verdict's detail for a request that took an
+// earlier configuration than the plugin's now.
+const reconfigured = "the plugin was reconfigured meanwhile; ask again"
+
+// stale is whether cfg, as a request took it, is an earlier
+// configuration than the plugin's now: such a request neither reads
+// nor writes this one's verdicts, nor starts its canaries. p.mu is held.
+func (p *Plugin) stale(cfg Config) bool { return cfg.gen != p.gen }
 
 // renewNodes is the renewer of one configuration, until stop.
 func (p *Plugin) renewNodes(stop <-chan struct{}, every time.Duration) {
@@ -139,11 +150,13 @@ func (p *Plugin) renewNodes(stop <-chan struct{}, every time.Duration) {
 }
 
 // unwatch forgets a machine's pod, gone or going: its node is no longer
-// renewed for it.
-func (p *Plugin) unwatch(pod string) {
+// renewed for it. One of an earlier configuration forgets nothing.
+func (p *Plugin) unwatch(cfg Config, pod string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.watch, pod)
+	if !p.stale(cfg) {
+		delete(p.watch, pod)
+	}
 }
 
 // retestNodes starts a canary on each open node last tried more than a
@@ -186,24 +199,32 @@ func (p *Plugin) nodeFailure() (enforcementState, string) {
 	return enforcementNotEnforced, strings.Join(detail, "; ")
 }
 
-// openNode is what a canary that got out on node reached, while node
-// is open.
-func (p *Plugin) openNode(node string) (string, bool) {
+// nodeOpen is "not enforced" while node is open, naming it and what
+// its canary reached; pending for an earlier configuration; "enforced"
+// otherwise.
+func (p *Plugin) nodeOpen(cfg Config, node string) (enforcementState, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if n := p.nodes[node]; node != "" && n != nil && n.open != nil {
-		return n.open.detail, true
+	if p.stale(cfg) {
+		return enforcementPending, reconfigured
 	}
-	return "", false
+	if n := p.nodes[node]; node != "" && n != nil && n.open != nil {
+		return enforcementNotEnforced, "on node " + node + ", " + n.open.detail
+	}
+	return enforcementEnforced, ""
 }
 
 // knownLeak is "not enforced" while the latest finished canary, or one
 // on some node, found a confined pod getting out; "enforced" otherwise:
-// the last word before a "none" pod is made (ensurePod).
-func (p *Plugin) knownLeak() (enforcementState, string) {
+// the last word before a "none" pod is made (ensurePod); pending for an
+// earlier configuration.
+func (p *Plugin) knownLeak(cfg Config) (enforcementState, string) {
 	p.mu.Lock()
-	last := p.settled
+	last, stale := p.settled, p.stale(cfg)
 	p.mu.Unlock()
+	if stale {
+		return enforcementPending, reconfigured
+	}
 	if last != nil && last.state == enforcementNotEnforced {
 		return last.state, last.detail
 	}
@@ -216,7 +237,7 @@ func (p *Plugin) knownLeak() (enforcementState, string) {
 func (p *Plugin) nodeGate(cfg Config, client kubernetes.Interface, instance string, pod *corev1.Pod, status, reason string) (string, string) {
 	if status == protocol.EnvError || status == protocol.EnvStopped {
 		if status == protocol.EnvStopped {
-			p.unwatch(pod.Name)
+			p.unwatch(cfg, pod.Name)
 		}
 		return status, reason
 	}
@@ -229,6 +250,12 @@ func (p *Plugin) nodeGate(cfg Config, client kubernetes.Interface, instance stri
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.stale(cfg) {
+		if status == protocol.EnvRunning {
+			return protocol.EnvStarting, "the plugin was reconfigured meanwhile; checking network isolation on node " + node + " again"
+		}
+		return status, reason
+	}
 	p.watch[pod.Name] = node
 	n, now := p.nodeOf(node), p.Now()
 	if p.due(n, now) {

@@ -116,6 +116,10 @@ func (p *Plugin) enforcement(ctx context.Context, cfg Config, client kubernetes.
 	}
 	deadline := time.Now().Add(wait)
 	p.mu.Lock()
+	if p.stale(cfg) {
+		p.mu.Unlock()
+		return enforcementPending, reconfigured
+	}
 	nc := p.netcheck
 	if nc == nil || (nc.state != enforcementPending && p.Now().Sub(nc.at) > time.Minute) {
 		nc = p.startCanary(cfg, client, instance)
@@ -159,6 +163,10 @@ func (p *Plugin) confinement(ctx context.Context, cfg Config, client kubernetes.
 // lastCanary is confinement's canary half.
 func (p *Plugin) lastCanary(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
 	p.mu.Lock()
+	if p.stale(cfg) {
+		p.mu.Unlock()
+		return enforcementPending, reconfigured
+	}
 	last, now := p.settled, p.Now()
 	renew := last == nil || (last.state == enforcementEnforced && now.Sub(last.at) > verdictTTL/2)
 	if renew && (p.netcheck == nil || p.netcheck.state != enforcementPending) {
@@ -180,7 +188,7 @@ func (p *Plugin) startCanary(cfg Config, client kubernetes.Interface, instance s
 	p.seq++
 	nc := &netcheck{done: make(chan struct{}), state: enforcementPending, seq: p.seq}
 	p.netcheck = nc
-	go p.runCanary(nc, cfg, client, p.apiHost, instance)
+	go p.runCanary(nc, cfg, client, instance)
 	return nc
 }
 
@@ -197,14 +205,17 @@ func (p *Plugin) await(ctx context.Context, nc *netcheck, wait time.Duration) (e
 	return nc.state, nc.detail
 }
 
-func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface, apiHost, instance string) {
+func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface, instance string) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.CanaryTimeout)
 	defer cancel()
-	state, detail, node := p.canary(ctx, cfg, client, apiHost, instance, nc.node)
+	state, detail, node := p.canary(ctx, cfg, client, cfg.apiHost, instance, nc.node)
 	p.mu.Lock()
 	p.seq++
 	nc.state, nc.detail, nc.at, nc.node, nc.doneSeq = state, detail, p.Now(), node, p.seq
-	current := p.netcheck == nc // not overtaken by a configure
+	// One of an earlier configuration (another cluster, namespace or
+	// API server) says nothing about this one's.
+	fresh := !p.stale(cfg)
+	current := fresh && p.netcheck == nc // not overtaken by a configure
 	if current {
 		p.settled = nc
 	}
@@ -212,7 +223,9 @@ func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface
 	// node it landed on as one pinned there.
 	if n := p.nodes[node]; n != nil && n.running == nc {
 		n.running = nil
-		n.record(nc)
+		if fresh {
+			n.record(nc)
+		}
 	} else if current && node != "" {
 		p.nodeOf(node).record(nc)
 	}

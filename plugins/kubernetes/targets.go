@@ -165,7 +165,7 @@ func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg
 			if err := noneRefused(policyVerdict(ctx, client, cfg.Namespace, instance)); err != nil {
 				return nil, err
 			}
-			if err := noneRefused(p.knownLeak()); err != nil {
+			if err := noneRefused(p.knownLeak(cfg)); err != nil {
 				return nil, err
 			}
 		}
@@ -241,7 +241,7 @@ func (p *Plugin) environment(pod *corev1.Pod, spec protocol.EnvironmentSpec, cfg
 		CreatedAt: createdFrom(sec, p.Now()),
 	}
 	if pod == nil {
-		p.unwatch(podName(spec.ID))
+		p.unwatch(cfg, podName(spec.ID))
 		env.Status, env.Reason = protocol.EnvStopped, ""
 		return env
 	}
@@ -317,9 +317,7 @@ func (p *Plugin) StartTarget(ctx context.Context, id string) error {
 		// Already there; a "none" one on a node known not to confine it
 		// is refused, not reported started (LOOM-208).
 		if spec.Egress == protocol.EgressNone {
-			if detail, open := p.openNode(pod.Spec.NodeName); open {
-				return noneRefused(enforcementNotEnforced, "on node "+pod.Spec.NodeName+", "+detail)
-			}
+			return noneRefused(p.nodeOpen(cfg, pod.Spec.NodeName))
 		}
 		return nil
 	}
@@ -345,7 +343,7 @@ func (p *Plugin) StopTarget(ctx context.Context, id string) error {
 	if err := p.deletePod(ctx, client, cfg, id, 30); err != nil {
 		return err
 	}
-	p.unwatch(podName(id))
+	p.unwatch(cfg, podName(id))
 	return nil
 }
 
@@ -398,7 +396,7 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	}
 	// The old pod's node is no longer this machine's; the new pod's is
 	// watched once it has one, if it is still "none".
-	p.unwatch(podName(id))
+	p.unwatch(cfg, podName(id))
 	pod, err := p.ensurePod(ctx, client, cfg, spec, size, instance)
 	if err != nil {
 		return protocol.Environment{}, err
@@ -433,7 +431,7 @@ func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {
 	if err := client.CoreV1().Secrets(cfg.Namespace).Delete(ctx, secretName(id), metav1.DeleteOptions{}); err != nil && !kerrors.IsNotFound(err) {
 		return unavailable(err)
 	}
-	p.unwatch(podName(id))
+	p.unwatch(cfg, podName(id))
 	return nil
 }
 
@@ -447,7 +445,7 @@ func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.Environm
 		return protocol.EnvironmentHealth{}, err
 	}
 	if pod == nil {
-		p.unwatch(podName(id))
+		p.unwatch(cfg, podName(id))
 		return protocol.EnvironmentHealth{Status: protocol.EnvStopped}, nil
 	}
 	h := protocol.EnvironmentHealth{Restarts: restartsOf(pod), ImageDigest: digestOf(pod)}

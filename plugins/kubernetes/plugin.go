@@ -103,11 +103,12 @@ type Plugin struct {
 	// creates at once can't both take the last place (LOOM-201).
 	createMu sync.Mutex
 
-	mu         sync.Mutex
-	cfg        Config
-	client     kubernetes.Interface
-	apiHost    string
-	host       protocol.HostInfo
+	mu     sync.Mutex
+	cfg    Config
+	client kubernetes.Interface
+	host   protocol.HostInfo
+	// gen counts the configurations; p.cfg.gen is the current one.
+	gen        uint64
 	configured bool
 	// netcheck is the latest canary started, settled the latest one
 	// finished: describe acts on settled while a new one runs.
@@ -169,7 +170,9 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cfg, p.client, p.apiHost, p.host, p.configured = cfg, client, apiHost, cp.Host, true
+	p.gen++
+	cfg.gen, cfg.apiHost = p.gen, apiHost
+	p.cfg, p.client, p.host, p.configured = cfg, client, cp.Host, true
 	p.netcheck, p.settled = nil, nil
 	p.nodes, p.watch = map[string]*nodeCheck{}, map[string]string{}
 	if p.stopRenew != nil {

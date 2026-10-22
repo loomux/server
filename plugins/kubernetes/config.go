@@ -24,6 +24,12 @@ type Config struct {
 	Sizes                []protocol.Size
 	MaxEnvironments      int
 	RequireNetworkPolicy bool
+
+	// gen and apiHost are Configure's: the configuration's generation,
+	// by which a request that took this copy knows whether it is still
+	// the plugin's (LOOM-208), and the API server its canaries probe.
+	gen     uint64
+	apiHost string
 }
 
 var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)

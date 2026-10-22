@@ -1,8 +1,8 @@
 # The policies of design §10 item 6. They do nothing until a policy
-# engine enforces them: plain kind doesn't (CI's canary reaches the
-# API server there), nor did theWyseKube's Flannel before
-# kube-network-policies was installed, which is why the plugin tests
-# enforcement with a canary instead of assuming it. The plugin also
+# engine enforces them. kind's own CNI, kindnetd, does (CI's canary
+# says "enforced", LOOMUX_KIND_ENFORCED=1); theWyseKube's Flannel
+# didn't before kube-network-policies was installed, which is why the
+# plugin tests enforcement with a canary instead of assuming it. The plugin also
 # reads them (LOOM-201): egress "none" is offered only while every
 # policy that may select a confined machine allows it kube-dns on port
 # 53 and nothing else, so a policy added here for agents must leave

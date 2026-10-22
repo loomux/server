@@ -792,7 +792,9 @@ a canary on each node of its `none` machines whose "enforced" is more than 5 min
 asks, so a machine in use stays `running`; a renewal that gets out turns the machines there to `error`, and with no
 "enforced" for 10 minutes they are `starting`. The last gate before a `none` pod is made also refuses it on any
 canary that got out since the create began. The verdicts are in the plugin process: a restarted plugin checks each
-node again, its `none` machines `starting` meanwhile. A node's "not enforced" from a canary that started before its
+node again, its `none` machines `starting` meanwhile, and so does a reconfigured one. A request still under way from
+the earlier configuration neither reads nor records the new one's verdicts nor starts its canaries, so another
+cluster's, namespace's or API server's canary can't certify a node for it. A node's "not enforced" from a canary that started before its
 latest "enforced" did is older news and opens nothing. Each canary is a pod in the agents namespace's quota while it
 runs: up to one per node being checked plus the check's own, for each plugin configuration (a restart, a rollout's
 old and new sidecar, a configure) whose canaries are still live. They aren't adopted across processes; one lives at

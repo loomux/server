@@ -130,7 +130,10 @@ so a machine in use stays `running`. A renewal that gets out turns the
 machines there to `error`; when none can say "enforced" for 10
 minutes, they are `starting` until one does. The verdicts live in the
 plugin process, so a restarted plugin checks each node again, and its
-`none` machines are `starting` for those few seconds. A node's
+`none` machines are `starting` for those few seconds; so does a
+reconfigured one, and a request still under way from before the
+configure neither reads nor records the new configuration's verdicts
+(a `none` create or start from it is refused: try again). A node's
 verdicts go by when their canaries started, so one read late never
 undoes a newer one. Each canary is a pod in the namespace's quota while
 it runs, up to one per node being checked plus the check's own, for each
