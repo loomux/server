@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -113,7 +115,7 @@ func shortTempDir(t *testing.T) string {
 }
 
 // serveFakeSocket serves the fake on path in-process until the returned
-// stop is called, and waits for the socket to exist.
+// stop is called, and waits for the socket to accept connections.
 func serveFakeSocket(t *testing.T, path string) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,19 +124,64 @@ func serveFakeSocket(t *testing.T, path string) (stop func()) {
 		defer close(done)
 		sdk.RunContext(ctx, fake.New(), []string{"--listen", path}, strings.NewReader(""), io.Discard, io.Discard)
 	}()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatal("socket never appeared")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := waitListening(path, 3*time.Second); err != nil {
+		cancel()
+		<-done
+		t.Fatal(err)
 	}
 	return func() {
 		cancel()
 		<-done
 	}
+}
+
+// waitListening waits until the unix socket at path accepts a dial; its
+// file existing isn't enough, as it exists from bind(), before listen().
+func waitListening(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		conn, err := net.DialTimeout("unix", path, time.Second)
+		if err == nil {
+			return conn.Close()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("socket %s never accepted: %w", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The socket file exists from bind(), before listen(), and a dial in
+// between is refused: TestCatalogSocket once listed no plugin that way
+// (LOOM-209). The wait holds until the socket accepts.
+func TestWaitListeningWaitsForListen(t *testing.T) {
+	path := filepath.Join(shortTempDir(t), "late.sock")
+	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrUnix{Name: path}); err != nil {
+		syscall.Close(fd)
+		t.Fatal(err)
+	}
+	listened := make(chan error, 1)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		listened <- syscall.Listen(fd, 8)
+	}()
+	defer func() {
+		if err := <-listened; err != nil {
+			t.Error("listen:", err)
+		}
+		syscall.Close(fd)
+	}()
+
+	if err := waitListening(path, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial right after the wait: %v", err)
+	}
+	conn.Close()
 }
