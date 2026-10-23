@@ -71,6 +71,10 @@ type WorkspaceManager interface {
 	// sessions, returning those it couldn't kill. registry.ErrNotFound for
 	// an unknown id; a *registry.ConflictError says what blocks it.
 	DeleteWorkspace(ctx context.Context, id string) ([]string, error)
+	// DeleteWorkspaceAndWorktree is DeleteWorkspace that first removes
+	// the workspace's git worktree from its target (LOOM-228); git's
+	// refusal (changes not committed) is a *registry.ConflictError.
+	DeleteWorkspaceAndWorktree(ctx context.Context, id string) ([]string, error)
 	// SetWorkspaceStatus moves a workspace to idle (back in service) or
 	// archived (out of it); errors as for DeleteWorkspace.
 	SetWorkspaceStatus(ctx context.Context, id string, status registry.WorkspaceStatus) error
@@ -752,7 +756,18 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "workspace management is not configured on this server")
 		return
 	}
-	left, err := s.workspaceManager.DeleteWorkspace(r.Context(), r.PathValue("id"))
+	del := s.workspaceManager.DeleteWorkspace
+	switch r.URL.Query().Get("remove_worktree") {
+	case "", "false":
+	case "true":
+		// A git_worktree workspace's worktree goes too (LOOM-228); its
+		// branch stays.
+		del = s.workspaceManager.DeleteWorkspaceAndWorktree
+	default:
+		writeError(w, http.StatusBadRequest, "remove_worktree must be true or false")
+		return
+	}
+	left, err := del(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeWorkspaceManageError(w, err, "could not delete workspace")
 		return

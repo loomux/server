@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"sync"
 
 	"github.com/Loomux/server/orchestrator"
@@ -34,6 +35,9 @@ type fakeExecutor struct {
 	runOnceOut string
 	// lastRunOnce is the last command RunOnce was given.
 	lastRunOnce string
+	// runOnceShell makes RunOnce run its command through a real sh, as a
+	// host target would (LOOM-228's worktree removal, against real git).
+	runOnceShell bool
 	// socket is TmuxSocket's answer; "" is targets.DefaultTmuxSocket.
 	socket string
 	// paneExit, if set, is every pane's exit: a paste is refused, as tmux
@@ -155,7 +159,13 @@ func (e *fakeExecutor) RunOnce(ctx context.Context, command string) (string, err
 	}
 	e.mu.Lock()
 	e.lastRunOnce = command
+	shell := e.runOnceShell
 	e.mu.Unlock()
+	if shell {
+		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
 	return e.runOnceOut, nil
 }
 

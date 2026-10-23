@@ -237,6 +237,24 @@ failure leaves the workspace `failed` with a reason, its output redacted.
 Arbitrary commands go only through `run_command` (§6), with its
 verbatim-or-confirmed safety model.
 
+**A git worktree per dispatch** (LOOM-228). `kind: git_worktree`, through
+`POST /api/v1/workspaces` only (the routing model's schema doesn't offer it
+yet), makes the workspace a worktree of a repository already on the target:
+`git -C <root>/<base> worktree add -b <branch> <root>/<name> <ref>`. `base`
+is a directory name under the workspace root, resolved and confined like
+the workspace itself (a symlink out of the root is refused before git
+runs). `ref` and `branch` are validated in Go to a conservative ref grammar
+(no leading `-`, no `..`, `//`, `.lock`), and git checks the branch again
+(`check-ref-format --branch`). The branch defaults to `loomux/<name>`, so
+each concurrent dispatch, each its own workspace name, has its own checkout
+and branch; git's refusals (branch exists, no such ref, not a repository)
+end the workspace `failed` with git's words. Teardown is opt-in at delete
+time: `DELETE /workspaces/{id}?remove_worktree=true` runs `git worktree
+remove`, the repository found from the worktree itself (so nothing about
+the base is stored and no migration is needed); git refuses a worktree with
+uncommitted or untracked files, and then nothing is deleted. The branch
+always stays, with whatever was committed on it.
+
 **Deleting and repairing a workspace** (LOOM-70).
 `DELETE /api/v1/workspaces/{id}` deletes the workspace and every task in it
 (their per-turn transcripts with them) in one transaction, then kills those

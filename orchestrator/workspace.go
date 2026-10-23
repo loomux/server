@@ -19,6 +19,23 @@ import (
 // person has taken over (release it first), or the
 // workspace still provisioning (the reaper fails one that is stuck).
 func (o *Orchestrator) DeleteWorkspace(ctx context.Context, id string) ([]string, error) {
+	return o.deleteWorkspace(ctx, id, false)
+}
+
+// DeleteWorkspaceAndWorktree is DeleteWorkspace for a workspace that is
+// a git worktree (LOOM-228, git_worktree), opted into at teardown: once
+// nothing blocks the delete, its worktree is removed from the target
+// first (`git worktree remove`; its branch stays, with whatever was
+// committed there), then the rows. git refuses a worktree with changes
+// not committed or untracked files, and a directory that is no worktree
+// is refused too: either is a *registry.ConflictError carrying git's or
+// the check's words, and then nothing is deleted. A directory already
+// gone counts as removed.
+func (o *Orchestrator) DeleteWorkspaceAndWorktree(ctx context.Context, id string) ([]string, error) {
+	return o.deleteWorkspace(ctx, id, true)
+}
+
+func (o *Orchestrator) deleteWorkspace(ctx context.Context, id string, removeWorktree bool) ([]string, error) {
 	ws, err := o.store.GetWorkspace(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: delete workspace: %w", err)
@@ -36,6 +53,11 @@ func (o *Orchestrator) DeleteWorkspace(ctx context.Context, id string) ([]string
 		}
 		if t.Status == registry.TaskStatusHumanTakeover {
 			return nil, &registry.ConflictError{Reason: "someone has taken over a task in this workspace; release it first"}
+		}
+	}
+	if removeWorktree {
+		if err := o.removeWorktree(ctx, ws); err != nil {
+			return nil, err
 		}
 	}
 	if err := o.store.DeleteWorkspaceAndTasks(ctx, id); err != nil {
@@ -152,4 +174,66 @@ func (o *Orchestrator) setWorkspaceStatus(ctx context.Context, id string, from, 
 // shellQuote quotes s as one POSIX shell word.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// worktreeRemoval is the script that removes the git worktree at path
+// (LOOM-228): it finds the repository from the worktree itself, so
+// nothing about its base need be recorded, and refuses a directory that
+// is a repository's main checkout (removing that would be deleting the
+// repository). Exit 0 when removed or already gone.
+func worktreeRemoval(path string) string {
+	return "p=" + shellQuote(path) + "\n" +
+		`[ -e "$p" ] || { echo "loomux: $p is already gone"; exit 0; }` + "\n" +
+		`gd=$(git -C "$p" rev-parse --path-format=absolute --git-dir 2>/dev/null) &&` +
+		` common=$(git -C "$p" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||` +
+		` { echo "loomux: $p isn't a git checkout"; exit 3; }` + "\n" +
+		`[ "$gd" != "$common" ] || { echo "loomux: $p is a repository's own checkout, not a worktree"; exit 4; }` + "\n" +
+		`git --git-dir="$common" worktree remove -- "$p"` + "\n"
+}
+
+// removeWorktree removes ws's worktree from its target, before its rows
+// go. A credential still scoped to it is checked first, so a delete the
+// store would refuse doesn't lose the worktree.
+func (o *Orchestrator) removeWorktree(ctx context.Context, ws *registry.Workspace) error {
+	if ws.Path == "" {
+		return &registry.ConflictError{Reason: "the workspace has no directory recorded, so there is no worktree to remove; delete it without remove_worktree"}
+	}
+	creds, err := o.store.ListCredentialInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("orchestrator: delete workspace: %w", err)
+	}
+	for _, c := range creds {
+		if c.WorkspaceID == ws.ID {
+			return &registry.ConflictError{Reason: "a credential is still scoped to this workspace; delete it first"}
+		}
+	}
+	target, err := o.store.GetTarget(ctx, ws.TargetID)
+	if err != nil {
+		return fmt.Errorf("orchestrator: delete workspace: %w", err)
+	}
+	exec, err := o.newExecutor(target)
+	if err != nil {
+		return fmt.Errorf("orchestrator: delete workspace: %w", err)
+	}
+	out, err := exec.RunOnce(ctx, worktreeRemoval(ws.Path))
+	if err == nil {
+		return nil
+	}
+	// The script's own refusals, and git's ("fatal: … contains modified
+	// or untracked files"), are the person's to act on; anything else is
+	// the target not answering.
+	if words := strings.TrimSpace(out); strings.Contains(words, "loomux:") || strings.Contains(words, "fatal:") || strings.Contains(words, "error:") {
+		return &registry.ConflictError{Reason: "couldn't remove the worktree " + ws.Path + ": " + lastLines(words, 3) +
+			"; commit or discard its changes there, or delete the workspace without remove_worktree"}
+	}
+	return fmt.Errorf("orchestrator: remove worktree %s: %w", ws.Path, err)
+}
+
+// lastLines is s's last n lines, joined by "; ".
+func lastLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "; ")
 }

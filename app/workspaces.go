@@ -17,6 +17,7 @@ func (a *App) ProvisionWorkspace(ctx context.Context, req api.WorkspaceToProvisi
 	p, err := a.router.ProvisionWorkspace(ctx, router.ProvisionSpec{
 		TargetID: req.TargetID, Name: req.Name, Kind: router.ProvisionKind(req.Kind), GitRemote: req.GitRemote,
 		Description: req.Description, Tags: req.Tags,
+		Worktree: router.WorktreeSpec{Base: req.Worktree.Base, Ref: req.Worktree.Ref, Branch: req.Worktree.Branch},
 	})
 	var (
 		specErr *router.SpecError
