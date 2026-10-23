@@ -694,10 +694,15 @@ Four independent axes:
   workspace stays `provisioning`: starting its session doesn't make it
   `active` (LOOM-77). The 10-minute provisioning bound only holds while
   the process that started provisioning is alive, so the idle reaper also
-  fails any workspace still `provisioning` 15 minutes after it was created
-  — left behind by a restart mid-provisioning, or written before
+  fails any workspace still `provisioning` 15 minutes after its recipe
+  started — left behind by a restart mid-provisioning, or written before
   provisioning was bounded — with a `status_reason` saying so; it runs
-  once at startup as well as on each sweep (LOOM-60).
+  once at startup as well as on each sweep (LOOM-60). The recipe's start
+  is the workspace's `last_used_at`, stamped when its session launches.
+  Before that, while a provisioning through the API starts and checks
+  its target (up to 40 minutes: a stopped machine's ready wait with its
+  image pulled, LOOM-222, and the probe), the limit is 45 minutes from
+  the workspace's creation (LOOM-242).
 - **Every dispatch error after a task exists fails that task** with a
   reason and error class (LOOM-77) — a failed send, an abandoned or broken
   wait, a capture/relay failure —

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
@@ -49,7 +50,7 @@ func TestBuild_FailsWorkspaceLeftProvisioningAtStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	old := time.Now().UTC().Add(-(staleProvisioningAfter + time.Hour))
+	old := time.Now().UTC().Add(-(stalePreparingAfter + time.Hour)) // its recipe never started (LOOM-242)
 	if _, err := db.ExecContext(ctx, `UPDATE workspaces SET created_at = ? WHERE id = ?`, old, staleID); err != nil {
 		t.Fatalf("backdate: %v", err)
 	}
@@ -98,5 +99,13 @@ func TestBuild_FailsWorkspaceLeftProvisioningAtStartup(t *testing.T) {
 func TestStaleProvisioningAfter_ExceedsRouterBound(t *testing.T) {
 	if staleProvisioningAfter <= router.ProvisionTimeout {
 		t.Fatalf("staleProvisioningAfter = %s, want more than router.ProvisionTimeout (%s)", staleProvisioningAfter, router.ProvisionTimeout)
+	}
+	// LOOM-242: likewise before the recipe, whose start-and-check waits
+	// out a machine's image pull as a dispatch does.
+	if pull := providers.DefaultReadyTimeout + providers.DefaultPullTimeout; provisionPrepareTimeout <= pull {
+		t.Errorf("provisionPrepareTimeout = %s, want more than a machine's ready wait with a pull (%s)", provisionPrepareTimeout, pull)
+	}
+	if stalePreparingAfter <= provisionPrepareTimeout {
+		t.Errorf("stalePreparingAfter = %s, want more than provisionPrepareTimeout (%s)", stalePreparingAfter, provisionPrepareTimeout)
 	}
 }

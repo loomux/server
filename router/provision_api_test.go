@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -189,5 +190,54 @@ func TestProvisionWorkspaceAPI_StartsAStoppedMachine(t *testing.T) {
 	ws, _ := h.store.GetWorkspace(ctx, p.Workspace.ID)
 	if ws.Status != registry.WorkspaceStatusFailed || !strings.Contains(ws.StatusReason, "target health") || !strings.Contains(ws.StatusReason, "didn't become ready") {
 		t.Errorf("after a start that failed: %s (%q), want failed naming why", ws.Status, ws.StatusReason)
+	}
+}
+
+// LOOM-242: the start-and-check before an API provisioning's recipe is
+// bounded by WithProvisionPrepareTimeout, which the app sets past a
+// machine's ready wait with an image pull; a stopped machine still
+// pulling at the old 4 minutes is waited for, while a start that
+// outlasts the bound still fails the workspace.
+func TestProvisionWorkspaceAPI_PrepareBound(t *testing.T) {
+	info := func(ctx context.Context, targetID string) (string, bool, string, bool) {
+		return "kubernetes", false, "stopped", true
+	}
+	var mu sync.Mutex
+	var left time.Duration
+	starter := func(ctx context.Context, targetID string) error {
+		deadline, _ := ctx.Deadline()
+		mu.Lock()
+		left = time.Until(deadline)
+		mu.Unlock()
+		return nil
+	}
+	h := newAvailabilityHarnessOpts(t, nil, router.WithMachines(info, starter), router.WithProvisionPrepareTimeout(time.Hour))
+	ctx := context.Background()
+	p, err := h.r.ProvisionWorkspace(ctx, apiSpec(h, "api-ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Run(ctx)
+	mu.Lock()
+	if left < 55*time.Minute {
+		t.Errorf("the start had %s, want the configured hour", left)
+	}
+	mu.Unlock()
+	if ws, _ := h.store.GetWorkspace(ctx, p.Workspace.ID); ws.Status != registry.WorkspaceStatusIdle {
+		t.Fatalf("after the start: %s (%s)", ws.Status, ws.StatusReason)
+	}
+
+	blocking := func(ctx context.Context, targetID string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	h = newAvailabilityHarnessOpts(t, nil, router.WithMachines(info, blocking), router.WithProvisionPrepareTimeout(100*time.Millisecond))
+	p, err = h.r.ProvisionWorkspace(ctx, apiSpec(h, "api-ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Run(ctx)
+	if ws, _ := h.store.GetWorkspace(ctx, p.Workspace.ID); ws.Status != registry.WorkspaceStatusFailed || !strings.Contains(ws.StatusReason, "target health") {
+		t.Errorf("a start past the bound: %s (%q), want failed at target health", ws.Status, ws.StatusReason)
 	}
 }

@@ -66,6 +66,9 @@ type Router struct {
 	// commandTimeout bounds how long a direct shell command's turn waits
 	// for it to exit (LOOM-72); see WithCommandTimeout.
 	commandTimeout time.Duration
+	// provisionPrepareTimeout bounds an API provisioning's start-and-check
+	// of its target; see WithProvisionPrepareTimeout.
+	provisionPrepareTimeout time.Duration
 	// metrics records Prometheus observations for dispatches, routing
 	// decisions, and task lifecycle events (LOOM-103). Never nil — New
 	// defaults it to a no-op nil *metrics.Metrics.
@@ -102,6 +105,20 @@ func WithCommandTimeout(d time.Duration) Option {
 	return func(r *Router) {
 		if d > 0 {
 			r.commandTimeout = d
+		}
+	}
+}
+
+// WithProvisionPrepareTimeout bounds an API provisioning's
+// start-and-check of its target, before its recipe (LOOM-242): long
+// enough for a stopped machine to come up with its image pulled. The
+// reaper's limit for a provisioning whose recipe hasn't started
+// (orchestrator.WithStalePreparingAfter) must exceed it. Zero or
+// negative keeps the default, 4 minutes.
+func WithProvisionPrepareTimeout(d time.Duration) Option {
+	return func(r *Router) {
+		if d > 0 {
+			r.provisionPrepareTimeout = d
 		}
 	}
 }
@@ -172,6 +189,8 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 		logger:         slog.New(slog.DiscardHandler),
 		commandTimeout: defaultCommandTimeout,
 		tmuxSocket:     targets.DefaultTmuxSocket,
+
+		provisionPrepareTimeout: defaultProvisionPrepareTimeout,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -748,7 +767,7 @@ func (r *Router) createProvisioningRow(ctx context.Context, log *slog.Logger, sp
 // the row: idle with its path, or failed with why. With checkHealth (the
 // API's provisioning, LOOM-215, whose row is written first) the target
 // is first started if it is a stopped machine, and checked, within
-// provisionPrepareTimeout; a failure there fails the workspace too.
+// r.provisionPrepareTimeout; a failure there fails the workspace too.
 func (r *Router) runProvisioning(ctx context.Context, log *slog.Logger, conversationID string, target *registry.Target, ws *registry.Workspace, spec ProvisionSpec, checkHealth bool) error {
 	// From here on a failure leaves the row behind (see above), marked
 	// failed (LOOM-71) — never left active or provisioning, and no longer
@@ -786,7 +805,7 @@ func (r *Router) runProvisioning(ctx context.Context, log *slog.Logger, conversa
 	}
 
 	if checkHealth {
-		hctx, cancel := context.WithTimeout(ctx, provisionPrepareTimeout)
+		hctx, cancel := context.WithTimeout(ctx, r.provisionPrepareTimeout)
 		err := r.requireHealthyTarget(hctx, target, true)
 		cancel()
 		if err != nil {

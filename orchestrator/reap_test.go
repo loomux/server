@@ -289,6 +289,57 @@ func TestReaper_Sweep_FailsStaleProvisioningWorkspaces(t *testing.T) {
 	}
 }
 
+// LOOM-242: a provisioning's age counts from its recipe's start
+// (LastUsedAt, which Launch stamps when the recipe's session starts),
+// not the row's creation: the start-and-check before it may wait out a
+// machine's image pull. Before the recipe starts, the longer preparing
+// limit applies, from the row's creation.
+func TestReaper_Sweep_StaleProvisioningCountsFromTheRecipe(t *testing.T) {
+	const recipeLimit, preparingLimit = time.Hour, 3 * time.Hour
+	type tc struct {
+		name           string
+		recipeStarted  time.Duration // after the row's creation; 0: not yet
+		now            time.Duration // after the row's creation
+		wantFailed     bool
+		wantReasonPart string
+	}
+	for _, c := range []tc{
+		{name: "preparing, past the recipe's limit", now: 2 * time.Hour},
+		{name: "preparing, past its own limit", now: 4 * time.Hour, wantFailed: true, wantReasonPart: "before its recipe started"},
+		{name: "recipe started recently", recipeStarted: 3*time.Hour + 30*time.Minute, now: 4 * time.Hour},
+		{name: "recipe started long ago", recipeStarted: time.Hour, now: 2*time.Hour + 30*time.Minute, wantFailed: true, wantReasonPart: "after its recipe started"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store, ws, _, _, o := setup(t)
+			ctx := context.Background()
+			p := newProvisioningWorkspace(t, store, ws.TargetID, "p")
+			if c.recipeStarted > 0 {
+				at := p.CreatedAt.Add(c.recipeStarted)
+				p.LastUsedAt = &at
+				if err := store.UpdateWorkspace(ctx, p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := p.CreatedAt.Add(c.now)
+			orchestrator.NewReaper(o, time.Hour,
+				orchestrator.WithReaperLogger(func(string, ...any) {}),
+				orchestrator.WithStaleProvisioningAfter(recipeLimit),
+				orchestrator.WithStalePreparingAfter(preparingLimit),
+				orchestrator.WithReaperClock(func() time.Time { return now })).Sweep(ctx)
+			got, err := store.GetWorkspace(ctx, p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failed := got.Status == registry.WorkspaceStatusFailed; failed != c.wantFailed {
+				t.Fatalf("status %s (%s), want failed %v", got.Status, got.StatusReason, c.wantFailed)
+			}
+			if c.wantFailed && !strings.Contains(got.StatusReason, c.wantReasonPart) {
+				t.Errorf("reason %q, want it to say %q", got.StatusReason, c.wantReasonPart)
+			}
+		})
+	}
+}
+
 // TestReaper_Run_FailsStaleProvisioningAtStart (LOOM-60): rows a restart
 // left provisioning are resolved as soon as the reaper starts, not an
 // interval later (the default interval is an hour).

@@ -44,6 +44,18 @@ import (
 // the router first.
 const staleProvisioningAfter = router.ProvisionTimeout + 5*time.Minute
 
+// provisionPrepareTimeout bounds an API provisioning's start-and-check
+// of its target before the recipe (LOOM-242): a stopped machine's ready
+// wait with its image pulled (what a dispatch waits, LOOM-222), plus the
+// health probe after. stalePreparingAfter is how long a workspace may
+// stay provisioning before its recipe starts: past that bound, so the
+// reaper never fails a live one, as staleProvisioningAfter is past the
+// recipe's.
+const (
+	provisionPrepareTimeout = providers.DefaultReadyTimeout + providers.DefaultPullTimeout + 5*time.Minute
+	stalePreparingAfter     = provisionPrepareTimeout + 5*time.Minute
+)
+
 // App is the fully wired Loomux domain layer, exposed through the one
 // operation this package's "minimal internal interface" needs —
 // Dispatch — plus lifecycle cleanup and read access to the underlying
@@ -606,7 +618,8 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if cfg.Logger != nil {
 		routerOpts = append(routerOpts, router.WithLogger(cfg.Logger))
 	}
-	routerOpts = append(routerOpts, router.WithMetrics(met), router.WithTmuxSocket(cfg.TmuxSocket))
+	routerOpts = append(routerOpts, router.WithMetrics(met), router.WithTmuxSocket(cfg.TmuxSocket),
+		router.WithProvisionPrepareTimeout(provisionPrepareTimeout))
 	// The notifier (LOOM-102) hears of finished turns from the dispatch
 	// service and of late replies (LOOM-121) from the router.
 	bg := &background{}
@@ -630,7 +643,8 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 
 	reaperOpts := []orchestrator.ReaperOption{orchestrator.WithReaperMetrics(met),
-		orchestrator.WithStaleProvisioningAfter(staleProvisioningAfter), orchestrator.WithTurnRetention(cfg.TurnRetention),
+		orchestrator.WithStaleProvisioningAfter(staleProvisioningAfter), orchestrator.WithStalePreparingAfter(stalePreparingAfter),
+		orchestrator.WithTurnRetention(cfg.TurnRetention),
 		orchestrator.WithEventRetention(cfg.EventRetention)}
 	if cfg.reaperClock != nil {
 		reaperOpts = append(reaperOpts, orchestrator.WithReaperClock(cfg.reaperClock))

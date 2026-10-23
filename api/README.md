@@ -387,7 +387,8 @@ plain ssh form.
     `Location: /api/v1/workspaces/{id}` to follow, and `conversation_id`,
     the conversation its provisioning run is recorded under (its command,
     output and events, as for any turn). The run goes on in the
-    background: a stopped machine a plugin made is started first, the
+    background: a stopped machine a plugin made is started first (waiting
+    out its image pull, up to 40 minutes with the check; LOOM-242), the
     target checked, then the confined recipe runs (bounded by its 10
     minutes), ending the workspace `idle` with its path or `failed` with
     `status_reason`. The same name on the same target from the same

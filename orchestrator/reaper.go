@@ -65,8 +65,12 @@ type Reaper struct {
 	now       func() time.Time
 	metrics   *metrics.Metrics
 	// staleProvisioningAfter is how long a workspace may stay
-	// provisioning before the sweep fails it; zero disables that check.
+	// provisioning once its recipe started before the sweep fails it;
+	// zero disables that check. stalePreparingAfter is how long it may
+	// stay provisioning before its recipe starts, from its creation;
+	// zero applies staleProvisioningAfter there too (LOOM-242).
 	staleProvisioningAfter time.Duration
+	stalePreparingAfter    time.Duration
 	// turnRetention is how long task turns are kept; zero keeps them.
 	turnRetention time.Duration
 	// eventRetention is how long dispatch events are kept; zero keeps
@@ -98,11 +102,23 @@ func WithReaperMetrics(m *metrics.Metrics) ReaperOption {
 }
 
 // WithStaleProvisioningAfter makes each sweep fail workspaces still
-// provisioning longer than d after they were created (LOOM-60). d must
+// provisioning longer than d after their recipe started (LOOM-60,
+// LOOM-242; before it starts, see WithStalePreparingAfter). d must
 // exceed the router's own provisioning bound, so a live provisioning is
 // never touched. Zero (the default) disables the check.
 func WithStaleProvisioningAfter(d time.Duration) ReaperOption {
 	return func(r *Reaper) { r.staleProvisioningAfter = d }
+}
+
+// WithStalePreparingAfter sets how long a workspace may stay
+// provisioning before its recipe starts, counted from its creation
+// (LOOM-242): the start-and-check of its target that comes first may
+// wait out a machine's image pull, far longer than the recipe's own
+// bound. Like staleProvisioningAfter it must exceed what the router
+// itself allows that stage. Zero (the default) applies
+// staleProvisioningAfter from the creation, as before.
+func WithStalePreparingAfter(d time.Duration) ReaperOption {
+	return func(r *Reaper) { r.stalePreparingAfter = d }
 }
 
 // WithTurnRetention makes each sweep delete task turns (LOOM-91's
@@ -220,15 +236,19 @@ func (r *Reaper) Sweep(ctx context.Context) {
 }
 
 // failStaleProvisioning marks failed every workspace in workspaces that
-// has been provisioning longer than staleProvisioningAfter (LOOM-60). The
-// status is re-read just before the write, so a provisioning that
-// finished since the list was taken is left as it ended.
+// has been provisioning too long (LOOM-60): staleProvisioningAfter since
+// its recipe started, or stalePreparingAfter since its creation while
+// the recipe hasn't (LOOM-242). The recipe's start is the workspace's
+// LastUsedAt, which Launch stamps when the recipe's session starts: a
+// provisioning workspace runs no other task. The status is re-read just
+// before the write, so a provisioning that finished since the list was
+// taken is left as it ended.
 func (r *Reaper) failStaleProvisioning(ctx context.Context, workspaces []*registry.Workspace, now time.Time) {
 	if r.staleProvisioningAfter <= 0 {
 		return
 	}
 	for _, ws := range workspaces {
-		if ws.Status != registry.WorkspaceStatusProvisioning || now.Sub(ws.CreatedAt) < r.staleProvisioningAfter {
+		if ws.Status != registry.WorkspaceStatusProvisioning || !r.provisioningStale(ws, now) {
 			continue
 		}
 		cur, err := r.orch.store.GetWorkspace(ctx, ws.ID)
@@ -239,16 +259,36 @@ func (r *Reaper) failStaleProvisioning(ctx context.Context, workspaces []*regist
 		if cur.Status != registry.WorkspaceStatusProvisioning {
 			continue
 		}
-		age := now.Sub(cur.CreatedAt).Round(time.Second)
+		if !r.provisioningStale(cur, now) {
+			continue
+		}
+		since, from := cur.CreatedAt, "the workspace was created, before its recipe started"
+		if cur.LastUsedAt != nil {
+			since, from = *cur.LastUsedAt, "its recipe started"
+		}
+		age := now.Sub(since).Round(time.Second)
 		cur.Status = registry.WorkspaceStatusFailed
-		cur.StatusReason = fmt.Sprintf("provisioning did not finish: still provisioning %s after the workspace was created, "+
-			"with nothing left running it (Loomux restarted mid-provisioning, or the row predates bounded provisioning)", age)
+		cur.StatusReason = fmt.Sprintf("provisioning did not finish: still provisioning %s after %s, "+
+			"with nothing left running it (Loomux restarted mid-provisioning, or the row predates bounded provisioning)", age, from)
 		if err := r.orch.store.UpdateWorkspace(ctx, cur); err != nil {
 			r.logf("orchestrator: reaper: stale provisioning: mark workspace %s failed: %v", ws.ID, err)
 			continue
 		}
 		r.logf("orchestrator: reaper: marked workspace %s failed (provisioning for %s)", ws.ID, age)
 	}
+}
+
+// provisioningStale is whether ws has been provisioning past its limit
+// (see failStaleProvisioning).
+func (r *Reaper) provisioningStale(ws *registry.Workspace, now time.Time) bool {
+	if ws.LastUsedAt != nil {
+		return now.Sub(*ws.LastUsedAt) >= r.staleProvisioningAfter
+	}
+	limit := r.stalePreparingAfter
+	if limit <= 0 {
+		limit = r.staleProvisioningAfter
+	}
+	return now.Sub(ws.CreatedAt) >= limit
 }
 
 // isReapable reports whether t is a candidate for idle-reaping at all —
