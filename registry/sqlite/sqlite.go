@@ -128,12 +128,12 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	t.UpdatedAt = now
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
-			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys,
+			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, keep_idle_sessions, ssh_port, host_keys,
 			ssh_proxy, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
-		t.SSHPort, t.HostKeys,
+		t.Policy.KeepIdleSessions, t.SSHPort, t.HostKeys,
 		t.SSHProxy, t.CreatedAt, t.UpdatedAt,
 	)
 	if isUniqueConstraintErr(err) {
@@ -194,10 +194,11 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
 			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, relay = ?,
-			ssh_port = ?, ssh_proxy = ?, updated_at = ?
+			keep_idle_sessions = ?, ssh_port = ?, ssh_proxy = ?, updated_at = ?
 		WHERE id = ?`,
 		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
-		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay, t.SSHPort,
+		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
+		t.Policy.KeepIdleSessions, t.SSHPort,
 		t.SSHProxy, t.UpdatedAt, t.ID,
 	)
 	if isUniqueConstraintErr(err) {
@@ -1337,15 +1338,15 @@ type rowScanner interface {
 
 // targetColumns is what scanTarget reads, in order.
 const targetColumns = `id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
-	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, ssh_port, host_keys, ssh_proxy, created_at,
-	updated_at`
+	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, keep_idle_sessions, ssh_port, host_keys,
+	ssh_proxy, created_at, updated_at`
 
 func scanTarget(row rowScanner) (*registry.Target, error) {
 	var t registry.Target
 	var kind, allowed string
 	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode,
 		&t.Policy.Purpose, &allowed, &t.Policy.NoProvision, &t.Policy.NoShell, &t.Policy.RequireConfirmation,
-		&t.Policy.Relay, &t.SSHPort, &t.HostKeys, &t.SSHProxy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.Policy.Relay, &t.Policy.KeepIdleSessions, &t.SSHPort, &t.HostKeys, &t.SSHProxy, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	t.Kind = registry.TargetKind(kind)

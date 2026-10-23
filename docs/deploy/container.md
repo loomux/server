@@ -223,7 +223,9 @@ defaults for three of them.
 
 **Optional:** `LOOMUX_SESSION_TTL` (720h, sliding), `LOOMUX_SESSION_MAX_AGE`
 (2160h: a session's absolute lifetime; `0` for none), `LOOMUX_MARKER_DIR`,
-`LOOMUX_REAP_IDLE_THRESHOLD` (24h), `LOOMUX_REAP_INTERVAL` (1h),
+`LOOMUX_REAP_IDLE_THRESHOLD` (24h; `off` or `0` closes no idle session,
+a negative value is refused; a target's `keep_idle_sessions` exempts
+its sessions, see operations.md), `LOOMUX_REAP_INTERVAL` (1h),
 `LOOMUX_TARGET_PROBE_INTERVAL` (5m), `LOOMUX_MACHINE_IDLE_STOP` (off: a
 persistent machine a plugin created is stopped once idle this long, and
 started again by the next request to it; see [plugins.md](plugins.md)),

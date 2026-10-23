@@ -97,6 +97,7 @@ DELETE /api/v1/targets/{id}/pin response .health.status string
 DELETE /api/v1/targets/{id}/pin response .health.tmux_version string
 DELETE /api/v1/targets/{id}/pin response .host string
 DELETE /api/v1/targets/{id}/pin response .id string
+DELETE /api/v1/targets/{id}/pin response .keep_idle_sessions boolean
 DELETE /api/v1/targets/{id}/pin response .kind string
 DELETE /api/v1/targets/{id}/pin response .name string
 DELETE /api/v1/targets/{id}/pin response .next_step string nullable
@@ -560,6 +561,7 @@ GET /api/v1/targets response .targets[].health.status string
 GET /api/v1/targets response .targets[].health.tmux_version string
 GET /api/v1/targets response .targets[].host string
 GET /api/v1/targets response .targets[].id string
+GET /api/v1/targets response .targets[].keep_idle_sessions boolean
 GET /api/v1/targets response .targets[].kind string
 GET /api/v1/targets response .targets[].name string
 GET /api/v1/targets response .targets[].next_step string nullable
@@ -624,6 +626,7 @@ GET /api/v1/targets/{id} response .health.status string
 GET /api/v1/targets/{id} response .health.tmux_version string
 GET /api/v1/targets/{id} response .host string
 GET /api/v1/targets/{id} response .id string
+GET /api/v1/targets/{id} response .keep_idle_sessions boolean
 GET /api/v1/targets/{id} response .kind string
 GET /api/v1/targets/{id} response .name string
 GET /api/v1/targets/{id} response .next_step string nullable
@@ -1180,6 +1183,7 @@ POST /api/v1/targets request .allow_shell boolean nullable
 POST /api/v1/targets request .allowed_agent_types []string nullable
 POST /api/v1/targets request .generate_ssh_key boolean
 POST /api/v1/targets request .host string
+POST /api/v1/targets request .keep_idle_sessions boolean nullable
 POST /api/v1/targets request .kind string
 POST /api/v1/targets request .name string
 POST /api/v1/targets request .permission_mode string nullable
@@ -1212,6 +1216,7 @@ POST /api/v1/targets response .health.status string
 POST /api/v1/targets response .health.tmux_version string
 POST /api/v1/targets response .host string
 POST /api/v1/targets response .id string
+POST /api/v1/targets response .keep_idle_sessions boolean
 POST /api/v1/targets response .kind string
 POST /api/v1/targets response .name string
 POST /api/v1/targets response .next_step string nullable
@@ -1305,6 +1310,7 @@ POST /api/v1/targets/{id}/migrate-ssh response .target.health.status string
 POST /api/v1/targets/{id}/migrate-ssh response .target.health.tmux_version string
 POST /api/v1/targets/{id}/migrate-ssh response .target.host string
 POST /api/v1/targets/{id}/migrate-ssh response .target.id string
+POST /api/v1/targets/{id}/migrate-ssh response .target.keep_idle_sessions boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target.kind string
 POST /api/v1/targets/{id}/migrate-ssh response .target.name string
 POST /api/v1/targets/{id}/migrate-ssh response .target.next_step string nullable
@@ -1390,6 +1396,7 @@ POST /api/v1/targets/{id}/pin response .health.status string
 POST /api/v1/targets/{id}/pin response .health.tmux_version string
 POST /api/v1/targets/{id}/pin response .host string
 POST /api/v1/targets/{id}/pin response .id string
+POST /api/v1/targets/{id}/pin response .keep_idle_sessions boolean
 POST /api/v1/targets/{id}/pin response .kind string
 POST /api/v1/targets/{id}/pin response .name string
 POST /api/v1/targets/{id}/pin response .next_step string nullable
@@ -1485,6 +1492,7 @@ POST /api/v1/targets/{id}/recreate response .health.status string
 POST /api/v1/targets/{id}/recreate response .health.tmux_version string
 POST /api/v1/targets/{id}/recreate response .host string
 POST /api/v1/targets/{id}/recreate response .id string
+POST /api/v1/targets/{id}/recreate response .keep_idle_sessions boolean
 POST /api/v1/targets/{id}/recreate response .kind string
 POST /api/v1/targets/{id}/recreate response .name string
 POST /api/v1/targets/{id}/recreate response .next_step string nullable
@@ -1575,6 +1583,7 @@ POST /api/v1/targets/{id}/start response .health.status string
 POST /api/v1/targets/{id}/start response .health.tmux_version string
 POST /api/v1/targets/{id}/start response .host string
 POST /api/v1/targets/{id}/start response .id string
+POST /api/v1/targets/{id}/start response .keep_idle_sessions boolean
 POST /api/v1/targets/{id}/start response .kind string
 POST /api/v1/targets/{id}/start response .name string
 POST /api/v1/targets/{id}/start response .next_step string nullable
@@ -1644,6 +1653,7 @@ POST /api/v1/targets/{id}/stop response .health.status string
 POST /api/v1/targets/{id}/stop response .health.tmux_version string
 POST /api/v1/targets/{id}/stop response .host string
 POST /api/v1/targets/{id}/stop response .id string
+POST /api/v1/targets/{id}/stop response .keep_idle_sessions boolean
 POST /api/v1/targets/{id}/stop response .kind string
 POST /api/v1/targets/{id}/stop response .name string
 POST /api/v1/targets/{id}/stop response .next_step string nullable
@@ -1929,6 +1939,7 @@ PUT /api/v1/targets/{id} request .allow_shell boolean nullable
 PUT /api/v1/targets/{id} request .allowed_agent_types []string nullable
 PUT /api/v1/targets/{id} request .generate_ssh_key boolean
 PUT /api/v1/targets/{id} request .host string
+PUT /api/v1/targets/{id} request .keep_idle_sessions boolean nullable
 PUT /api/v1/targets/{id} request .kind string
 PUT /api/v1/targets/{id} request .name string
 PUT /api/v1/targets/{id} request .permission_mode string nullable
@@ -1961,6 +1972,7 @@ PUT /api/v1/targets/{id} response .health.status string
 PUT /api/v1/targets/{id} response .health.tmux_version string
 PUT /api/v1/targets/{id} response .host string
 PUT /api/v1/targets/{id} response .id string
+PUT /api/v1/targets/{id} response .keep_idle_sessions boolean
 PUT /api/v1/targets/{id} response .kind string
 PUT /api/v1/targets/{id} response .name string
 PUT /api/v1/targets/{id} response .next_step string nullable

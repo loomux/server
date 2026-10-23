@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -407,5 +408,121 @@ func TestReaper_EventRetention(t *testing.T) {
 	orchestrator.NewReaper(o, time.Hour, orchestrator.WithEventRetention(time.Nanosecond)).Sweep(ctx)
 	if n := count(); n != 0 {
 		t.Fatalf("events past retention = %d, want 0", n)
+	}
+}
+
+// awaitingTask launches a task in ws and leaves it waiting for a
+// follow-up, the one state the reaper closes.
+func awaitingTask(t *testing.T, store registry.Store, o *orchestrator.Orchestrator, ws *registry.Workspace, conv string) *registry.Task {
+	t.Helper()
+	ctx := context.Background()
+	task, err := o.Launch(ctx, ws.ID, conv, registry.TaskKindAgent, "claude-code", "claude")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	task.Status = registry.TaskStatusAwaitingInput
+	if err := store.UpdateTask(ctx, task); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	return task
+}
+
+func reapedAt(t *testing.T, store registry.Store, id string) *time.Time {
+	t.Helper()
+	got, err := store.GetTask(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetTask(%s): %v", id, err)
+	}
+	return got.ReapedAt
+}
+
+// TestReaper_KeepIdleSessionsTarget (LOOM-227): a target whose policy
+// keeps idle sessions (a hub's) has none reaped however long they wait;
+// another target's are reaped as before, and clearing the policy makes
+// the kept one reapable again.
+func TestReaper_KeepIdleSessionsTarget(t *testing.T) {
+	store, ws, exec, _, o := setup(t)
+	ctx := context.Background()
+	hub := &registry.Target{ID: "hub-target", Name: "cc", Kind: registry.TargetKindLocal, Policy: registry.TargetPolicy{KeepIdleSessions: true}}
+	if err := store.CreateTarget(ctx, hub); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	hubWS := &registry.Workspace{ID: "hub-ws", Name: "command-center", Path: "/data/work/command-center", TargetID: hub.ID, Status: registry.WorkspaceStatusIdle}
+	if err := store.CreateWorkspace(ctx, hubWS); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	hubTask := awaitingTask(t, store, o, hubWS, "conv-hub")
+	other := awaitingTask(t, store, o, ws, "conv-other")
+
+	later := time.Now().Add(30 * 24 * time.Hour)
+	reaper := orchestrator.NewReaper(o, 24*time.Hour, orchestrator.WithReaperLogger(func(string, ...any) {}),
+		orchestrator.WithReaperClock(func() time.Time { return later }))
+	reaper.Sweep(ctx)
+	if reapedAt(t, store, hubTask.ID) != nil {
+		t.Error("the hub's session was reaped though its target keeps idle sessions")
+	}
+	if live, _ := exec.HasSession(ctx, hubTask.TmuxSession); !live {
+		t.Error("the hub's tmux session is gone")
+	}
+	if reapedAt(t, store, other.ID) == nil {
+		t.Error("another target's idle session wasn't reaped")
+	}
+
+	hub.Policy.KeepIdleSessions = false
+	if err := store.UpdateTarget(ctx, hub); err != nil {
+		t.Fatalf("UpdateTarget: %v", err)
+	}
+	reaper.Sweep(ctx)
+	if reapedAt(t, store, hubTask.ID) == nil {
+		t.Error("with the policy cleared, the idle session wasn't reaped")
+	}
+}
+
+// TestReaper_ZeroThresholdReapsNothing (LOOM-227): threshold zero turns
+// idle reaping off; the sweep's other work (retention) still runs.
+func TestReaper_ZeroThresholdReapsNothing(t *testing.T) {
+	store, ws, _, _, o := setup(t)
+	ctx := context.Background()
+	task := awaitingTask(t, store, o, ws, "conv-1")
+	if err := store.CreateDispatchEvent(ctx, &registry.DispatchEvent{ID: "e1", ConversationID: "c", Kind: registry.EventDecision}); err != nil {
+		t.Fatalf("CreateDispatchEvent: %v", err)
+	}
+	later := time.Now().Add(365 * 24 * time.Hour)
+	orchestrator.NewReaper(o, 0, orchestrator.WithReaperLogger(func(string, ...any) {}),
+		orchestrator.WithReaperClock(func() time.Time { return later }),
+		orchestrator.WithEventRetention(time.Hour)).Sweep(ctx)
+	if reapedAt(t, store, task.ID) != nil {
+		t.Error("a zero threshold reaped an idle session")
+	}
+	if events, _ := store.ListDispatchEventsByConversation(ctx, "c"); len(events) != 0 {
+		t.Errorf("event retention didn't run with idle reaping off: %d left", len(events))
+	}
+}
+
+// targetErrStore fails every GetTarget.
+type targetErrStore struct{ registry.Store }
+
+func (targetErrStore) GetTarget(context.Context, string) (*registry.Target, error) {
+	return nil, errors.New("database is locked")
+}
+
+// TestReaper_UnreadableTargetKeepsSessions: a sweep that can't read a
+// workspace's target can't tell whether it keeps idle sessions, so it
+// closes none of that workspace's.
+func TestReaper_UnreadableTargetKeepsSessions(t *testing.T) {
+	store, ws, exec, detector, _ := setup(t)
+	ctx := context.Background()
+	o := orchestrator.New(store, exec.factory(), detector)
+	task := awaitingTask(t, store, o, ws, "conv-1")
+	var logged []string
+	later := time.Now().Add(30 * 24 * time.Hour)
+	orchestrator.NewReaper(orchestrator.New(targetErrStore{store}, exec.factory(), detector), time.Hour,
+		orchestrator.WithReaperLogger(func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }),
+		orchestrator.WithReaperClock(func() time.Time { return later })).Sweep(ctx)
+	if reapedAt(t, store, task.ID) != nil {
+		t.Error("a session was reaped though its target couldn't be read")
+	}
+	if len(logged) == 0 || !strings.Contains(strings.Join(logged, "\n"), "kept this sweep") {
+		t.Errorf("logged = %q, want the unreadable target noted", logged)
 	}
 }

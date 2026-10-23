@@ -112,7 +112,7 @@ or the path of a file with it (a mounted ConfigMap):
   ],
   "machines": [
     {"name": "cc", "plugin": "wysekube", "size": "large", "persistent": true, "egress": "internet",
-     "require_confirmation": true, "relay": "last_message"}
+     "require_confirmation": true, "relay": "last_message", "keep_idle_sessions": true}
   ]
 }
 ```
@@ -165,7 +165,9 @@ plan and applies nothing.
   for a machine that must keep its data;
 - the target options a machine takes: `permission_mode`, `purpose`,
   `allowed_agent_types`, `allow_provision`, `allow_shell`,
-  `require_confirmation` and `relay`, spelled as in the API.
+  `require_confirmation`, `relay` and `keep_idle_sessions` (LOOM-227: the
+  idle reaper leaves its sessions open, as a hub's must be), spelled as
+  in the API.
 
 A field left out says nothing: the default when the machine is made, and
 after that whatever the machine has (a change made through the API

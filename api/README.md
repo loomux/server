@@ -496,6 +496,10 @@ plain ssh form.
     show `relay_effective`: what the router models may see of the
     target's work (`docs/deploy/operations.md`, "What the router models
     see").
+  - Targets carry `keep_idle_sessions` (LOOM-227, default `false`): when
+    `true` the idle reaper never closes the target's sessions however
+    long they wait for a follow-up, as a hub's own session needs
+    (`docs/deploy/operations.md`, "Idle sessions").
   - `POST /api/v1/targets/{id}/scan-host-key`,
     `POST /api/v1/targets/{id}/pin` `{fingerprint}`,
     `DELETE /api/v1/targets/{id}/pin`, `POST /api/v1/targets/{id}/test` —
