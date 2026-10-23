@@ -556,6 +556,7 @@ below join the "admin-only once there are roles" list the freeze review keeps (s
 | **A malicious or buggy plugin** | runs out of process; its output is validated (addresses by grammar, statuses by list, strings bounded); it never receives the vault, the managed private keys or another machine's material; a third-party one must be explicitly trusted with its declared permissions. It **is** trusted with everything on the machines it makes (§1.6): first-party plugins are therefore the bundled ones |
 | **The docker socket inside an agent container** | never mounted; the plugin talks to the engine from its own process, and the agent image has no docker client. Agent containers get `--cap-drop ALL`, `--security-opt no-new-privileges`, a non-root user, `--read-only`, `--pids-limit` |
 | **An agent reaching loomuxd** (its API, its database PVC, its SOCKS sidecar) or the cluster | agents live in **another namespace** (`loomux-agents`) with a default-deny ingress NetworkPolicy (only loomuxd's pod may reach 2222) and an egress policy that allows kube-dns and the internet but **denies the cluster CIDRs, RFC 1918, the Tailscale CGNAT range, link-local and loopback** (`ipBlock` with `except`), so a pod can't reach the API server, loomuxd, Ceph, the LAN or the tailnet. Egress `none` cuts the internet too. **This depends on a policy engine** (next row) |
+| **A trusted machine** (egress `trusted`, LOOM-226) reaching the LAN, the nodes and the tailnet | by design, for the machines an admin names: off unless the cluster has policy (e) (§10 item 6) **and** the plugin's `trusted_machines` lists the target's name **and** the create asks for it; never a default; logged by the host and the plugin; withdrawn by taking the name out (the machine turns `error`, can't start) or, at once, by deleting (e). Still no ServiceAccount token, no other pods or Services, no metadata address. Its agent can do on the LAN what the LAN lets anyone do, so a trusted machine should run only what you would run on a LAN host |
 | **NetworkPolicy not enforced** (theWyseKube today: Talos-default Flannel v0.27.4 with no policy controller; a deny-all policy was proven to block nothing) | the Kubernetes plugin's `check` **tests enforcement** (§8): it runs a short canary pod labelled `egress=none` that tries to reach the API server's ClusterIP and an external address and exits with the result, read from the pod's status (no exec). Not enforced ⇒ a warning on the plugin and on every machine it makes ("Network isolation is not enforced on this cluster: agents can reach cluster services, the LAN and the tailnet"), the `egress` choice is withdrawn from `targets.describe` (so the UI can't offer `none` and the user can't believe a machine is confined), and the plugin's setting `require_network_policy` (default `false`) decides whether machines may be created at all; **set it to `true` for production** (§10). An engine (theWyseKube's first choice is kube-network-policies, a policy-only nftables DaemonSet) makes the warning go away on the next `check` |
 | **An agent reaching another agent's machine** | default-deny ingress between pods in the namespace; `enable_icc=false` on Docker |
 | **An agent escaping the container** | Pod Security Admission `restricted` on the namespace: `runAsNonRoot`, seccomp `RuntimeDefault`, all capabilities dropped, no privilege escalation, read-only root, no host namespaces or host paths; the plugin's pod spec is written to pass `restricted` and CI asserts it. A sandboxed runtime (gVisor/Kata `RuntimeClass`) isn't in theWyseKube today and is left as a later plugin setting (open question 14) |
@@ -722,7 +723,7 @@ withdraws when network isolation isn't enforced.
 
 **Objects per machine**, all labelled `app.kubernetes.io/managed-by=loomux-plugin-kubernetes`,
 `loomux.io/instance=<instance id>`, `loomux.io/target=<target id>`, `loomux.io/environment=<env id>`,
-`loomux.io/role=agent`, `loomux.io/egress=internet|none` (what the NetworkPolicies select on), and annotated
+`loomux.io/role=agent`, `loomux.io/egress=internet|none|trusted` (what the NetworkPolicies select on), and annotated
 `loomux.io/target-name=<name>`:
 
 | Object | Name | Notes |
@@ -861,6 +862,30 @@ call, as for a node found open. The plugin's Role can list NetworkPolicies but n
 so a list a minute stands in for a watch, and a machine moved to another node is seen at the host's next get. From a
 policy opened to the host refusing the machine: up to a minute plus the host's reconcile interval; a `targets.changed`
 notification would cut the second part, but the SDK can't send one yet.
+
+**Egress `trusted` (LOOM-226).** An opt-in third class for the machines an admin designates, such as a
+hub (command-center) that reaches the LAN's VIP and hosts and the tailnet. It is never the default and takes
+three locks, each an admin's: the cluster's own NetworkPolicy (e) of §10 item 6 (the plugin makes no
+NetworkPolicy, its Role can't), the plugin's setting `trusted_machines` (target names, comma-separated; in a GitOps deployment kept in `LOOMUX_PLUGINS_SEED`, which restores it at every start; empty by
+default) and `egress: trusted` asked for at create. `targets.describe` offers `trusted` only while
+`trusted_machines` names any, and last; the host never picks it unasked, even if a plugin lists it first, and logs
+each such create at warning level with the target's name and id; the plugin logs each trusted pod it makes. A
+create, start or recreate of a trusted machine whose name `trusted_machines` doesn't list is refused
+(`invalid_params`); taking a name out withdraws it: the machine is `error` ("egress trusted withdrawn"), its pod
+left as it is, start and recreate refused until it is destroyed or named again (the configure tells the host at
+once, `targets.changed`), and deleting (e) cuts its LAN
+and tailnet at once. The pod is labelled `loomux.io/egress=trusted`, which (d) doesn't select and the `none`
+checks above ignore: a policy for trusted machines, however wide, never withdraws `none`, and the LOOM-208 node
+canaries are `none`'s alone. When `trusted_machines` names any machine and no policy that selects every trusted
+machine lets it out beyond kube-dns, check reports `trusted_egress_policy_missing` (warning): such a machine
+reaches kube-dns only. The machine shows `egress: trusted` wherever its plugin object does. What (e) opens, the
+tradeoff the designation accepts: the internet; all of RFC 1918 but the pod and service CIDRs, so the LAN, its
+VIP `192.168.0.26`, the Proxmox, odroid and seedbox hosts, and the **cluster's nodes**, with the API server's
+6443 and the kubelets' 10250 (an agent pod mounts no ServiceAccount token, but anything those ports grant
+anonymously is the machine's); and the tailnet's `100.64.0.0/10`, which a pod reaches only if its node routes it
+(a subnet router, or the node on the tailnet). It stays closed to other pods (loomuxd, Ceph, other machines),
+Services, the link-local metadata address and loopback. An admin who wants less narrows (e) (ports, the nodes'
+addresses in `except`); the plugin checks only that some policy lets trusted machines out, not what.
 
 Not enforced:
 
@@ -1024,7 +1049,12 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
    `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (the Tailscale CGNAT range), `169.254.0.0/16`,
    `127.0.0.0/8`; `none` pods match only (a)–(c). The plugin reads these (§8, LOOM-201): any other policy
    that may select a `none` pod and allows it more than (c) withdraws `none`, so additions for agents select
-   `loomux.io/egress=internet`.
+   `loomux.io/egress=internet`;
+   (e) for `loomux.io/egress=trusted` pods (LOOM-226, §8; only the machines the plugin's `trusted_machines`
+   names), allow egress to `0.0.0.0/0` **except** the pod CIDR `10.244.0.0/16`, the service CIDR
+   `10.96.0.0/12`, `169.254.0.0/16` and `127.0.0.0/8`: the internet, the LAN (`192.168.0.0/16` with the VIP
+   and the hosts, and the nodes) and the tailnet's `100.64.0.0/10`. `deploy/test/kind/30-networkpolicies.yaml`
+   has it as `agents-allow-trusted`. Without it a trusted machine reaches kube-dns only.
 7. **ResourceQuota** `loomux-agents` (TEST, to tune): `requests.cpu: 4`, `limits.cpu: 8`,
    `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 10`, `persistentvolumeclaims: 6`,
    `ceph-rbd-sc.storageclass.storage.k8s.io/requests.storage: 100Gi`; a **LimitRange** with the `small`

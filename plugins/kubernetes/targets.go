@@ -35,6 +35,11 @@ func (p *Plugin) DescribeTargets(ctx context.Context) (protocol.TargetsInfo, err
 	if state, _ := p.confinement(ctx, cfg, client, host.InstanceID, 0); state == enforcementEnforced {
 		egress = append(egress, protocol.EgressNone)
 	}
+	if len(cfg.TrustedMachines) > 0 {
+		// Last, so nothing takes it for the default (LOOM-226); create
+		// makes it only for the names trusted_machines lists.
+		egress = append(egress, protocol.EgressTrusted)
+	}
 	return protocol.TargetsInfo{
 		Sizes:             cfg.Sizes,
 		PersistentDefault: true,
@@ -169,6 +174,9 @@ func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg
 				return nil, err
 			}
 		}
+		if spec.Egress == protocol.EgressTrusted {
+			p.Logger.Printf("egress trusted: making pod %s for machine %q, named in trusted_machines: it may reach the LAN and the tailnet", name, cleanText(spec.Name))
+		}
 		pod, err = pods.Create(ctx, podFor(spec, size, cfg, instance), metav1.CreateOptions{})
 		if err == nil {
 			return pod, nil
@@ -256,6 +264,7 @@ func (p *Plugin) environment(ctx context.Context, pod *corev1.Pod, spec protocol
 	if spec.Egress == protocol.EgressNone {
 		env.Status, env.Reason = p.nodeGate(cfg, client, instance, pod, env.Status, env.Reason)
 	}
+	env.Status, env.Reason = trustGate(cfg, spec, env.Status, env.Reason)
 	env.ImageDigest = digestOf(pod)
 	return env
 }
@@ -318,6 +327,11 @@ func (p *Plugin) StartTarget(ctx context.Context, id string) error {
 	}
 	sec, spec, pod, err := p.machine(ctx, client, cfg, host, id)
 	if err != nil {
+		return err
+	}
+	// A trusted one no longer named in trusted_machines is refused,
+	// whether or not its pod is there (LOOM-226).
+	if err := trustRefused(cfg, spec); err != nil {
 		return err
 	}
 	if pod != nil && pod.DeletionTimestamp == nil {
@@ -467,6 +481,7 @@ func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.Environm
 	if spec.Egress == protocol.EgressNone {
 		h.Status, h.Reason = p.nodeGate(cfg, client, host.InstanceID, pod, h.Status, h.Reason)
 	}
+	h.Status, h.Reason = trustGate(cfg, spec, h.Status, h.Reason)
 	return h, nil
 }
 

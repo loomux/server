@@ -84,8 +84,12 @@ func validateSpec(spec protocol.EnvironmentSpec, cfg Config, host protocol.HostI
 	}
 	switch spec.Egress {
 	case protocol.EgressInternet, protocol.EgressNone:
+	case protocol.EgressTrusted:
+		if err := trustRefused(cfg, spec); err != nil {
+			return err
+		}
 	default:
-		return invalidParams("egress must be internet or none")
+		return invalidParams("egress must be internet, none or trusted")
 	}
 	if spec.Image != "" && strings.ContainsAny(spec.Image, " \t\r\n\"'`$") {
 		return invalidParams("image must be an image reference")

@@ -31,7 +31,7 @@ volumes behind after destroy and the quota allows none of it), `subdomain`,
 `agent_image` (pin it by digest in production), `kubeconfig` (secret,
 empty in-cluster), `sizes` (`{name: {cpu, memory, disk}}`; small/medium/
 large by default), `max_environments`, `require_network_policy`,
-`timezone`.
+`trusted_machines` (below), `timezone`.
 
 The Role it runs under grants exactly design §8's verbs (pods c/g/l/w/d,
 pods/log get, PVCs c/g/l/d, secrets c/g/l/u/d, events list, services
@@ -258,6 +258,64 @@ traffic to its own node is policed is up to the engine, so the node's
 own listening services are outside the guarantee. Name lookups through
 kube-dns remain allowed (§10's (c)), and the resolvers forward them.
 
+## Egress `trusted` (LOOM-226)
+
+An opt-in class for the machines an admin designates, such as a hub
+that ssh-es to the LAN's hosts: the internet, the LAN and the tailnet.
+Three locks, each an admin's, all needed:
+
+1. **The cluster's policy** (e) of design §10 item 6, applied by the
+   cluster's admin (the plugin makes no NetworkPolicy; its Role can't).
+   `deploy/test/kind/30-networkpolicies.yaml` has it as
+   `agents-allow-trusted`:
+
+   ```yaml
+   podSelector: {matchLabels: {loomux.io/role: agent, loomux.io/egress: trusted}}
+   policyTypes: [Egress]
+   egress:
+     - to:
+         - ipBlock:
+             cidr: 0.0.0.0/0
+             except: [10.244.0.0/16, 10.96.0.0/12, 169.254.0.0/16, 127.0.0.0/8]
+   ```
+
+   With §10's (a)–(c), a trusted machine may reach exactly: kube-dns on
+   53; the internet; RFC 1918 but the pod and service CIDRs, which is
+   the LAN (its VIP `192.168.0.26`, the Proxmox, odroid and seedbox
+   hosts) **and the cluster's nodes**, the API server's 6443 and the
+   kubelets' 10250 among them (no ServiceAccount token is mounted, but
+   what those ports grant anonymously is the machine's); and the
+   tailnet's `100.64.0.0/10`, if its node routes it. Not other pods
+   (loomuxd, Ceph, other machines), Services, `169.254.0.0/16` (the
+   metadata address) or loopback. Narrow it (ports, the nodes'
+   addresses in `except`) if you want less; the plugin checks only that
+   some policy lets trusted machines out, not what it allows.
+2. **`trusted_machines`**, the plugin's setting: target names,
+   comma-separated, empty by default. While it names any,
+   `targets.describe` offers `trusted`, last. Loomux has one user
+   today, so whoever may configure plugins may set it; in a GitOps
+   deployment keep it in `LOOMUX_PLUGINS_SEED` (LOOM-219), which puts
+   the seed's value back at every start.
+3. **`egress: trusted` asked for** at create. Loomux never defaults to
+   it, and logs each such create (warning, with the target's name and
+   id); the plugin logs each trusted pod it makes, and the machine shows
+   `egress: trusted`.
+
+A create, start or recreate of a trusted machine whose name
+`trusted_machines` doesn't list is refused (`invalid_params`). Taking a
+name out withdraws it: the machine is `error` ("egress trusted
+withdrawn"), its pod left as it is (stop or destroy it), and start and
+recreate are refused until it is named again. The configure that
+names or unnames a trusted machine tells the host at once
+(`targets.changed`, LOOM-213) rather than at its next reconcile. Deleting (e) cuts the
+LAN and the tailnet at once. Its pods are labelled
+`loomux.io/egress=trusted`, so (d) doesn't select them and the `none`
+checks ignore them: a policy for trusted machines never withdraws
+`none`, and only `none` machines wait for a node's canary. When
+`trusted_machines` names any machine and no policy that selects every
+trusted machine lets it out beyond kube-dns, check reports
+`trusted_egress_policy_missing` (warning).
+
 ## Tests
 
 `plugin_test.go`: the manifest and schema, the pod spec field by field,
@@ -271,7 +329,9 @@ at create, start and recreate.
 `nodecheck_test.go`: a `none` machine runs only once a canary pinned to
 its node says "enforced"; a node that lets one out, or can't run one;
 two nodes; renewal in the background, stuck, or unable to run; lapse.
-`nodegate_test.go`: a node found open during a create, start or
+`trusted_test.go`: egress trusted offered and made only for the names
+`trusted_machines` lists, withdrawn when a name is taken out, and its
+policy leaving `none` alone. `nodegate_test.go`: a node found open during a create, start or
 recreate refuses the pod. `nodecheck_kind_test.go` (`-tags kind`): a
 canary pinned to kind's node, and to a node that doesn't exist.
 `kind_test.go` (`-tags kind`, CI's `plugin-kubernetes` job): the

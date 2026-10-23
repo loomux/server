@@ -55,10 +55,14 @@ const (
 	LabelEnvironment = "loomux.io/environment"
 )
 
-// Egress values.
+// Egress values. EgressTrusted (LOOM-226) is the opt-in class for the
+// machines an admin designates: the LAN and the tailnet as well as the
+// internet. A plugin lists it last, if at all, and the host never picks
+// it unasked.
 const (
 	EgressInternet = "internet"
 	EgressNone     = "none"
+	EgressTrusted  = "trusted"
 )
 
 // SSH proxy values (TargetsInfo.SSHProxy, Address.Proxy): how the host

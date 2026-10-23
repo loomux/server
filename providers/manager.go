@@ -253,19 +253,9 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Targ
 	if !persistent && !caps[protocol.CapTargetsEphemeral] {
 		return nil, nil, &InvalidError{Field: "persistent", Msg: "this plugin only makes machines that keep their data"}
 	}
-	egress := req.Egress
-	if len(info.EgressOptions) == 0 {
-		if egress != "" {
-			return nil, nil, &InvalidError{Field: "egress", Msg: "this plugin offers no egress choice right now"}
-		}
-		egress = protocol.EgressInternet
-	} else {
-		if egress == "" {
-			egress = info.EgressOptions[0]
-		}
-		if !contains(info.EgressOptions, egress) {
-			return nil, nil, &InvalidError{Field: "egress", Msg: "must be one of " + strings.Join(info.EgressOptions, ", ")}
-		}
+	egress, err := chooseEgress(info.EgressOptions, req.Egress)
+	if err != nil {
+		return nil, nil, err
 	}
 	if info.MaxEnvironments > 0 {
 		existing, err := m.store.ListEnvironmentsByPlugin(ctx, req.PluginID)
@@ -329,9 +319,39 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Targ
 		m.releaseKey(ctx, key.ID)
 		return nil, nil, err
 	}
+	if egress == protocol.EgressTrusted {
+		// The record of an opt-in that opens the LAN and the tailnet
+		// (LOOM-226): the row keeps egress, this says when and to whom.
+		m.logger.Warn("machine created with egress trusted: it may reach the LAN and the tailnet",
+			"target", target.Name, "target_id", target.ID, "environment", env.ID, "plugin", req.PluginID)
+	}
 	m.updateGauge(ctx)
 	m.startJob(env.ID, func(ctx context.Context) { m.runCreate(ctx, env.ID) })
 	return &target, env, nil
+}
+
+// chooseEgress is the machine's egress: the one asked for, if offered;
+// unasked, the plugin's first option that isn't trusted (LOOM-226:
+// never the default), or internet when it offers no choice.
+func chooseEgress(options []string, asked string) (string, error) {
+	if len(options) == 0 {
+		if asked != "" {
+			return "", &InvalidError{Field: "egress", Msg: "this plugin offers no egress choice right now"}
+		}
+		return protocol.EgressInternet, nil
+	}
+	if asked == "" {
+		for _, o := range options {
+			if o != protocol.EgressTrusted {
+				return o, nil
+			}
+		}
+		return "", &InvalidError{Field: "egress", Msg: "egress trusted is never the default; ask for it"}
+	}
+	if !contains(options, asked) {
+		return "", &InvalidError{Field: "egress", Msg: "must be one of " + strings.Join(options, ", ")}
+	}
+	return asked, nil
 }
 
 func hasSize(info protocol.TargetsInfo, name string) bool {

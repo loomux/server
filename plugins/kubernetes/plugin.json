@@ -24,6 +24,7 @@
       "sizes": {"type": "object", "additionalProperties": {"type": "object", "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}, "disk": {"type": "string"}}}, "description": "machine sizes by name, each {cpu, memory, disk} in Kubernetes quantities; small/medium/large when empty"},
       "max_environments": {"type": "integer", "minimum": 1, "default": 5, "description": "how many machines this plugin makes at most"},
       "require_network_policy": {"type": "boolean", "default": false, "description": "refuse to make machines unless NetworkPolicy is enforced (true in production)"},
+      "trusted_machines": {"type": "string", "default": "", "description": "target names, comma-separated, that may have egress trusted: the LAN and the tailnet as well as the internet. An admin's setting, never the default; it needs the cluster's NetworkPolicy for loomux.io/egress=trusted (design §10 item 6 (e)). Empty: no machine may"},
       "timezone": {"type": "string", "default": "UTC", "description": "TZ inside machines"}
     }
   }

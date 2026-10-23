@@ -89,3 +89,30 @@ spec:
               - 100.64.0.0/10
               - 169.254.0.0/16
               - 127.0.0.0/8
+---
+# (e) egress "trusted" (LOOM-226): the opt-in class for machines the
+# plugin's trusted_machines names, such as a hub that ssh-es to the
+# LAN's hosts. The internet, the rest of RFC 1918 (the LAN, its VIP and
+# hosts, and the nodes) and the tailnet's 100.64.0.0/10; not the pod
+# and service CIDRs (kind's and theWyseKube's defaults), the link-local
+# metadata address or loopback. Never selects egress=none pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agents-allow-trusted
+  namespace: loomux-agents
+spec:
+  podSelector:
+    matchLabels:
+      loomux.io/role: agent
+      loomux.io/egress: trusted
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.244.0.0/16
+              - 10.96.0.0/12
+              - 169.254.0.0/16
+              - 127.0.0.0/8

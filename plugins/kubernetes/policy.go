@@ -114,10 +114,16 @@ const (
 )
 
 // selectsConfined is how sel selects the egress "none" machines of
-// instance. Their labels are labelsFor's: these four known, the target
-// and environment ids present with any value, no others.
+// instance.
 func selectsConfined(sel metav1.LabelSelector, instance string) match {
-	known := map[string]string{labelManagedBy: managedBy, protocol.LabelInstance: instance, labelRole: roleAgent, labelEgress: protocol.EgressNone}
+	return selectsMachines(sel, instance, protocol.EgressNone)
+}
+
+// selectsMachines is how sel selects the machines of instance with that
+// egress. Their labels are labelsFor's: these four known, the target
+// and environment ids present with any value, no others.
+func selectsMachines(sel metav1.LabelSelector, instance, egress string) match {
+	known := map[string]string{labelManagedBy: managedBy, protocol.LabelInstance: instance, labelRole: roleAgent, labelEgress: egress}
 	reqs := append([]metav1.LabelSelectorRequirement(nil), sel.MatchExpressions...)
 	for k, v := range sel.MatchLabels {
 		reqs = append(reqs, metav1.LabelSelectorRequirement{Key: k, Operator: metav1.LabelSelectorOpIn, Values: []string{v}})
