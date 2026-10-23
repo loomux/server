@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Loomux/server/internal/tmuxtest"
 )
 
 func TestExitMarker(t *testing.T) {
@@ -171,7 +173,7 @@ func TestWrapExitStatusInTmux(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
-	ex := NewLocalExecutor()
+	ex := NewLocalExecutor(tmuxtest.Socket(t))
 	ctx := context.Background()
 	for i, tc := range []struct {
 		command    string
@@ -227,7 +229,7 @@ func TestWrapExitStatusSurvivesCtrlC(t *testing.T) {
 	if _, err := exec.LookPath("busybox"); err == nil {
 		shells["busybox ash"] = "busybox sh -c "
 	}
-	ex := NewLocalExecutor()
+	ex := NewLocalExecutor(tmuxtest.Socket(t))
 	ctx := context.Background()
 	for name, prefix := range shells {
 		t.Run(name, func(t *testing.T) {

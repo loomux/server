@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -19,7 +20,7 @@ import (
 // interactive shell, whose prompt theme could keep redrawing and
 // destabilize the pane, defeating the point of this test.
 func TestIntegration_IdleWatcherRealLocalTmux(t *testing.T) {
-	exec := targets.NewLocalExecutor()
+	exec := targets.NewLocalExecutor(tmuxtest.Socket(t))
 	t.Cleanup(func() {
 		if err := exec.Close(); err != nil {
 			t.Errorf("Close: %v", err)

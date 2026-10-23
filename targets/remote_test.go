@@ -7,6 +7,7 @@ import (
 	osexec "os/exec"
 	"testing"
 
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/targets"
 	"github.com/Loomux/server/targets/executortest"
 	"github.com/Loomux/server/targets/sshtest"
@@ -15,6 +16,7 @@ import (
 func newTestRemoteExecutor(t *testing.T, server *sshtest.Server, opts ...targets.RemoteOption) *targets.RemoteExecutor {
 	t.Helper()
 	exec := targets.NewRemoteExecutor(server.Host, "loomux-test", append([]targets.RemoteOption{
+		targets.WithTmuxSocket(tmuxtest.Socket(t)),
 		targets.WithPort(server.Port),
 		targets.WithIdentityFile(server.IdentityFile),
 		targets.WithExtraSSHArgs(

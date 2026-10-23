@@ -501,11 +501,11 @@ func TestLifecycle(t *testing.T) {
 		t.Errorf("recreate to ephemeral: %v", err)
 	}
 
-	cmds, err := p.TargetAttachCommands(ctx, "abc123", "loomux-abc")
-	if err != nil || len(cmds) != 1 || cmds[0].Via != "kubectl" || cmds[0].Command != "kubectl -n loomux-agents exec -it lx-abc123 -- tmux -L loomux attach -t loomux-abc" {
+	cmds, err := p.TargetAttachCommands(ctx, "abc123", "loomux-abc", "loomux-b")
+	if err != nil || len(cmds) != 1 || cmds[0].Via != "kubectl" || cmds[0].Command != "kubectl -n loomux-agents exec -it lx-abc123 -- tmux -L loomux-b attach -t loomux-abc" {
 		t.Errorf("attach = %+v, %v", cmds, err)
 	}
-	if _, err := p.TargetAttachCommands(ctx, "abc123", "x; rm -rf /"); rpcCode(err) != rpc.CodeInvalidParams {
+	if _, err := p.TargetAttachCommands(ctx, "abc123", "x; rm -rf /", "loomux"); rpcCode(err) != rpc.CodeInvalidParams {
 		t.Errorf("attach with a bad session: %v", err)
 	}
 

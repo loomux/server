@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 	"github.com/Loomux/server/targets/executortest"
@@ -84,7 +85,7 @@ func setupManaged(t *testing.T, proxy string) *managedSetup {
 		tgt.SSHProxy = registry.SSHProxyNone
 	}
 	return &managedSetup{server: server, key: key, target: tgt,
-		opts: targets.ExecutorOptions{KnownHostsDir: filepath.Join(base, "known_hosts.d"), Managed: m}}
+		opts: targets.ExecutorOptions{TmuxSocket: tmuxtest.Socket(t), KnownHostsDir: filepath.Join(base, "known_hosts.d"), Managed: m}}
 }
 
 // executor is an executor for tgt with s's options.
