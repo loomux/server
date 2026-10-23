@@ -252,3 +252,56 @@ func TestSeedSecretFromFile(t *testing.T) {
 		t.Errorf("token = %+v", p)
 	}
 }
+
+// LOOM-236: the seed's "machines" are parsed and checked with the rest.
+
+func TestParseSeedMachines(t *testing.T) {
+	s := parseSeed(t, `{"machines": [{"name": " cc ", "plugin": "wysekube", "size": "small", "persistent": true,
+		"egress": "internet", "permission_mode": "accept_edits", "purpose": "personal", "allowed_agent_types": [],
+		"allow_provision": true, "allow_shell": false, "require_confirmation": true, "relay": "last_message"}]}`)
+	if len(s.Machines) != 1 {
+		t.Fatalf("machines = %+v", s.Machines)
+	}
+	m := s.Machines[0]
+	if m.Name != "cc" || m.Plugin != "wysekube" || m.Size != "small" || m.Persistent == nil || !*m.Persistent || m.Egress != "internet" {
+		t.Errorf("machine = %+v", m)
+	}
+	var tg registry.Target
+	m.ApplyTargetOptions(&tg)
+	if tg.PermissionMode != registry.PermissionModeAcceptEdits || tg.Policy.Purpose != "personal" || tg.Policy.AllowedAgentTypes != nil ||
+		tg.Policy.NoProvision || !tg.Policy.NoShell || !tg.Policy.RequireConfirmation || tg.Policy.Relay != registry.RelayLastMessage {
+		t.Errorf("target options = mode %q policy %+v", tg.PermissionMode, tg.Policy)
+	}
+	// Left out says nothing.
+	var untouched registry.Target
+	untouched.Policy.Relay = registry.RelayNone
+	plugins.SeedMachine{Name: "x", Plugin: "p"}.ApplyTargetOptions(&untouched)
+	if untouched.Policy.Relay != registry.RelayNone || untouched.PermissionMode != "" {
+		t.Errorf("an empty entry changed options: %+v", untouched)
+	}
+}
+
+func TestParseSeedRefusesBadMachines(t *testing.T) {
+	for name, raw := range map[string]string{
+		"unknown field":   `{"machines": [{"name": "cc", "plugin": "p", "colour": "blue"}]}`,
+		"no name":         `{"machines": [{"name": " ", "plugin": "p"}]}`,
+		"name twice":      `{"machines": [{"name": "cc", "plugin": "p"}, {"name": "cc", "plugin": "q"}]}`,
+		"bad label":       `{"machines": [{"name": "cc", "plugin": "not a label"}]}`,
+		"no plugin":       `{"machines": [{"name": "cc"}]}`,
+		"permission mode": `{"machines": [{"name": "cc", "plugin": "p", "permission_mode": "yolo"}]}`,
+		"relay":           `{"machines": [{"name": "cc", "plugin": "p", "relay": "everything"}]}`,
+		"purpose":         `{"machines": [{"name": "cc", "plugin": "p", "purpose": "fun"}]}`,
+		"host":            `{"machines": [{"name": "cc", "plugin": "p", "host": "example.com"}]}`,
+		"machines type":   `{"machines": {"cc": {}}}`,
+	} {
+		if _, err := plugins.ParseSeed(raw); err == nil {
+			t.Errorf("%s: parsed, want an error", name)
+		}
+	}
+	// "machines" itself is a known key, empty or absent.
+	for _, raw := range []string{`{"machines": []}`, `{"plugins": []}`, `{"prune": true, "machines": null}`} {
+		if _, err := plugins.ParseSeed(raw); err != nil {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+}
