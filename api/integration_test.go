@@ -11,6 +11,7 @@ import (
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/app"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/router/llmrouter"
 )
 
@@ -52,8 +53,9 @@ func TestIntegration_RealAppBehindAuth(t *testing.T) {
 	t.Cleanup(llmSrv.Close)
 
 	realApp, err := app.Build(app.Config{
-		DBPath: filepath.Join(t.TempDir(), "test.db"),
-		Router: routerConfigFor(llmSrv.URL),
+		DBPath:     filepath.Join(t.TempDir(), "test.db"),
+		Router:     routerConfigFor(llmSrv.URL),
+		TmuxSocket: tmuxtest.Socket(t),
 	})
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)
@@ -153,8 +155,9 @@ func TestIntegration_DispatchThenConversationDetail_ShowsMessages(t *testing.T) 
 	t.Cleanup(llmSrv.Close)
 
 	realApp, err := app.Build(app.Config{
-		DBPath: filepath.Join(t.TempDir(), "test.db"),
-		Router: routerConfigFor(llmSrv.URL),
+		DBPath:     filepath.Join(t.TempDir(), "test.db"),
+		Router:     routerConfigFor(llmSrv.URL),
+		TmuxSocket: tmuxtest.Socket(t),
 	})
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)
@@ -249,8 +252,9 @@ func TestIntegration_DirectAnswerOnlyConversation_IsListedAndReadable(t *testing
 	t.Cleanup(llmSrv.Close)
 
 	realApp, err := app.Build(app.Config{
-		DBPath: filepath.Join(t.TempDir(), "test.db"),
-		Router: routerConfigFor(llmSrv.URL),
+		DBPath:     filepath.Join(t.TempDir(), "test.db"),
+		Router:     routerConfigFor(llmSrv.URL),
+		TmuxSocket: tmuxtest.Socket(t),
 	})
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)

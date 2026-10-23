@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -131,10 +132,9 @@ func TestBuild_ManagedSSHDirsPerInstance(t *testing.T) {
 // second's orphan sweep would reap them as its own.
 func TestBuild_TmuxSocketPerInstance(t *testing.T) {
 	srv := fakeRouterServer(t)
-	sockets := [2]string{fmt.Sprintf("loomux-apptest-a-%d", os.Getpid()), fmt.Sprintf("loomux-apptest-b-%d", os.Getpid())}
+	sockets := [2]string{tmuxtest.Socket(t), tmuxtest.Socket(t)}
 	var apps [2]*App
 	for i, socket := range sockets {
-		t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
 		cfg := testConfig(t, srv.URL)
 		cfg.TmuxSocket = socket
 		a, err := Build(cfg)
@@ -169,8 +169,7 @@ func TestBuild_TmuxSocketPerInstance(t *testing.T) {
 // server (LOOM-141), the socket it was given.
 func TestBuild_ScrubsItsOwnTmuxSocket(t *testing.T) {
 	srv := fakeRouterServer(t)
-	socket := fmt.Sprintf("loomux-apptest-scrub-%d", os.Getpid())
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+	socket := tmuxtest.Socket(t)
 	start := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", "first", "sleep 60")
 	start.Env = append(os.Environ(), "LOOMUX_SCRUBTEST_LEAK=1")
 	if out, err := start.CombinedOutput(); err != nil {

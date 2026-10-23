@@ -10,14 +10,16 @@ import (
 	"time"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 	"github.com/Loomux/server/targets/sshtest"
 )
 
-func localExecutorFactory() func(*registry.Target) (targets.TargetExecutor, error) {
+func localExecutorFactory(t *testing.T) func(*registry.Target) (targets.TargetExecutor, error) {
+	exec := targets.NewLocalExecutor(tmuxtest.Socket(t))
 	return func(*registry.Target) (targets.TargetExecutor, error) {
-		return targets.NewLocalExecutor(), nil
+		return exec, nil
 	}
 }
 
@@ -25,7 +27,7 @@ var localTarget = &registry.Target{Kind: registry.TargetKindLocal}
 
 func TestMarkerWatcher_WaitReturnsWhenMarkerAppears(t *testing.T) {
 	dir := t.TempDir()
-	w := completion.NewMarkerWatcher(localExecutorFactory(), dir, 20*time.Millisecond)
+	w := completion.NewMarkerWatcher(localExecutorFactory(t), dir, 20*time.Millisecond)
 	task := &registry.Task{ID: "task-1"}
 
 	errCh := make(chan error, 1)
@@ -52,7 +54,7 @@ func TestMarkerWatcher_WaitReturnsWhenMarkerAppears(t *testing.T) {
 
 func TestMarkerWatcher_MarkerPathIsDeterministicPerTask(t *testing.T) {
 	dir := t.TempDir()
-	w := completion.NewMarkerWatcher(localExecutorFactory(), dir, 20*time.Millisecond)
+	w := completion.NewMarkerWatcher(localExecutorFactory(t), dir, 20*time.Millisecond)
 
 	got := w.MarkerPath("abc-123")
 	want := filepath.Join(dir, "abc-123.done")
@@ -69,7 +71,7 @@ func TestMarkerWatcher_MarkerPathIsDeterministicPerTask(t *testing.T) {
 // hook-touched marker to ever be found.
 func TestMarkerPath_PackageFuncMatchesWatcherMethod(t *testing.T) {
 	dir := t.TempDir()
-	w := completion.NewMarkerWatcher(localExecutorFactory(), dir, 20*time.Millisecond)
+	w := completion.NewMarkerWatcher(localExecutorFactory(t), dir, 20*time.Millisecond)
 
 	got := completion.MarkerPath(dir, "abc-123")
 	want := w.MarkerPath("abc-123")
@@ -80,7 +82,7 @@ func TestMarkerPath_PackageFuncMatchesWatcherMethod(t *testing.T) {
 
 func TestMarkerWatcher_RemovesMarkerAfterDetection(t *testing.T) {
 	dir := t.TempDir()
-	w := completion.NewMarkerWatcher(localExecutorFactory(), dir, 20*time.Millisecond)
+	w := completion.NewMarkerWatcher(localExecutorFactory(t), dir, 20*time.Millisecond)
 	task := &registry.Task{ID: "task-cleanup"}
 
 	if err := os.WriteFile(w.MarkerPath(task.ID), []byte("done"), 0o644); err != nil {
@@ -97,7 +99,7 @@ func TestMarkerWatcher_RemovesMarkerAfterDetection(t *testing.T) {
 
 func TestMarkerWatcher_ContextCancelled(t *testing.T) {
 	dir := t.TempDir()
-	w := completion.NewMarkerWatcher(localExecutorFactory(), dir, 20*time.Millisecond)
+	w := completion.NewMarkerWatcher(localExecutorFactory(t), dir, 20*time.Millisecond)
 	task := &registry.Task{ID: "task-never"}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
@@ -115,9 +117,11 @@ func TestMarkerWatcher_ContextCancelled(t *testing.T) {
 // actually runs commands locally, so a test can write the marker to a
 // real local path and see the "remote" FileExists/RemoveFile calls
 // observe it for real.
-func remoteExecutorFactory(server *sshtest.Server) func(*registry.Target) (targets.TargetExecutor, error) {
+func remoteExecutorFactory(t *testing.T, server *sshtest.Server) func(*registry.Target) (targets.TargetExecutor, error) {
+	socket := tmuxtest.Socket(t)
 	return func(*registry.Target) (targets.TargetExecutor, error) {
 		return targets.NewRemoteExecutor(server.Host, "loomux-test",
+			targets.WithTmuxSocket(socket),
 			targets.WithPort(server.Port),
 			targets.WithIdentityFile(server.IdentityFile),
 			targets.WithExtraSSHArgs(
@@ -133,7 +137,7 @@ var remoteTarget = &registry.Target{Kind: registry.TargetKindRemote}
 func TestMarkerWatcher_RemoteViaSSH(t *testing.T) {
 	server := sshtest.Start(t)
 	dir := t.TempDir()
-	w := completion.NewMarkerWatcher(remoteExecutorFactory(server), dir, 20*time.Millisecond)
+	w := completion.NewMarkerWatcher(remoteExecutorFactory(t, server), dir, 20*time.Millisecond)
 	task := &registry.Task{ID: "task-remote"}
 
 	errCh := make(chan error, 1)

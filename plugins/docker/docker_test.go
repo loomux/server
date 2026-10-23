@@ -22,6 +22,7 @@ import (
 	"github.com/Loomux/server/plugins/plugintest"
 	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/plugins/rpc"
+	"github.com/Loomux/server/targets"
 	"github.com/Loomux/server/targets/sshtest"
 )
 
@@ -212,6 +213,7 @@ func endToEnd(t *testing.T, launch plugintest.Launch, o plugintest.Options, inst
 	}
 
 	sshIn(t, port, tgtBlock, hostSSHPub)
+	attachReachesSession(t, call, id, port, tgtBlock, hostSSHPub)
 
 	if err := call(protocol.MethodTargetsStop, protocol.IDParams{ID: id}, nil); err != nil {
 		t.Fatalf("stop: %v", err)
@@ -334,6 +336,58 @@ func sshIn(t *testing.T, port int, key *pem.Block, hostPub ssh.PublicKey) {
 		t.Errorf("ssh output = %q", s)
 	}
 	t.Logf("ssh login ok: %s", strings.Join(strings.Fields(s), " "))
+}
+
+// attachReachesSession is LOOM-210 in a real container: a session
+// started the way the host starts one (its RemoteExecutor over ssh, on
+// an instance's own socket) is the one the plugin's attach command
+// reaches. The command is run with has-session for attach and without
+// -it; asked for the default socket instead, it must not find it.
+func attachReachesSession(t *testing.T, call func(string, any, any) error, id string, port int, key *pem.Block, hostPub ssh.PublicKey) {
+	t.Helper()
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Log("no ssh: skipping the attach check")
+		return
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "key")
+	known := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(key), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(known, []byte("[127.0.0.1]:"+itoa(port)+" "+strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostPub)))+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const socket, session = "loomux-e2e-instance", "loomux-e2e-attach"
+	host := targets.NewRemoteExecutor("127.0.0.1", "agent", targets.WithPort(port), targets.WithIdentityFile(keyPath),
+		targets.WithExtraSSHArgs("-o", "IdentitiesOnly=yes", "-o", "UserKnownHostsFile="+known, "-o", "StrictHostKeyChecking=yes"),
+		targets.WithTmuxSocket(socket))
+	t.Cleanup(func() { _ = host.Close() })
+	ctx := context.Background()
+	if err := host.NewSession(ctx, session, "", "sleep 120"); err != nil {
+		t.Fatalf("NewSession over ssh: %v", err)
+	}
+	defer func() { _ = host.KillSession(ctx, session) }()
+	for _, tc := range []struct {
+		socket string
+		finds  bool
+	}{{socket, true}, {"", false}} {
+		var att protocol.AttachResult
+		if err := call(protocol.MethodTargetsAttachCommands, protocol.AttachParams{ID: id, Session: session, Socket: tc.socket}, &att); err != nil || len(att.Commands) != 1 {
+			t.Fatalf("attach on %q = %+v, %v", tc.socket, att, err)
+		}
+		probe := strings.Replace(strings.Replace(att.Commands[0].Command, " exec -it ", " exec ", 1), " attach -t ", " has-session -t ", 1)
+		// An ssh engine's command (docker -H ssh://…) needs the person's
+		// own ssh to the engine host; the test's is this same engine, so
+		// the rest runs on it directly.
+		if f := strings.Fields(probe); len(f) > 3 && f[1] == "-H" {
+			probe = strings.Join(append(f[:1:1], f[3:]...), " ")
+		}
+		out, err := exec.Command("sh", "-c", probe).CombinedOutput()
+		if (err == nil) != tc.finds {
+			t.Errorf("socket %q: %s: err %v, want it to find the session: %v\n%s", tc.socket, probe, err, tc.finds, out)
+		}
+	}
 }
 
 // nothingLeft asks the docker CLI (when there is one) for anything

@@ -9,11 +9,13 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
 	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/targets/executortest"
 )
 
 // TestIntegration_RunCommand is LOOM-72 end to end against real tmux:
@@ -29,16 +31,18 @@ func TestIntegration_RunCommand(t *testing.T) {
 	}
 	agentTypes := router.AgentTypeRegistry{"": router.AgentType{AgentConfig: completion.AgentConfig{Tier: completion.TierIdle}}}
 	markerDir := t.TempDir()
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
-	orch := orchestrator.New(store, targets.NewExecutor, detector)
+	socket := tmuxtest.Socket(t)
+	newExec := executortest.NewExecutor(socket)
+	detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), markerDir)
+	orch := orchestrator.New(store, newExec, detector)
 	const command = `echo "loomux-$((6*7))"; echo to-stderr >&2; exit 4`
 	model := &routertest.StubRoutingModel{
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 			return router.Decision{Action: router.ActionRunCommand, TargetID: target.ID, Command: command}, nil
 		},
 	}
-	r := router.New(store, orch, targets.NewExecutor, credentials.NewResolver(store), agentTypes, model, markerDir)
-	exec := targets.NewLocalExecutor()
+	r := router.New(store, orch, newExec, credentials.NewResolver(store), agentTypes, model, markerDir)
+	exec := targets.NewLocalExecutor(socket)
 	t.Cleanup(func() { killWorkspaceSessions(t, store, exec) })
 
 	reply, err := r.Dispatch(ctx, "conv", "run `"+command+"` on local")

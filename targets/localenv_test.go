@@ -3,7 +3,6 @@ package targets
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 )
 
@@ -34,7 +34,7 @@ func TestLocalEnv_KeepsOnlyAllowedVariables(t *testing.T) {
 
 func TestLocalExecutor_RunOnceDoesNotSeeLoomuxSecrets(t *testing.T) {
 	t.Setenv("LOOMUX_MASTER_KEY", "vault-key")
-	out, err := NewLocalExecutor().RunOnce(context.Background(), "env")
+	out, err := NewLocalExecutor(tmuxtest.Socket(t)).RunOnce(context.Background(), "env")
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
@@ -62,8 +62,7 @@ func TestScrubLocalTmuxEnv_CleansARunningServer(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("no tmux")
 	}
-	socket := fmt.Sprintf("loomux-scrubtest-%d", os.Getpid())
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+	socket := tmuxtest.Socket(t)
 	ctx := context.Background()
 
 	start := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", "first", "sleep 60")

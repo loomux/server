@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/targets"
@@ -86,8 +87,9 @@ func TestDetector_LocalMarkerConfiguredTaskUsesMarkerTier(t *testing.T) {
 
 	markerDir := t.TempDir()
 	cfg := completion.Config{"claude-code": {Tier: completion.TierMarker, NoProgressTimeout: -1}}
+	local := targets.NewLocalExecutor(tmuxtest.Socket(t))
 	factory := func(*registry.Target) (targets.TargetExecutor, error) {
-		return &capturePaneForbiddenExecutor{TargetExecutor: targets.NewLocalExecutor(), t: t}, nil
+		return &capturePaneForbiddenExecutor{TargetExecutor: local, t: t}, nil
 	}
 	d := completion.NewDetector(store, factory, cfg, markerDir)
 
@@ -126,8 +128,10 @@ func TestDetector_RemoteMarkerConfiguredTaskUsesMarkerTier(t *testing.T) {
 	server := sshtest.Start(t)
 	markerDir := t.TempDir()
 	cfg := completion.Config{"claude-code": {Tier: completion.TierMarker, NoProgressTimeout: -1}}
+	socket := tmuxtest.Socket(t)
 	factory := func(*registry.Target) (targets.TargetExecutor, error) {
 		real := targets.NewRemoteExecutor(server.Host, "loomux-test",
+			targets.WithTmuxSocket(socket),
 			targets.WithPort(server.Port),
 			targets.WithIdentityFile(server.IdentityFile),
 			targets.WithExtraSSHArgs(
