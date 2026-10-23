@@ -1,0 +1,3 @@
+### Fixed
+
+- A running Kubernetes machine with egress `none` stays checked after it starts (LOOM-211). The plugin reads the agents namespace's NetworkPolicies every minute as well as at each check, describe and create. If they no longer confine the machine, it is reported `error` (as when its node is found not enforcing), `none` is withdrawn from describe and refused at create, and check reports it. A read that fails proves nothing: the last good one stands 10 minutes, then the machine is `starting`. A change in the policies re-runs the canary on each running machine's node within a minute instead of at the 5-minute renewal, one canary at a time per node. The machine's pod is left running and the host stops dispatching to it; destroying it stays the person's call.

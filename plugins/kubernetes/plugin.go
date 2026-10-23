@@ -129,6 +129,9 @@ type Plugin struct {
 	// undeleted is each canary whose verdict is recorded but whose
 	// delete failed, for the sweep to try again (LOOM-212).
 	undeleted map[string]undeletedCanary
+	// policy is what the NetworkPolicies were last found to be, for the
+	// "none" machines running (LOOM-211, nodecheck.go).
+	policy policyRead
 	// verdictHook, if set, runs once check has its verdict, before it
 	// reports the nodes known open (tests: a node canary finishing then).
 	verdictHook func()
@@ -181,7 +184,7 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	cfg.gen, cfg.apiHost = p.gen, apiHost
 	p.cfg, p.client, p.host, p.configured = cfg, client, cp.Host, true
 	p.netcheck, p.settled = nil, nil
-	p.nodes, p.watch = map[string]*nodeCheck{}, map[string]string{}
+	p.nodes, p.watch, p.policy = map[string]*nodeCheck{}, map[string]string{}, policyRead{}
 	if p.stopRenew != nil {
 		close(p.stopRenew)
 	}
