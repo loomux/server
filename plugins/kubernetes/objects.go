@@ -214,6 +214,7 @@ func podFor(spec protocol.EnvironmentSpec, size protocol.Size, cfg Config, insta
 		ephemeral = resource.MustParse(size.Disk)
 		ephemeral.Add(resource.MustParse("2Gi"))
 	}
+	cpuRequest, memoryRequest := requests(size)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: podName(spec.ID), Labels: labelsFor(spec, instance),
@@ -236,7 +237,7 @@ func podFor(spec protocol.EnvironmentSpec, size protocol.Size, cfg Config, insta
 				},
 				Ports: []corev1.ContainerPort{{Name: "ssh", ContainerPort: sshPort}},
 				Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(size.CPU), corev1.ResourceMemory: resource.MustParse(size.Memory)},
+					Requests: corev1.ResourceList{corev1.ResourceCPU: cpuRequest, corev1.ResourceMemory: memoryRequest},
 					Limits: corev1.ResourceList{
 						corev1.ResourceCPU: resource.MustParse(size.CPU), corev1.ResourceMemory: resource.MustParse(size.Memory),
 						corev1.ResourceEphemeralStorage: ephemeral,

@@ -29,9 +29,12 @@ go build ./cmd/loomux-plugin-kubernetes
 `ceph-rbd-sc-delete`, a Delete-reclaim class; a Retain class leaves
 volumes behind after destroy and the quota allows none of it), `subdomain`,
 `agent_image` (pin it by digest in production), `kubeconfig` (secret,
-empty in-cluster), `sizes` (`{name: {cpu, memory, disk}}`; small/medium/
-large by default), `max_environments`, `require_network_policy`,
-`trusted_machines` (below), `timezone`.
+empty in-cluster), `sizes` (`{name: {cpu, memory, disk}}`, the pod's
+limits, and optional `cpu_request`/`memory_request` at most those, for a
+Burstable pod that fits a node by its request; small/medium/large by
+default, requests = limits; design §8 "Sizes with requests below
+limits" for the eviction tradeoff and the quota), `max_environments`,
+`require_network_policy`, `trusted_machines` (below), `timezone`.
 
 The Role it runs under grants exactly design §8's verbs (pods c/g/l/w/d,
 pods/log get, PVCs c/g/l/d, secrets c/g/l/u/d, events list, services

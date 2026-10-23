@@ -161,13 +161,30 @@ func parseSizes(v any) ([]protocol.Size, error) {
 		if !ok {
 			return nil, invalid("size %q must be an object of {cpu, memory, disk}", name)
 		}
-		s := protocol.Size{Name: name, CPU: str(fields, "cpu"), Memory: str(fields, "memory"), Disk: str(fields, "disk")}
+		s := protocol.Size{Name: name, CPU: str(fields, "cpu"), Memory: str(fields, "memory"), Disk: str(fields, "disk"),
+			CPURequest: str(fields, "cpu_request"), MemoryRequest: str(fields, "memory_request")}
 		for _, q := range []struct{ k, v string }{{"cpu", s.CPU}, {"memory", s.Memory}, {"disk", s.Disk}} {
 			if q.v == "" {
 				return nil, invalid("size %q: %s is required", name, q.k)
 			}
 			if _, err := resource.ParseQuantity(q.v); err != nil {
 				return nil, invalid("size %q: %s %q isn't a Kubernetes quantity", name, q.k, q.v)
+			}
+		}
+		// A request below the limit (LOOM-241): the pod is Burstable,
+		// placed by what it asks for and allowed up to the limit.
+		for _, r := range []struct{ k, v, limitKey, limit string }{
+			{"cpu_request", s.CPURequest, "cpu", s.CPU}, {"memory_request", s.MemoryRequest, "memory", s.Memory},
+		} {
+			if r.v == "" {
+				continue
+			}
+			q, err := resource.ParseQuantity(r.v)
+			if err != nil || q.Sign() <= 0 {
+				return nil, invalid("size %q: %s %q isn't a positive Kubernetes quantity", name, r.k, r.v)
+			}
+			if q.Cmp(resource.MustParse(r.limit)) > 0 {
+				return nil, invalid("size %q: %s %s is more than its %s %s; a request is at most the limit", name, r.k, r.v, r.limitKey, r.limit)
 			}
 		}
 		out = append(out, s)
@@ -184,6 +201,19 @@ func parseSizes(v any) ([]protocol.Size, error) {
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// requests are what a pod of size s asks for: the size's requests where
+// it gives them, its limits otherwise (Guaranteed, as before LOOM-241).
+func requests(s protocol.Size) (cpu, memory resource.Quantity) {
+	cpu, memory = resource.MustParse(s.CPU), resource.MustParse(s.Memory)
+	if s.CPURequest != "" {
+		cpu = resource.MustParse(s.CPURequest)
+	}
+	if s.MemoryRequest != "" {
+		memory = resource.MustParse(s.MemoryRequest)
+	}
+	return cpu, memory
 }
 
 // size is the named size, if offered.
