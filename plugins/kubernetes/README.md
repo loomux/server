@@ -154,7 +154,12 @@ its plugin die first), and the new process doesn't adopt them. One that
 never got a node (pinned to a node whose kubelet is gone, or
 unschedulable) has no deadline, as the kubelet keeps it: a running
 plugin sweeps those left behind past that age at configure and once a
-minute, so it holds its place up to about a minute longer. So leave
+minute, so it holds its place up to about a minute longer. Each canary
+is deleted once its verdict is recorded, so none is left `Completed`; one
+whose delete fails (the API server unavailable) is deleted again by that
+sweep. A finished one is out of the quota meanwhile (it counts only pods
+not yet `Succeeded` or `Failed`), and an unfinished one counts as above
+until it is deleted or its deadline ends it. So leave
 `pods` room for `max_environments` machines plus (nodes + 1) × the
 configurations that can overlap: 2 for a restart or a rollout, one more
 for each further restart within 4 minutes. A canary with no room can't

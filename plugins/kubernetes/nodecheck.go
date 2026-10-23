@@ -46,8 +46,14 @@ import (
 // CanaryTimeout plus a minute (its active deadline, should this process
 // die first). One that never got a node has no deadline (the kubelet
 // keeps it); the renewer's sweep, at configure and once a minute, takes
-// those a dead plugin left past that age. Too little room costs only
-// time: a canary that can't be made proves nothing.
+// those a dead plugin left past that age. Each canary is deleted once
+// its verdict is recorded (LOOM-212); one whose delete failed is tried
+// again by that sweep, whatever its phase or configuration: finished,
+// it is already out of the quota (which counts pods not yet Succeeded
+// or Failed) and only stays listed until then; unfinished (it couldn't
+// run, or outlived its wait) it counts until then or its deadline, as
+// before. Too little room costs only time: a canary that can't be made
+// proves nothing.
 
 // nodeCheck is one node's canaries: the one running there; the last
 // finished and the last that said "enforced", each the latest to start
