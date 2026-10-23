@@ -585,6 +585,7 @@ All additions; nothing existing changes shape or meaning. Each is recorded in th
 | `GET /api/v1/plugins` | installed instances: `{plugins: [{id, name, label, version, available_version, protocol, source, trust, status, status_reason, enabled, capabilities, config (secrets as {set: bool}), check: {ok, problems: [{code, message, severity}]}, machines: n, installed_at, updated_at}]}` |
 | `POST /api/v1/plugins` `{plugin, source?, label, config}` | install; `201` with the instance; `400` (schema), `409` (label), `503` (no master key), `422` with the `check` problems when it starts but can't work |
 | `GET /api/v1/plugins/{id}` | one instance, as in the list |
+| `GET /api/v1/plugins/{id}/targets` | what it offers for a new machine, its `targets.describe` now: `{sizes, persistent_default, egress_options, image, max_environments, environments}` (LOOM-238); `409` when it isn't running or makes no machines |
 | `PUT /api/v1/plugins/{id}/config` | reconfigure; secrets omitted keep their value, `""` clears |
 | `POST /api/v1/plugins/{id}/enable`, `.../disable`, `.../upgrade`, `.../check` | lifecycle; `check` re-runs the plugin's self-test and returns its problems |
 | `DELETE /api/v1/plugins/{id}?targets=destroy\|keep` | uninstall; `409` with the targets when it has any and the parameter is absent |

@@ -475,6 +475,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/plugins", s.requireAuth(s.handleListPlugins))
 	mux.HandleFunc("POST /api/v1/plugins", s.requireAuth(s.handleInstallPlugin))
 	mux.HandleFunc("GET /api/v1/plugins/{id}", s.requireAuth(s.handleGetPlugin))
+	mux.HandleFunc("GET /api/v1/plugins/{id}/targets", s.requireAuth(s.handleDescribePluginTargets))
 	mux.HandleFunc("PUT /api/v1/plugins/{id}/config", s.requireAuth(s.handleSetPluginConfig))
 	mux.HandleFunc("POST /api/v1/plugins/{id}/enable", s.requireAuth(s.handleEnablePlugin))
 	mux.HandleFunc("POST /api/v1/plugins/{id}/disable", s.requireAuth(s.handleDisablePlugin))

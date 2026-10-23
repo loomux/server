@@ -222,6 +222,15 @@ answers `422` with the plugin as it is (`status: error`,
 `503` without `LOOMUX_MASTER_KEY`. The routes answer `404` on a server
 built without `WithPlugins`.
 
+`GET /plugins/{id}/targets` is what an instance offers for a new
+machine, as its `targets.describe` says right now (LOOM-238): `sizes`
+(`{name, cpu, memory, disk}`, the first the default),
+`persistent_default`, `egress_options` (the first the default; `none`
+only while the plugin finds network isolation enforced),
+`image`, `max_environments` (0: no quota) and `environments`. `404` for
+no such instance (or a server without machines), `409` when it isn't
+running or doesn't make machines.
+
 ## Machines (LOOM-178)
 
 A target a plugin made (`docs/design/target-providers.md` §2, §5).

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/api"
+	"github.com/Loomux/server/plugins"
 	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
@@ -45,6 +46,20 @@ func (s *stubMachines) Views(ctx context.Context) (map[string]*providers.Machine
 		out[id] = v
 	}
 	return out, nil
+}
+func (s *stubMachines) Describe(ctx context.Context, pluginID string) (protocol.TargetsInfo, error) {
+	s.calls = append(s.calls, "describe:"+pluginID)
+	switch {
+	case s.err != nil:
+		return protocol.TargetsInfo{}, s.err
+	case pluginID != "p1":
+		return protocol.TargetsInfo{}, registry.ErrNotFound
+	}
+	return protocol.TargetsInfo{
+		Sizes:             []protocol.Size{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"}},
+		PersistentDefault: true, EgressOptions: []string{"internet", "none"}, Image: "ghcr.io/loomux/agent:v9",
+		MaxEnvironments: 5, Environments: 2, AddressTemplate: "lx-{id}.cluster.invalid", User: "agent", Port: 2222,
+	}, nil
 }
 func (s *stubMachines) IsMachine(ctx context.Context, id string) bool { _, ok := s.envs[id]; return ok }
 func (s *stubMachines) Create(ctx context.Context, req providers.CreateRequest) (*registry.Target, *registry.Environment, error) {
@@ -297,6 +312,41 @@ func TestMachines_LifecycleAndDelete(t *testing.T) {
 	}
 }
 
+// LOOM-238: what an instance offers for a new machine (its
+// targets.describe), for the create form; the host's own fields (the
+// address template, sshd's user and port) stay out.
+func TestMachines_DescribePlugin(t *testing.T) {
+	base, token, stub, _ := machineServer(t)
+	status, body := doJSON(t, "GET", base+"/api/v1/plugins/p1/targets", token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("describe: %d %s", status, body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"egress_options":["internet","none"],"environments":2,"image":"ghcr.io/loomux/agent:v9","max_environments":5,"persistent_default":true,"sizes":[{"cpu":"1","disk":"10Gi","memory":"2Gi","name":"small"}]}`
+	if normalized, _ := json.Marshal(got); string(normalized) != want {
+		t.Errorf("describe = %s\nwant       %s", normalized, want)
+	}
+	if status, body := doJSON(t, "GET", base+"/api/v1/plugins/nope/targets", token, nil); status != http.StatusNotFound || !strings.Contains(body, "no such plugin") {
+		t.Errorf("an unknown instance: %d %s", status, body)
+	}
+	for err, want := range map[error]int{
+		providers.ErrPluginUnavailable: http.StatusConflict,
+		&plugins.CapabilityMissingError{Method: protocol.MethodTargetsDescribe, Capability: protocol.CapTargetsCreate}: http.StatusConflict,
+		errors.New("boom"): http.StatusInternalServerError,
+	} {
+		stub.err = err
+		if status, body := doJSON(t, "GET", base+"/api/v1/plugins/p1/targets", token, nil); status != want {
+			t.Errorf("%v: %d %s, want %d", err, status, body, want)
+		}
+	}
+	if status, _ := doJSON(t, "GET", base+"/api/v1/plugins/p1/targets", "", nil); status != http.StatusUnauthorized {
+		t.Errorf("without a session: %d", status)
+	}
+}
+
 func TestMachines_NotConfigured(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	token, _ := login(t, srv.URL, testPassword)
@@ -306,6 +356,9 @@ func TestMachines_NotConfigured(t *testing.T) {
 	}
 	if status, _ := doJSON(t, "POST", srv.URL+"/api/v1/targets/x/start", token, nil); status != http.StatusNotFound {
 		t.Errorf("start without machines: %d", status)
+	}
+	if status, _ := doJSON(t, "GET", srv.URL+"/api/v1/plugins/p1/targets", token, nil); status != http.StatusNotFound {
+		t.Errorf("describe without machines: %d", status)
 	}
 }
 
