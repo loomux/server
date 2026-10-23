@@ -17,9 +17,11 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/plugins"
+	"github.com/Loomux/server/plugins/attest"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
@@ -117,6 +119,19 @@ type Config struct {
 	// would do.
 	PluginsSeed       *plugins.Seed
 	PluginsSeedDryRun bool
+	// PluginDigests and PluginSigners vouch for plugins from the plugin
+	// directory (LOOM-218, plugins/attest): executable digests the
+	// operator pinned (LOOMUX_PLUGIN_DIGESTS, "sha256:<hex>"), and the
+	// signing workflows whose Sigstore build provenance is trusted
+	// (LOOMUX_PLUGIN_SIGNERS), verified against PluginTrustedRoot
+	// (LOOMUX_PLUGIN_TRUSTED_ROOT, a Sigstore trusted_root.json; empty
+	// for Sigstore's public-good root). PluginAllowUnsigned
+	// (LOOMUX_PLUGIN_ALLOW_UNSIGNED) lets unverified ones be installed:
+	// for local development.
+	PluginDigests       []string
+	PluginSigners       []string
+	PluginTrustedRoot   string
+	PluginAllowUnsigned bool
 	// SessionRetention is how long a session row is kept after it
 	// expired, DispatchRetention how long a dispatch is kept after it
 	// finished, and ConfirmationRetention how long a confirmation is kept
@@ -178,6 +193,10 @@ const (
 	envPluginSocketDir     = "LOOMUX_PLUGIN_SOCKET_DIR"
 	envPluginsSeed         = "LOOMUX_PLUGINS_SEED"
 	envPluginsSeedDryRun   = "LOOMUX_PLUGINS_SEED_DRY_RUN"
+	envPluginDigests       = "LOOMUX_PLUGIN_DIGESTS"
+	envPluginSigners       = "LOOMUX_PLUGIN_SIGNERS"
+	envPluginTrustedRoot   = "LOOMUX_PLUGIN_TRUSTED_ROOT"
+	envPluginAllowUnsigned = "LOOMUX_PLUGIN_ALLOW_UNSIGNED"
 	envSessionRetention    = "LOOMUX_SESSION_RETENTION"
 	envDispatchRetention   = "LOOMUX_DISPATCH_RETENTION"
 	envConfirmRetention    = "LOOMUX_CONFIRMATION_RETENTION"
@@ -367,6 +386,22 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("app: %s %q: on or off", envPluginsSeedDryRun, v)
 	}
 
+	// What vouches for plugins from the plugin directory (LOOM-218):
+	// checked here, so a mistyped digest or signer stops the server
+	// rather than quietly refusing every plugin.
+	pluginDigests, pluginSigners := listEnv(envPluginDigests), listEnv(envPluginSigners)
+	if _, err := attest.New(pluginDigests, pluginSigners, "", ""); err != nil {
+		return Config{}, fmt.Errorf("app: %s/%s: %w", envPluginDigests, envPluginSigners, err)
+	}
+	pluginAllowUnsigned := false
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv(envPluginAllowUnsigned))); v {
+	case "", "off", "false", "0", "no":
+	case "on", "true", "1", "yes":
+		pluginAllowUnsigned = true
+	default:
+		return Config{}, fmt.Errorf("app: %s %q: on or off", envPluginAllowUnsigned, v)
+	}
+
 	localTargetsOff := false
 	switch v := strings.ToLower(strings.TrimSpace(os.Getenv(envLocalTargets))); v {
 	case "", "on", "true", "1", "yes":
@@ -402,6 +437,10 @@ func LoadConfig() (Config, error) {
 		PluginSocketDir:       os.Getenv(envPluginSocketDir),
 		PluginsSeed:           pluginsSeed,
 		PluginsSeedDryRun:     pluginsSeedDryRun,
+		PluginDigests:         pluginDigests,
+		PluginSigners:         pluginSigners,
+		PluginTrustedRoot:     os.Getenv(envPluginTrustedRoot),
+		PluginAllowUnsigned:   pluginAllowUnsigned,
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil
@@ -477,4 +516,10 @@ func loadNotifyConfig() (NotifyConfig, error) {
 		cfg.MinDuration = d
 	}
 	return cfg, nil
+}
+
+// listEnv is the environment variable name's entries, separated by
+// commas or whitespace.
+func listEnv(name string) []string {
+	return strings.FieldsFunc(os.Getenv(name), func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
 }

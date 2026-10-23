@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Loomux/server/plugins"
@@ -44,7 +45,8 @@ type availablePluginResponse struct {
 	Description    string `json:"description"`
 	MinHostVersion string `json:"min_host_version"`
 	// Source is bundled, dir or socket; Path the plugin's directory or
-	// socket. Trust is bundled, unsigned or signed:<identity>; Isolation
+	// socket. Trust is bundled, unsigned, signed:<identity> or
+	// pinned:sha256:<hex> (LOOM-218); Isolation
 	// none (a subprocess of loomuxd's own user) or container (a
 	// sidecar).
 	Source       string               `json:"source"`
@@ -360,6 +362,7 @@ func (s *Server) writePluginError(w http.ResponseWriter, err error, v *plugins.V
 		checkFailed  *plugins.CheckFailedError
 		dropped      *plugins.CapabilityDroppedError
 		incompatible *plugins.IncompatibleError
+		unverified   *plugins.UnverifiedError
 	)
 	switch {
 	case errors.Is(err, registry.ErrNotFound):
@@ -378,6 +381,8 @@ func (s *Server) writePluginError(w http.ResponseWriter, err error, v *plugins.V
 		writeError(w, http.StatusConflict, dropped.Error())
 	case errors.As(err, &incompatible):
 		writeError(w, http.StatusConflict, incompatible.Error())
+	case errors.As(err, &unverified):
+		writeError(w, http.StatusUnprocessableEntity, strings.TrimPrefix(unverified.Error(), "plugins: "))
 	case errors.As(err, &checkFailed) && v != nil:
 		writeJSON(w, http.StatusUnprocessableEntity, newPluginResponse(v))
 	case errors.Is(err, plugins.ErrUnavailable):

@@ -52,6 +52,12 @@ LOOMUX_PLUGINS_SEED           plugin instances declared as JSON (inline or a fil
 LOOMUX_PLUGINS_SEED_DRY_RUN   true: only log what the seed would do (default: false)
 LOOMUX_MACHINE_IDLE_STOP      stop a persistent plugin-created machine idle this long; the next request
                                starts it again (default: off; LOOM-217)
+LOOMUX_PLUGIN_DIGESTS         pinned sha256 digests of plugin-directory executables (sha256:<hex>, comma or
+                               space separated; LOOM-218)
+LOOMUX_PLUGIN_SIGNERS         GitHub Actions workflow URIs whose Sigstore build provenance vouches for a
+                               plugin-directory executable (comma or space separated; LOOM-218)
+LOOMUX_PLUGIN_TRUSTED_ROOT    a Sigstore trusted_root.json (default: Sigstore's public-good root, via TUF)
+LOOMUX_PLUGIN_ALLOW_UNSIGNED  true: install and run unverified plugin-directory plugins (default: false)
 LOOMUX_TURN_RETENTION         how long per-turn transcripts are kept (default: 720h; 0 keeps them; LOOM-122)
 LOOMUX_LOG_LEVEL              debug | info | warn | error (default: info); structured JSON on stderr
                                for routing decisions, provisioning and dispatch (LOOM-63)

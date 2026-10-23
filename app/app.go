@@ -26,6 +26,7 @@ import (
 	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/plugins"
+	"github.com/Loomux/server/plugins/attest"
 	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
@@ -656,10 +657,23 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	if pluginDir == "" {
 		pluginDir = filepath.Join(dataDir, "plugins")
 	}
-	catalog := &plugins.Catalog{BundleDir: cfg.PluginBundleDir, PluginDir: pluginDir, SocketDir: cfg.PluginSocketDir, Logger: cfg.Logger, HostVersion: version.Version}
+	// Plugins from the plugin directory run as loomuxd's own user: each
+	// is verified before it is installed, upgraded to or started
+	// (LOOM-218), unless the operator opted out for local development.
+	verifier, err := attest.New(cfg.PluginDigests, cfg.PluginSigners, cfg.PluginTrustedRoot, dataDir)
+	if err != nil {
+		stopReaper()
+		_ = store.Close()
+		return nil, fmt.Errorf("app: %w", err)
+	}
+	catalog := &plugins.Catalog{BundleDir: cfg.PluginBundleDir, PluginDir: pluginDir, SocketDir: cfg.PluginSocketDir, Verifier: verifier, Logger: cfg.Logger, HostVersion: version.Version}
 	pluginManager := plugins.NewManager(store, catalog,
 		protocol.HostInfo{Version: version.Version, InstanceID: instanceID, DataDir: filepath.Join(dataDir, "plugin-data")},
 		cfg.Logger, met)
+	pluginManager.RequireVerified = !cfg.PluginAllowUnsigned
+	if cfg.PluginAllowUnsigned && cfg.Logger != nil {
+		cfg.Logger.Warn("LOOMUX_PLUGIN_ALLOW_UNSIGNED is on: plugins from the plugin directory are installed and run unverified, as loomuxd's own user")
+	}
 	healthChecker.WithPlugins(func(ctx context.Context) health.ComponentResult {
 		report := pluginManager.Health(ctx)
 		return health.ComponentResult{Status: report.Status, Error: report.Error, Detail: report.Plugins}
