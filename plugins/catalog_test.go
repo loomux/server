@@ -84,7 +84,7 @@ func TestCatalogSocket(t *testing.T) {
 
 type stubVerifier struct{ trust string }
 
-func (s stubVerifier) Verify(ctx context.Context, dir string) (string, error) { return s.trust, nil }
+func (s stubVerifier) Verify(ctx context.Context, path string) (string, string) { return s.trust, "" }
 
 func TestCatalogVerifier(t *testing.T) {
 	pluginDir := t.TempDir()

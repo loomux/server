@@ -252,6 +252,18 @@ Routes join the "admin-only once there are roles" list (freeze review, section D
 | **First-party as a release asset or its own image** | signed in CI with GitHub build-provenance attestations; verified at install with the LOOM-118 verifier (`webbundle/attest.go`'s pattern) against Sigstore's trust root, with the identity pinned to `github.com/loomux/server/.github/workflows/image.yml@refs/heads/main` (every patch release is published by the merge's run; a hand-pushed MINOR by `@refs/tags/v0.Y.0`; the agent image by `agent.yml` at the same refs) and the provenance's commit checked to be the one `vX.Y.Z` tags (LOOM-194) | "Signed by Loomux CI", the commit, version, capabilities, permissions |
 | **Third-party** (a directory on the plugin path, or a sidecar) | unsigned, or signed by another identity the host can verify but doesn't know | "Not signed by Loomux" (or "Signed by `<identity>`"), the permissions, and an explicit confirmation: "I trust this plugin with the permissions above" |
 
+**Changed by LOOM-218 (2026-10-23):** a plugin from the plugin directory is no longer installable unsigned
+behind a confirmation. Its executable must be vouched for, by a digest the operator pinned
+(`LOOMUX_PLUGIN_DIGESTS`, trust `pinned:sha256:<hex>`) or by a Sigstore bundle beside it
+(`loomux-plugin-<name>.sigstore.json`: SLSA v1 build provenance over its sha256, signed by a GitHub Actions
+workflow the operator lists in `LOOMUX_PLUGIN_SIGNERS`, trust `signed:<workflow>`). It's verified against
+`LOOMUX_PLUGIN_TRUSTED_ROOT` or Sigstore's public-good root via TUF, with the LOOM-118 verifier's library.
+Otherwise install and upgrade answer `422` with the reason, and an installed one whose executable no longer
+verifies is refused at start (its machines keep working). `LOOMUX_PLUGIN_ALLOW_UNSIGNED=true` restores the old
+behaviour for local development, logged. Sidecars are unaffected (loomuxd never sees their binary; their image
+is the deployment's to pin), as are bundled plugins. First-party release-asset binaries aren't attested yet:
+when the release run attests and publishes them, `image.yml`'s identity becomes the signer to list.
+
 Stated plainly in that confirmation, because it is true: a plugin run as a **subprocess runs as loomuxd's
 own user**, so it can read loomuxd's database file and process environment; the subprocess boundary isolates
 crashes and dependencies, not secrets. The form that limits a third-party plugin is the **sidecar
@@ -1146,6 +1158,9 @@ root (no `go.work` is committed: the root's tooling stays in module mode), and C
     secrets only as `{env}`/`{file}` references; an instance it no longer lists is kept unless `prune`, and
     even then not while it owns machines; a malformed seed stops startup, an entry that fails to apply is
     logged and retried for a while. `docs/deploy/plugins.md` has the format.
+    *Extended in LOOM-236:* an optional `machines` list declares persistent machines by target name: made when
+    missing (their target ids in `machines_seed_owned`), their target options kept as the seed says, a change
+    that needs a recreate or a new machine only logged, and never destroyed, `prune` or not.
 
 ## 14. Decisions for the user
 

@@ -62,6 +62,8 @@ var apiV1Bodies = map[string][]contractBody{
 	"GET /api/v1/workspaces":                     {{"response", listWorkspacesResponse{}}},
 	"DELETE /api/v1/workspaces/{id}":             {{"response", deleteWorkspaceResponse{}}},
 	"PATCH /api/v1/workspaces/{id}":              {{"request", patchWorkspaceRequest{}}, {"response", nil}},
+	"POST /api/v1/workspaces":                    {{"request", createWorkspaceRequest{}}, {"response", workspaceCreatedResponse{}}},
+	"GET /api/v1/workspaces/{id}":                {{"response", workspaceSummary{}}},
 	"GET /api/v1/conversations":                  {{"response", listConversationsResponse{}}},
 	"GET /api/v1/conversations/{id}":             {{"response", getConversationResponse{}}},
 	"GET /api/v1/conversations/{id}/events":      {{"response", listEventsResponse{}}},

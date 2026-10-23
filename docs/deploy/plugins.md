@@ -13,10 +13,55 @@ you register the hosts you already use. Design and threat model:
 | Setting | Image default | What is there |
 |---|---|---|
 | `LOOMUX_PLUGIN_BUNDLE_DIR` | `/usr/local/lib/loomux/plugins` | first-party plugins shipped in the image, one directory each with `plugin.json` and `loomux-plugin-<name>`. Trusted as the image is. The Kubernetes plugin (`plugins/kubernetes/README.md`) and the Docker plugin (`plugins/docker/README.md`) are bundled. |
-| `LOOMUX_PLUGIN_DIR` | `plugins/` beside the database | plugins you put there yourself, same layout. Shown as **unsigned** until signed first-party assets exist; installing one means trusting it with the permissions its manifest declares |
+| `LOOMUX_PLUGIN_DIR` | `plugins/` beside the database | plugins you put there yourself, same layout. Installed, upgraded to and started only when verified (below) |
 | `LOOMUX_PLUGIN_SOCKET_DIR` | `/run/loomux/plugins` | sockets served by sidecar containers (`loomux-plugin-<name> --listen /run/loomux/plugins/<name>.sock`). The recommended form on Kubernetes: the plugin container alone holds the cluster credential |
 
 `GET /api/v1/plugins/available` is the catalog of all three.
+
+## Verifying plugins from the plugin directory (LOOM-218)
+
+A plugin from `LOOMUX_PLUGIN_DIR` runs as loomuxd's own user, so
+loomuxd runs only one whose executable something vouches for:
+
+- **a pinned digest:** its sha256 is in `LOOMUX_PLUGIN_DIGESTS`
+  (`sha256:<hex>`, separated by commas or spaces): a build you vetted
+  yourself. Shown as `pinned:sha256:<hex>`.
+- **a signed build:** a Sigstore bundle beside the executable,
+  `loomux-plugin-<name>.sigstore.json`, holding SLSA v1 build provenance
+  over the executable's sha256, signed by a GitHub Actions workflow
+  listed in `LOOMUX_PLUGIN_SIGNERS` (its full URI, for example
+  `https://github.com/acme/loomux-plugin/.github/workflows/release.yml@refs/heads/main`).
+  That's what `actions/attest-build-provenance` makes for a binary, and
+  `gh attestation download` fetches. Shown as `signed:<workflow>`. It
+  is checked against Sigstore's trust root: `LOOMUX_PLUGIN_TRUSTED_ROOT`
+  names a `trusted_root.json` to use (pinned, or for a server without
+  internet), else Sigstore's public-good root comes from its TUF
+  repository, every update authenticated against the root
+  sigstore-go embeds, cached beside the database, and fetched only when a
+  bundle has to be checked. The manifest needs no signature of its own:
+  loomuxd refuses a plugin whose manifest differs from the one its
+  (verified) executable describes.
+
+An unverified plugin is still listed by `GET /api/v1/plugins/available`
+(`trust: "unsigned"`), but its install or upgrade answers `422` with why
+(no bundle and no pinned digest, a bundle for another binary, a signer
+not trusted, …). An installed plugin whose executable no longer
+verifies (replaced since a verified install) is refused at start, status
+`error`; its machines keep working as ordinary targets. One installed
+unverified before this check (or with the opt-out) still starts, with a
+warning in the log.
+
+`LOOMUX_PLUGIN_ALLOW_UNSIGNED=true` turns the requirement off, for local
+development: unverified plugins are installed and started, each with a
+warning, and loomuxd logs at startup that the check is off.
+
+Bundled plugins are trusted as the image is, and sidecars aren't checked
+here: loomuxd sees only their socket, so the image they run is the
+deployment's to pin by digest (and verify with the cluster's admission
+policy, if it has one). First-party plugins are bundled; their
+release-asset binaries aren't published or attested yet, so for now a
+first-party plugin from the plugin directory is verified by pinning its
+digest.
 
 ## What a plugin runs as
 
@@ -64,6 +109,10 @@ or the path of a file with it (a mounted ConfigMap):
       "config": {"namespace": "loomux-agents", "storage_class": "ceph-rbd-sc-delete"},
       "secrets": {"kubeconfig": {"file": "/run/secrets/loomux-plugin/kubeconfig"}}
     }
+  ],
+  "machines": [
+    {"name": "cc", "plugin": "wysekube", "size": "large", "persistent": true, "egress": "internet",
+     "require_confirmation": true, "relay": "last_message"}
   ]
 }
 ```
@@ -102,6 +151,55 @@ check that fails) is logged per instance and loomuxd runs on; an entry
 whose plugin isn't there yet (a sidecar still starting) is tried again
 every 30 s for 10 minutes. `LOOMUX_PLUGINS_SEED_DRY_RUN=true` logs the
 plan and applies nothing.
+
+### Machines in the seed (LOOM-236)
+
+`machines` (optional) declares persistent machines, the way `POST
+/api/v1/targets` with a `plugin` object makes one. Each entry has:
+
+- `name` (the target's name, which the seed matches it by) and `plugin`
+  (the label of the plugin instance that makes it: one from `plugins` or
+  one installed by hand);
+- the machine's shape: `size`, `persistent` and `egress`, each the
+  plugin's default when left out. Give `persistent: true` explicitly
+  for a machine that must keep its data;
+- the target options a machine takes: `permission_mode`, `purpose`,
+  `allowed_agent_types`, `allow_provision`, `allow_shell`,
+  `require_confirmation` and `relay`, spelled as in the API.
+
+A field left out says nothing: the default when the machine is made, and
+after that whatever the machine has (a change made through the API
+stands).
+
+After the plugin instances, loomuxd logs a second plan line
+(`machines seed plan`) and applies it:
+
+- a machine the seed lists and no target has that name is created, and
+  recorded as the seed's (the `machines_seed_owned` setting, their target
+  ids). A machine whose instance isn't installed or running yet is tried
+  again with the instances (every 30 s for 10 minutes);
+- on a machine the seed made, the target options are kept as the seed
+  says: they change without touching the machine, like `PUT
+  /api/v1/targets/{id}`;
+- what would need the machine made again is **logged as a warning and not
+  done**: a new `size` needs a recreate (`POST
+  /api/v1/targets/{id}/recreate {"size": …}`, which restarts it); a
+  different `persistent` or `egress`, or another plugin instance, needs
+  a new machine. The log line says how;
+- a target with that name made through the UI or API is left alone;
+- **a seed never destroys a machine**, `prune` or not: one it made and no
+  longer lists is kept (and is the seed's again if listed again). Delete
+  it through the API. A seeded machine deleted through the API and still
+  in the seed is made again, empty, at the next start; take it out of
+  the seed first to remove it for good;
+- don't rename a seeded machine through the API: the seed matches by
+  name, so it would make another one and keep the renamed one.
+
+A malformed machine entry (an unknown field, no name, a name twice, an
+invalid label, permission mode, purpose or relay) stops loomuxd at
+startup like the rest of the seed. A dry run plans the machines too; one
+whose instance is only in the seed's plan shows as `create (after its
+plugin instance …)`.
 
 ## Upgrades and compatibility
 
