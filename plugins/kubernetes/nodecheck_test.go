@@ -153,6 +153,36 @@ func scheduleOn(t *testing.T, cs *fake.Clientset, id, node string) {
 	markRunning(t, cs, podName(id))
 }
 
+// settleCanaries waits, up to 5 s, until every canary p has started has
+// ended, its pod deleted (LOOM-212: done closes after the delete). A
+// test changes the fake clientset's reactors only then: client-go's
+// fake doesn't guard its reactor chain, so a reactor added while a
+// canary goroutine is still calling the fake races with it.
+func settleCanaries(t *testing.T, p *Plugin) {
+	t.Helper()
+	p.mu.Lock()
+	var pending []*netcheck
+	if p.netcheck != nil {
+		pending = append(pending, p.netcheck)
+	}
+	for _, n := range p.nodes {
+		for _, nc := range []*netcheck{n.running, n.settled, n.enforced, n.open} {
+			if nc != nil {
+				pending = append(pending, nc)
+			}
+		}
+	}
+	p.mu.Unlock()
+	deadline := time.After(5 * time.Second)
+	for _, nc := range pending {
+		select {
+		case <-nc.done:
+		case <-deadline:
+			t.Fatal("a canary never ended")
+		}
+	}
+}
+
 // statusSoon polls get until the machine is want, within 5 s.
 func statusSoon(t *testing.T, p *Plugin, id, want string) protocol.Environment {
 	t.Helper()
@@ -645,6 +675,7 @@ func TestNoneOpenNodeOutlivesAPolicyError(t *testing.T) {
 			}
 			scheduleOn(t, cs, "conf1", "n1")
 			statusSoon(t, p, "conf1", protocol.EnvError)
+			settleCanaries(t, p) // before changing the fake's reactors
 			if tc.list != nil {
 				cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
 					obj, err := tc.list()

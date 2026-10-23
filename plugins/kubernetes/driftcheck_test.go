@@ -167,6 +167,7 @@ func TestNoneRecheckThatCantRunIsNoPass(t *testing.T) {
 func TestNonePolicyReadFailureIsNoPass(t *testing.T) {
 	var failing atomic.Bool
 	cs, _, p, clock := runningOn(t)
+	settleCanaries(t, p) // before changing the fake's reactors
 	cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
 		if failing.Load() {
 			return true, nil, errors.New("etcdserver: request timed out")
@@ -192,6 +193,7 @@ func TestNonePolicyReadFailureIsNoPass(t *testing.T) {
 func TestNoneRecheckNoStorm(t *testing.T) {
 	var reads atomic.Int32
 	cs, nodes, p, clock := runningOn(t, func(p *Plugin) { p.CanaryTimeout = time.Minute })
+	settleCanaries(t, p) // before changing the fake's reactors
 	cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
 		reads.Add(1)
 		return false, nil, nil
