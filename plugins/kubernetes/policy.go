@@ -2,8 +2,12 @@ package kubernetes
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -20,7 +24,8 @@ import (
 // machine out to a destination it didn't try (the metadata address, a
 // LAN service), and NetworkPolicies are additive. So egress "none" also
 // rests on the policies themselves, read on every check, describe and
-// create: every NetworkPolicy of the namespace that may select an
+// create, and once a minute for running machines (LOOM-211,
+// nodecheck.go): every NetworkPolicy of the namespace that may select an
 // egress "none" machine allows it §10's (c) and nothing else, kube-dns
 // pods in kube-system on port 53; and one that selects every such
 // machine isolates it for egress.
@@ -34,7 +39,8 @@ import (
 // Whether a pod's traffic to its own node is policed is up to the
 // engine. And policies are live, and no list is atomic with making a
 // pod: ensurePod reads them last, just before the pod, and one an admin
-// adds after that applies to it at once; only the next check sees it.
+// adds after that applies to it at once; only the next read sees it, a
+// minute on at most.
 
 // nsNameLabel is the label the API server gives every namespace.
 const nsNameLabel = "kubernetes.io/metadata.name"
@@ -44,13 +50,22 @@ const nsNameLabel = "kubernetes.io/metadata.name"
 // which one doesn't (enforcementPolicyOpen), or why they couldn't be
 // read (enforcementFailed).
 func policyVerdict(ctx context.Context, client kubernetes.Interface, namespace, instance string) (enforcementState, string) {
+	state, detail, _ := policyCheck(ctx, client, namespace, instance)
+	return state, detail
+}
+
+// policyCheck is policyVerdict and sig, a digest of the policies' names
+// and specs, to notice a change (LOOM-211); "" when they couldn't be
+// read.
+func policyCheck(ctx context.Context, client kubernetes.Interface, namespace, instance string) (state enforcementState, detail, sig string) {
 	list, err := client.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
 	switch {
 	case kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err):
-		return enforcementFailed, "couldn't list NetworkPolicies in " + namespace + " (the Role lacks networkpolicies list): " + safeStatus(err)
+		return enforcementFailed, "couldn't list NetworkPolicies in " + namespace + " (the Role lacks networkpolicies list): " + safeStatus(err), ""
 	case err != nil:
-		return enforcementFailed, "couldn't list NetworkPolicies in " + namespace + ": " + safeStatus(err)
+		return enforcementFailed, "couldn't list NetworkPolicies in " + namespace + ": " + safeStatus(err), ""
 	}
+	sig = policySig(list.Items)
 	isolated := false
 	for _, np := range list.Items {
 		m := selectsConfined(np.Spec.PodSelector, instance)
@@ -62,14 +77,30 @@ func policyVerdict(ctx context.Context, client kubernetes.Interface, namespace, 
 		}
 		for _, rule := range np.Spec.Egress {
 			if what := beyondDNS(rule); what != "" {
-				return enforcementPolicyOpen, fmt.Sprintf("NetworkPolicy %q lets a confined machine out %s", np.Name, what)
+				return enforcementPolicyOpen, fmt.Sprintf("NetworkPolicy %q lets a confined machine out %s", np.Name, what), sig
 			}
 		}
 	}
 	if !isolated {
-		return enforcementPolicyOpen, "no NetworkPolicy in " + namespace + " isolates every confined machine for egress (§10's default deny for " + labelRole + "=" + roleAgent + ")"
+		return enforcementPolicyOpen, "no NetworkPolicy in " + namespace + " isolates every confined machine for egress (§10's default deny for " + labelRole + "=" + roleAgent + ")", sig
 	}
-	return enforcementEnforced, ""
+	return enforcementEnforced, "", sig
+}
+
+// policySig digests the policies' names and specs, in name order.
+func policySig(items []networkingv1.NetworkPolicy) string {
+	sorted := slices.Clone(items)
+	slices.SortFunc(sorted, func(a, b networkingv1.NetworkPolicy) int { return strings.Compare(a.Name, b.Name) })
+	h := sha256.New()
+	for _, np := range sorted {
+		b, _ := json.Marshal(struct {
+			Name string
+			Spec networkingv1.NetworkPolicySpec
+		}{np.Name, np.Spec})
+		h.Write(b)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // match is whether a selector selects every confined machine (yes),

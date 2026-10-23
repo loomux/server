@@ -166,6 +166,23 @@ for each further restart within 4 minutes. A canary with no room can't
 run, which proves nothing: the node is tried again a minute on, and 10
 minutes on the machines are `starting`, never `running` unchecked.
 
+**After it starts** (LOOM-211). A running `none` machine stays
+checked: its node by the renewal above, and the agents namespace's
+NetworkPolicies by every check, describe and create, and by the plugin
+once a minute. Policies found open (one lets a confined machine out, or
+none isolates it any more) make each `none` machine `error`, as an open
+node does, until a read finds them confining again; `none` is withdrawn
+and check reports `network_policy_allows_egress` meanwhile. A read that
+fails proves nothing: the last good one stands 10 minutes, then the
+machine is `starting`. A change in the policies runs each watched
+node's canary again at once rather than at the renewal, until one
+started after the change has run (still one at a time per node, and
+not within a minute of the node's last, so the quota above holds). The
+pod is left running: the host records the `error` at its next reconcile
+(`LOOMUX_TARGET_PROBE_INTERVAL`, 5 minutes by default) and refuses to
+dispatch to it; whether to destroy it is yours. The Role can't watch
+policies or read nodes, so the minute's list is the event source.
+
 What it trusts. The canary samples a few destinations; it can't prove
 that none other answers. What proves that is the policies, so the
 engine must implement NetworkPolicy as specified on each node; the
@@ -175,7 +192,7 @@ that node between renewals leaves the machine unconfined until the
 next one. Policies are
 live, and no list is atomic with making a pod: one an admin adds after
 that last read, even in the same moment, applies to the machine at
-once, and only the next check reports it. Holding policy edits back
+once, and only the next read (at most a minute on) reports it. Holding policy edits back
 while a pod is made would take admission control in the cluster, which
 the plugin can't set up. Policy APIs the plugin's namespaced Role can't
 read can allow what NetworkPolicy

@@ -128,7 +128,7 @@ func probeOf(pod *corev1.Pod) probe {
 // one pinned to it, as often, and stands until one says "enforced"; it
 // is the verdict while it stands.
 func (p *Plugin) enforcement(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
-	if state, detail := policyVerdict(ctx, client, cfg.Namespace, instance); state != enforcementEnforced {
+	if state, detail := p.readPolicies(ctx, cfg, client, instance); state != enforcementEnforced {
 		return state, detail
 	}
 	deadline := time.Now().Add(wait)
@@ -164,7 +164,7 @@ func (p *Plugin) enforcement(ctx context.Context, cfg Config, client kubernetes.
 // stands until a check. For create the policies are read again after
 // the canary (and ensurePod reads them last).
 func (p *Plugin) confinement(ctx context.Context, cfg Config, client kubernetes.Interface, instance string, wait time.Duration) (enforcementState, string) {
-	if state, detail := policyVerdict(ctx, client, cfg.Namespace, instance); state != enforcementEnforced {
+	if state, detail := p.readPolicies(ctx, cfg, client, instance); state != enforcementEnforced {
 		return state, detail
 	}
 	if state, detail := p.nodeFailure(); state != enforcementEnforced {
@@ -174,7 +174,7 @@ func (p *Plugin) confinement(ctx context.Context, cfg Config, client kubernetes.
 	if state != enforcementEnforced || wait == 0 {
 		return state, detail
 	}
-	return policyVerdict(ctx, client, cfg.Namespace, instance)
+	return p.readPolicies(ctx, cfg, client, instance)
 }
 
 // lastCanary is confinement's canary half.

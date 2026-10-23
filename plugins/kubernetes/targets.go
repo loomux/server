@@ -162,7 +162,7 @@ func (p *Plugin) ensurePod(ctx context.Context, client kubernetes.Interface, cfg
 			return nil, unavailable(err)
 		}
 		if spec.Egress == protocol.EgressNone {
-			if err := noneRefused(policyVerdict(ctx, client, cfg.Namespace, instance)); err != nil {
+			if err := noneRefused(p.readPolicies(ctx, cfg, client, instance)); err != nil {
 				return nil, err
 			}
 			if err := noneRefused(p.knownLeak(cfg)); err != nil {

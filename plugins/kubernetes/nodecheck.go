@@ -54,6 +54,28 @@ import (
 // run, or outlived its wait) it counts until then or its deadline, as
 // before. Too little room costs only time: a canary that can't be made
 // proves nothing.
+//
+// Drift (LOOM-211). A running "none" machine stays checked: its node by
+// the renewal above, and the namespace's NetworkPolicies, which every
+// check, describe and create reads and the renewer once a minute
+// (readPolicies). Found open (one lets a confined machine out, or none
+// isolates it), they make each "none" machine an error, as an open node
+// does, until a read finds them confining again; "none" is withdrawn
+// from describe and refused at create meanwhile, and check reports it.
+// A read that fails proves nothing either way: an earlier read's
+// "confining" stands for verdictTTL, then a running machine is starting
+// until one succeeds. A change in the policies (their specs' digest)
+// has the canary of each watched node run again at once rather than at
+// the renewal, and again until one started after the change has run
+// there (one that couldn't run settles nothing): still one at a time
+// per node, and not within a minute of the node's last, so the quota
+// above holds and a policy that keeps changing costs at most a canary a
+// minute per node. The machine itself
+// is left as it is, its pod running: whether to destroy it is the
+// person's call (an agent may be mid-task), and the host refuses to
+// dispatch to a machine in error. Nodes come and go with their
+// machines' pods (watch); the plugin's Role can neither watch policies
+// nor read nodes, so polling a list a minute is the event source.
 
 // nodeCheck is one node's canaries: the one running there; the last
 // finished and the last that said "enforced", each the latest to start
@@ -75,11 +97,19 @@ import (
 type nodeCheck struct {
 	running, settled, enforced, open *netcheck
 	openUntil                        time.Time
+	// recheckAfter, when not zero, is the seq the policies last changed
+	// at (LOOM-211): the node is due again, a minute after its last
+	// canary, until one started after that has run there and said
+	// "enforced" or not. One that couldn't run doesn't settle it.
+	recheckAfter uint64
 }
 
 // record is a finished canary's verdict on the node; p.mu is held.
 func (n *nodeCheck) record(nc *netcheck) {
 	newer := func(old *netcheck) bool { return old == nil || nc.seq > old.seq }
+	if n.recheckAfter != 0 && nc.seq > n.recheckAfter && (nc.state == enforcementEnforced || nc.state == enforcementNotEnforced) {
+		n.recheckAfter = 0
+	}
 	if newer(n.settled) {
 		n.settled = nc
 	}
@@ -121,19 +151,21 @@ func (n *nodeCheck) clearedBy(nc *netcheck) bool {
 }
 
 // due is whether the node's canary should start now: none is running,
-// the node isn't open (that stands until a check), the last couldn't
-// run more than a minute ago if it couldn't, and it has no "enforced"
-// from the last half of verdictTTL. p.mu is held.
+// the node isn't open (that stands until a check), the last finished
+// more than a minute ago if it couldn't run or a re-check is pending,
+// and it has no "enforced" from the last half of verdictTTL or a
+// re-check is pending (the policies changed, LOOM-211). p.mu is held.
 func (p *Plugin) due(n *nodeCheck, now time.Time) bool {
+	recheck := n.recheckAfter != 0
 	switch last := n.settled; {
 	case n.running != nil || n.open != nil:
 		return false
 	case last == nil:
 		return true
-	case last.state != enforcementEnforced && now.Sub(last.at) <= time.Minute:
+	case (last.state != enforcementEnforced || recheck) && now.Sub(last.at) <= time.Minute:
 		return false
 	}
-	return n.enforced == nil || now.Sub(n.enforced.at) > verdictTTL/2
+	return recheck || n.enforced == nil || now.Sub(n.enforced.at) > verdictTTL/2
 }
 
 // nodeOf is node's entry; p.mu is held.
@@ -168,7 +200,9 @@ func (p *Plugin) stale(cfg Config) bool { return cfg.gen != p.gen }
 // sweeps the canaries left behind, at once and then once a minute: one
 // that never got a node isn't ended by its deadline (the kubelet's), and
 // a plugin that died before deleting it would otherwise leave it in the
-// quota until some later canary's own sweep.
+// quota until some later canary's own sweep. And as often it reads the
+// NetworkPolicies again, so running machines notice them change
+// (LOOM-211).
 func (p *Plugin) renewNodes(stop <-chan struct{}, every time.Duration) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
@@ -176,6 +210,7 @@ func (p *Plugin) renewNodes(stop <-chan struct{}, every time.Duration) {
 	for {
 		if now := p.Now(); swept.IsZero() || now.Sub(swept) >= time.Minute {
 			p.sweepLeft()
+			p.rereadPolicies()
 			swept = now
 		}
 		select {
@@ -184,18 +219,92 @@ func (p *Plugin) renewNodes(stop <-chan struct{}, every time.Duration) {
 		case <-ticker.C:
 		}
 		p.mu.Lock()
-		if len(p.watch) == 0 {
-			p.mu.Unlock()
-			continue
-		}
-		now := p.Now()
-		for _, node := range p.watch {
-			if n := p.nodeOf(node); p.due(n, now) {
-				p.startNodeCanary(p.cfg, p.client, p.host.InstanceID, node)
-			}
-		}
+		p.renewDue(p.Now())
 		p.mu.Unlock()
 	}
+}
+
+// renewDue starts the canary of each watched node that is due; p.mu is
+// held.
+func (p *Plugin) renewDue(now time.Time) {
+	for _, node := range p.watch {
+		if n := p.nodeOf(node); p.due(n, now) {
+			p.startNodeCanary(p.cfg, p.client, p.host.InstanceID, node)
+		}
+	}
+}
+
+// policyRead is what the namespace's NetworkPolicies were last found to
+// be (LOOM-211): open, why (until a read finds them confining again);
+// when a read last found them confining; sig, the digest of the last
+// read that got them; and why the latest read failed, if it did.
+type policyRead struct {
+	open, sig, failed string
+	at                time.Time
+}
+
+// readPolicies is policyVerdict for cfg, recorded for its "none"
+// machines (nodeGate): every check, describe and create reads the
+// policies through it, and the renewer once a minute. A read that
+// changes what they are has each watched node's canary run again. One
+// of an earlier configuration records nothing.
+func (p *Plugin) readPolicies(ctx context.Context, cfg Config, client kubernetes.Interface, instance string) (enforcementState, string) {
+	state, detail, sig := policyCheck(ctx, client, cfg.Namespace, instance)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stale(cfg) {
+		return state, detail
+	}
+	now := p.Now()
+	switch state {
+	case enforcementEnforced, enforcementPolicyOpen:
+		changed := p.policy.sig != "" && sig != p.policy.sig
+		p.policy.sig, p.policy.failed = sig, ""
+		if state == enforcementEnforced {
+			p.policy.open, p.policy.at = "", now
+		} else {
+			p.policy.open = detail
+		}
+		if changed {
+			for _, node := range p.watch {
+				p.nodeOf(node).recheckAfter = p.seq
+			}
+			p.renewDue(now)
+		}
+	default:
+		p.policy.failed = detail
+	}
+	return state, detail
+}
+
+// rereadPolicies is readPolicies for the configuration now.
+func (p *Plugin) rereadPolicies() {
+	p.mu.Lock()
+	cfg, client, instance := p.cfg, p.client, p.host.InstanceID
+	p.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	p.readPolicies(ctx, cfg, client, instance)
+}
+
+// policyGate is what the policies' reads make of a "none" machine whose
+// status is status otherwise: an error while they were last found open;
+// starting, were it running, until a read has found them confining, or
+// once reads have failed since the last that did, more than verdictTTL
+// ago; "" for no change. p.mu is held.
+func (p *Plugin) policyGate(status string, now time.Time) (string, string) {
+	switch pr := p.policy; {
+	case pr.open != "":
+		return protocol.EnvError, "egress none's NetworkPolicies no longer confine this machine (" + pr.open + "): destroy it, and fix the policies before making another"
+	case status != protocol.EnvRunning:
+	case pr.at.IsZero() && pr.failed != "":
+		return protocol.EnvStarting, "couldn't read the NetworkPolicies to check network isolation (" + pr.failed + "); trying again"
+	case pr.at.IsZero():
+		return protocol.EnvStarting, "checking the NetworkPolicies"
+	case pr.failed != "" && now.Sub(pr.at) > verdictTTL:
+		return protocol.EnvStarting, "couldn't confirm the NetworkPolicies still confine this machine (" + pr.failed + "); trying again"
+	}
+	return "", ""
 }
 
 // sweepLeft is sweepCanaries for the configuration now.
@@ -291,9 +400,27 @@ func (p *Plugin) knownLeak(cfg Config) (enforcementState, string) {
 }
 
 // nodeGate is an egress "none" machine's status given its pod's: what
-// the pod says, unless its node isn't known to confine it. Asking
+// the pod says, unless its node isn't known to confine it, or the
+// namespace's NetworkPolicies aren't (policyGate, LOOM-211). Asking
 // starts the node's canary when it is due.
 func (p *Plugin) nodeGate(cfg Config, client kubernetes.Interface, instance string, pod *corev1.Pod, status, reason string) (string, string) {
+	status, reason = p.onNode(cfg, client, instance, pod, status, reason)
+	if status == protocol.EnvStopped || status == protocol.EnvError {
+		return status, reason
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stale(cfg) {
+		return status, reason
+	}
+	if s, r := p.policyGate(status, p.Now()); s != "" {
+		return s, r
+	}
+	return status, reason
+}
+
+// onNode is nodeGate for the machine's node alone.
+func (p *Plugin) onNode(cfg Config, client kubernetes.Interface, instance string, pod *corev1.Pod, status, reason string) (string, string) {
 	if status == protocol.EnvError || status == protocol.EnvStopped {
 		if status == protocol.EnvStopped {
 			p.unwatch(cfg, pod.Name)

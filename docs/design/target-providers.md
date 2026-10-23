@@ -777,7 +777,7 @@ for the canary's destinations, when the machine comes up and at each renewal. Po
 nothing of theirs may let agent pods out; the canary is the only check on them, and only for its own
 destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live and no
 list is atomic with making a pod: a policy an admin adds after that last read applies at once and is reported only
-by the next check; holding policy edits back would take admission control in the cluster.
+by the next read (at most a minute on, LOOM-211); holding policy edits back would take admission control in the cluster.
 
 **Each machine's node (LOOM-208).** The engine runs on each node and the check's canary lands on one, so an engine
 missing from or broken on another node left `none` machines there unconfined and reported running. Now a `none`
@@ -808,6 +808,26 @@ the kubelet keeping it, and the plugin sweeps those left behind past that age at
 (nodes + 1) × the configurations that can overlap: 2 for one restart or rollout, one more per further restart within
 4 minutes. Too little room costs only time: a canary that can't be made proves nothing, and the machines stay
 `starting`.
+
+**After a machine starts (LOOM-211).** A running `none` machine stays checked: its node by the renewal above, and
+the namespace's NetworkPolicies by the read every check, describe and create makes plus one the plugin makes every
+minute. Policies found open (one lets a confined machine out, or none isolates it any more) make each `none` machine
+`error` ("egress none's NetworkPolicies no longer confine this machine (…)"), as an open node does, until a read finds
+them confining again; meanwhile `none` is withdrawn from describe and refused at create, and check reports
+`network_policy_allows_egress`. A read that fails proves nothing either way: the last that found them confining
+stands for 10 minutes, then the machine is `starting` until one succeeds. A change in the policies (a digest of their
+specs) runs the canary of each watched node again at once instead of at the renewal, and again until one started after
+the change has run there (one that couldn't run settles nothing); still one canary at a time per node and none within
+a minute of the node's last, so the `pods` quota holds and a policy that keeps changing costs at most a canary a minute
+per node. *Withdrawn* means exactly this, at the protocol level: the plugin reports the machine `error` (or `starting`
+while unverified) with the reason in `targets.get`/`list`/`health`; the host's reconcile (every
+`LOOMUX_TARGET_PROBE_INTERVAL`, 5 minutes by default) records it on the machine, where the person sees it, and the host
+then refuses to dispatch to it (`error` is left for inspection; a retry is explicit). The pod is neither stopped nor
+deleted: an agent may be mid-task with its work in the pod, and whether to destroy an exposed machine is the person's
+call, as for a node found open. The plugin's Role can list NetworkPolicies but not watch them, and can't read nodes,
+so a list a minute stands in for a watch, and a machine moved to another node is seen at the host's next get. From a
+policy opened to the host refusing the machine: up to a minute plus the host's reconcile interval; a `targets.changed`
+notification would cut the second part, but the SDK can't send one yet.
 
 Not enforced:
 
