@@ -59,11 +59,15 @@ type targetPluginResponse struct {
 	// error, lost and detached.
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason"`
-	Size         string `json:"size"`
-	Persistent   bool   `json:"persistent"`
-	Egress       string `json:"egress"`
-	Image        string `json:"image"`
-	ImageDigest  string `json:"image_digest"`
+	// Progress is what a machine coming up is doing, as the plugin last
+	// reported it: image_pull while its image is pulled; "" otherwise
+	// (LOOM-239). StatusReason says it in words.
+	Progress    string `json:"progress"`
+	Size        string `json:"size"`
+	Persistent  bool   `json:"persistent"`
+	Egress      string `json:"egress"`
+	Image       string `json:"image"`
+	ImageDigest string `json:"image_digest"`
 	// UpdateAvailable: the plugin's configured image differs from the
 	// one the machine runs; recreate applies it.
 	UpdateAvailable bool `json:"update_available"`
@@ -94,7 +98,7 @@ func newTargetPluginResponse(v *providers.MachineView) *targetPluginResponse {
 	e := v.Environment
 	out := &targetPluginResponse{
 		ID: e.PluginID, Name: e.PluginName, Label: v.PluginLabel, Version: e.PluginVersion, EnvironmentID: e.ID,
-		Status: string(e.Status), StatusReason: e.StatusReason, Size: e.Size, Persistent: e.Persistent, Egress: e.Egress,
+		Status: string(e.Status), StatusReason: e.StatusReason, Progress: v.Progress, Size: e.Size, Persistent: e.Persistent, Egress: e.Egress,
 		Image: e.Image, ImageDigest: e.ImageDigest, UpdateAvailable: v.UpdateAvailable, Warnings: []warningResponse{}, CreatedAt: e.CreatedAt,
 	}
 	for _, w := range v.Warnings {

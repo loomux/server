@@ -1283,12 +1283,17 @@ func (m *Manager) Close() {
 
 // MachineView is what the API shows of a machine: its environment, the
 // plugin that owns it, whether the plugin's configured image differs
-// from what runs, and the plugin's current warnings.
+// from what runs, the plugin's current warnings, and what the machine
+// is doing while it comes up.
 type MachineView struct {
 	Environment     registry.Environment
 	PluginLabel     string
 	UpdateAvailable bool
 	Warnings        []protocol.Problem
+	// Progress is what the plugin last said a machine coming up is
+	// doing, as the job following it saw it: protocol.ProgressImagePull,
+	// or "" (LOOM-239).
+	Progress string
 }
 
 // View is the machine behind targetID; ErrNotMachine for a registered
@@ -1337,6 +1342,9 @@ func (m *Manager) pluginViews(ctx context.Context) (map[string]*plugins.View, er
 func (m *Manager) view(ctx context.Context, env *registry.Environment, views map[string]*plugins.View) *MachineView {
 	mv := &MachineView{Environment: *env}
 	mv.Environment.HostPrivateKey = nil
+	if inFlight(env.Status) {
+		mv.Progress = m.progress(env.ID)
+	}
 	v := views[env.PluginID]
 	if v == nil {
 		return mv
