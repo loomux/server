@@ -162,7 +162,13 @@ Methods the host calls (every one has a per-call deadline, 30 s unless noted):
 | `targets.attach_commands(id, session, socket)` → `[{via, command}]` | the `kubectl exec` / `docker exec` form of attach for a person, onto `socket`: the instance's tmux socket the host runs the machine's sessions on (LOOM-210; absent from an older host, `loomux`) |
 
 A plugin may send the notification `targets.changed {id, status}` on the same channel; the host treats it as
-a hint to poll sooner and never as the truth. Errors are JSON-RPC errors with a `code` from a fixed list
+a hint to poll sooner and never as the truth. The SDK sends it for a plugin that implements `sdk.Notifying`
+(`Notifier().TargetsChanged`), through the same writer as its answers so frames never interleave; the host
+reconciles that machine 200 ms on, coalescing a burst for one machine into one reconcile, plus one more for hints
+that came while it ran (LOOM-213). Being part of `loomux-plugin/1` from the start, it needs no version or
+capability: a peer ignores a notification it doesn't handle (it has no id, so there is no answer to miss), a host
+from before LOOM-213 reconciles on it without coalescing, and a plugin that never sends it leaves the host to its
+periodic reconcile. Errors are JSON-RPC errors with a `code` from a fixed list
 (`invalid_config`, `unauthorized`, `not_found`, `quota`, `unavailable`, `internal`) and a `message` safe to
 show; the host maps them to its own error classes. Anything else (unknown method, malformed frame, a field
 outside its grammar) fails the call and counts against the plugin's health.

@@ -1,0 +1,3 @@
+### Added
+
+- Plugins can tell the host that a machine changed on its own (`targets.changed`, LOOM-213). The plugin SDK sends it for a plugin that implements `sdk.Notifying`, through the same writer as its answers. The host reconciles that machine within a moment instead of at its next reconcile (`LOOMUX_TARGET_PROBE_INTERVAL`, 5 minutes by default), coalescing a burst of hints for one machine into one reconcile. Peers ignore notifications they don't handle, so older hosts and plugins keep working unchanged.

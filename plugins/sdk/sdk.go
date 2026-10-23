@@ -117,9 +117,65 @@ func toRPC(err error) *rpc.Error {
 	return &rpc.Error{Code: rpc.CodeInternal, Message: err.Error()}
 }
 
-// Serve serves p on one connection (r in, w out) until it ends.
+// Serve serves p on one connection (r in, w out) until it ends. A
+// Notifying plugin's notifications go to the host on it meanwhile.
 func Serve(ctx context.Context, p Plugin, r io.Reader, w io.Writer) error {
-	return rpc.Serve(ctx, r, w, Handler(p, nil))
+	rw := rpc.NewWriter(w)
+	if np, ok := p.(Notifying); ok {
+		if n := np.Notifier(); n != nil {
+			defer n.attach(rw)()
+		}
+	}
+	return rpc.ServeWriter(ctx, r, rw, Handler(p, nil))
+}
+
+// Notifying is a plugin that sends the host notifications (LOOM-213):
+// the SDK attaches every connection it serves the plugin on to its
+// Notifier, from the first frame until the connection ends.
+type Notifying interface {
+	Notifier() *Notifier
+}
+
+// Notifier sends the host notifications, on every connection serving
+// the plugin now (one on stdio; a sidecar's host may reconnect). The
+// zero value is ready. With no host connected a notification is
+// dropped: it is a hint, and the host still reconciles on its own.
+type Notifier struct {
+	mu      sync.Mutex
+	writers map[*rpc.Writer]struct{}
+}
+
+// TargetsChanged tells the host that machine id's status may have
+// changed, to status if it is known (a hint either way: the host asks
+// targets.get), so the host reconciles it now rather than at its next
+// pass. It writes on the caller's goroutine and blocks while the host
+// isn't reading: don't call it holding a lock the plugin's handlers
+// need. Errors are dropped like the hint they'd lose.
+func (n *Notifier) TargetsChanged(id, status string) {
+	n.mu.Lock()
+	writers := make([]*rpc.Writer, 0, len(n.writers))
+	for w := range n.writers {
+		writers = append(writers, w)
+	}
+	n.mu.Unlock()
+	for _, w := range writers {
+		_ = w.Notify(protocol.NotifyTargetsChanged, protocol.TargetsChanged{ID: id, Status: status})
+	}
+}
+
+// attach adds w until the returned func is called.
+func (n *Notifier) attach(w *rpc.Writer) func() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.writers == nil {
+		n.writers = map[*rpc.Writer]struct{}{}
+	}
+	n.writers[w] = struct{}{}
+	return func() {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		delete(n.writers, w)
+	}
 }
 
 // Main runs p as a plugin process: on stdio, or on the unix socket

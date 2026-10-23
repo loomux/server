@@ -464,3 +464,18 @@ func TestUninstallKeepAndDestroy(t *testing.T) {
 	}
 	_ = e2
 }
+
+// LOOM-213 end to end: the fake plugin (its real binary, over stdio)
+// fails a running machine on its own and sends targets.changed; the
+// harness runs no periodic reconcile, so only the notification can
+// bring the row to error.
+func TestNotifiedMachineReconciledAtOnce(t *testing.T) {
+	h := newHarness(t, map[string]any{"targets_mode": fake.TargetsFailNotify})
+	h.m.NotifyDelay = 10 * time.Millisecond
+	target, _ := h.create(t, "notified", true)
+	h.waitStatus(t, target.ID, registry.EnvironmentRunning)
+	env := h.waitStatus(t, target.ID, registry.EnvironmentError)
+	if env.StatusReason != "the fake failed it" {
+		t.Errorf("reason = %q", env.StatusReason)
+	}
+}

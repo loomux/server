@@ -2,6 +2,7 @@ package sdk_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -213,4 +214,55 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// LOOM-213: a Notifying plugin's TargetsChanged reaches the host on the
+// connection serving it, and is dropped once none is: a hint, never an
+// error or a block.
+func TestNotifierSendsTargetsChanged(t *testing.T) {
+	p := fake.New()
+	hostR, pluginW := io.Pipe()
+	pluginR, hostW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = sdk.Serve(ctx, p, pluginR, pluginW)
+		_ = pluginW.Close()
+	}()
+	got := make(chan protocol.TargetsChanged, 1)
+	c := rpc.NewConn(hostR, hostW, func(method string, params json.RawMessage) {
+		var tc protocol.TargetsChanged
+		if method == protocol.NotifyTargetsChanged && json.Unmarshal(params, &tc) == nil {
+			got <- tc
+		}
+	})
+	// A call first: the connection is attached before its first frame.
+	if err := c.Call(context.Background(), protocol.MethodDescribe, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.Notifier().TargetsChanged("m1", protocol.EnvError)
+	select {
+	case tc := <-got:
+		if tc.ID != "m1" || tc.Status != protocol.EnvError {
+			t.Errorf("targets.changed = %+v", tc)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the notification never reached the host")
+	}
+	c.Close()
+	cancel()
+	<-done
+	finished := make(chan struct{})
+	go func() {
+		p.Notifier().TargetsChanged("m1", "") // no connection: dropped
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("TargetsChanged blocked with no host connected")
+	}
+	var zero sdk.Notifier
+	zero.TargetsChanged("m2", "") // the zero value is ready
 }
