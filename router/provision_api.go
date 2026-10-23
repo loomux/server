@@ -18,11 +18,14 @@ import (
 // conversation of its own, and ends on the row: idle with its path, or
 // failed with why.
 
-// provisionPrepareTimeout bounds the API's start-and-check of the
-// target before its recipe runs: with the recipe's ProvisionTimeout it
-// stays inside the reaper's staleProvisioningAfter (ProvisionTimeout +
-// 5 min, counted from the row's creation).
-const provisionPrepareTimeout = 4 * time.Minute
+// defaultProvisionPrepareTimeout bounds the API's start-and-check of the
+// target before its recipe runs, unless WithProvisionPrepareTimeout says
+// otherwise: with the recipe's ProvisionTimeout it stays inside the
+// reaper's staleProvisioningAfter (ProvisionTimeout + 5 min) counted
+// from the row's creation, as a reaper without a preparing limit counts
+// it. loomuxd sets it past a machine's ready wait with an image pull,
+// and the reaper's preparing limit past that (LOOM-242).
+const defaultProvisionPrepareTimeout = 4 * time.Minute
 
 // ErrNoSuchTarget: the target to provision on doesn't exist.
 var ErrNoSuchTarget = errors.New("router: no such target")

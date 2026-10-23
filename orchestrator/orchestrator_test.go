@@ -685,6 +685,11 @@ func TestLaunch_LeavesProvisioningWorkspaceProvisioning(t *testing.T) {
 	if got.Status != registry.WorkspaceStatusProvisioning {
 		t.Fatalf("workspace status = %q, want still provisioning", got.Status)
 	}
+	// The recipe's start is recorded: the reaper counts a provisioning's
+	// age from it (LOOM-242).
+	if got.LastUsedAt == nil {
+		t.Error("the recipe's launch didn't stamp LastUsedAt")
+	}
 }
 
 // TestFail_DoesNotRevertFailedWorkspace: failing a task only returns an
