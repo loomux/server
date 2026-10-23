@@ -19,6 +19,7 @@ type targetPolicyJSON struct {
 	AllowProvision      bool     `json:"allow_provision"`
 	AllowShell          bool     `json:"allow_shell"`
 	RequireConfirmation bool     `json:"require_confirmation"`
+	KeepIdleSessions    bool     `json:"keep_idle_sessions"`
 }
 
 func targetRequestJSON(t *testing.T, method, url, token string, body map[string]any) (targetPolicyJSON, int) {
@@ -108,6 +109,37 @@ func TestTargetPolicy_API(t *testing.T) {
 
 // LOOM-122: with the server's agent types known, an allowed_agent_types
 // entry naming none of them is rejected, on create and on update.
+// LOOM-227: keep_idle_sessions is off by default, set on create or by a
+// PUT, and kept by a PUT that doesn't mention it.
+func TestTargetPolicy_KeepIdleSessions(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	token, _ := login(t, srv.URL, testPassword)
+	base := map[string]any{"name": "cc", "kind": "remote", "host": "cc", "user": "u"}
+	def, status := targetRequestJSON(t, http.MethodPost, srv.URL+"/api/v1/targets", token, base)
+	if status != http.StatusCreated || def.KeepIdleSessions {
+		t.Fatalf("create = %d, %+v; want keep_idle_sessions false by default", status, def)
+	}
+	url := srv.URL + "/api/v1/targets/" + def.ID
+	with := map[string]any{"keep_idle_sessions": true}
+	for k, v := range base {
+		with[k] = v
+	}
+	if got, status := targetRequestJSON(t, http.MethodPut, url, token, with); status != http.StatusOK || !got.KeepIdleSessions {
+		t.Fatalf("PUT keep_idle_sessions = %d, %+v", status, got)
+	}
+	if got, status := targetRequestJSON(t, http.MethodPut, url, token, base); status != http.StatusOK || !got.KeepIdleSessions {
+		t.Errorf("a PUT without keep_idle_sessions cleared it: %d, %+v", status, got)
+	}
+	if got, status := targetRequestJSON(t, http.MethodGet, url, token, nil); status != http.StatusOK || !got.KeepIdleSessions {
+		t.Errorf("GET = %d, %+v", status, got)
+	}
+	created, status := targetRequestJSON(t, http.MethodPost, srv.URL+"/api/v1/targets", token,
+		map[string]any{"name": "hub2", "kind": "remote", "host": "hub2", "user": "u", "keep_idle_sessions": true})
+	if status != http.StatusCreated || !created.KeepIdleSessions {
+		t.Errorf("create with keep_idle_sessions = %d, %+v", status, created)
+	}
+}
+
 func TestTargetPolicy_UnknownAgentType(t *testing.T) {
 	srv, _, _ := newTestServer(t, api.WithAgentTypes([]string{"claude-code", "codex"}))
 	token, _ := login(t, srv.URL, testPassword)

@@ -583,7 +583,13 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 
 	threshold := cfg.ReapIdleThreshold
-	if threshold == 0 {
+	switch {
+	case cfg.ReapIdleOff:
+		threshold = 0 // the reaper closes no waiting session (LOOM-227)
+		if cfg.Logger != nil {
+			cfg.Logger.Info("idle reaping is off: waiting sessions stay open until their conversation ends them", "env", envReapIdleThreshold)
+		}
+	case threshold == 0:
 		threshold = defaultReapIdleThreshold
 	}
 	interval := cfg.ReapInterval

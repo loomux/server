@@ -128,11 +128,39 @@ otherwise. Everything sent is redacted first (vault values, secret
 shapes). The message being routed always reaches the routing model.
 Under `none`, a turn is never judged "done" by a model, and Loomux
 doesn't guess locally: its session stays open until the idle reaper
-closes it (`LOOMUX_REAP_IDLE_THRESHOLD`, 24h by default). That is on
-purpose: an idle pane for a day costs little, while closing a session
-the agent was still working in loses it. Messages logged before this
+closes it (`LOOMUX_REAP_IDLE_THRESHOLD`, 24h by default; see "Idle
+sessions" below). That is on purpose: an idle pane for a day costs
+little, while closing a session the agent was still working in loses it. Messages logged before this
 policy existed are matched to their target through their task, or
 failing that, their purpose.
+
+## Idle sessions
+
+A session whose turn ended and that waits for a follow-up holds its
+tmux pane, and whatever credentials live in that process's environment,
+until the idle reaper closes it. The reaper sweeps every
+`LOOMUX_REAP_INTERVAL` (1h) and closes a waiting session with no state
+change for `LOOMUX_REAP_IDLE_THRESHOLD` (24h). A running turn and a
+session someone has taken over are never closed. A follow-up after the
+reaper has closed a session starts a fresh one, without the old one's
+context.
+
+- **Change the threshold** with any Go duration (`72h`, `168h`).
+  `off` or `0` turns idle reaping off for the whole server: retention
+  and stuck-provisioning cleanup still run. A negative value is refused
+  at startup (it would close every waiting session). Before LOOM-227
+  `0` meant the default.
+- **Exempt one target** with its `keep_idle_sessions` (`PUT
+  /api/v1/targets/{id}`, LOOM-227). None of its sessions is closed for
+  waiting, whatever the threshold. This is for a hub whose own
+  conversation waits days for its next message, such as a
+  command-center machine. Every session on that target is kept, so
+  dispatch short-lived work to other targets, or close it yourself.
+  While a sweep can't read a workspace's target, it keeps that
+  workspace's sessions too.
+- A kept session keeps a plugin-made machine running as well:
+  `LOOMUX_MACHINE_IDLE_STOP` (LOOM-217) never stops a machine with a
+  task waiting for its follow-up.
 
 ## Backups
 

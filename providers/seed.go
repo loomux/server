@@ -23,7 +23,7 @@ import (
 //     the seed's (registry.SettingMachinesSeedOwned, target ids);
 //   - one the seed made is kept in line where that is safe on a running
 //     machine: its target options (permission mode, purpose, allowed
-//     agent types, provision, shell, confirmation, relay), the fields
+//     agent types, provision, shell, confirmation, relay, idle sessions), the fields
 //     PUT /targets/{id} may change on a machine. What needs the machine
 //     made again (size: a recreate; persistence, egress, another plugin
 //     instance: a new machine) is logged as a warning and left to the
@@ -204,6 +204,7 @@ func changedOptions(t, want *registry.Target) []string {
 	add(t.Policy.NoShell != want.Policy.NoShell, "allow_shell")
 	add(t.Policy.RequireConfirmation != want.Policy.RequireConfirmation, "require_confirmation")
 	add(t.Policy.Relay != want.Policy.Relay, "relay")
+	add(t.Policy.KeepIdleSessions != want.Policy.KeepIdleSessions, "keep_idle_sessions")
 	return out
 }
 

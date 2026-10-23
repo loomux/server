@@ -67,6 +67,10 @@ type Config struct {
 	// callers that construct Config directly (tests) get sensible
 	// behavior without needing to set every field.
 	ReapIdleThreshold time.Duration
+	// ReapIdleOff turns idle reaping off (LOOMUX_REAP_IDLE_THRESHOLD
+	// "off" or "0", LOOM-227): no session is closed for waiting, however
+	// long. The sweep's other work (retention, stuck provisioning) runs.
+	ReapIdleOff bool
 	// ReapInterval is how often the idle reaper sweeps. Same zero-means-
 	// default handling as ReapIdleThreshold.
 	ReapInterval time.Duration
@@ -256,13 +260,9 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("app: router config: %w", err)
 	}
 
-	reapIdleThreshold := defaultReapIdleThreshold
-	if raw := os.Getenv(envReapIdleThreshold); raw != "" {
-		d, err := time.ParseDuration(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("app: %s is not a valid duration: %w", envReapIdleThreshold, err)
-		}
-		reapIdleThreshold = d
+	reapIdleThreshold, reapIdleOff, err := parseReapIdleThreshold(os.Getenv(envReapIdleThreshold))
+	if err != nil {
+		return Config{}, err
 	}
 	reapInterval := defaultReapInterval
 	if raw := os.Getenv(envReapInterval); raw != "" {
@@ -422,6 +422,7 @@ func LoadConfig() (Config, error) {
 		SSHProxy:              sshProxy,
 		Router:                routerCfg,
 		ReapIdleThreshold:     reapIdleThreshold,
+		ReapIdleOff:           reapIdleOff,
 		ReapInterval:          reapInterval,
 		TargetProbeInterval:   targetProbeInterval,
 		MachineIdleStop:       machineIdleStop,
@@ -522,4 +523,29 @@ func loadNotifyConfig() (NotifyConfig, error) {
 // commas or whitespace.
 func listEnv(name string) []string {
 	return strings.FieldsFunc(os.Getenv(name), func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+}
+
+// parseReapIdleThreshold reads LOOMUX_REAP_IDLE_THRESHOLD (LOOM-227): a
+// positive duration, "off" or "0" for no idle reaping, empty for the
+// default. A negative one is refused: it would close every waiting
+// session on the next sweep.
+func parseReapIdleThreshold(raw string) (threshold time.Duration, off bool, err error) {
+	raw = strings.TrimSpace(raw)
+	switch strings.ToLower(raw) {
+	case "":
+		return defaultReapIdleThreshold, false, nil
+	case "off", "0":
+		return 0, true, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, false, fmt.Errorf("app: %s is not a valid duration (or off): %w", envReapIdleThreshold, err)
+	}
+	switch {
+	case d < 0:
+		return 0, false, fmt.Errorf("app: %s %q is negative: it would close every waiting session; use off to keep them all", envReapIdleThreshold, raw)
+	case d == 0:
+		return 0, true, nil
+	}
+	return d, false, nil
 }

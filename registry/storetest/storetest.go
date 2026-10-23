@@ -1784,7 +1784,7 @@ func testTargetPolicy(t *testing.T, s registry.Store) {
 		t.Fatalf("new target's policy = %+v, want the zero (allow-all) policy", got.Policy)
 	}
 	want := registry.TargetPolicy{Purpose: registry.TargetPurposeWork, AllowedAgentTypes: []string{"claude-code"},
-		NoProvision: true, NoShell: true, RequireConfirmation: true, Relay: registry.RelayLastMessage}
+		NoProvision: true, NoShell: true, RequireConfirmation: true, Relay: registry.RelayLastMessage, KeepIdleSessions: true}
 	got.Policy = want
 	if err := s.UpdateTarget(ctx, got); err != nil {
 		t.Fatalf("UpdateTarget: %v", err)
