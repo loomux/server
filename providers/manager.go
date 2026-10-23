@@ -186,6 +186,47 @@ func (m *Manager) Info(ctx context.Context, pluginID string) (protocol.TargetsIn
 	return info, nil
 }
 
+// Describe is what plugin instance pluginID offers for a new machine
+// (its targets.describe), for the create form (LOOM-238), bounded as
+// any plugin output is: at most maxOffered sizes and egress options,
+// their strings truncated. registry.ErrNotFound for no such instance,
+// ErrPluginUnavailable when it isn't installed, enabled and running,
+// *plugins.CapabilityMissingError when it doesn't make machines.
+func (m *Manager) Describe(ctx context.Context, pluginID string) (protocol.TargetsInfo, error) {
+	v, err := m.plugins.Get(ctx, pluginID)
+	if err != nil {
+		return protocol.TargetsInfo{}, err
+	}
+	if v.Status != registry.PluginStatusInstalled || !v.Enabled || v.Instance.State != plugins.StateRunning {
+		return protocol.TargetsInfo{}, ErrPluginUnavailable
+	}
+	if !contains(v.Capabilities, protocol.CapTargetsCreate) {
+		return protocol.TargetsInfo{}, &plugins.CapabilityMissingError{Method: protocol.MethodTargetsDescribe, Capability: protocol.CapTargetsCreate}
+	}
+	info, err := m.Info(ctx, pluginID)
+	if err != nil {
+		return protocol.TargetsInfo{}, err
+	}
+	out := protocol.TargetsInfo{
+		Sizes:             []protocol.Size{},
+		PersistentDefault: info.PersistentDefault,
+		EgressOptions:     []string{},
+		Image:             truncate(info.Image, 512),
+		MaxEnvironments:   max(info.MaxEnvironments, 0),
+		Environments:      max(info.Environments, 0),
+	}
+	for _, s := range info.Sizes[:min(len(info.Sizes), maxOffered)] {
+		out.Sizes = append(out.Sizes, protocol.Size{Name: truncate(s.Name, 64), CPU: truncate(s.CPU, 32), Memory: truncate(s.Memory, 32), Disk: truncate(s.Disk, 32)})
+	}
+	for _, e := range info.EgressOptions[:min(len(info.EgressOptions), maxOffered)] {
+		out.EgressOptions = append(out.EgressOptions, truncate(e, 32))
+	}
+	return out, nil
+}
+
+// maxOffered bounds the sizes and egress options Describe passes on.
+const maxOffered = 32
+
 // mapPluginErr turns a plugin-manager error into this package's.
 func (m *Manager) mapPluginErr(err error) error {
 	switch {

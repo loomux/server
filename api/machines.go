@@ -22,6 +22,9 @@ type Machines interface {
 	View(ctx context.Context, targetID string) (*providers.MachineView, error)
 	Views(ctx context.Context) (map[string]*providers.MachineView, error)
 	IsMachine(ctx context.Context, targetID string) bool
+	// Describe is what a plugin instance offers for a new machine
+	// (LOOM-238).
+	Describe(ctx context.Context, pluginID string) (protocol.TargetsInfo, error)
 	Create(ctx context.Context, req providers.CreateRequest) (*registry.Target, *registry.Environment, error)
 	Start(ctx context.Context, targetID string) error
 	Stop(ctx context.Context, targetID string) error
@@ -75,6 +78,27 @@ type targetPluginResponse struct {
 	// makes (network isolation not enforced, say).
 	Warnings  []warningResponse `json:"warnings"`
 	CreatedAt time.Time         `json:"created_at"`
+}
+
+// pluginTargetsResponse is GET /plugins/{id}/targets: what the instance
+// offers for a new machine, as its targets.describe says right now
+// (LOOM-238). The first size and egress option are the defaults.
+type pluginTargetsResponse struct {
+	Sizes             []sizeResponse `json:"sizes"`
+	PersistentDefault bool           `json:"persistent_default"`
+	EgressOptions     []string       `json:"egress_options"`
+	Image             string         `json:"image"`
+	// MaxEnvironments is the instance's machine quota (0: none);
+	// Environments is how many it has.
+	MaxEnvironments int `json:"max_environments"`
+	Environments    int `json:"environments"`
+}
+
+type sizeResponse struct {
+	Name   string `json:"name"`
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
+	Disk   string `json:"disk"`
 }
 
 type warningResponse struct {
@@ -242,6 +266,42 @@ func (s *Server) deleteMachine(w http.ResponseWriter, r *http.Request, id string
 	}
 	s.forgetScan(id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDescribePluginTargets: GET /api/v1/plugins/{id}/targets, what
+// the instance offers for a new machine (LOOM-238): the create form's
+// sizes, egress options and persistence default. 404 for no such
+// instance; 409 when it isn't running or doesn't make machines.
+func (s *Server) handleDescribePluginTargets(w http.ResponseWriter, r *http.Request) {
+	if s.machines == nil {
+		writeError(w, http.StatusNotFound, "machines are not available on this server")
+		return
+	}
+	info, err := s.machines.Describe(r.Context(), r.PathValue("id"))
+	var missing *plugins.CapabilityMissingError
+	switch {
+	case errors.Is(err, registry.ErrNotFound):
+		writeError(w, http.StatusNotFound, "no such plugin")
+		return
+	case errors.Is(err, providers.ErrPluginUnavailable):
+		writeError(w, http.StatusConflict, "the plugin isn't installed, enabled and running")
+		return
+	case errors.As(err, &missing):
+		writeError(w, http.StatusConflict, "the plugin doesn't make machines: it doesn't declare "+missing.Capability)
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "could not ask the plugin what it offers")
+		return
+	}
+	out := pluginTargetsResponse{
+		Sizes: make([]sizeResponse, 0, len(info.Sizes)), PersistentDefault: info.PersistentDefault,
+		EgressOptions: orEmpty(info.EgressOptions), Image: info.Image,
+		MaxEnvironments: info.MaxEnvironments, Environments: info.Environments,
+	}
+	for _, sz := range info.Sizes {
+		out.Sizes = append(out.Sizes, sizeResponse{Name: sz.Name, CPU: sz.CPU, Memory: sz.Memory, Disk: sz.Disk})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // writeMachineError maps a providers error to a response and reports

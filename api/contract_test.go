@@ -96,6 +96,7 @@ var apiV1Bodies = map[string][]contractBody{
 	"GET /api/v1/plugins":                        {{"response", listPluginsResponse{}}},
 	"POST /api/v1/plugins":                       {{"request", installPluginRequest{}}, {"response", pluginResponse{}}},
 	"GET /api/v1/plugins/{id}":                   {{"response", pluginResponse{}}},
+	"GET /api/v1/plugins/{id}/targets":           {{"response", pluginTargetsResponse{}}},
 	"PUT /api/v1/plugins/{id}/config":            {{"request", setPluginConfigRequest{}}, {"response", pluginResponse{}}},
 	"POST /api/v1/plugins/{id}/enable":           {{"response", pluginResponse{}}},
 	"POST /api/v1/plugins/{id}/disable":          {{"response", pluginResponse{}}},

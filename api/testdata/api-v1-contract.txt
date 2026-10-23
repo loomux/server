@@ -456,6 +456,25 @@ GET /api/v1/plugins/{id} status 409
 GET /api/v1/plugins/{id} status 422
 GET /api/v1/plugins/{id} status 500
 GET /api/v1/plugins/{id} status 503
+GET /api/v1/plugins/{id}/targets
+GET /api/v1/plugins/{id}/targets request-header Authorization
+GET /api/v1/plugins/{id}/targets response - object
+GET /api/v1/plugins/{id}/targets response .egress_options []string
+GET /api/v1/plugins/{id}/targets response .environments number
+GET /api/v1/plugins/{id}/targets response .image string
+GET /api/v1/plugins/{id}/targets response .max_environments number
+GET /api/v1/plugins/{id}/targets response .persistent_default boolean
+GET /api/v1/plugins/{id}/targets response .sizes []object
+GET /api/v1/plugins/{id}/targets response .sizes[].cpu string
+GET /api/v1/plugins/{id}/targets response .sizes[].disk string
+GET /api/v1/plugins/{id}/targets response .sizes[].memory string
+GET /api/v1/plugins/{id}/targets response .sizes[].name string
+GET /api/v1/plugins/{id}/targets response-header Content-Type
+GET /api/v1/plugins/{id}/targets status 200
+GET /api/v1/plugins/{id}/targets status 401
+GET /api/v1/plugins/{id}/targets status 404
+GET /api/v1/plugins/{id}/targets status 409
+GET /api/v1/plugins/{id}/targets status 500
 GET /api/v1/sessions
 GET /api/v1/sessions request-header Authorization
 GET /api/v1/sessions response - object
