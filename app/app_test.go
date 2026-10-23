@@ -14,6 +14,7 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/internal/metrics"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
 )
@@ -56,6 +57,9 @@ func testConfig(t *testing.T, routerBaseURL string) Config {
 		Router: llmrouter.Config{
 			Primary: llmrouter.Tier{BaseURL: routerBaseURL, APIKey: "test-key", Model: "test-model"},
 		},
+		// Build scrubs its socket's tmux server and runs local sessions
+		// there: the test's own, never loomux (LOOM-210).
+		TmuxSocket: tmuxtest.Socket(t),
 	}
 }
 

@@ -14,11 +14,12 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
-	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/targets/executortest"
 )
 
 // TestIntegration_ProbeResolvesAgentOffThePath runs the real probe
@@ -68,9 +69,11 @@ func TestIntegration_ProbeResolvesAgentOffThePath(t *testing.T) {
 					LaunchTemplate: "loomux-definitely-not-installed", Binary: "loomux-definitely-not-installed",
 				},
 			}
-			detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), t.TempDir())
-			orch := orchestrator.New(store, targets.NewExecutor, detector)
-			r := router.New(store, orch, targets.NewExecutor, credentials.NewResolver(store), agentTypes,
+			socket := tmuxtest.Socket(t)
+			newExec := executortest.NewExecutor(socket)
+			detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), t.TempDir())
+			orch := orchestrator.New(store, newExec, detector)
+			r := router.New(store, orch, newExec, credentials.NewResolver(store), agentTypes,
 				&routertest.StubRoutingModel{}, t.TempDir())
 
 			got, err := r.RefreshTargetAgents(context.Background(), target.ID)
@@ -122,9 +125,11 @@ func TestIntegration_ProbeTargetHealth(t *testing.T) {
 	agentTypes := router.AgentTypeRegistry{
 		"": router.AgentType{AgentConfig: completion.AgentConfig{Tier: completion.TierIdle, IdleTimeout: time.Second}},
 	}
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), t.TempDir())
-	orch := orchestrator.New(store, targets.NewExecutor, detector)
-	r := router.New(store, orch, targets.NewExecutor, credentials.NewResolver(store), agentTypes,
+	socket := tmuxtest.Socket(t)
+	newExec := executortest.NewExecutor(socket)
+	detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), t.TempDir())
+	orch := orchestrator.New(store, newExec, detector)
+	r := router.New(store, orch, newExec, credentials.NewResolver(store), agentTypes,
 		&routertest.StubRoutingModel{}, t.TempDir())
 
 	h, _, err := r.ProbeTarget(context.Background(), target.ID)

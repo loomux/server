@@ -56,7 +56,10 @@ type TargetProvider interface {
 	RecreateTarget(ctx context.Context, id string, spec protocol.EnvironmentSpec) (protocol.Environment, error)
 	DestroyTarget(ctx context.Context, id string) error
 	TargetHealth(ctx context.Context, id string) (protocol.EnvironmentHealth, error)
-	TargetAttachCommands(ctx context.Context, id, session string) ([]protocol.AttachCommand, error)
+	// TargetAttachCommands names socket, the tmux socket the host runs
+	// the session on (LOOM-210): the handler has already checked it with
+	// protocol.ValidTmuxSocket, defaulting to protocol.DefaultTmuxSocket.
+	TargetAttachCommands(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error)
 }
 
 // Handler returns the rpc.Handler that serves p's plugin.* methods, and
@@ -295,7 +298,13 @@ func targetsHandler(ctx context.Context, t TargetProvider, method string, params
 		if e := decode(&p); e != nil {
 			return nil, e
 		}
-		cmds, err := t.TargetAttachCommands(ctx, p.ID, p.Session)
+		if p.Socket == "" {
+			p.Socket = protocol.DefaultTmuxSocket
+		}
+		if !protocol.ValidTmuxSocket(p.Socket) {
+			return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: "targets.attach_commands: socket must be letters, digits, '-' and '_'"}
+		}
+		cmds, err := t.TargetAttachCommands(ctx, p.ID, p.Session, p.Socket)
 		if err != nil {
 			return nil, toRPC(err)
 		}

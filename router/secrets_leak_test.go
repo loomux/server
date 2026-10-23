@@ -14,11 +14,12 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
-	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/targets/executortest"
 )
 
 // TestSecretsNeverLeakIntoCapturedOutputOrSummary is the test LOOM-7's
@@ -78,8 +79,10 @@ func TestSecretsNeverLeakIntoCapturedOutputOrSummary(t *testing.T) {
 		},
 	}
 	markerDir := t.TempDir()
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
-	orch := orchestrator.New(store, targets.NewExecutor, detector)
+	socket := tmuxtest.Socket(t)
+	newExec := executortest.NewExecutor(socket)
+	detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), markerDir)
+	orch := orchestrator.New(store, newExec, detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
@@ -92,7 +95,7 @@ func TestSecretsNeverLeakIntoCapturedOutputOrSummary(t *testing.T) {
 		},
 	}
 
-	r := router.New(store, orch, targets.NewExecutor, resolver, agentTypes, model, markerDir)
+	r := router.New(store, orch, newExec, resolver, agentTypes, model, markerDir)
 
 	reply, err := r.Dispatch(ctx, "conv-secrets", "authenticate and do the thing")
 	if err != nil {
@@ -119,7 +122,7 @@ func TestSecretsNeverLeakIntoCapturedOutputOrSummary(t *testing.T) {
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("ListTasks = %v, %v", tasks, err)
 	}
-	startCmd, err := exec.Command("tmux", "-L", targets.DefaultTmuxSocket, "display-message", "-p", "-t",
+	startCmd, err := exec.Command("tmux", "-L", socket, "display-message", "-p", "-t",
 		tasks[0].TmuxSession, "#{pane_start_command}").CombinedOutput()
 	if err != nil {
 		t.Fatalf("tmux display-message: %v: %s", err, startCmd)

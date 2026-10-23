@@ -484,7 +484,10 @@ func eventTime(e corev1.Event) time.Time {
 
 var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session string) ([]protocol.AttachCommand, error) {
+// TargetAttachCommands attaches onto socket, the one the host runs the
+// machine's sessions on over ssh (its instance's, LOOM-210; the image
+// starts no tmux itself).
+func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
 	cfg, client, host, err := p.state()
 	if err != nil {
 		return nil, err
@@ -492,12 +495,15 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session string) (
 	if !sessionPattern.MatchString(session) {
 		return nil, invalidParams("session must be letters, digits, dots, dashes and underscores")
 	}
+	if !protocol.ValidTmuxSocket(socket) {
+		return nil, invalidParams("socket must be letters, digits, '-' and '_'")
+	}
 	if _, _, _, err := p.machine(ctx, client, cfg, host, id); err != nil {
 		return nil, err
 	}
 	return []protocol.AttachCommand{{
 		Via:     "kubectl",
-		Command: "kubectl -n " + cfg.Namespace + " exec -it " + podName(id) + " -- tmux -L loomux attach -t " + session,
+		Command: "kubectl -n " + cfg.Namespace + " exec -it " + podName(id) + " -- tmux -L " + socket + " attach -t " + session,
 	}}, nil
 }
 

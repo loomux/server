@@ -11,11 +11,13 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
 	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/targets/executortest"
 )
 
 // integrationDispatchTimeout bounds a real dispatch here: only a hang
@@ -75,8 +77,10 @@ func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 				},
 			}
 			markerDir := t.TempDir()
-			detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
-			orch := orchestrator.New(store, targets.NewExecutor, detector)
+			socket := tmuxtest.Socket(t)
+			newExec := executortest.NewExecutor(socket)
+			detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), markerDir)
+			orch := orchestrator.New(store, newExec, detector)
 			resolver := credentials.NewResolver(store)
 			model := &routertest.StubRoutingModel{
 				DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
@@ -87,7 +91,7 @@ func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 				},
 			}
 
-			r := router.New(store, orch, targets.NewExecutor, resolver, agentTypes, model, markerDir)
+			r := router.New(store, orch, newExec, resolver, agentTypes, model, markerDir)
 
 			// A hard deadline: if the env vars were ever wrong (e.g. the
 			// hook can't find the marker path it was told), MarkerWatcher
@@ -121,7 +125,7 @@ func TestIntegration_RealDispatch_TierMarker(t *testing.T) {
 				t.Fatalf("task Status = %q, want %q (marker detection must have fired, not merely timed out)", task.Status, registry.TaskStatusCompleted)
 			}
 
-			realExec := targets.NewLocalExecutor()
+			realExec := targets.NewLocalExecutor(socket)
 			t.Cleanup(func() {
 				if err := realExec.Close(); err != nil {
 					t.Errorf("Close: %v", err)
@@ -179,8 +183,10 @@ func TestIntegration_RealDispatch_RelaysSavedLastMessage(t *testing.T) {
 		},
 	}
 	markerDir := t.TempDir()
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
-	orch := orchestrator.New(store, targets.NewExecutor, detector)
+	socket := tmuxtest.Socket(t)
+	newExec := executortest.NewExecutor(socket)
+	detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), markerDir)
+	orch := orchestrator.New(store, newExec, detector)
 	var relayed string
 	model := &routertest.StubRoutingModel{
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
@@ -191,7 +197,7 @@ func TestIntegration_RealDispatch_RelaysSavedLastMessage(t *testing.T) {
 			return router.RelayResult{Reply: "ok", Done: true}, nil
 		},
 	}
-	r := router.New(store, orch, targets.NewExecutor, credentials.NewResolver(store), agentTypes, model, markerDir)
+	r := router.New(store, orch, newExec, credentials.NewResolver(store), agentTypes, model, markerDir)
 	dispatchCtx, cancel := context.WithTimeout(ctx, integrationDispatchTimeout)
 	defer cancel()
 	if _, err := r.Dispatch(dispatchCtx, "conv-real", "go"); err != nil {
@@ -199,7 +205,7 @@ func TestIntegration_RealDispatch_RelaysSavedLastMessage(t *testing.T) {
 	}
 	tasks, _ := store.ListTasksByWorkspace(ctx, ws.ID)
 	if len(tasks) == 1 {
-		t.Cleanup(func() { _ = targets.NewLocalExecutor().KillSession(context.Background(), tasks[0].TmuxSession) })
+		t.Cleanup(func() { _ = targets.NewLocalExecutor(socket).KillSession(context.Background(), tasks[0].TmuxSession) })
 	}
 	if relayed != "the whole answer" {
 		t.Fatalf("relayed %q, want the saved last message", relayed)

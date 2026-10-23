@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
@@ -100,9 +101,11 @@ func TestBuild_EndToEnd_Continuation_RealTmux(t *testing.T) {
 		t.Fatalf("Close (seed): %v", err)
 	}
 
+	socket := tmuxtest.Socket(t)
 	cfg := Config{
-		DBPath:    dbPath,
-		MasterKey: []byte("01234567890123456789012345678901"[:32]),
+		DBPath:     dbPath,
+		TmuxSocket: socket,
+		MasterKey:  []byte("01234567890123456789012345678901"[:32]),
 		Router: llmrouter.Config{
 			Primary: llmrouter.Tier{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"},
 		},
@@ -141,7 +144,7 @@ func TestBuild_EndToEnd_Continuation_RealTmux(t *testing.T) {
 		t.Fatalf("task Status = %q, want %q", tasks[0].Status, registry.TaskStatusAwaitingInput)
 	}
 
-	realExec := targets.NewLocalExecutor()
+	realExec := targets.NewLocalExecutor(socket)
 	t.Cleanup(func() {
 		if err := realExec.Close(); err != nil {
 			t.Errorf("Close: %v", err)
