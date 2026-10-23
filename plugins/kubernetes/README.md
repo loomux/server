@@ -182,8 +182,11 @@ started after the change has run (still one at a time per node, and
 not within a minute of the node's last, so the quota above holds). The
 pod is left running: the host records the `error` at its next reconcile
 (`LOOMUX_TARGET_PROBE_INTERVAL`, 5 minutes by default) and refuses to
-dispatch to it; whether to destroy it is yours. The Role can't watch
-policies or read nodes, so the minute's list is the event source.
+dispatch to it; whether to destroy it is yours. A read that changes
+what the policies make of those machines (open, confining, or
+unconfirmed) tells the host at once (`targets.changed`, LOOM-223). The
+Role can't watch policies or read nodes, so the minute's list is the
+event source.
 
 What it trusts. The canary samples a few destinations; it can't prove
 that none other answers. What proves that is the policies, so the

@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/plugins/rpc"
 	"github.com/Loomux/server/plugins/sdk"
@@ -100,4 +103,59 @@ func TestNodeVerdictNotifiesTheHost(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 		}
 	})
+}
+
+// LOOM-223: the policies opening under a running machine, or confining
+// it again, tell the host at once; a read that changes nothing says
+// nothing.
+func TestPolicyChangeNotifiesTheHost(t *testing.T) {
+	cs, _, p, clock := runningOn(t)
+	ids := hostFor(t, p)
+	expect := func(what string) {
+		t.Helper()
+		select {
+		case id := <-ids:
+			if id != "conf1" {
+				t.Errorf("%s: targets.changed for %q, want conf1", what, id)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: the host wasn't told", what)
+		}
+	}
+	quiet := func(what string) {
+		t.Helper()
+		select {
+		case id := <-ids:
+			t.Errorf("%s: targets.changed for %q, want none", what, id)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	clock.advance(time.Minute + time.Second) // a read, nothing changed
+	quiet("an unchanged read")
+
+	nps := cs.NetworkingV1().NetworkPolicies(testNS)
+	var removed []*networkingv1.NetworkPolicy
+	for _, name := range []string{"agents-default-deny", "agents-allow-dns"} {
+		np, err := nps.Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := nps.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		removed = append(removed, np)
+	}
+	clock.advance(time.Minute + time.Second)
+	expect("the policies opened")
+	reasonSoon(t, p, "conf1", protocol.EnvError, "NetworkPolicies no longer confine")
+
+	for _, np := range removed {
+		np.ResourceVersion = ""
+		if _, err := nps.Create(ctx, np, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock.advance(time.Minute + time.Second)
+	expect("the policies confine it again")
 }

@@ -189,11 +189,12 @@ func (p *Plugin) nodeStanding(node string, now time.Time) int {
 	return nodeUnconfirmed
 }
 
-// machinesOn is the ids of the watched machines on node; p.mu is held.
+// machinesOn is the ids of the watched machines on node, or on any node
+// for ""; p.mu is held.
 func (p *Plugin) machinesOn(node string) []string {
 	var ids []string
 	for pod, on := range p.watch {
-		if on == node {
+		if node == "" || on == node {
 			ids = append(ids, strings.TrimPrefix(pod, "lx-"))
 		}
 	}
@@ -284,11 +285,12 @@ type policyRead struct {
 func (p *Plugin) readPolicies(ctx context.Context, cfg Config, client kubernetes.Interface, instance string) (enforcementState, string) {
 	state, detail, sig := policyCheck(ctx, client, cfg.Namespace, instance)
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.stale(cfg) {
+		p.mu.Unlock()
 		return state, detail
 	}
 	now := p.Now()
+	was := p.policyStanding(now)
 	switch state {
 	case enforcementEnforced, enforcementPolicyOpen:
 		changed := p.policy.sig != "" && sig != p.policy.sig
@@ -307,7 +309,30 @@ func (p *Plugin) readPolicies(ctx context.Context, cfg Config, client kubernetes
 	default:
 		p.policy.failed = detail
 	}
+	// The host hears at once of the "none" machines whose status that
+	// changed (LOOM-223), as of a node's verdict (LOOM-213).
+	var moved []string
+	if p.policyStanding(now) != was {
+		moved = p.machinesOn("")
+	}
+	p.mu.Unlock()
+	for _, id := range moved {
+		p.notifier.TargetsChanged(id, "")
+	}
 	return state, detail
+}
+
+// policyStanding is what the policies' reads make of the running "none"
+// machines at now, as policyGate reads them: open (error), confining
+// (running), or unconfirmed (starting); p.mu is held.
+func (p *Plugin) policyStanding(now time.Time) int {
+	switch pr := p.policy; {
+	case pr.open != "":
+		return nodeOpen
+	case pr.at.IsZero(), pr.failed != "" && now.Sub(pr.at) > verdictTTL:
+		return nodeUnconfirmed
+	}
+	return nodeConfirmed
 }
 
 // rereadPolicies is readPolicies for the configuration now.
