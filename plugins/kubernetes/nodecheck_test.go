@@ -42,7 +42,7 @@ const failToRun = -1
 
 func nodeCanaries(t *testing.T, cs *fake.Clientset, scheduled string, codes map[string]int32) *canaryNodes {
 	n := &canaryNodes{t: t, cs: cs, scheduled: scheduled, codes: codes}
-	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
 		if !ok || pod.Labels[labelCanary] != "true" {
 			return false, nil, nil
@@ -425,6 +425,7 @@ func TestNoneNodeRenewed(t *testing.T) {
 		if !nodes.pinnedSoon("n1", 2) {
 			t.Fatalf("canaries pinned to n1 = %d 6 minutes on, nobody asking; want 2: the renewal", nodes.pinnedTo("n1"))
 		}
+		nodeIdleSoon(t, p, "n1") // its "enforced" is timed when it ends
 		clock.advance(6 * time.Minute)
 		if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvRunning {
 			t.Errorf("12 minutes on, renewed at 6: %s (%s), want running", env.Status, env.Reason)
@@ -677,13 +678,13 @@ func TestNoneOpenNodeOutlivesAPolicyError(t *testing.T) {
 			statusSoon(t, p, "conf1", protocol.EnvError)
 			settleCanaries(t, p) // before changing the fake's reactors
 			if tc.list != nil {
-				cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
+				prependReactor(cs, "list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
 					obj, err := tc.list()
 					return true, obj, err
 				})
 			} else {
 				// Check's first read: it stops there.
-				cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+				prependReactor(cs, "list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
 					return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("no"))
 				})
 			}

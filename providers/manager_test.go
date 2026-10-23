@@ -97,6 +97,37 @@ func TestCreateRefuses(t *testing.T) {
 	}
 }
 
+// TestEgressTrustedIsNeverTheDefault (LOOM-226): a create that names no
+// egress takes the plugin's first option that isn't trusted, even when
+// the plugin lists trusted first; trusted is made only when asked for.
+func TestEgressTrustedIsNeverTheDefault(t *testing.T) {
+	for _, tc := range []struct {
+		options     []string
+		asked, want string
+		wantRefusal bool
+	}{
+		{options: nil, want: protocol.EgressInternet},
+		{options: nil, asked: protocol.EgressTrusted, wantRefusal: true},
+		{options: []string{protocol.EgressInternet, protocol.EgressNone, protocol.EgressTrusted}, want: protocol.EgressInternet},
+		{options: []string{protocol.EgressTrusted, protocol.EgressNone}, want: protocol.EgressNone},
+		{options: []string{protocol.EgressTrusted}, wantRefusal: true},
+		{options: []string{protocol.EgressInternet, protocol.EgressTrusted}, asked: protocol.EgressTrusted, want: protocol.EgressTrusted},
+		{options: []string{protocol.EgressInternet, protocol.EgressNone}, asked: protocol.EgressTrusted, wantRefusal: true},
+	} {
+		got, err := providers.ChooseEgressForTest(tc.options, tc.asked)
+		var inv *providers.InvalidError
+		if tc.wantRefusal {
+			if !errors.As(err, &inv) || inv.Field != "egress" {
+				t.Errorf("options %v, asked %q: got %q, %v; want an egress refusal", tc.options, tc.asked, got, err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("options %v, asked %q: got %q, %v; want %q", tc.options, tc.asked, got, err, tc.want)
+		}
+	}
+}
+
 func TestCreateRefusesBadAddress(t *testing.T) {
 	h := newHarness(t, map[string]any{"address_domain": "bad;domain"})
 	_, _, err := h.m.Create(context.Background(), providers.CreateRequest{Target: registry.Target{Name: "evil"}, PluginID: h.pluginID})

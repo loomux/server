@@ -36,7 +36,7 @@ func TestNoneNodeFailureBeforeThePod(t *testing.T) {
 	}
 	t.Run("create", func(t *testing.T) {
 		cs, _, p, _ := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked})
-		cs.PrependReactor("create", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		prependReactor(cs, "create", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
 			leakOn(p, "n1")
 			return false, nil, nil
 		})
@@ -55,7 +55,7 @@ func TestNoneNodeFailureBeforeThePod(t *testing.T) {
 			t.Fatal(err)
 		}
 		var gets atomic.Int32
-		cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		prependReactor(cs, "get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			// The start reads the pod first, before its own check, then
 			// in ensurePod, after it.
 			if action.(k8stesting.GetAction).GetName() == podName("conf1") && gets.Add(1) == 2 {
@@ -89,7 +89,7 @@ func TestNoneNodeFailureBeforeThePod(t *testing.T) {
 		if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
 			t.Fatal(err)
 		}
-		cs.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		prependReactor(cs, "delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			if action.(k8stesting.DeleteAction).GetName() == podName("conf1") {
 				leakOn(p, "n1")
 			}
@@ -274,7 +274,7 @@ func TestCanaryProbeTimes(t *testing.T) {
 	}
 
 	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
-	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		obj, err := cs.Tracker().Get(corev1.SchemeGroupVersion.WithResource("pods"), testNS, action.(k8stesting.GetAction).GetName())
 		if err != nil {
 			return true, nil, err

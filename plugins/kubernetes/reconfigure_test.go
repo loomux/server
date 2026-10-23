@@ -35,13 +35,13 @@ func newCluster(t *testing.T) *fake.Clientset {
 func pauseAcross(t *testing.T, cs, next *fake.Clientset, p *Plugin, verb, resource, name string, then func()) *acrossConfigure {
 	t.Helper()
 	a := &acrossConfigure{}
-	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod); ok && a.paused.Load() && strings.HasPrefix(pod.Name, "lx-netcheck-") {
 			a.canaries.Add(1)
 		}
 		return false, nil, nil
 	})
-	cs.PrependReactor(verb, resource, func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, verb, resource, func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if named, ok := action.(interface{ GetName() string }); ok && name != "" && named.GetName() != name {
 			return false, nil, nil
 		}
@@ -199,7 +199,7 @@ func TestStaleConfigurationCertifiesNothing(t *testing.T) {
 	t.Run("a canary of the old configuration that gets in", func(t *testing.T) {
 		cs, _, p, _ := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked})
 		var script atomic.Value
-		cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			if pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod); ok && pod.Spec.NodeName == "n1" {
 				script.Store(strings.Join(pod.Spec.Containers[0].Command, " "))
 			}

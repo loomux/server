@@ -284,6 +284,15 @@ plugin lost is made again, an ephemeral one is marked lost and its
 workspaces archived, and machines the plugin has that Loomux doesn't
 know are destroyed after a day.
 
+A Kubernetes machine's egress is `internet` unless you ask for another:
+`none` (kube-dns only, offered while the plugin proves the cluster
+confines it) or `trusted` (the LAN and the tailnet as well, LOOM-226).
+`trusted` is for the machines you name in the plugin's
+`trusted_machines`, and needs the cluster's NetworkPolicy for
+`loomux.io/egress=trusted` (design §10 item 6 (e); the plugin's README
+says exactly what it opens). Loomux never picks it for you and logs
+every machine made with it.
+
 Credentials for the agents on a machine go in the vault scoped to the
 target (`target_id`); a one-time interactive sign-in kept in the
 machine's home works too, where the plugin keeps the data.

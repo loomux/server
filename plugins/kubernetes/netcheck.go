@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -300,8 +301,11 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 		case err != nil:
 			// Transient (etcd "leader changed" was seen on TEST): poll
 			// again, and report it only if it outlasts the canary. The
-			// context's own end is the timeout below, not a read error.
-			if ctx.Err() == nil {
+			// context's own end is the timeout below, not a read error;
+			// any other error counts, even one that came back as the
+			// time ran out (the first read can be the last, when making
+			// the pod took the canary's whole time).
+			if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 				readErr = err
 			}
 		default:

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -187,6 +188,9 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.configured && !slices.Equal(p.cfg.TrustedMachines, cfg.TrustedMachines) {
+		go p.trustChanged(p.cfg, cfg, client, cp.Host.InstanceID)
+	}
 	p.gen++
 	cfg.gen, cfg.apiHost = p.gen, apiHost
 	p.cfg, p.client, p.host, p.configured = cfg, client, cp.Host, true
@@ -277,6 +281,9 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 	// error or open policies answered first (LOOM-208).
 	if state != enforcementNotEnforced {
 		res.Problems = append(res.Problems, p.openNodes(severity)...)
+	}
+	if pr := trustedPolicyProblem(ctx, client, cfg, host.InstanceID); pr != nil {
+		res.Problems = append(res.Problems, *pr)
 	}
 	// Not OK on any error, a node found open since the verdict too, and
 	// on any verdict but "enforced" when the policy is required (pending

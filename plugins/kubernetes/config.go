@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -24,6 +25,10 @@ type Config struct {
 	Sizes                []protocol.Size
 	MaxEnvironments      int
 	RequireNetworkPolicy bool
+	// TrustedMachines are the target names that may have egress
+	// "trusted" (LOOM-226): the LAN and the tailnet. Empty: no machine
+	// may, and describe doesn't offer it.
+	TrustedMachines []string
 
 	// gen and apiHost are Configure's: the configuration's generation,
 	// by which a request that took this copy knows whether it is still
@@ -96,12 +101,47 @@ func parseConfig(m map[string]any) (Config, error) {
 		}
 		c.RequireNetworkPolicy = b
 	}
+	trusted, err := parseTrusted(m["trusted_machines"])
+	if err != nil {
+		return c, err
+	}
+	c.TrustedMachines = trusted
 	sizes, err := parseSizes(m["sizes"])
 	if err != nil {
 		return c, err
 	}
 	c.Sizes = sizes
 	return c, nil
+}
+
+// parseTrusted is trusted_machines: target names, comma-separated.
+func parseTrusted(v any) ([]string, error) {
+	if v == nil {
+		return nil, nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return nil, invalid("trusted_machines must be target names, comma-separated")
+	}
+	var out []string
+	for _, name := range strings.Split(s, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if len(name) > 200 || strings.ContainsAny(name, "\r\n") {
+			return nil, invalid("trusted_machines: %q isn't a target name", truncate(name, 40))
+		}
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// trusted is whether the machine named name may have egress "trusted".
+func (c Config) trusted(name string) bool {
+	return slices.Contains(c.TrustedMachines, strings.TrimSpace(name))
 }
 
 func parseSizes(v any) ([]protocol.Size, error) {

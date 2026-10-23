@@ -10,6 +10,8 @@ import (
 
 var ErrStaleForTest = errStale
 
+var ChooseEgressForTest = chooseEgress
+
 func (m *Manager) StartJobForTest(envID string, fn func(ctx context.Context)) { m.startJob(envID, fn) }
 func (m *Manager) CancelJobForTest(envID string)                              { m.cancelJob(envID) }
 func (m *Manager) FollowingForTest(envID string) bool                         { return m.following(envID) }

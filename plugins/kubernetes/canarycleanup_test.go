@@ -53,6 +53,26 @@ func canaryGone(t *testing.T, cs *fake.Clientset, ns, name, why string) {
 	}
 }
 
+// renewerSwept waits up to 5 s for the renewer's first pass after
+// configure: its sweep of canaries left behind, then its read of the
+// NetworkPolicies, the first list of them when nothing else has read
+// them yet. The next pass is a minute on.
+func renewerSwept(t *testing.T, cs *fake.Clientset) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		for _, a := range cs.Actions() {
+			if a.GetVerb() == "list" && a.GetResource().Resource == "networkpolicies" {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the renewer never read the NetworkPolicies")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // numbered names each canary pod apart: lx-netcheck-c1, -c2, …
 func numbered(p *Plugin) {
 	var n atomic.Int32
@@ -68,7 +88,7 @@ func TestCanaryDeletedOnceItsVerdictIsRecorded(t *testing.T) {
 	var mu sync.Mutex
 	var deleted []string
 	var recordedFirst []bool
-	cs.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		p.mu.Lock()
 		recorded := p.settled != nil && p.settled.state == enforcementEnforced
 		p.mu.Unlock()
@@ -79,6 +99,9 @@ func TestCanaryDeletedOnceItsVerdictIsRecorded(t *testing.T) {
 		return false, nil, nil
 	})
 	p = configured(t, cs, nil, func(pp *Plugin) { p = pp })
+	// The renewer's first sweep, at configure, deletes terminated
+	// canaries too: one that ran late would delete this check's as well.
+	renewerSwept(t, cs)
 	res, err := p.Check(ctx)
 	if err != nil || !res.OK {
 		t.Fatalf("check = %+v, %v", res, err)
@@ -100,7 +123,7 @@ func TestCanaryDeletedOnceItsVerdictIsRecorded(t *testing.T) {
 func TestCanaryStillRunningIsLeftAlone(t *testing.T) {
 	cs := fake.NewClientset(kindPolicies(t)...)
 	// The check's canary (unpinned) exits; the node's, pinned, runs on.
-	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
 		if ok && pod.Labels[labelCanary] == "true" && pod.Spec.NodeName == "" {
 			pod.Status.Phase = corev1.PodSucceeded
@@ -146,7 +169,7 @@ func TestCanaryStillRunningIsLeftAlone(t *testing.T) {
 // verdict stands meanwhile.
 func TestCanaryDeleteFailureRetriedBySweep(t *testing.T) {
 	cs := fake.NewClientset(kindPolicies(t)...)
-	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
 		if ok && pod.Labels[labelCanary] == "true" {
 			pod.Status.Phase = corev1.PodRunning
@@ -157,7 +180,7 @@ func TestCanaryDeleteFailureRetriedBySweep(t *testing.T) {
 	var failing atomic.Bool
 	failing.Store(true)
 	var attempts atomic.Int32
-	cs.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		attempts.Add(1)
 		if failing.Load() {
 			return true, nil, kerrors.NewServiceUnavailable("etcdserver: request timed out")
@@ -221,7 +244,7 @@ func TestCanaryDeleteFailureRetriedBySweep(t *testing.T) {
 func TestCanaryDeleteGivenUp(t *testing.T) {
 	cs := fake.NewClientset(kindPolicies(t)...)
 	canaryExits(cs, exitBlocked)
-	cs.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, kerrors.NewForbidden(corev1.Resource("pods"), action.(k8stesting.DeleteAction).GetName(), nil)
 	})
 	var clock *testClock
