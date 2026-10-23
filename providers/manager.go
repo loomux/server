@@ -466,6 +466,9 @@ func (m *Manager) following(envID string) bool {
 func (m *Manager) runCreate(ctx context.Context, envID string) {
 	env, target, err := m.load(ctx, envID)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			m.failJob(ctx, envID, m.deadlineReason(ctx))
+		}
 		return
 	}
 	spec, err := m.buildSpec(ctx, env, target, "")
@@ -519,7 +522,15 @@ func (m *Manager) follow(ctx context.Context, envID string) {
 	var left time.Duration // when the pull was first seen; 0: not pulling
 	for {
 		env, _, err := m.load(ctx, envID)
-		if err != nil || !inFlight(env.Status) {
+		if err != nil {
+			// A read the deadline cut short is the deadline: without
+			// this the machine was left starting for ever.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				m.failJob(ctx, envID, m.deadlineReason(ctx))
+			}
+			return
+		}
+		if !inFlight(env.Status) {
 			return
 		}
 		var pe protocol.Environment
