@@ -146,6 +146,8 @@ func (r *Router) describePlan(ctx context.Context, target *registry.Target, deci
 			what = "a workspace cloned from " + s.GitRemote
 		case ProvisionExistingDir:
 			what = "a workspace from the existing directory"
+		case ProvisionGitWorktree:
+			what = "a git worktree of " + workspaceDisplayPath(target, s.Worktree.Base) + " on a new branch " + s.worktreeBranch()
 		}
 		return fmt.Sprintf("create %s named %s at %s on %s, and start %s there",
 			what, s.Name, workspaceDisplayPath(target, s.Name), target.Name, decision.AgentType), nil

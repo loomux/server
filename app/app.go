@@ -135,6 +135,12 @@ func (a *App) DeleteWorkspace(ctx context.Context, id string) ([]string, error) 
 	return a.orch.DeleteWorkspace(ctx, id)
 }
 
+// DeleteWorkspaceAndWorktree is DeleteWorkspace that also removes the
+// workspace's git worktree from its target (LOOM-228).
+func (a *App) DeleteWorkspaceAndWorktree(ctx context.Context, id string) ([]string, error) {
+	return a.orch.DeleteWorkspaceAndWorktree(ctx, id)
+}
+
 // SetWorkspaceStatus reopens (idle) or archives a workspace (LOOM-70) —
 // see orchestrator.Orchestrator.ReopenWorkspace and ArchiveWorkspace.
 // Satisfies api.WorkspaceManager.

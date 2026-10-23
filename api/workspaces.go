@@ -29,10 +29,19 @@ type WorkspaceProvisioner interface {
 }
 
 // WorkspaceToProvision is a workspace to make: Kind is empty,
-// git_clone or existing_dir.
+// git_clone, existing_dir or git_worktree (LOOM-228: Worktree's base,
+// ref and branch, only then).
 type WorkspaceToProvision struct {
 	TargetID, Name, Kind, GitRemote, Description string
 	Tags                                         []string
+	Worktree                                     WorktreeToAdd
+}
+
+// WorktreeToAdd is a git_worktree workspace's source: the repository's
+// directory under the workspace root, the ref the branch starts at
+// ("" for its HEAD) and the new branch ("" for loomux/<name>).
+type WorktreeToAdd struct {
+	Base, Ref, Branch string
 }
 
 // ProvisionedWorkspace is what ProvisionWorkspace did.
@@ -74,6 +83,15 @@ type createWorkspaceRequest struct {
 	GitRemote   string   `json:"git_remote"`
 	Description string   `json:"description"`
 	Tags        []string `json:"tags"`
+	// Worktree makes the workspace a git worktree of a repository
+	// already on the target (LOOM-228); kind is git_worktree with it.
+	Worktree *worktreeRequest `json:"worktree"`
+}
+
+type worktreeRequest struct {
+	Base   string `json:"base"`
+	Ref    string `json:"ref"`
+	Branch string `json:"branch"`
 }
 
 // workspaceCreatedResponse is a workspace as the list shows it, plus
@@ -106,15 +124,27 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	var worktree WorktreeToAdd
+	if req.Worktree != nil {
+		worktree = WorktreeToAdd{Base: strings.TrimSpace(req.Worktree.Base), Ref: strings.TrimSpace(req.Worktree.Ref), Branch: strings.TrimSpace(req.Worktree.Branch)}
+	}
 	if req.Kind == "" {
-		req.Kind = "empty"
-		if req.GitRemote != "" {
+		switch {
+		case req.Worktree != nil:
+			req.Kind = "git_worktree"
+		case req.GitRemote != "":
 			req.Kind = "git_clone"
+		default:
+			req.Kind = "empty"
 		}
+	}
+	if req.Kind == "git_worktree" && req.Worktree == nil {
+		writeError(w, http.StatusBadRequest, "kind git_worktree needs worktree: {base, ref, branch}")
+		return
 	}
 	got, err := s.workspaceProvisioner.ProvisionWorkspace(r.Context(), WorkspaceToProvision{
 		TargetID: req.TargetID, Name: req.Name, Kind: req.Kind, GitRemote: req.GitRemote,
-		Description: req.Description, Tags: req.Tags,
+		Description: req.Description, Tags: req.Tags, Worktree: worktree,
 	})
 	var (
 		specErr *WorkspaceSpecError

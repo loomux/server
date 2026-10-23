@@ -47,13 +47,45 @@ var (
 	// part can be read by git or ssh as an option (`-oProxyCommand=…`).
 	gitRemoteURL = regexp.MustCompile(`^(https|ssh)://(?:[A-Za-z0-9][A-Za-z0-9._~%+-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?(?:/[A-Za-z0-9._~%+@:/-]*)?$`)
 	gitRemoteSCP = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*:[A-Za-z0-9._~/+][A-Za-z0-9._~/+-]*$`)
+	// gitRefName is what a worktree's ref and branch may be: a
+	// conservative subset of git's ref names that never starts with a
+	// dash (no option) and needs no quoting thought; git itself checks
+	// the branch again (check-ref-format) when the recipe runs.
+	gitRefName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
 )
+
+// validRefName is gitRefName without what git refuses in a ref name:
+// "..", "//", a component starting with "." or ending in ".lock", a
+// trailing "/" or ".".
+func validRefName(s string) bool {
+	if !gitRefName.MatchString(s) || strings.Contains(s, "..") || strings.Contains(s, "//") ||
+		strings.HasSuffix(s, "/") || strings.HasSuffix(s, ".") {
+		return false
+	}
+	for _, part := range strings.Split(s, "/") {
+		if strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	return true
+}
+
+// worktreeBranch is the branch a git_worktree workspace gets.
+func (s ProvisionSpec) worktreeBranch() string {
+	if s.Worktree.Branch != "" {
+		return s.Worktree.Branch
+	}
+	return "loomux/" + s.Name
+}
 
 // Validate rejects any spec provisioning can't safely act on. Its errors
 // are safe to show to the user.
 func (s ProvisionSpec) Validate() error {
 	if !workspaceSlug.MatchString(s.Name) {
 		return fmt.Errorf("workspace name %q must be lowercase letters, digits, dashes and underscores (at most 63, starting with a letter or digit)", s.Name)
+	}
+	if s.Kind != ProvisionGitWorktree && s.Worktree != (WorktreeSpec{}) {
+		return fmt.Errorf("worktree is only used with kind %q", ProvisionGitWorktree)
 	}
 	switch s.Kind {
 	case ProvisionEmpty, ProvisionExistingDir:
@@ -64,9 +96,23 @@ func (s ProvisionSpec) Validate() error {
 		if !gitRemoteURL.MatchString(s.GitRemote) && !gitRemoteSCP.MatchString(s.GitRemote) {
 			return fmt.Errorf("git_remote %q must be an https://, ssh:// or user@host:path URL", s.GitRemote)
 		}
+	case ProvisionGitWorktree:
+		w := s.Worktree
+		switch {
+		case s.GitRemote != "":
+			return fmt.Errorf("git_remote is only used with kind %q", ProvisionGitClone)
+		case !workspaceSlug.MatchString(w.Base):
+			return fmt.Errorf("worktree base %q must be the name of a directory under the workspace root: lowercase letters, digits, dashes and underscores", w.Base)
+		case w.Base == s.Name:
+			return fmt.Errorf("worktree base %q is the workspace's own name: a worktree needs its own directory", w.Base)
+		case w.Ref != "" && !validRefName(w.Ref):
+			return fmt.Errorf("worktree ref %q must be a branch, tag or commit name (letters, digits, . _ / -)", w.Ref)
+		case !validRefName(s.worktreeBranch()):
+			return fmt.Errorf("worktree branch %q must be a branch name (letters, digits, . _ / -)", s.worktreeBranch())
+		}
 	default:
-		return fmt.Errorf("provisioning kind must be %q, %q or %q, not %q",
-			ProvisionEmpty, ProvisionGitClone, ProvisionExistingDir, s.Kind)
+		return fmt.Errorf("provisioning kind must be %q, %q, %q or %q, not %q",
+			ProvisionEmpty, ProvisionGitClone, ProvisionExistingDir, ProvisionGitWorktree, s.Kind)
 	}
 	return nil
 }
@@ -98,6 +144,22 @@ func provisioningRecipe(target *registry.Target, spec ProvisionSpec, nonce strin
 		fmt.Fprintf(&b, "git clone -- %s \"$p\"\n", shellQuote(spec.GitRemote))
 	case ProvisionExistingDir:
 		b.WriteString(`[ -d "$p" ] || { echo "loomux: no directory $p" >&2; exit 1; }` + "\n")
+	case ProvisionGitWorktree:
+		// The base is confined like the workspace: a symlink out of the
+		// root can't make another directory's repository the source.
+		ref := spec.Worktree.Ref
+		if ref == "" {
+			ref = "HEAD"
+		}
+		branch := shellQuote(spec.worktreeBranch())
+		fmt.Fprintf(&b, "b=\"$r\"/%s\n", shellQuote(spec.Worktree.Base))
+		b.WriteString(`[ -d "$b" ] || { echo "loomux: no repository directory $b" >&2; exit 1; }` + "\n")
+		b.WriteString(`base=$(cd -- "$b" && pwd -P)` + "\n")
+		b.WriteString(`case "$base" in "$r"/*) ;; *) echo "loomux: $b resolves to $base, outside the workspace root $r" >&2; exit 1 ;; esac` + "\n")
+		b.WriteString(`git -C "$base" rev-parse --git-dir >/dev/null 2>&1 || { echo "loomux: $base isn't a git repository" >&2; exit 1; }` + "\n")
+		b.WriteString(`if [ -e "$p" ] || [ -L "$p" ]; then echo "loomux: $p already exists" >&2; exit 1; fi` + "\n")
+		fmt.Fprintf(&b, "git check-ref-format --branch %s >/dev/null || { echo \"loomux: %s isn't a branch name git accepts\" >&2; exit 1; }\n", branch, spec.worktreeBranch())
+		fmt.Fprintf(&b, "git -C \"$base\" worktree add -b %s -- \"$p\" %s\n", branch, shellQuote(ref))
 	}
 	b.WriteString(`real=$(cd -- "$p" && pwd -P)` + "\n")
 	b.WriteString(`case "$real" in "$r"/*) ;; *) echo "loomux: $p resolves to $real, outside the workspace root $r" >&2; exit 1 ;; esac` + "\n")

@@ -1,0 +1,3 @@
+### Added
+
+- Workspaces can be git worktrees, one per dispatch (LOOM-228): `POST /api/v1/workspaces` with `worktree: {base, ref?, branch?}` (kind `git_worktree`) runs `git worktree add -b <branch>` from a repository already under the target's workspace root. The branch defaults to `loomux/<name>`, so each workspace gets its own checkout and branch, and git's refusals become the workspace's failure reason. `DELETE /api/v1/workspaces/{id}?remove_worktree=true` also removes the worktree from the target. git refuses one with uncommitted or untracked files, and then nothing is deleted. The branch always stays.

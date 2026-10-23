@@ -149,11 +149,13 @@ DELETE /api/v1/targets/{id}/pin status 409
 DELETE /api/v1/targets/{id}/pin status 500
 DELETE /api/v1/targets/{id}/pin status 501
 DELETE /api/v1/workspaces/{id}
+DELETE /api/v1/workspaces/{id} query remove_worktree
 DELETE /api/v1/workspaces/{id} request-header Authorization
 DELETE /api/v1/workspaces/{id} response - object
 DELETE /api/v1/workspaces/{id} response .sessions_not_killed []string
 DELETE /api/v1/workspaces/{id} response-header Content-Type
 DELETE /api/v1/workspaces/{id} status 200
+DELETE /api/v1/workspaces/{id} status 400
 DELETE /api/v1/workspaces/{id} status 401
 DELETE /api/v1/workspaces/{id} status 404
 DELETE /api/v1/workspaces/{id} status 409
@@ -1821,6 +1823,10 @@ POST /api/v1/workspaces request .kind string
 POST /api/v1/workspaces request .name string
 POST /api/v1/workspaces request .tags []string
 POST /api/v1/workspaces request .target_id string
+POST /api/v1/workspaces request .worktree object nullable
+POST /api/v1/workspaces request .worktree.base string
+POST /api/v1/workspaces request .worktree.branch string
+POST /api/v1/workspaces request .worktree.ref string
 POST /api/v1/workspaces request-header Authorization
 POST /api/v1/workspaces response - object
 POST /api/v1/workspaces response .conversation_id string omitempty
