@@ -12,14 +12,21 @@ import (
 )
 
 type fakeWorkspaceManager struct {
-	deleted   []string
-	left      []string
-	statusSet []string
-	err       error
+	deleted []string
+	// withWorktree are the ids deleted with their worktree (LOOM-228).
+	withWorktree []string
+	left         []string
+	statusSet    []string
+	err          error
 }
 
 func (m *fakeWorkspaceManager) DeleteWorkspace(ctx context.Context, id string) ([]string, error) {
 	m.deleted = append(m.deleted, id)
+	return m.left, m.err
+}
+
+func (m *fakeWorkspaceManager) DeleteWorkspaceAndWorktree(ctx context.Context, id string) ([]string, error) {
+	m.withWorktree = append(m.withWorktree, id)
 	return m.left, m.err
 }
 
@@ -49,6 +56,27 @@ func TestDeleteWorkspace(t *testing.T) {
 	}
 	if len(out.SessionsNotKilled) != 1 || out.SessionsNotKilled[0] != "loomux-abc" {
 		t.Fatalf("sessions_not_killed = %v", out.SessionsNotKilled)
+	}
+}
+
+// LOOM-228: remove_worktree=true deletes through the worktree path;
+// false or absent, the plain one; anything else is a 400.
+func TestDeleteWorkspace_RemoveWorktree(t *testing.T) {
+	m := &fakeWorkspaceManager{}
+	srv, _, _ := newTestServer(t, api.WithWorkspaceManager(m))
+	token, _ := login(t, srv.URL, testPassword)
+	for _, tc := range []struct {
+		query  string
+		status int
+	}{{"?remove_worktree=true", 200}, {"?remove_worktree=false", 200}, {"", 200}, {"?remove_worktree=yes", 400}} {
+		resp := authedRequest(t, http.MethodDelete, srv.URL+"/api/v1/workspaces/ws-1"+tc.query, token, nil)
+		resp.Body.Close()
+		if resp.StatusCode != tc.status {
+			t.Errorf("%q: status = %d, want %d", tc.query, resp.StatusCode, tc.status)
+		}
+	}
+	if len(m.withWorktree) != 1 || len(m.deleted) != 2 {
+		t.Errorf("with worktree %v, plain %v; want one and two", m.withWorktree, m.deleted)
 	}
 }
 

@@ -222,6 +222,15 @@ answers `422` with the plugin as it is (`status: error`,
 `503` without `LOOMUX_MASTER_KEY`. The routes answer `404` on a server
 built without `WithPlugins`.
 
+`GET /plugins/{id}/targets` is what an instance offers for a new
+machine, as its `targets.describe` says right now (LOOM-238): `sizes`
+(`{name, cpu, memory, disk}`, the first the default),
+`persistent_default`, `egress_options` (the first the default; `none`
+only while the plugin finds network isolation enforced),
+`image`, `max_environments` (0: no quota) and `environments`. `404` for
+no such instance (or a server without machines), `409` when it isn't
+running or doesn't make machines.
+
 ## Machines (LOOM-178)
 
 A target a plugin made (`docs/design/target-providers.md` §2, §5).
@@ -233,7 +242,8 @@ egress}`) asks that installed plugin for a machine: `kind` must be
 target, its `plugin.status` `creating`, and the machine comes up in the
 background (poll `GET /targets/{id}`). Every target carries `plugin`
 (null for a registered host): the owning plugin, the machine's status
-and reason, size, persistence, egress, image and digest,
+and reason, `progress` (`image_pull` while a machine coming up pulls
+its image, else empty; LOOM-239), size, persistence, egress, image and digest,
 `update_available`, and the plugin's warnings. `POST
 /targets/{id}/start`, `/stop` and `/recreate` (`{size?}`) answer `202`
 with the target; `409` while a task runs there, for a stop of an
@@ -358,9 +368,19 @@ plain ssh form.
     mirroring `SessionStore`, satisfied structurally by `*app.App.Store()`.
   - `POST /api/v1/workspaces` — auth-gated (LOOM-215), provisions a
     workspace on a chosen target, as a chat's `provision_workspace` does:
-    `{target_id, name, kind?, git_remote?, description?, tags?}`, `kind`
-    one of `empty`, `git_clone`, `existing_dir` (default `git_clone` with
-    a `git_remote`, else `empty`). It answers once the workspace row
+    `{target_id, name, kind?, git_remote?, worktree?, description?, tags?}`,
+    `kind` one of `empty`, `git_clone`, `existing_dir`, `git_worktree`
+    (default `git_worktree` with a `worktree`, `git_clone` with a
+    `git_remote`, else `empty`). `git_worktree` (LOOM-228) is `git -C
+    <root>/<worktree.base> worktree add -b <branch> <root>/<name> <ref>`:
+    `worktree: {base, ref?, branch?}`, `base` a repository's directory
+    under the target's workspace root (confined like the workspace),
+    `ref` the commit the branch starts at (default the base's `HEAD`),
+    `branch` the new branch (default `loomux/<name>`, so each workspace,
+    one per dispatch, has its own). git's refusals (the branch exists, no
+    such ref, not a repository) are the workspace's `status_reason`. A
+    repeat is matched by name and target only: the base and branch aren't
+    recorded. It answers once the workspace row
     exists: `202` with the workspace (status `provisioning`), a
     `Location: /api/v1/workspaces/{id}` to follow, and `conversation_id`,
     the conversation its provisioning run is recorded under (its command,
@@ -378,6 +398,17 @@ plain ssh form.
   - `GET /api/v1/workspaces/{id}` — auth-gated (LOOM-215), one workspace
     as `GET /workspaces` lists it; what a client polls while one
     provisions. `404` if unknown.
+  - `DELETE /api/v1/workspaces/{id}[?remove_worktree=true]` — auth-gated
+    (LOOM-70): deletes the workspace, its tasks and their sessions
+    (`{sessions_not_killed}`); its files stay. With `remove_worktree=true`
+    (LOOM-228, for a `git_worktree` workspace) its worktree is removed
+    from the target first (`git worktree remove`, found from the
+    worktree itself; the branch stays). git's refusal of a worktree with
+    changes not committed or untracked files, a directory that is a
+    repository's own checkout or not git, or a credential still scoped
+    to the workspace is `409` with why, and nothing is deleted; a
+    directory already gone counts as removed. `400` for any other
+    `remove_worktree` value.
   - `GET /api/v1/conversations` — auth-gated (LOOM-18), one summary row
     per distinct `conversation_id`, most-recently-updated first:
     `{conversations: [{conversation_id, workspace_id, status,
@@ -486,6 +517,10 @@ plain ssh form.
     show `relay_effective`: what the router models may see of the
     target's work (`docs/deploy/operations.md`, "What the router models
     see").
+  - Targets carry `keep_idle_sessions` (LOOM-227, default `false`): when
+    `true` the idle reaper never closes the target's sessions however
+    long they wait for a follow-up, as a hub's own session needs
+    (`docs/deploy/operations.md`, "Idle sessions").
   - `POST /api/v1/targets/{id}/scan-host-key`,
     `POST /api/v1/targets/{id}/pin` `{fingerprint}`,
     `DELETE /api/v1/targets/{id}/pin`, `POST /api/v1/targets/{id}/test` —

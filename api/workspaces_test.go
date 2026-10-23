@@ -81,6 +81,30 @@ func TestCreateWorkspace_Accepted(t *testing.T) {
 	}
 }
 
+// LOOM-228: a worktree object makes a git_worktree workspace (the kind
+// implied), its base, ref and branch passed on; the kind without one is
+// a 400.
+func TestCreateWorkspace_Worktree(t *testing.T) {
+	stub := &stubProvisioner{resp: api.ProvisionedWorkspace{
+		Workspace: &registry.Workspace{ID: "ws-2", Name: "fix-1", TargetID: "t-1", Status: registry.WorkspaceStatusProvisioning},
+	}}
+	base, token, _ := provisioningServer(t, stub)
+	resp := authedRequest(t, http.MethodPost, base+"/api/v1/workspaces", token,
+		[]byte(`{"target_id": "t-1", "name": "fix-1", "worktree": {"base": "server", "ref": " origin/main ", "branch": "orski/fix-1"}}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if g := stub.got; g.Kind != "git_worktree" || g.Worktree != (api.WorktreeToAdd{Base: "server", Ref: "origin/main", Branch: "orski/fix-1"}) {
+		t.Errorf("asked = %+v", g)
+	}
+	resp = authedRequest(t, http.MethodPost, base+"/api/v1/workspaces", token, []byte(`{"target_id": "t-1", "name": "fix-2", "kind": "git_worktree"}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("git_worktree without worktree: status %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestCreateWorkspace_Existing(t *testing.T) {
 	stub := &stubProvisioner{resp: api.ProvisionedWorkspace{
 		Workspace: &registry.Workspace{ID: "ws-1", Name: "api-ws", TargetID: "t-1", Status: registry.WorkspaceStatusIdle},

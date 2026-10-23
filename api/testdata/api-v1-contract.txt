@@ -97,6 +97,7 @@ DELETE /api/v1/targets/{id}/pin response .health.status string
 DELETE /api/v1/targets/{id}/pin response .health.tmux_version string
 DELETE /api/v1/targets/{id}/pin response .host string
 DELETE /api/v1/targets/{id}/pin response .id string
+DELETE /api/v1/targets/{id}/pin response .keep_idle_sessions boolean
 DELETE /api/v1/targets/{id}/pin response .kind string
 DELETE /api/v1/targets/{id}/pin response .name string
 DELETE /api/v1/targets/{id}/pin response .next_step string nullable
@@ -114,6 +115,7 @@ DELETE /api/v1/targets/{id}/pin response .plugin.image_digest string
 DELETE /api/v1/targets/{id}/pin response .plugin.label string
 DELETE /api/v1/targets/{id}/pin response .plugin.name string
 DELETE /api/v1/targets/{id}/pin response .plugin.persistent boolean
+DELETE /api/v1/targets/{id}/pin response .plugin.progress string
 DELETE /api/v1/targets/{id}/pin response .plugin.size string
 DELETE /api/v1/targets/{id}/pin response .plugin.status string
 DELETE /api/v1/targets/{id}/pin response .plugin.status_reason string
@@ -148,11 +150,13 @@ DELETE /api/v1/targets/{id}/pin status 409
 DELETE /api/v1/targets/{id}/pin status 500
 DELETE /api/v1/targets/{id}/pin status 501
 DELETE /api/v1/workspaces/{id}
+DELETE /api/v1/workspaces/{id} query remove_worktree
 DELETE /api/v1/workspaces/{id} request-header Authorization
 DELETE /api/v1/workspaces/{id} response - object
 DELETE /api/v1/workspaces/{id} response .sessions_not_killed []string
 DELETE /api/v1/workspaces/{id} response-header Content-Type
 DELETE /api/v1/workspaces/{id} status 200
+DELETE /api/v1/workspaces/{id} status 400
 DELETE /api/v1/workspaces/{id} status 401
 DELETE /api/v1/workspaces/{id} status 404
 DELETE /api/v1/workspaces/{id} status 409
@@ -455,6 +459,25 @@ GET /api/v1/plugins/{id} status 409
 GET /api/v1/plugins/{id} status 422
 GET /api/v1/plugins/{id} status 500
 GET /api/v1/plugins/{id} status 503
+GET /api/v1/plugins/{id}/targets
+GET /api/v1/plugins/{id}/targets request-header Authorization
+GET /api/v1/plugins/{id}/targets response - object
+GET /api/v1/plugins/{id}/targets response .egress_options []string
+GET /api/v1/plugins/{id}/targets response .environments number
+GET /api/v1/plugins/{id}/targets response .image string
+GET /api/v1/plugins/{id}/targets response .max_environments number
+GET /api/v1/plugins/{id}/targets response .persistent_default boolean
+GET /api/v1/plugins/{id}/targets response .sizes []object
+GET /api/v1/plugins/{id}/targets response .sizes[].cpu string
+GET /api/v1/plugins/{id}/targets response .sizes[].disk string
+GET /api/v1/plugins/{id}/targets response .sizes[].memory string
+GET /api/v1/plugins/{id}/targets response .sizes[].name string
+GET /api/v1/plugins/{id}/targets response-header Content-Type
+GET /api/v1/plugins/{id}/targets status 200
+GET /api/v1/plugins/{id}/targets status 401
+GET /api/v1/plugins/{id}/targets status 404
+GET /api/v1/plugins/{id}/targets status 409
+GET /api/v1/plugins/{id}/targets status 500
 GET /api/v1/sessions
 GET /api/v1/sessions request-header Authorization
 GET /api/v1/sessions response - object
@@ -540,6 +563,7 @@ GET /api/v1/targets response .targets[].health.status string
 GET /api/v1/targets response .targets[].health.tmux_version string
 GET /api/v1/targets response .targets[].host string
 GET /api/v1/targets response .targets[].id string
+GET /api/v1/targets response .targets[].keep_idle_sessions boolean
 GET /api/v1/targets response .targets[].kind string
 GET /api/v1/targets response .targets[].name string
 GET /api/v1/targets response .targets[].next_step string nullable
@@ -557,6 +581,7 @@ GET /api/v1/targets response .targets[].plugin.image_digest string
 GET /api/v1/targets response .targets[].plugin.label string
 GET /api/v1/targets response .targets[].plugin.name string
 GET /api/v1/targets response .targets[].plugin.persistent boolean
+GET /api/v1/targets response .targets[].plugin.progress string
 GET /api/v1/targets response .targets[].plugin.size string
 GET /api/v1/targets response .targets[].plugin.status string
 GET /api/v1/targets response .targets[].plugin.status_reason string
@@ -603,6 +628,7 @@ GET /api/v1/targets/{id} response .health.status string
 GET /api/v1/targets/{id} response .health.tmux_version string
 GET /api/v1/targets/{id} response .host string
 GET /api/v1/targets/{id} response .id string
+GET /api/v1/targets/{id} response .keep_idle_sessions boolean
 GET /api/v1/targets/{id} response .kind string
 GET /api/v1/targets/{id} response .name string
 GET /api/v1/targets/{id} response .next_step string nullable
@@ -620,6 +646,7 @@ GET /api/v1/targets/{id} response .plugin.image_digest string
 GET /api/v1/targets/{id} response .plugin.label string
 GET /api/v1/targets/{id} response .plugin.name string
 GET /api/v1/targets/{id} response .plugin.persistent boolean
+GET /api/v1/targets/{id} response .plugin.progress string
 GET /api/v1/targets/{id} response .plugin.size string
 GET /api/v1/targets/{id} response .plugin.status string
 GET /api/v1/targets/{id} response .plugin.status_reason string
@@ -1158,6 +1185,7 @@ POST /api/v1/targets request .allow_shell boolean nullable
 POST /api/v1/targets request .allowed_agent_types []string nullable
 POST /api/v1/targets request .generate_ssh_key boolean
 POST /api/v1/targets request .host string
+POST /api/v1/targets request .keep_idle_sessions boolean nullable
 POST /api/v1/targets request .kind string
 POST /api/v1/targets request .name string
 POST /api/v1/targets request .permission_mode string nullable
@@ -1190,6 +1218,7 @@ POST /api/v1/targets response .health.status string
 POST /api/v1/targets response .health.tmux_version string
 POST /api/v1/targets response .host string
 POST /api/v1/targets response .id string
+POST /api/v1/targets response .keep_idle_sessions boolean
 POST /api/v1/targets response .kind string
 POST /api/v1/targets response .name string
 POST /api/v1/targets response .next_step string nullable
@@ -1207,6 +1236,7 @@ POST /api/v1/targets response .plugin.image_digest string
 POST /api/v1/targets response .plugin.label string
 POST /api/v1/targets response .plugin.name string
 POST /api/v1/targets response .plugin.persistent boolean
+POST /api/v1/targets response .plugin.progress string
 POST /api/v1/targets response .plugin.size string
 POST /api/v1/targets response .plugin.status string
 POST /api/v1/targets response .plugin.status_reason string
@@ -1282,6 +1312,7 @@ POST /api/v1/targets/{id}/migrate-ssh response .target.health.status string
 POST /api/v1/targets/{id}/migrate-ssh response .target.health.tmux_version string
 POST /api/v1/targets/{id}/migrate-ssh response .target.host string
 POST /api/v1/targets/{id}/migrate-ssh response .target.id string
+POST /api/v1/targets/{id}/migrate-ssh response .target.keep_idle_sessions boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target.kind string
 POST /api/v1/targets/{id}/migrate-ssh response .target.name string
 POST /api/v1/targets/{id}/migrate-ssh response .target.next_step string nullable
@@ -1299,6 +1330,7 @@ POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.image_digest strin
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.label string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.name string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.persistent boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.progress string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.size string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.status string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.status_reason string
@@ -1366,6 +1398,7 @@ POST /api/v1/targets/{id}/pin response .health.status string
 POST /api/v1/targets/{id}/pin response .health.tmux_version string
 POST /api/v1/targets/{id}/pin response .host string
 POST /api/v1/targets/{id}/pin response .id string
+POST /api/v1/targets/{id}/pin response .keep_idle_sessions boolean
 POST /api/v1/targets/{id}/pin response .kind string
 POST /api/v1/targets/{id}/pin response .name string
 POST /api/v1/targets/{id}/pin response .next_step string nullable
@@ -1383,6 +1416,7 @@ POST /api/v1/targets/{id}/pin response .plugin.image_digest string
 POST /api/v1/targets/{id}/pin response .plugin.label string
 POST /api/v1/targets/{id}/pin response .plugin.name string
 POST /api/v1/targets/{id}/pin response .plugin.persistent boolean
+POST /api/v1/targets/{id}/pin response .plugin.progress string
 POST /api/v1/targets/{id}/pin response .plugin.size string
 POST /api/v1/targets/{id}/pin response .plugin.status string
 POST /api/v1/targets/{id}/pin response .plugin.status_reason string
@@ -1460,6 +1494,7 @@ POST /api/v1/targets/{id}/recreate response .health.status string
 POST /api/v1/targets/{id}/recreate response .health.tmux_version string
 POST /api/v1/targets/{id}/recreate response .host string
 POST /api/v1/targets/{id}/recreate response .id string
+POST /api/v1/targets/{id}/recreate response .keep_idle_sessions boolean
 POST /api/v1/targets/{id}/recreate response .kind string
 POST /api/v1/targets/{id}/recreate response .name string
 POST /api/v1/targets/{id}/recreate response .next_step string nullable
@@ -1477,6 +1512,7 @@ POST /api/v1/targets/{id}/recreate response .plugin.image_digest string
 POST /api/v1/targets/{id}/recreate response .plugin.label string
 POST /api/v1/targets/{id}/recreate response .plugin.name string
 POST /api/v1/targets/{id}/recreate response .plugin.persistent boolean
+POST /api/v1/targets/{id}/recreate response .plugin.progress string
 POST /api/v1/targets/{id}/recreate response .plugin.size string
 POST /api/v1/targets/{id}/recreate response .plugin.status string
 POST /api/v1/targets/{id}/recreate response .plugin.status_reason string
@@ -1549,6 +1585,7 @@ POST /api/v1/targets/{id}/start response .health.status string
 POST /api/v1/targets/{id}/start response .health.tmux_version string
 POST /api/v1/targets/{id}/start response .host string
 POST /api/v1/targets/{id}/start response .id string
+POST /api/v1/targets/{id}/start response .keep_idle_sessions boolean
 POST /api/v1/targets/{id}/start response .kind string
 POST /api/v1/targets/{id}/start response .name string
 POST /api/v1/targets/{id}/start response .next_step string nullable
@@ -1566,6 +1603,7 @@ POST /api/v1/targets/{id}/start response .plugin.image_digest string
 POST /api/v1/targets/{id}/start response .plugin.label string
 POST /api/v1/targets/{id}/start response .plugin.name string
 POST /api/v1/targets/{id}/start response .plugin.persistent boolean
+POST /api/v1/targets/{id}/start response .plugin.progress string
 POST /api/v1/targets/{id}/start response .plugin.size string
 POST /api/v1/targets/{id}/start response .plugin.status string
 POST /api/v1/targets/{id}/start response .plugin.status_reason string
@@ -1617,6 +1655,7 @@ POST /api/v1/targets/{id}/stop response .health.status string
 POST /api/v1/targets/{id}/stop response .health.tmux_version string
 POST /api/v1/targets/{id}/stop response .host string
 POST /api/v1/targets/{id}/stop response .id string
+POST /api/v1/targets/{id}/stop response .keep_idle_sessions boolean
 POST /api/v1/targets/{id}/stop response .kind string
 POST /api/v1/targets/{id}/stop response .name string
 POST /api/v1/targets/{id}/stop response .next_step string nullable
@@ -1634,6 +1673,7 @@ POST /api/v1/targets/{id}/stop response .plugin.image_digest string
 POST /api/v1/targets/{id}/stop response .plugin.label string
 POST /api/v1/targets/{id}/stop response .plugin.name string
 POST /api/v1/targets/{id}/stop response .plugin.persistent boolean
+POST /api/v1/targets/{id}/stop response .plugin.progress string
 POST /api/v1/targets/{id}/stop response .plugin.size string
 POST /api/v1/targets/{id}/stop response .plugin.status string
 POST /api/v1/targets/{id}/stop response .plugin.status_reason string
@@ -1793,6 +1833,10 @@ POST /api/v1/workspaces request .kind string
 POST /api/v1/workspaces request .name string
 POST /api/v1/workspaces request .tags []string
 POST /api/v1/workspaces request .target_id string
+POST /api/v1/workspaces request .worktree object nullable
+POST /api/v1/workspaces request .worktree.base string
+POST /api/v1/workspaces request .worktree.branch string
+POST /api/v1/workspaces request .worktree.ref string
 POST /api/v1/workspaces request-header Authorization
 POST /api/v1/workspaces response - object
 POST /api/v1/workspaces response .conversation_id string omitempty
@@ -1901,6 +1945,7 @@ PUT /api/v1/targets/{id} request .allow_shell boolean nullable
 PUT /api/v1/targets/{id} request .allowed_agent_types []string nullable
 PUT /api/v1/targets/{id} request .generate_ssh_key boolean
 PUT /api/v1/targets/{id} request .host string
+PUT /api/v1/targets/{id} request .keep_idle_sessions boolean nullable
 PUT /api/v1/targets/{id} request .kind string
 PUT /api/v1/targets/{id} request .name string
 PUT /api/v1/targets/{id} request .permission_mode string nullable
@@ -1933,6 +1978,7 @@ PUT /api/v1/targets/{id} response .health.status string
 PUT /api/v1/targets/{id} response .health.tmux_version string
 PUT /api/v1/targets/{id} response .host string
 PUT /api/v1/targets/{id} response .id string
+PUT /api/v1/targets/{id} response .keep_idle_sessions boolean
 PUT /api/v1/targets/{id} response .kind string
 PUT /api/v1/targets/{id} response .name string
 PUT /api/v1/targets/{id} response .next_step string nullable
@@ -1950,6 +1996,7 @@ PUT /api/v1/targets/{id} response .plugin.image_digest string
 PUT /api/v1/targets/{id} response .plugin.label string
 PUT /api/v1/targets/{id} response .plugin.name string
 PUT /api/v1/targets/{id} response .plugin.persistent boolean
+PUT /api/v1/targets/{id} response .plugin.progress string
 PUT /api/v1/targets/{id} response .plugin.size string
 PUT /api/v1/targets/{id} response .plugin.status string
 PUT /api/v1/targets/{id} response .plugin.status_reason string

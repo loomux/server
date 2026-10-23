@@ -71,6 +71,10 @@ type WorkspaceManager interface {
 	// sessions, returning those it couldn't kill. registry.ErrNotFound for
 	// an unknown id; a *registry.ConflictError says what blocks it.
 	DeleteWorkspace(ctx context.Context, id string) ([]string, error)
+	// DeleteWorkspaceAndWorktree is DeleteWorkspace that first removes
+	// the workspace's git worktree from its target (LOOM-228); git's
+	// refusal (changes not committed) is a *registry.ConflictError.
+	DeleteWorkspaceAndWorktree(ctx context.Context, id string) ([]string, error)
 	// SetWorkspaceStatus moves a workspace to idle (back in service) or
 	// archived (out of it); errors as for DeleteWorkspace.
 	SetWorkspaceStatus(ctx context.Context, id string, status registry.WorkspaceStatus) error
@@ -475,6 +479,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/plugins", s.requireAuth(s.handleListPlugins))
 	mux.HandleFunc("POST /api/v1/plugins", s.requireAuth(s.handleInstallPlugin))
 	mux.HandleFunc("GET /api/v1/plugins/{id}", s.requireAuth(s.handleGetPlugin))
+	mux.HandleFunc("GET /api/v1/plugins/{id}/targets", s.requireAuth(s.handleDescribePluginTargets))
 	mux.HandleFunc("PUT /api/v1/plugins/{id}/config", s.requireAuth(s.handleSetPluginConfig))
 	mux.HandleFunc("POST /api/v1/plugins/{id}/enable", s.requireAuth(s.handleEnablePlugin))
 	mux.HandleFunc("POST /api/v1/plugins/{id}/disable", s.requireAuth(s.handleDisablePlugin))
@@ -751,7 +756,18 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "workspace management is not configured on this server")
 		return
 	}
-	left, err := s.workspaceManager.DeleteWorkspace(r.Context(), r.PathValue("id"))
+	del := s.workspaceManager.DeleteWorkspace
+	switch r.URL.Query().Get("remove_worktree") {
+	case "", "false":
+	case "true":
+		// A git_worktree workspace's worktree goes too (LOOM-228); its
+		// branch stays.
+		del = s.workspaceManager.DeleteWorkspaceAndWorktree
+	default:
+		writeError(w, http.StatusBadRequest, "remove_worktree must be true or false")
+		return
+	}
+	left, err := del(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeWorkspaceManageError(w, err, "could not delete workspace")
 		return
@@ -1701,6 +1717,9 @@ type targetResponse struct {
 	// RelayEffective is what applies (a work machine's default is none).
 	Relay          string `json:"relay"`
 	RelayEffective string `json:"relay_effective"`
+	// KeepIdleSessions: the idle reaper leaves this target's sessions
+	// open however long they wait for a follow-up (LOOM-227).
+	KeepIdleSessions bool `json:"keep_idle_sessions"`
 	// SSHPort overrides the SSH config's port when non-zero (LOOM-114).
 	SSHPort int `json:"ssh_port"`
 	// PinnedHostKeys are the host keys pinned through the API (LOOM-114),
@@ -1776,6 +1795,7 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		RequireConfirmation: t.Policy.RequireConfirmation,
 		Relay:               t.Policy.Relay,
 		RelayEffective:      t.Policy.EffectiveRelay(),
+		KeepIdleSessions:    t.Policy.KeepIdleSessions,
 		SSHPort:             t.SSHPort,
 		PinnedHostKeys:      pinnedHostKeys(t),
 		SSHMode:             sshMode(t),
@@ -1807,6 +1827,9 @@ type targetRequest struct {
 	RequireConfirmation *bool     `json:"require_confirmation"`
 	// Relay is optional the same way: "" sets the purpose's default.
 	Relay *string `json:"relay"`
+	// KeepIdleSessions is optional the same way; on a create, omitted
+	// means the reaper may close the target's idle sessions.
+	KeepIdleSessions *bool `json:"keep_idle_sessions"`
 	// SSHPort is optional the same way (LOOM-114); 0 means the SSH
 	// config's port.
 	SSHPort *int `json:"ssh_port"`
@@ -1937,6 +1960,9 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if req.Relay != nil {
 		target.Policy.Relay = *req.Relay
+	}
+	if req.KeepIdleSessions != nil {
+		target.Policy.KeepIdleSessions = *req.KeepIdleSessions
 	}
 	if req.WorkspaceRoot != nil {
 		target.WorkspaceRoot = *req.WorkspaceRoot

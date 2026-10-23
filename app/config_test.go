@@ -174,6 +174,32 @@ func TestLoadConfig_InvalidReapTiming(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_ReapIdleOff (LOOM-227): "off" or "0" turns idle
+// reaping off, rather than meaning the default; a negative threshold,
+// which would close every waiting session, is refused.
+func TestLoadConfig_ReapIdleOff(t *testing.T) {
+	for _, raw := range []string{"off", "OFF", "0", "0s", " off "} {
+		setRouterEnv(t)
+		t.Setenv(envReapIdleThreshold, raw)
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("%q: LoadConfig: %v", raw, err)
+		}
+		if !cfg.ReapIdleOff || cfg.ReapIdleThreshold != 0 {
+			t.Errorf("%q: ReapIdleOff = %v, threshold %v; want off", raw, cfg.ReapIdleOff, cfg.ReapIdleThreshold)
+		}
+	}
+	setRouterEnv(t)
+	t.Setenv(envReapIdleThreshold, "168h")
+	if cfg, err := LoadConfig(); err != nil || cfg.ReapIdleOff || cfg.ReapIdleThreshold != 168*time.Hour {
+		t.Errorf("168h: %+v, %v", cfg.ReapIdleThreshold, err)
+	}
+	t.Setenv(envReapIdleThreshold, "-1h")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Errorf("-1h: err = %v, want it refused as negative", err)
+	}
+}
+
 func TestLoadConfig_CustomDBPath(t *testing.T) {
 	setRouterEnv(t)
 	t.Setenv(envDBPath, "/tmp/custom.db")

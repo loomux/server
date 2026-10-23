@@ -99,7 +99,26 @@ const (
 	// ProvisionExistingDir adopts a directory that already exists under
 	// the workspace root.
 	ProvisionExistingDir ProvisionKind = "existing_dir"
+	// ProvisionGitWorktree adds a git worktree, on a new branch, of a
+	// repository already under the workspace root (LOOM-228): each
+	// concurrent dispatch its own checkout and branch.
+	ProvisionGitWorktree ProvisionKind = "git_worktree"
 )
+
+// WorktreeSpec is a git_worktree workspace's source (LOOM-228): the
+// recipe runs `git -C <root>/<Base> worktree add -b <Branch> <root>/<Name>
+// <Ref>`.
+type WorktreeSpec struct {
+	// Base is the directory under the workspace root holding the
+	// repository; a name, as a workspace's is.
+	Base string
+	// Ref is the commit the branch starts at (a branch, tag or commit);
+	// empty is Base's HEAD.
+	Ref string
+	// Branch is the new branch; empty is loomux/<workspace name>, so each
+	// workspace (names are unique) has its own.
+	Branch string
+}
 
 // ProvisionSpec describes a new dynamic workspace to create (design spec
 // §2). It is structured data only (LOOM-90): Loomux builds the commands
@@ -113,7 +132,8 @@ type ProvisionSpec struct {
 	Name        string
 	TargetID    string
 	Kind        ProvisionKind
-	GitRemote   string // required for ProvisionGitClone, and only then
+	GitRemote   string       // required for ProvisionGitClone, and only then
+	Worktree    WorktreeSpec // required for ProvisionGitWorktree, and only then
 	Description string
 	Tags        []string
 }

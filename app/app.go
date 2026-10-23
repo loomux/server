@@ -135,6 +135,12 @@ func (a *App) DeleteWorkspace(ctx context.Context, id string) ([]string, error) 
 	return a.orch.DeleteWorkspace(ctx, id)
 }
 
+// DeleteWorkspaceAndWorktree is DeleteWorkspace that also removes the
+// workspace's git worktree from its target (LOOM-228).
+func (a *App) DeleteWorkspaceAndWorktree(ctx context.Context, id string) ([]string, error) {
+	return a.orch.DeleteWorkspaceAndWorktree(ctx, id)
+}
+
 // SetWorkspaceStatus reopens (idle) or archives a workspace (LOOM-70) —
 // see orchestrator.Orchestrator.ReopenWorkspace and ArchiveWorkspace.
 // Satisfies api.WorkspaceManager.
@@ -583,7 +589,13 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	}
 
 	threshold := cfg.ReapIdleThreshold
-	if threshold == 0 {
+	switch {
+	case cfg.ReapIdleOff:
+		threshold = 0 // the reaper closes no waiting session (LOOM-227)
+		if cfg.Logger != nil {
+			cfg.Logger.Info("idle reaping is off: waiting sessions stay open until their conversation ends them", "env", envReapIdleThreshold)
+		}
+	case threshold == 0:
 		threshold = defaultReapIdleThreshold
 	}
 	interval := cfg.ReapInterval
