@@ -769,13 +769,43 @@ minutes. Describe never waits for a canary; past 5 minutes it starts one in the 
 renews the verdict before it lapses. Create, start and recreate refuse a `none` pod unless the policies (read
 before anything is made, and last just before the pod is) and such a recent verdict both hold, running and waiting for the
 canary when there is none; check runs the canary again after a minute. The trust assumption: the engine
-implements NetworkPolicy as specified, on every node (the canary samples the one it lands on). Policy APIs a namespaced Role can't read
+implements NetworkPolicy as specified on each node; the per-node check below shows it does on a machine's node,
+for the canary's destinations, when the machine comes up and at each renewal. Policy APIs a namespaced Role can't read
 (AdminNetworkPolicy, Calico's `GlobalNetworkPolicy`, Cilium's policies) can allow what NetworkPolicy denies, so
 nothing of theirs may let agent pods out; the canary is the only check on them, and only for its own
-destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live, no
-list is atomic with making a pod, and a running machine isn't re-checked: a policy an admin adds after that last read
-applies at once and is reported only by the next check; holding policy edits back would take admission control in
-the cluster. A canary pinned to each `none` machine's node, before it is reported running, is the follow-up.
+destinations. Whether a pod's traffic to its own node is policed is the engine's choice. Policies are live and no
+list is atomic with making a pod: a policy an admin adds after that last read applies at once and is reported only
+by the next check; holding policy edits back would take admission control in the cluster.
+
+**Each machine's node (LOOM-208).** The engine runs on each node and the check's canary lands on one, so an engine
+missing from or broken on another node left `none` machines there unconfined and reported running. Now a `none`
+machine is `running` only while a canary bound to its own node (`spec.nodeName`, past the scheduler; no node
+permissions needed) has said "enforced" there within those 10 minutes; the check's canary counts for the node it
+landed on. Until then it is `starting` once its pod is up ("checking network isolation on node …"; a pod not up
+yet keeps its own status, such as `creating`), the node's canary starting when a
+get, list or health first sees the pod on its node (the renewer knows only pods seen on a node, so one unplaced at
+the host's last ask isn't checked until it asks again, and can't be `running` before). A canary that gets out on the node makes each `none` machine there `error`, naming the node
+(the pod is left, like any machine in error), withdraws `none` from describe and create (a start of a `none` machine still on the node is refused too), and check reports
+`network_policy_not_enforced` for the node (whatever its own canary says) and tries it again with a pinned canary a minute on, until one whose
+probe began after the failure's ended says "enforced" (verdicts go by when the probes ran, by the kubelet's
+container times, or else by when canaries were started and read; a retry that can't run leaves the node open). A canary that can't run there proves nothing either way: an "enforced" from the last 10 minutes still
+stands, and the node is tried again a minute on. The plugin keeps the verdicts current itself: every minute it runs
+a canary on each node of its `none` machines whose "enforced" is more than 5 minutes old, whether or not the host
+asks, so a machine in use stays `running`; a renewal that gets out turns the machines there to `error`, and with no
+"enforced" for 10 minutes they are `starting`. The last gate before a `none` pod is made also refuses it on any
+canary that got out since the create began. The verdicts are in the plugin process: a restarted plugin checks each
+node again, its `none` machines `starting` meanwhile, and so does a reconfigured one. A request still under way from
+the earlier configuration neither reads nor records the new one's verdicts nor starts its canaries, so another
+cluster's, namespace's or API server's canary can't certify a node for it. A node's "not enforced" whose probe had ended before its latest
+"enforced" probe began, by the kubelet's times, is older news and opens nothing; one that overlapped it, or without
+both times, counts. Each canary is a pod in the agents namespace's quota while it
+runs: up to one per node being checked plus the check's own, for each plugin configuration (a restart, a rollout's
+old and new sidecar, a configure) whose canaries are still live. They aren't adopted across processes; one lives at
+most 4 minutes (the 3-minute timeout plus a minute's active deadline; one that never got a node has no deadline,
+the kubelet keeping it, and the plugin sweeps those left behind past that age at configure and once a minute), so the quota needs `max_environments` +
+(nodes + 1) × the configurations that can overlap: 2 for one restart or rollout, one more per further restart within
+4 minutes. Too little room costs only time: a canary that can't be made proves nothing, and the machines stay
+`starting`.
 
 Not enforced:
 
@@ -933,9 +963,12 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
    that may select a `none` pod and allows it more than (c) withdraws `none`, so additions for agents select
    `loomux.io/egress=internet`.
 7. **ResourceQuota** `loomux-agents` (TEST, to tune): `requests.cpu: 4`, `limits.cpu: 8`,
-   `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 8` (the canary included), `persistentvolumeclaims:
-   6`, `ceph-rbd-sc.storageclass.storage.k8s.io/requests.storage: 100Gi`; a **LimitRange** with the `small`
-   defaults so a pod never runs unbounded.
+   `requests.memory: 8Gi`, `limits.memory: 16Gi`, `pods: 10`, `persistentvolumeclaims: 6`,
+   `ceph-rbd-sc.storageclass.storage.k8s.io/requests.storage: 100Gi`; a **LimitRange** with the `small`
+   defaults so a pod never runs unbounded. `pods` includes the canaries (LOOM-208, §8): up to one per node being
+   checked plus the check's own, for each plugin configuration whose canaries are still live, so at least
+   `max_environments` + 2 × (nodes + 1) for a restart or rollout, plus (nodes + 1) per further restart within
+   4 minutes. 10 is 5 + 2 × (1 + 1) = 9 for one node, and a spare; recompute it for the cluster's node count.
 8. **PBS backup**: `lx-*-data` PVCs are the user's working copies of repositories, not system state; recommend
    **not** adding them to the nightly PBS set in v1 (git remotes are the backup), stated in the handoff so it
    is a decision, not an omission.

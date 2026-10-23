@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -212,6 +213,27 @@ func endToEnd(t *testing.T, launch plugintest.Launch, o plugintest.Options, kube
 		if e.ID == id {
 			t.Errorf("destroyed machine still listed: %+v", e)
 		}
+	}
+
+	// An egress "none" machine where the cluster enforces: running only
+	// once a canary on its node has said so (LOOM-208; on kind's one
+	// node, the check's own canary did). TestKindNodeCanary pins one.
+	if os.Getenv("LOOMUX_KIND_ENFORCED") != "1" {
+		return
+	}
+	if !slices.Contains(info.EgressOptions, protocol.EgressNone) {
+		t.Fatalf("egress none not offered where the cluster enforces: %v", info.EgressOptions)
+	}
+	conf := spec
+	conf.ID, conf.Name, conf.Persistent, conf.Egress = "e2n-"+hex.EncodeToString(suffix), "kind e2e none", false, protocol.EgressNone
+	conf.Labels = map[string]string{protocol.LabelInstance: instance, protocol.LabelTarget: "kind-target", protocol.LabelEnvironment: conf.ID}
+	defer func() { _ = call(protocol.MethodTargetsDestroy, protocol.IDParams{ID: conf.ID}, nil) }()
+	if err := call(protocol.MethodTargetsCreate, conf, &env); err != nil {
+		t.Fatalf("create with egress none: %v", err)
+	}
+	waitStatus(t, call, conf.ID, protocol.EnvRunning, 3*time.Minute)
+	if err := call(protocol.MethodTargetsDestroy, protocol.IDParams{ID: conf.ID}, nil); err != nil {
+		t.Fatalf("destroy the none machine: %v", err)
 	}
 }
 

@@ -11,7 +11,9 @@ spec:
     limits.cpu: "8"
     requests.memory: 8Gi
     limits.memory: 16Gi
-    pods: "8"
+    # max_environments (5) + 2 × (nodes + 1) canaries for a restart or
+    # rollout (LOOM-208, design §8): 9 on kind's one node, and a spare.
+    pods: "10"
     persistentvolumeclaims: "6"
 ---
 apiVersion: v1

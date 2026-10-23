@@ -101,15 +101,73 @@ verdict exists. With none, the canary is run and waited for (15 s).
 The policies are read before anything is made and once more, last,
 just before the pod is.
 Otherwise create refuses it: `invalid_params`, or `unavailable` while
-the canary runs. A machine already running isn't watched: the label
-confines nothing by itself.
+the canary runs.
+
+**Each machine's node** (LOOM-208). NetworkPolicy is enforced by an
+engine on each node, and the check's canary runs on one. So a `none`
+machine is reported `running` only while a canary bound to its own node
+(`spec.nodeName`, past the scheduler) has said "enforced" there within
+the last 10 minutes. The check's canary counts for the node it landed
+on. Until then a machine whose pod is up is `starting` ("checking
+network isolation on node …"), and one whose pod isn't up yet keeps its
+own status, such as `creating`. The node's canary starts when a get,
+list or health first sees the pod on its node, usually while sshd
+comes up. The renewer only knows pods it has seen on a node, so one the
+scheduler hadn't placed at the host's last ask isn't checked until the
+host asks again (and can't be `running` before). A node where the
+canary gets out makes each `none` machine there `error`, naming the node and what was reached, and
+withdraws `none` from describe and create (a start of a `none` machine
+still on that node is refused too); check reports
+`network_policy_not_enforced` for that node, whatever its own canary
+says, and tries it again with a
+pinned canary a minute on, until one whose probe began after the
+failure's ended says "enforced"; neither the renewer nor a get tries it before, and a retry
+that can't run leaves it open. The pod is left
+as it is, like any machine in error: destroy it. A canary that can't
+run on the node (no room, the image) proves nothing either way: an
+"enforced" from the last 10 minutes still stands, the machine is
+`starting` without one, and the node is tried again a minute on. The
+plugin keeps the verdicts current itself: every minute it looks at the
+nodes of its `none` machines and runs a canary on each whose
+"enforced" is more than 5 minutes old, whether or not the host asks,
+so a machine in use stays `running`. A renewal that gets out turns the
+machines there to `error`; when none can say "enforced" for 10
+minutes, they are `starting` until one does. The verdicts live in the
+plugin process, so a restarted plugin checks each node again, and its
+`none` machines are `starting` until it says "enforced": seconds when the
+agent image is on the node, up to the canary's 3-minute timeout when it
+is pulled, and a minute more for each try that can't run; so does a
+reconfigured one, and a request still under way from before the
+configure neither reads nor records the new configuration's verdicts
+(a `none` create or start from it is refused: try again). A node's
+verdicts go by when their probes ran, by the kubelet's container
+times, not when their canaries were started or read (one may wait on
+its image and run after one started later): an escape counts unless
+the latest "enforced" probe began after it had ended, so one that
+overlapped it counts, and without both times it counts. Each canary is a pod in the namespace's quota while
+it runs, up to one per node being checked plus the check's own, for each
+plugin configuration whose canaries are still live. A restart, a
+rollout (old and new sidecar overlapping) or a configure starts a fresh
+set while the last one's may still run: a canary lives at most 4
+minutes (its 3-minute timeout plus a minute's active deadline, should
+its plugin die first), and the new process doesn't adopt them. One that
+never got a node (pinned to a node whose kubelet is gone, or
+unschedulable) has no deadline, as the kubelet keeps it: a running
+plugin sweeps those left behind past that age at configure and once a
+minute, so it holds its place up to about a minute longer. So leave
+`pods` room for `max_environments` machines plus (nodes + 1) × the
+configurations that can overlap: 2 for a restart or a rollout, one more
+for each further restart within 4 minutes. A canary with no room can't
+run, which proves nothing: the node is tried again a minute on, and 10
+minutes on the machines are `starting`, never `running` unchecked.
 
 What it trusts. The canary samples a few destinations; it can't prove
 that none other answers. What proves that is the policies, so the
-engine must implement NetworkPolicy as specified, on every node: the
-canary runs on whichever node it is scheduled to. A policy engine
-DaemonSet missing from or broken on one node leaves machines there
-unconfined, and the canary only notices if it lands there. Policies are
+engine must implement NetworkPolicy as specified on each node; the
+canary on a machine's node shows it does there, for its destinations,
+when the machine comes up and at each renewal. An engine that breaks on
+that node between renewals leaves the machine unconfined until the
+next one. Policies are
 live, and no list is atomic with making a pod: one an admin adds after
 that last read, even in the same moment, applies to the machine at
 once, and only the next check reports it. Holding policy edits back
@@ -133,6 +191,12 @@ policies and against policies that let a confined machine out (a CIDR,
 a LAN service, kube-dns on another port, one machine by its label);
 the verdict's expiry for describe and create; the policies read again
 at create, start and recreate.
+`nodecheck_test.go`: a `none` machine runs only once a canary pinned to
+its node says "enforced"; a node that lets one out, or can't run one;
+two nodes; renewal in the background, stuck, or unable to run; lapse.
+`nodegate_test.go`: a node found open during a create, start or
+recreate refuses the pod. `nodecheck_kind_test.go` (`-tags kind`): a
+canary pinned to kind's node, and to a node that doesn't exist.
 `kind_test.go` (`-tags kind`, CI's `plugin-kubernetes` job): the
 conformance suite and an end-to-end run against a kind cluster with
 `deploy/test/kind/` applied, as the plugin's ServiceAccount: create,

@@ -249,16 +249,15 @@ func canaries(cs *fake.Clientset) int {
 // made, unconfined. Describe and create now take it for verdictTTL (10
 // minutes); past half of that, describe renews it in the background.
 func TestNoneVerdictExpires(t *testing.T) {
-	setup := func(t *testing.T) (*fake.Clientset, *atomic.Int32, *Plugin, *time.Time) {
+	setup := func(t *testing.T) (*fake.Clientset, *atomic.Int32, *Plugin, *testClock) {
 		cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
 		exit := canaryExits(cs, exitBlocked)
-		p := configured(t, cs, nil)
-		now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-		p.Now = func() time.Time { return now }
+		var clock *testClock
+		p := configured(t, cs, nil, func(p *Plugin) { clock = newClock(p) })
 		if res, _ := p.Check(ctx); !res.OK || len(res.Problems) != 0 {
 			t.Fatalf("check = %+v", res)
 		}
-		return cs, exit, p, &now
+		return cs, exit, p, clock
 	}
 	offered := func(p *Plugin) bool {
 		info, err := p.DescribeTargets(ctx)
@@ -269,12 +268,12 @@ func TestNoneVerdictExpires(t *testing.T) {
 	}
 	t.Run("lapses", func(t *testing.T) {
 		cs, exit, p, now := setup(t)
-		*now = now.Add(4 * time.Minute)
+		now.advance(4 * time.Minute)
 		if !offered(p) || canaries(cs) != 1 {
 			t.Errorf("4 minutes on: none offered %v, canaries %d; want true, the check's 1", offered(p), canaries(cs))
 		}
 		exit.Store(exitAPIReachable) // the engine is gone
-		*now = now.Add(7 * time.Minute)
+		now.advance(7 * time.Minute)
 		if offered(p) {
 			t.Error("none offered 11 minutes after the check")
 		}
@@ -288,12 +287,12 @@ func TestNoneVerdictExpires(t *testing.T) {
 	})
 	t.Run("renewed while in use", func(t *testing.T) {
 		cs, _, p, now := setup(t)
-		*now = now.Add(6 * time.Minute)
+		now.advance(6 * time.Minute)
 		if !offered(p) {
 			t.Error("none withdrawn while its renewal runs")
 		}
 		settle(t, p)
-		*now = now.Add(6 * time.Minute) // 12 minutes after the check, 6 after the renewal
+		now.advance(6 * time.Minute) // 12 minutes after the check, 6 after the renewal
 		if !offered(p) || canaries(cs) < 2 {
 			t.Errorf("after a renewal: none offered %v, canaries %d", offered(p), canaries(cs))
 		}
@@ -301,7 +300,7 @@ func TestNoneVerdictExpires(t *testing.T) {
 	t.Run("renewal sees the engine gone", func(t *testing.T) {
 		_, exit, p, now := setup(t)
 		exit.Store(exitNetReachable)
-		*now = now.Add(6 * time.Minute)
+		now.advance(6 * time.Minute)
 		offered(p)
 		settle(t, p)
 		if offered(p) {
@@ -322,7 +321,7 @@ func TestNoneVerdictExpires(t *testing.T) {
 		if _, err := p.CreateTarget(ctx, confinedSpec("conf1")); err != nil {
 			t.Fatalf("create with egress none, freshly enforced: %v", err)
 		}
-		*now = now.Add(11 * time.Minute)
+		now.advance(11 * time.Minute)
 		exit.Store(exitNetReachable)
 		if _, err := p.CreateTarget(ctx, confinedSpec("conf2")); rpcCode(err) != rpc.CodeInvalidParams || !strings.Contains(err.Error(), "internet") {
 			t.Errorf("create with egress none after the TTL, the engine gone = %v", err)

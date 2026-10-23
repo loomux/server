@@ -44,6 +44,7 @@ func newTestPlugin(cs kubernetes.Interface) *Plugin {
 	p.DeleteWait = 200 * time.Millisecond
 	p.CanaryWait = time.Second
 	p.CanaryTimeout = 2 * time.Second
+	p.RenewEvery = 5 * time.Millisecond
 	p.Rand = func() string { return "abcd" }
 	return p
 }
@@ -71,9 +72,15 @@ func baseConfig(t *testing.T, extra map[string]any) map[string]any {
 }
 
 // configured is a plugin over a fresh fake clientset, configured.
-func configured(t *testing.T, cs *fake.Clientset, extra map[string]any) *Plugin {
+// configured is a test plugin over cs, configured; setup sets its
+// fields first, as a host would: the renewer reads them from configure
+// on.
+func configured(t *testing.T, cs *fake.Clientset, extra map[string]any, setup ...func(*Plugin)) *Plugin {
 	t.Helper()
 	p := newTestPlugin(cs)
+	for _, f := range setup {
+		f(p)
+	}
 	if err := p.Configure(ctx, protocol.ConfigureParams{Config: baseConfig(t, extra), Host: protocol.HostInfo{Version: "test", InstanceID: testInstance}}); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -822,7 +829,7 @@ func TestCanaryScript(t *testing.T) {
 			t.Errorf("script lacks %q:\n%s", want, s)
 		}
 	}
-	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", time.Minute)
+	pod := canaryPod("lx-netcheck-abcd", Config{AgentImage: "img"}, testInstance, "", time.Minute, "")
 	// Labelled like a machine, so a policy on target or environment
 	// labels applies to it as to one.
 	if pod.Labels[protocol.LabelTarget] == "" || pod.Labels[protocol.LabelEnvironment] == "" {

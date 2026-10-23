@@ -95,21 +95,40 @@ type Plugin struct {
 	// CanaryTimeout bounds the canary itself, the image pull included;
 	// 3 min.
 	CanaryTimeout time.Duration
+	// RenewEvery is how often the nodes of egress "none" machines are
+	// looked at for a verdict to renew (nodecheck.go); 1 min.
+	RenewEvery time.Duration
 
 	// createMu serializes a new machine's quota count and record, so two
 	// creates at once can't both take the last place (LOOM-201).
 	createMu sync.Mutex
 
-	mu         sync.Mutex
-	cfg        Config
-	client     kubernetes.Interface
-	apiHost    string
-	host       protocol.HostInfo
+	mu     sync.Mutex
+	cfg    Config
+	client kubernetes.Interface
+	host   protocol.HostInfo
+	// gen counts the configurations; p.cfg.gen is the current one.
+	gen        uint64
 	configured bool
 	// netcheck is the latest canary started, settled the latest one
 	// finished: describe acts on settled while a new one runs.
 	netcheck *netcheck
 	settled  *netcheck
+	// nodes is each node's canaries, and watch each egress "none"
+	// machine's pod (by name) and its node, whose verdict the renewer
+	// keeps current (LOOM-208, nodecheck.go); stopRenew ends this
+	// configuration's renewer.
+	nodes     map[string]*nodeCheck
+	watch     map[string]string
+	stopRenew chan struct{}
+	// seq numbers the canaries as they start.
+	seq uint64
+	// inflight is the canary pods this process is still reading: a
+	// sweep leaves them to their readers.
+	inflight map[string]bool
+	// verdictHook, if set, runs once check has its verdict, before it
+	// reports the nodes known open (tests: a node canary finishing then).
+	verdictHook func()
 }
 
 // New returns the plugin for real use.
@@ -123,6 +142,10 @@ func New() *Plugin {
 		DeleteWait:    20 * time.Second,
 		CanaryWait:    15 * time.Second,
 		CanaryTimeout: 3 * time.Minute,
+		RenewEvery:    time.Minute,
+		nodes:         map[string]*nodeCheck{},
+		watch:         map[string]string{},
+		inflight:      map[string]bool{},
 	}
 }
 
@@ -137,7 +160,8 @@ func (p *Plugin) Describe(ctx context.Context) (*plugins.Manifest, error) {
 }
 
 // Configure parses the configuration and makes the client. A change
-// forgets the last network-isolation verdict: the host checks again.
+// forgets the network-isolation verdicts, the nodes' too: the host
+// checks again.
 func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) error {
 	cfg, err := parseConfig(cp.Config)
 	if err != nil {
@@ -149,8 +173,16 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.cfg, p.client, p.apiHost, p.host, p.configured = cfg, client, apiHost, cp.Host, true
+	p.gen++
+	cfg.gen, cfg.apiHost = p.gen, apiHost
+	p.cfg, p.client, p.host, p.configured = cfg, client, cp.Host, true
 	p.netcheck, p.settled = nil, nil
+	p.nodes, p.watch = map[string]*nodeCheck{}, map[string]string{}
+	if p.stopRenew != nil {
+		close(p.stopRenew)
+	}
+	p.stopRenew = make(chan struct{})
+	go p.renewNodes(p.stopRenew, p.RenewEvery)
 	return nil
 }
 
@@ -174,6 +206,10 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		return protocol.CheckResult{}, err
 	}
 	res := protocol.CheckResult{OK: true, Problems: []protocol.Problem{}}
+	severity := protocol.SeverityWarning
+	if cfg.RequireNetworkPolicy {
+		severity = protocol.SeverityError
+	}
 	if _, err := client.CoreV1().Pods(cfg.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedSelector, Limit: 1}); err != nil {
 		code := ProblemClusterUnreachable
 		if kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err) {
@@ -184,6 +220,7 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 			Code: code, Severity: protocol.SeverityError,
 			Message: "can't list pods in namespace " + cfg.Namespace + ": " + safeStatus(err),
 		})
+		res.Problems = append(res.Problems, p.openNodes(severity)...)
 		return res, nil
 	}
 	switch _, err := client.CoreV1().Services(cfg.Namespace).Get(ctx, cfg.Subdomain, metav1.GetOptions{}); {
@@ -199,17 +236,13 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		})
 	}
 	state, detail := p.enforcement(ctx, cfg, client, host.InstanceID, p.CanaryWait)
-	severity := protocol.SeverityWarning
-	if cfg.RequireNetworkPolicy {
-		severity = protocol.SeverityError
+	if p.verdictHook != nil {
+		p.verdictHook()
 	}
 	switch state {
 	case enforcementEnforced:
 	case enforcementNotEnforced:
-		res.Problems = append(res.Problems, protocol.Problem{
-			Code: ProblemNetworkPolicyNotEnforced, Severity: severity,
-			Message: "NetworkPolicy isn't enforced in this cluster (" + detail + "): machines can't be confined; install a policy engine (kube-network-policies, Calico, kube-router) for egress: none",
-		})
+		res.Problems = append(res.Problems, notEnforced(severity, detail))
 	case enforcementPolicyOpen:
 		res.Problems = append(res.Problems, protocol.Problem{
 			Code: ProblemNetworkPolicyAllowsEgress, Severity: severity,
@@ -226,13 +259,51 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 			Message: "the network-isolation check didn't run: " + detail,
 		})
 	}
+	// A node known open, if that isn't the verdict already: a policy
+	// error or open policies answered first (LOOM-208).
+	if state != enforcementNotEnforced {
+		res.Problems = append(res.Problems, p.openNodes(severity)...)
+	}
+	// Not OK on any error, a node found open since the verdict too, and
+	// on any verdict but "enforced" when the policy is required (pending
+	// is only a warning).
+	for _, pr := range res.Problems {
+		if pr.Severity == protocol.SeverityError {
+			res.OK = false
+		}
+	}
 	if severity == protocol.SeverityError && state != enforcementEnforced {
 		res.OK = false
 	}
 	return res, nil
 }
 
-func (p *Plugin) Shutdown(ctx context.Context) error { return nil }
+// notEnforced is the problem of a canary that got out.
+func notEnforced(severity, detail string) protocol.Problem {
+	return protocol.Problem{
+		Code: ProblemNetworkPolicyNotEnforced, Severity: severity,
+		Message: "NetworkPolicy isn't enforced in this cluster (" + detail + "): machines can't be confined; install a policy engine (kube-network-policies, Calico, kube-router) for egress: none",
+	}
+}
+
+// openNodes is the problem of the nodes known open, if any: check
+// reports them whatever else it can't do (LOOM-208).
+func (p *Plugin) openNodes(severity string) []protocol.Problem {
+	if state, detail := p.nodeFailure(); state == enforcementNotEnforced {
+		return []protocol.Problem{notEnforced(severity, detail)}
+	}
+	return nil
+}
+
+func (p *Plugin) Shutdown(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopRenew != nil {
+		close(p.stopRenew)
+		p.stopRenew = nil
+	}
+	return nil
+}
 
 // safeStatus is an API error's text for a message: the server's
 // status message, truncated. A credential never appears in one.
