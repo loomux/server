@@ -229,6 +229,7 @@ func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface
 	p.mu.Lock()
 	p.seq++
 	nc.state, nc.detail, nc.at, nc.node, nc.doneSeq, nc.probe = state, detail, p.Now(), node, p.seq, ran
+	was := p.nodeStanding(node, nc.at)
 	// One of an earlier configuration (another cluster, namespace or
 	// API server) says nothing about this one's.
 	fresh := !p.stale(cfg)
@@ -246,7 +247,16 @@ func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface
 	} else if current && node != "" {
 		p.nodeOf(node).record(nc)
 	}
+	// The host hears of a machine whose status that changed at once,
+	// not at its next reconcile (LOOM-213).
+	var changed []string
+	if fresh && node != "" && p.nodeStanding(node, nc.at) != was {
+		changed = p.machinesOn(node)
+	}
 	p.mu.Unlock()
+	for _, id := range changed {
+		p.notifier.TargetsChanged(id, "")
+	}
 	// Its verdict recorded, the canary goes (LOOM-212), before anyone
 	// waiting is told: a check that has its answer leaves none behind.
 	// A failed delete changes no verdict; the sweep tries it again.

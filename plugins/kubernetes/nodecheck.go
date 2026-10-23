@@ -168,6 +168,39 @@ func (p *Plugin) due(n *nodeCheck, now time.Time) bool {
 	return recheck || n.enforced == nil || now.Sub(n.enforced.at) > verdictTTL/2
 }
 
+// Standings of a node, as nodeGate reads its verdicts for the "none"
+// machines on it.
+const (
+	nodeUnconfirmed = iota // starting
+	nodeConfirmed          // running: an "enforced" within verdictTTL
+	nodeOpen               // error
+)
+
+// nodeStanding is node's standing at now; p.mu is held.
+func (p *Plugin) nodeStanding(node string, now time.Time) int {
+	switch n := p.nodes[node]; {
+	case n == nil:
+		return nodeUnconfirmed
+	case n.open != nil:
+		return nodeOpen
+	case n.enforced != nil && now.Sub(n.enforced.at) <= verdictTTL:
+		return nodeConfirmed
+	}
+	return nodeUnconfirmed
+}
+
+// machinesOn is the ids of the watched machines on node; p.mu is held.
+func (p *Plugin) machinesOn(node string) []string {
+	var ids []string
+	for pod, on := range p.watch {
+		if on == node {
+			ids = append(ids, strings.TrimPrefix(pod, "lx-"))
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // nodeOf is node's entry; p.mu is held.
 func (p *Plugin) nodeOf(node string) *nodeCheck {
 	n := p.nodes[node]
