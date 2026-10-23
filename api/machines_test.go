@@ -21,6 +21,7 @@ import (
 type stubMachines struct {
 	store    registry.Store
 	envs     map[string]*registry.Environment // by target id
+	progress map[string]string                // by target id
 	err      error
 	lastReq  providers.CreateRequest
 	lastSize string
@@ -32,7 +33,7 @@ func (s *stubMachines) view(id string) (*providers.MachineView, error) {
 	if !ok {
 		return nil, providers.ErrNotMachine
 	}
-	return &providers.MachineView{Environment: *env, PluginLabel: "wysekube", UpdateAvailable: env.Image == "old",
+	return &providers.MachineView{Environment: *env, PluginLabel: "wysekube", UpdateAvailable: env.Image == "old", Progress: s.progress[id],
 		Warnings: []protocol.Problem{{Code: "network_policy_not_enforced", Message: "no engine", Severity: "warning"}}}, nil
 }
 func (s *stubMachines) View(ctx context.Context, id string) (*providers.MachineView, error) {
@@ -184,6 +185,31 @@ func TestMachines_NoNextStepWhileComingUp(t *testing.T) {
 	stub.envs[resp.ID].Status = registry.EnvironmentRunning
 	if _, body := doJSON(t, "GET", base+"/api/v1/targets/"+resp.ID, token, nil); !strings.Contains(body, `"next_step":"test_connection"`) {
 		t.Errorf("running, unprobed: %s", body)
+	}
+}
+
+// LOOM-239: what the machine is doing while it comes up is a field, so
+// a client needn't parse status_reason for it.
+func TestMachines_ProgressShown(t *testing.T) {
+	base, token, stub, _ := machineServer(t)
+	status, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{
+		"name": "builds", "plugin": map[string]any{"id": "p1", "size": "small"},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create machine: %d %s", status, body)
+	}
+	if !strings.Contains(body, `"progress":""`) {
+		t.Errorf("created, no progress reported: %s", body)
+	}
+	var created struct{ ID string }
+	if err := json.Unmarshal([]byte(body), &created); err != nil {
+		t.Fatal(err)
+	}
+	stub.progress = map[string]string{created.ID: protocol.ProgressImagePull}
+	for _, path := range []string{"/api/v1/targets/" + created.ID, "/api/v1/targets"} {
+		if _, body := doJSON(t, "GET", base+path, token, nil); !strings.Contains(body, `"progress":"image_pull"`) {
+			t.Errorf("%s while pulling: %s", path, body)
+		}
 	}
 }
 
