@@ -146,11 +146,11 @@ func TestLifecycle(t *testing.T) {
 	_, err = p.RecreateTarget(ctx, "k7f3q2", sp3)
 	wantCode(t, err, rpc.CodeInvalidParams)
 
-	cmds, err := p.TargetAttachCommands(ctx, "k7f3q2", "loomux-x")
-	if err != nil || len(cmds) != 1 || cmds[0].Via != "docker" || cmds[0].Command != "docker exec -it lx-k7f3q2 tmux -L loomux attach -t loomux-x" {
+	cmds, err := p.TargetAttachCommands(ctx, "k7f3q2", "loomux-x", "loomux-b")
+	if err != nil || len(cmds) != 1 || cmds[0].Via != "docker" || cmds[0].Command != "docker exec -it lx-k7f3q2 tmux -L loomux-b attach -t loomux-x" {
 		t.Errorf("attach = %+v, %v", cmds, err)
 	}
-	_, err = p.TargetAttachCommands(ctx, "k7f3q2", "bad session;rm")
+	_, err = p.TargetAttachCommands(ctx, "k7f3q2", "bad session;rm", "loomux")
 	wantCode(t, err, rpc.CodeInvalidParams)
 
 	if err := p.DestroyTarget(ctx, "k7f3q2"); err != nil {
@@ -175,7 +175,7 @@ func TestAttachCommandForSSHEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := attachCommand(cfg, "k7f3q2", "loomux-x"); got != "docker -H ssh://docker@jet01.example:2200 exec -it lx-k7f3q2 tmux -L loomux attach -t loomux-x" {
+	if got := attachCommand(cfg, "k7f3q2", "loomux-x", "loomux-b"); got != "docker -H ssh://docker@jet01.example:2200 exec -it lx-k7f3q2 tmux -L loomux-b attach -t loomux-x" {
 		t.Errorf("attach = %q", got)
 	}
 }

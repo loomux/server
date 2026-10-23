@@ -47,6 +47,62 @@ targets, only their start/stop/recreate/destroy pause. **Uninstall**
 asks what to do with its machines: destroy them (data included) or keep
 them as plain hosts.
 
+## Declaring plugins in the deployment (`LOOMUX_PLUGINS_SEED`)
+
+For a GitOps deployment, the plugin instances can be declared instead
+of installed by hand (LOOM-219). `LOOMUX_PLUGINS_SEED` holds the JSON,
+or the path of a file with it (a mounted ConfigMap):
+
+```json
+{
+  "prune": false,
+  "plugins": [
+    {
+      "label": "wysekube",
+      "plugin": "kubernetes",
+      "source": "socket",
+      "config": {"namespace": "loomux-agents", "storage_class": "ceph-rbd-sc-delete"},
+      "secrets": {"kubeconfig": {"file": "/run/secrets/loomux-plugin/kubeconfig"}}
+    }
+  ]
+}
+```
+
+`plugin` and `source` (`bundled`, `dir` or `socket`) are what the
+catalog lists; `config` is the configuration as the install form takes
+it, without its secret fields. Those are never written in the seed: each
+is a reference in `secrets`, to an environment variable (`{"env":
+"NAME"}`) or a file (`{"file": "/path"}`, its trailing newline dropped),
+read when the seed is applied. A secret field in `config` is refused.
+
+After the installed plugins have started, loomuxd logs the plan on one
+line (`plugins seed plan`) and applies it:
+
+- an instance the seed lists and none exists with that label is
+  installed, as `POST /api/v1/plugins` would;
+- one the seed installed is reconfigured when the seed says otherwise
+  (a secret's new value counts; a secret dropped from the seed is
+  cleared), and left alone when nothing changed;
+- one installed through the UI or API is never touched, even with a
+  label the seed lists: the log says so. Which instances are the seed's
+  is kept in the database (the `plugins_seed_owned` setting, their ids);
+- one the seed installed and no longer lists is kept, unless the seed
+  says `"prune": true`: it is then uninstalled, but only if it owns no
+  machines. Destroying machines is never the seed's to do: uninstall
+  such an instance through the API, choosing to destroy or keep them.
+
+The seed is the source of truth for its own instances: a change made to
+one through the UI is undone at the next start if the seed differs.
+
+A malformed seed (not JSON, an unknown field, a label twice, a secret
+both inline and referenced) stops loomuxd at startup, like any malformed
+setting, before anything is applied. A problem only applying reveals (a
+plugin not in the catalog yet, a missing environment variable or file, a
+check that fails) is logged per instance and loomuxd runs on; an entry
+whose plugin isn't there yet (a sidecar still starting) is tried again
+every 30 s for 10 minutes. `LOOMUX_PLUGINS_SEED_DRY_RUN=true` logs the
+plan and applies nothing.
+
 ## Upgrades and compatibility
 
 A bundled plugin's available version changes with the image; a

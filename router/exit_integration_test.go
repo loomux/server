@@ -10,11 +10,13 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
 	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/targets/executortest"
 )
 
 // TestIntegration_ProcessExit replays the 2026-10-02 incident (LOOM-71,
@@ -59,8 +61,10 @@ func TestIntegration_ProcessExit(t *testing.T) {
 				},
 			}
 			markerDir := t.TempDir()
-			detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
-			orch := orchestrator.New(store, targets.NewExecutor, detector)
+			socket := tmuxtest.Socket(t)
+			newExec := executortest.NewExecutor(socket)
+			detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), markerDir)
+			orch := orchestrator.New(store, newExec, detector)
 			model := &routertest.StubRoutingModel{
 				DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 					return router.Decision{Action: router.ActionProvisionWorkspace, AgentType: "agent", NewWorkspace: router.ProvisionSpec{
@@ -71,8 +75,8 @@ func TestIntegration_ProcessExit(t *testing.T) {
 					return router.RelayResult{Reply: strings.TrimSpace(captured), Done: true}, nil
 				},
 			}
-			r := router.New(store, orch, targets.NewExecutor, credentials.NewResolver(store), agentTypes, model, markerDir)
-			exec := targets.NewLocalExecutor()
+			r := router.New(store, orch, newExec, credentials.NewResolver(store), agentTypes, model, markerDir)
+			exec := targets.NewLocalExecutor(socket)
 			t.Cleanup(func() { killWorkspaceSessions(t, store, exec) })
 
 			start := time.Now()

@@ -406,7 +406,7 @@ func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.Environm
 	return protocol.EnvironmentHealth{Status: m.env.Status, ImageDigest: m.env.ImageDigest}, nil
 }
 
-func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session string) ([]protocol.AttachCommand, error) {
+func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
 	st := p.state()
 	st.mu.Lock()
 	_, ok := st.machines[id]
@@ -414,7 +414,7 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session string) (
 	if !ok {
 		return nil, notFound(id)
 	}
-	return []protocol.AttachCommand{{Via: "fake", Command: "fake attach " + id + " -- tmux -L loomux attach -t " + session}}, nil
+	return []protocol.AttachCommand{{Via: "fake", Command: "fake attach " + id + " -- tmux -L " + socket + " attach -t " + session}}, nil
 }
 
 // Machines is a snapshot of the fake's machines, for tests.

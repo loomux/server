@@ -2,6 +2,8 @@ package app
 
 import (
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +58,40 @@ func TestLoadConfig_TargetProbeInterval(t *testing.T) {
 		if _, err := LoadConfig(); err == nil {
 			t.Errorf("LoadConfig with %s=%q: want an error", envTargetProbeInterval, bad)
 		}
+	}
+}
+
+// LOOM-219: a malformed LOOMUX_PLUGINS_SEED stops the server; a good
+// one, inline or a file, is parsed; the dry-run switch is on or off.
+func TestLoadConfig_PluginsSeed(t *testing.T) {
+	setRouterEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || cfg.PluginsSeed != nil || cfg.PluginsSeedDryRun {
+		t.Fatalf("unset: %+v, %v, %v", cfg.PluginsSeed, cfg.PluginsSeedDryRun, err)
+	}
+	good := `{"plugins": [{"label": "k8s", "plugin": "kubernetes", "source": "socket", "config": {"namespace": "loomux-agents"}}]}`
+	t.Setenv(envPluginsSeed, good)
+	t.Setenv(envPluginsSeedDryRun, "true")
+	cfg, err = LoadConfig()
+	if err != nil || cfg.PluginsSeed == nil || len(cfg.PluginsSeed.Plugins) != 1 || !cfg.PluginsSeedDryRun {
+		t.Fatalf("inline: %+v, %v, %v", cfg.PluginsSeed, cfg.PluginsSeedDryRun, err)
+	}
+	file := filepath.Join(t.TempDir(), "seed.json")
+	if err := os.WriteFile(file, []byte(good), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envPluginsSeed, file)
+	if cfg, err := LoadConfig(); err != nil || cfg.PluginsSeed == nil {
+		t.Fatalf("from a file: %+v, %v", cfg.PluginsSeed, err)
+	}
+	t.Setenv(envPluginsSeed, `{"plugins": [{"label": "k8s"}]}`)
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), envPluginsSeed) {
+		t.Errorf("a malformed seed: %v, want an error naming %s", err, envPluginsSeed)
+	}
+	t.Setenv(envPluginsSeed, "")
+	t.Setenv(envPluginsSeedDryRun, "maybe")
+	if _, err := LoadConfig(); err == nil {
+		t.Error("a dry-run value that's neither on nor off was accepted")
 	}
 }
 

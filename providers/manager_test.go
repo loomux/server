@@ -128,6 +128,20 @@ func TestCreateQuotaAndPluginFailure(t *testing.T) {
 	}
 }
 
+// The socket grammar plugins check (protocol.ValidTmuxSocket) is the
+// host's (targets.ValidTmuxSocket): every socket an instance can have,
+// a plugin accepts, and nothing else (LOOM-210).
+func TestTmuxSocketGrammarsAgree(t *testing.T) {
+	if protocol.DefaultTmuxSocket != targets.DefaultTmuxSocket {
+		t.Errorf("default sockets differ: %q, %q", protocol.DefaultTmuxSocket, targets.DefaultTmuxSocket)
+	}
+	for _, name := range []string{"loomux", "loomux-test", "a", "A_b-9", "-x", "_x", "a b", "a;b", "a/b", "", "a.b", strings.Repeat("a", 64), strings.Repeat("a", 65)} {
+		if p, h := protocol.ValidTmuxSocket(name), targets.ValidTmuxSocket(name); p != h {
+			t.Errorf("%q: protocol says %v, targets %v", name, p, h)
+		}
+	}
+}
+
 func TestLifecycle(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()
@@ -167,6 +181,24 @@ func TestLifecycle(t *testing.T) {
 	cmds, err := h.m.AttachCommands(ctx, target.ID, "loomux-x")
 	if err != nil || len(cmds) != 1 || cmds[0].Via != "fake" || !strings.Contains(cmds[0].Command, env.ID) {
 		t.Errorf("AttachCommands = %+v, %v", cmds, err)
+	}
+	// LOOM-210: the plugin is told the instance's socket, the one the
+	// machine's sessions run on (its executor's), and attaches onto it;
+	// unset, the default. (The executor is made without the target's
+	// key, as managed SSH isn't set up here; the socket doesn't depend
+	// on it.)
+	unkeyed := *target
+	unkeyed.SSHKeyRef = ""
+	for _, socket := range []string{"loomux-b", ""} {
+		h.m.TmuxSocket = socket
+		exec, err := targets.NewExecutorWith(&unkeyed, targets.ExecutorOptions{TmuxSocket: socket, KnownHostsDir: t.TempDir()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmds, err := h.m.AttachCommands(ctx, target.ID, "loomux-x")
+		if want := " -- " + targets.AttachCommand(exec.TmuxSocket(), "loomux-x"); err != nil || len(cmds) != 1 || !strings.HasSuffix(cmds[0].Command, want) {
+			t.Errorf("socket %q: AttachCommands = %+v, %v; want a command ending %q", socket, cmds, err, want)
+		}
 	}
 
 	ephTarget, _ := h.create(t, "scratch", false)

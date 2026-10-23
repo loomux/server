@@ -15,8 +15,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
+
+// NewExecutor is targets.NewExecutor on socket: the factory for a test
+// that dispatches real sessions, on a socket of its own
+// (tmuxtest.Socket), never an instance's (LOOM-210).
+func NewExecutor(socket string) func(*registry.Target) (targets.TargetExecutor, error) {
+	return func(t *registry.Target) (targets.TargetExecutor, error) {
+		return targets.NewExecutorWith(t, targets.ExecutorOptions{TmuxSocket: socket})
+	}
+}
 
 // Run executes the full behavioral suite against an executor built fresh
 // by newExecutor for each subtest. newExecutor's caller is responsible

@@ -12,11 +12,12 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
-	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/targets/executortest"
 )
 
 // realVersionCheckFixture builds the same real-infrastructure rig as
@@ -55,8 +56,10 @@ func realVersionCheckFixture(t *testing.T, vc router.VersionCheck) (*router.Rout
 		},
 	}
 	markerDir := t.TempDir()
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
-	orch := orchestrator.New(store, targets.NewExecutor, detector)
+	socket := tmuxtest.Socket(t)
+	newExec := executortest.NewExecutor(socket)
+	detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), markerDir)
+	orch := orchestrator.New(store, newExec, detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
@@ -67,7 +70,7 @@ func realVersionCheckFixture(t *testing.T, vc router.VersionCheck) (*router.Rout
 		},
 	}
 
-	r := router.New(store, orch, targets.NewExecutor, resolver, agentTypes, model, markerDir)
+	r := router.New(store, orch, newExec, resolver, agentTypes, model, markerDir)
 	return r, ws, store
 }
 

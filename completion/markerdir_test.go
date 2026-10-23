@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -32,7 +33,7 @@ func TestResolveMarkerDir_DefaultIsPerUser0700(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	dir, err := completion.ResolveMarkerDir(context.Background(), targets.NewLocalExecutor(), "")
+	dir, err := completion.ResolveMarkerDir(context.Background(), targets.NewLocalExecutor(tmuxtest.Socket(t)), "")
 	if err != nil {
 		t.Fatalf("ResolveMarkerDir: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestResolveMarkerDir_TightensExistingDir(t *testing.T) {
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := completion.ResolveMarkerDir(context.Background(), targets.NewLocalExecutor(), ""); err != nil {
+	if _, err := completion.ResolveMarkerDir(context.Background(), targets.NewLocalExecutor(tmuxtest.Socket(t)), ""); err != nil {
 		t.Fatalf("ResolveMarkerDir: %v", err)
 	}
 	fi, _ := os.Stat(dir)
@@ -79,7 +80,7 @@ func TestResolveMarkerDir_RefusesSymlink(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), filepath.Join(parent, "completion-markers")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := completion.ResolveMarkerDir(context.Background(), targets.NewLocalExecutor(), "")
+	_, err := completion.ResolveMarkerDir(context.Background(), targets.NewLocalExecutor(tmuxtest.Socket(t)), "")
 	if err == nil || !strings.Contains(err.Error(), "owned by") {
 		t.Fatalf("err = %v, want a refusal naming the ownership requirement", err)
 	}
@@ -87,7 +88,7 @@ func TestResolveMarkerDir_RefusesSymlink(t *testing.T) {
 
 // LOOMUX_MARKER_DIR is used verbatim, without touching the target.
 func TestResolveMarkerDir_ConfiguredIsVerbatim(t *testing.T) {
-	exec := &countingExecutor{LocalExecutor: targets.NewLocalExecutor()}
+	exec := &countingExecutor{LocalExecutor: targets.NewLocalExecutor(tmuxtest.Socket(t))}
 	dir, err := completion.ResolveMarkerDir(context.Background(), exec, "/configured/dir")
 	if err != nil || dir != "/configured/dir" {
 		t.Fatalf("= %q, %v; want the configured dir", dir, err)
@@ -101,7 +102,7 @@ func TestResolveMarkerDir_ConfiguredIsVerbatim(t *testing.T) {
 func TestMarkerWatcher_DefaultDirResolvedOnTarget(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	w := completion.NewMarkerWatcher(localExecutorFactory(), "", 20*time.Millisecond)
+	w := completion.NewMarkerWatcher(localExecutorFactory(t), "", 20*time.Millisecond)
 	task := &registry.Task{ID: "task-default-dir"}
 
 	done := make(chan error, 1)

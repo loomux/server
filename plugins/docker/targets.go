@@ -1037,22 +1037,26 @@ var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 // attachCommand is how a person attaches to a machine's tmux: docker
 // exec on the docker host, named by its engine address for an ssh
-// engine.
-func attachCommand(cfg Config, id, session string) string {
+// engine, onto socket, the one the host runs the machine's sessions on
+// over ssh (its instance's, LOOM-210; the image starts no tmux itself).
+func attachCommand(cfg Config, id, session, socket string) string {
 	cmd := "docker"
 	if cfg.Engine.Kind == engineSSH {
 		cmd += " -H " + cfg.Engine.String()
 	}
-	return cmd + " exec -it " + containerName(id) + " tmux -L loomux attach -t " + session
+	return cmd + " exec -it " + containerName(id) + " tmux -L " + socket + " attach -t " + session
 }
 
-func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session string) ([]protocol.AttachCommand, error) {
+func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
 	cfg, eng, host, err := p.state()
 	if err != nil {
 		return nil, err
 	}
 	if !sessionPattern.MatchString(session) {
 		return nil, invalidParams("session must be letters, digits, dots, dashes and underscores")
+	}
+	if !protocol.ValidTmuxSocket(socket) {
+		return nil, invalidParams("socket must be letters, digits, '-' and '_'")
 	}
 	if !idPattern.MatchString(id) {
 		return nil, notFound(id)
@@ -1064,5 +1068,5 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session string) (
 	if rec == nil {
 		return nil, notFound(id)
 	}
-	return []protocol.AttachCommand{{Via: "docker", Command: attachCommand(cfg, id, session)}}, nil
+	return []protocol.AttachCommand{{Via: "docker", Command: attachCommand(cfg, id, session, socket)}}, nil
 }

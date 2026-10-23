@@ -8,10 +8,12 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/orchestrator/detectortest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/targets/executortest"
 )
 
 // TestIntegration_RealLocalTmux proves the orchestrator's actual wiring
@@ -37,14 +39,15 @@ func TestIntegration_RealLocalTmux(t *testing.T) {
 	}
 
 	detector := detectortest.NewManualDetector()
-	o := orchestrator.New(store, targets.NewExecutor, detector)
+	socket := tmuxtest.Socket(t)
+	o := orchestrator.New(store, executortest.NewExecutor(socket), detector)
 
 	task, err := o.Launch(ctx, ws.ID, "conv-real", registry.TaskKindShell, "", "")
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
 
-	realExec := targets.NewLocalExecutor()
+	realExec := targets.NewLocalExecutor(socket)
 	t.Cleanup(func() {
 		if err := realExec.Close(); err != nil {
 			t.Errorf("Close: %v", err)
