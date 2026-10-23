@@ -344,11 +344,11 @@ func TestCreatePullsImage(t *testing.T) {
 		p.CreateWait = 100 * time.Millisecond
 		f.pullDelay = 600 * time.Millisecond
 		env, err := p.CreateTarget(ctx, specWithImage("pull2", "ghcr.io/loomux/agent:v9"))
-		if err != nil || env.Status != protocol.EnvCreating || !strings.Contains(env.Reason, "pulling") || env.Address.Port != sshPort {
+		if err != nil || env.Status != protocol.EnvCreating || !strings.Contains(env.Reason, "pulling") || env.Progress != protocol.ProgressImagePull || env.Address.Port != sshPort {
 			t.Fatalf("env = %+v, %v", env, err)
 		}
 		got, err := p.GetTarget(ctx, "pull2")
-		if err != nil || got.Status != protocol.EnvCreating {
+		if err != nil || got.Status != protocol.EnvCreating || got.Progress != protocol.ProgressImagePull {
 			t.Errorf("get while pulling = %+v, %v", got, err)
 		}
 		deadline := time.Now().Add(5 * time.Second)
@@ -356,7 +356,7 @@ func TestCreatePullsImage(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 			got, _ = p.GetTarget(ctx, "pull2")
 		}
-		if got.Status != protocol.EnvRunning || got.Address.Port != 32768 {
+		if got.Status != protocol.EnvRunning || got.Address.Port != 32768 || got.Progress != "" {
 			t.Errorf("after the pull = %+v", got)
 		}
 	})
@@ -514,11 +514,11 @@ func TestRecreatePullsInBackground(t *testing.T) {
 	f.pullDelay = 600 * time.Millisecond
 	sp2 := specWithImage("k7f3q2", "ghcr.io/loomux/agent:v9")
 	re, err := p.RecreateTarget(ctx, "k7f3q2", sp2)
-	if err != nil || re.Status != protocol.EnvRecreating || !strings.Contains(re.Reason, "pulling") || re.Address.Port != 32768 {
+	if err != nil || re.Status != protocol.EnvRecreating || !strings.Contains(re.Reason, "pulling") || re.Progress != protocol.ProgressImagePull || re.Address.Port != 32768 {
 		t.Fatalf("recreate = %+v, %v", re, err)
 	}
 	got, err := p.GetTarget(ctx, "k7f3q2")
-	if err != nil || got.Status != protocol.EnvRecreating || got.Address.Port != 32768 {
+	if err != nil || got.Status != protocol.EnvRecreating || got.Progress != protocol.ProgressImagePull || got.Address.Port != 32768 {
 		t.Errorf("get while recreating = %+v, %v", got, err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -817,5 +817,35 @@ func TestStartOpIsSingleAfterReconfigure(t *testing.T) {
 			t.Fatalf("round %d: the tracked op %p isn't the one the callers got %p", round, tracked, ops[0])
 		}
 		_ = p.cancelOp(ctx, "twice")
+	}
+}
+
+// LOOM-221: a start remaking a lost container pulls its pruned image in
+// the background, and get says so as progress, not only in words.
+func TestStartPullReportsProgress(t *testing.T) {
+	p, f := fakePlugin(t, map[string]any{"agent_image": "ghcr.io/loomux/agent:test"})
+	p.CreateWait = 100 * time.Millisecond
+	if _, err := p.CreateTarget(ctx, spec("k7f3q2")); err != nil {
+		t.Fatal(err)
+	}
+	f.vanish("lx-k7f3q2")
+	f.mu.Lock()
+	delete(f.images, "ghcr.io/loomux/agent:test")
+	f.pullDelay = 600 * time.Millisecond
+	f.mu.Unlock()
+	if err := p.StartTarget(ctx, "k7f3q2"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	got, err := p.GetTarget(ctx, "k7f3q2")
+	if err != nil || got.Status != protocol.EnvStarting || got.Progress != protocol.ProgressImagePull || !strings.Contains(got.Reason, "pulling") {
+		t.Fatalf("get while the start pulls = %+v, %v", got, err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for got.Status != protocol.EnvRunning && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		got, _ = p.GetTarget(ctx, "k7f3q2")
+	}
+	if got.Status != protocol.EnvRunning || got.Progress != "" {
+		t.Errorf("after the pull = %+v", got)
 	}
 }
