@@ -43,9 +43,12 @@ type Available struct {
 	Manifest Manifest
 	Source   registry.PluginSource
 	// Path is the plugin's directory, or its socket.
-	Path      string
-	Trust     string
-	Isolation string
+	Path  string
+	Trust string
+	// TrustReason is why a plugin from the plugin directory isn't
+	// verified, "" when it is or doesn't need to be (LOOM-218).
+	TrustReason string
+	Isolation   string
 	// Incompatible is why this host refuses the plugin (below its
 	// min_host_version, or another major: Manifest.HostCompatible), ""
 	// when it doesn't; an install answers 409 with it. Warning is why
@@ -58,13 +61,15 @@ type Available struct {
 // ErrNotAvailable is a plugin the catalog doesn't have.
 var ErrNotAvailable = errors.New("plugins: not available")
 
-// Verifier decides the trust of a plugin directory that isn't bundled:
-// the LOOM-118 attestation verifier, once plugin artifacts are signed
-// (design §1.6). Nil means every such plugin is unsigned.
+// Verifier decides the trust of a plugin from the plugin directory
+// (design §1.6, LOOM-218: AttestationVerifier). Nil means every such
+// plugin is unsigned.
 type Verifier interface {
-	// Verify returns the trust value for dir: registry.PluginTrustUnsigned,
-	// or registry.PluginTrustSignedPrefix + the identity that signed it.
-	Verify(ctx context.Context, dir string) (string, error)
+	// Verify is the trust of the plugin executable at path:
+	// registry.PluginTrustSignedPrefix + the identity that signed it, or
+	// registry.PluginTrustPinnedPrefix + its pinned digest; else
+	// registry.PluginTrustUnsigned and why, for the person refused.
+	Verify(ctx context.Context, path string) (trust, why string)
 }
 
 // Catalog finds plugins in the three places the host looks (design
@@ -193,18 +198,15 @@ func (c *Catalog) readDir(ctx context.Context, dir string, source registry.Plugi
 	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
 		return nil, fmt.Errorf("plugins: %s isn't an executable file", exe)
 	}
-	trust := registry.PluginTrustUnsigned
+	trust, why := registry.PluginTrustUnsigned, "nothing verifies plugins on this server"
 	switch {
 	case source == registry.PluginSourceBundled:
-		trust = registry.PluginTrustBundled
+		trust, why = registry.PluginTrustBundled, ""
 	case c.Verifier != nil:
-		trust, err = c.Verifier.Verify(ctx, dir)
-		if err != nil {
-			return nil, fmt.Errorf("plugins: verify: %w", err)
-		}
+		trust, why = c.Verifier.Verify(ctx, exe)
 	}
 	refused, warning := c.compatibility(m)
-	return &Available{Manifest: *m, Source: source, Path: dir, Trust: trust, Isolation: IsolationNone, Incompatible: refused, Warning: warning}, nil
+	return &Available{Manifest: *m, Source: source, Path: dir, Trust: trust, TrustReason: why, Isolation: IsolationNone, Incompatible: refused, Warning: warning}, nil
 }
 
 // scanSockets lists the sockets in SocketDir and asks each to describe

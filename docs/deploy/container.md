@@ -256,6 +256,12 @@ plugins are found (LOOM-178, see [plugins.md](plugins.md)),
 a JSON file; secrets by reference only) and `LOOMUX_PLUGINS_SEED_DRY_RUN`
 (`false`: `true` only logs what the seed would do; LOOM-219, see
 [plugins.md](plugins.md)),
+`LOOMUX_PLUGIN_DIGESTS`, `LOOMUX_PLUGIN_SIGNERS` and
+`LOOMUX_PLUGIN_TRUSTED_ROOT` (what vouches for a plugin from the plugin
+directory: pinned executable digests, trusted signing workflows, and a
+Sigstore `trusted_root.json`; LOOM-218) and
+`LOOMUX_PLUGIN_ALLOW_UNSIGNED` (`false`; `true` runs unverified ones,
+for local development),
 `LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
 provisioning and dispatch — see below), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a
