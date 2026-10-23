@@ -77,6 +77,11 @@ type Manager struct {
 	// the plugin's attach commands name it (LOOM-210). Empty is
 	// targets.DefaultTmuxSocket.
 	TmuxSocket string
+	// IdleStop, when set, stops a persistent machine idle for that long
+	// at each reconcile, and Activity says what is happening on its
+	// target (idle.go); zero, or a nil Activity, never stops one.
+	IdleStop time.Duration
+	Activity Activity
 
 	CreateTimeout time.Duration
 	// PullTimeout is how much longer than CreateTimeout a job waits
@@ -107,7 +112,10 @@ type Manager struct {
 	// notified is each machine a targets.changed reconcile is pending or
 	// running for, keyed plugin/env (HandleNotify).
 	notified map[string]*notifyRun
-	closed   bool
+	// lastUse is when each running machine was last started or handed
+	// to a dispatch, as this process saw it (idle.go).
+	lastUse map[string]time.Time
+	closed  bool
 }
 
 // NewManager makes a Manager over store and the plugin manager.
@@ -125,7 +133,7 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 		CreateTimeout: DefaultCreateTimeout, PullTimeout: DefaultPullTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
 		NotifyDelay: DefaultNotifyDelay,
 		Now:         time.Now,
-		locks:       map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{},
+		locks:       map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{}, lastUse: map[string]time.Time{},
 		notified: map[string]*notifyRun{},
 		life:     life, endLife: endLife,
 	}
@@ -626,6 +634,7 @@ func (m *Manager) apply(ctx context.Context, env *registry.Environment, target *
 	if err := m.store.UpdateEnvironment(ctx, env); err != nil {
 		return err
 	}
+	m.noteRunning(env.ID, status == registry.EnvironmentRunning)
 	m.updateGauge(ctx)
 	if status == registry.EnvironmentRunning && was != registry.EnvironmentRunning {
 		m.logger.Info("machine running", "target", target.Name, "environment", env.ID, "host", target.Host)
@@ -757,6 +766,12 @@ func (m *Manager) refuseIfActive(ctx context.Context, targetID string) error {
 
 // Stop frees the machine's compute, keeping its data.
 func (m *Manager) Stop(ctx context.Context, targetID string) error {
+	return m.stop(ctx, targetID, "", nil)
+}
+
+// stop is Stop recording reason, and only while still (when set) holds
+// for the machine as re-read under its lock (errNotIdle otherwise).
+func (m *Manager) stop(ctx context.Context, targetID, reason string, still func(*registry.Environment) bool) error {
 	env, _, err := m.managed(ctx, targetID)
 	if err != nil {
 		return err
@@ -764,6 +779,9 @@ func (m *Manager) Stop(ctx context.Context, targetID string) error {
 	defer m.lock(env.ID)()
 	if env, _, err = m.reload(ctx, env.ID); err != nil {
 		return err
+	}
+	if still != nil && !still(env) {
+		return errNotIdle
 	}
 	if !env.Persistent {
 		return ErrEphemeralStop
@@ -782,7 +800,7 @@ func (m *Manager) Stop(ctx context.Context, targetID string) error {
 		return m.mapPluginErr(err)
 	}
 	m.cancelJob(env.ID)
-	return m.setStatus(ctx, env, registry.EnvironmentStopped, "")
+	return m.setStatus(ctx, env, registry.EnvironmentStopped, reason)
 }
 
 // Start brings a stopped machine back at the same address.
@@ -984,11 +1002,16 @@ func (m *Manager) AttachCommands(ctx context.Context, targetID, session string) 
 
 // EnsureRunning starts a stopped machine and waits for it to be
 // running; a machine already running returns at once. For dispatch.
-func (m *Manager) EnsureRunning(ctx context.Context, targetID string) error {
+func (m *Manager) EnsureRunning(ctx context.Context, targetID string) (err error) {
 	env, err := m.Get(ctx, targetID)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err == nil {
+			m.markUsed(env.ID) // in use from now: not idle (idle.go)
+		}
+	}()
 	switch env.Status {
 	case registry.EnvironmentRunning:
 		return nil
@@ -1073,6 +1096,7 @@ func (m *Manager) setStatus(ctx context.Context, env *registry.Environment, stat
 	if err := m.store.UpdateEnvironment(ctx, env); err != nil {
 		return err
 	}
+	m.noteRunning(env.ID, status == registry.EnvironmentRunning)
 	m.updateGauge(ctx)
 	return nil
 }

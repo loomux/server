@@ -50,6 +50,8 @@ LOOMUX_TARGET_PROBE_INTERVAL  how often every target's health is probed (default
 LOOMUX_PLUGINS_SEED           plugin instances declared as JSON (inline or a file path), secrets by env/file
                                reference only; applied at startup (LOOM-219, docs/deploy/plugins.md)
 LOOMUX_PLUGINS_SEED_DRY_RUN   true: only log what the seed would do (default: false)
+LOOMUX_MACHINE_IDLE_STOP      stop a persistent plugin-created machine idle this long; the next request
+                               starts it again (default: off; LOOM-217)
 LOOMUX_TURN_RETENTION         how long per-turn transcripts are kept (default: 720h; 0 keeps them; LOOM-122)
 LOOMUX_LOG_LEVEL              debug | info | warn | error (default: info); structured JSON on stderr
                                for routing decisions, provisioning and dispatch (LOOM-63)
