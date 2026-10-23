@@ -289,6 +289,7 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err), ranOn, probe{}, ""
 	}
 	var readErr error
+	var last *corev1.Pod
 	for {
 		pod, err := pods.Get(ctx, name, metav1.GetOptions{})
 		switch {
@@ -304,7 +305,7 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 				readErr = err
 			}
 		default:
-			readErr = nil
+			readErr, last = nil, pod
 			if ranOn == "" {
 				ranOn = pod.Spec.NodeName
 			}
@@ -317,7 +318,19 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 			if readErr != nil {
 				return enforcementFailed, "couldn't read the canary pod: " + safeStatus(readErr), ranOn, probe{}, name
 			}
-			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String(), ranOn, probe{}, name
+			detail := "the canary didn't finish within " + p.CanaryTimeout.String()
+			if last != nil {
+				// Most often a cold image pull (LOOM-203): say so. It proves
+				// nothing all the same, and the kubelet that finishes it
+				// leaves the image for the next canary on that node.
+				pctx, pcancel := context.WithTimeout(context.Background(), 10*time.Second)
+				reason, pulling := p.pulling(pctx, client, cfg, last)
+				pcancel()
+				if pulling {
+					detail += ", still " + reason + "; the next canary there starts once it is pulled"
+				}
+			}
+			return enforcementFailed, detail, ranOn, probe{}, name
 		case <-time.After(p.Poll):
 		}
 	}

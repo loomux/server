@@ -56,6 +56,56 @@ All labelled `app.kubernetes.io/managed-by=loomux-plugin-kubernetes`,
 `loomux.io/role=agent`, `loomux.io/egress`. Another server's machines
 (another instance label) are invisible: never listed, never touched.
 
+## A cold image pull (LOOM-203)
+
+The first machine on a node pulls the agent image (542 MB), which on a
+slow link takes longer than the host's 10-minute create deadline. While
+it pulls, the machine is `creating`, its reason "pulling the image on
+node … (for …)", and the plugin tells the host it is progress
+(`progress: image_pull`): the host's deadline stands still meanwhile, up
+to 30 minutes more. The plugin calls it pulling when the pod is
+scheduled, its container `ContainerCreating`, and the kubelet's latest
+image Event is `Pulling`, with no `Pulled`, `Failed` or `BackOff` since.
+A pull that fails is `error` with its reason (`ErrImagePull: …`,
+`ImagePullBackOff: …`); the kubelet retries it, and recreate or start
+picks the machine up again. The canary keeps its 3 minutes and the
+quota above: one that runs out mid-pull proves nothing and says it was
+pulling; the image, once pulled, serves the next.
+
+To take a first pull out of the way, pre-pull the pinned image on every
+node. That is deployment work (it needs a DaemonSet, which the plugin's
+Role can't make), for example, with `agent_image` pinned to the same
+reference:
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: loomux-agent-prepull, namespace: loomux-agents}
+spec:
+  selector: {matchLabels: {app: loomux-agent-prepull}}
+  template:
+    metadata: {labels: {app: loomux-agent-prepull}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10002, seccompProfile: {type: RuntimeDefault}}
+      initContainers:
+        - name: pull
+          image: ghcr.io/loomux/agent:<the pinned version>
+          command: ["true"]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {cpu: 50m, memory: 32Mi}}
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.10
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 1m, memory: 8Mi}, limits: {cpu: 10m, memory: 16Mi}}
+```
+
+Its pods sit in the namespace's `pods` quota (one per node) and carry
+none of the plugin's labels, so neither the policies nor the plugin
+count them as machines; leave room for them, or run it in another
+namespace.
+
 ## The network-isolation check
 
 `egress: none` rests on two things, both required.

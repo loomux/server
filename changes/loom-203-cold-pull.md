@@ -1,0 +1,3 @@
+### Fixed
+
+- A slow first image pull is no longer a create failure (LOOM-203). The Kubernetes plugin reports a machine whose image is being pulled as `creating`, with "pulling the image on node … (for …)" as its reason, and marks it as progress (`progress: image_pull`). The host's 10-minute create, start and recreate deadline stands still meanwhile, for up to 30 minutes more. A pull that fails is still `error` with its reason (`ErrImagePull: …`). A machine stuck any other way still fails at 10 minutes. A network-isolation canary that runs out of time mid-pull still proves nothing, and now says it was pulling. The plugin README shows how to pre-pull the agent image on every node with a DaemonSet.

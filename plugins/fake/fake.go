@@ -237,10 +237,20 @@ const (
 	// (LOOM-213): only a host that heeds the hint sees it before its
 	// next reconcile.
 	TargetsFailNotify = "fail_notify"
+	// TargetsSlowPull: a new machine's image pulls for PullFor (status
+	// starting, progress image_pull), then it runs (LOOM-203).
+	TargetsSlowPull = "slow_pull"
+	// TargetsPullForever: the pull never ends.
+	TargetsPullForever = "pull_forever"
+	// TargetsStuck: a new machine stays starting, no progress reported.
+	TargetsStuck = "stuck"
 )
 
 // FailAfter is how long a machine runs in mode fail_notify.
 const FailAfter = 200 * time.Millisecond
+
+// PullFor is how long a machine's image pulls in mode slow_pull.
+const PullFor = 800 * time.Millisecond
 
 // machine is one in-memory environment.
 type machine struct {
@@ -329,6 +339,14 @@ func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment
 	m.gets++
 	switch m.env.Status {
 	case protocol.EnvStarting:
+		switch {
+		case mode == TargetsStuck:
+			return m.env, nil
+		case mode == TargetsPullForever, mode == TargetsSlowPull && time.Since(m.started) < PullFor:
+			env := m.env
+			env.Reason, env.Progress = "pulling the image", protocol.ProgressImagePull
+			return env, nil
+		}
 		need := 1
 		if mode == TargetsSlowStart {
 			need = 3
