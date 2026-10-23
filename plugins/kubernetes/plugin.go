@@ -126,6 +126,9 @@ type Plugin struct {
 	// inflight is the canary pods this process is still reading: a
 	// sweep leaves them to their readers.
 	inflight map[string]bool
+	// undeleted is each canary whose verdict is recorded but whose
+	// delete failed, for the sweep to try again (LOOM-212).
+	undeleted map[string]undeletedCanary
 	// verdictHook, if set, runs once check has its verdict, before it
 	// reports the nodes known open (tests: a node canary finishing then).
 	verdictHook func()
@@ -146,6 +149,7 @@ func New() *Plugin {
 		nodes:         map[string]*nodeCheck{},
 		watch:         map[string]string{},
 		inflight:      map[string]bool{},
+		undeleted:     map[string]undeletedCanary{},
 	}
 }
 
