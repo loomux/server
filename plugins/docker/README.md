@@ -109,7 +109,9 @@ by field, including the JSON the engine receives.
   background the same way: the call answers `creating` / `recreating` /
   `starting` with the phase ("pulling the image") after 20 s (less when
   the host's call deadline is nearer) and finishes when the pull ends;
-  `get` reports the progress. A destroy or a recreate cancels a making
+  `get` reports the progress, in words and as `progress: image_pull`
+  while the image pulls, so the host's deadline stands still meanwhile
+  (LOOM-221, as LOOM-203 for Kubernetes). A destroy or a recreate cancels a making
   in progress and waits for it, so nothing is made behind its back; a
   plugin restart drops it, and the host's reconcile resumes what it
   needs.

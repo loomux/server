@@ -222,6 +222,15 @@ answers `422` with the plugin as it is (`status: error`,
 `503` without `LOOMUX_MASTER_KEY`. The routes answer `404` on a server
 built without `WithPlugins`.
 
+`GET /plugins/{id}/targets` is what an instance offers for a new
+machine, as its `targets.describe` says right now (LOOM-238): `sizes`
+(`{name, cpu, memory, disk}`, the first the default),
+`persistent_default`, `egress_options` (the first the default; `none`
+only while the plugin finds network isolation enforced),
+`image`, `max_environments` (0: no quota) and `environments`. `404` for
+no such instance (or a server without machines), `409` when it isn't
+running or doesn't make machines.
+
 ## Machines (LOOM-178)
 
 A target a plugin made (`docs/design/target-providers.md` §2, §5).
@@ -233,7 +242,8 @@ egress}`) asks that installed plugin for a machine: `kind` must be
 target, its `plugin.status` `creating`, and the machine comes up in the
 background (poll `GET /targets/{id}`). Every target carries `plugin`
 (null for a registered host): the owning plugin, the machine's status
-and reason, size, persistence, egress, image and digest,
+and reason, `progress` (`image_pull` while a machine coming up pulls
+its image, else empty; LOOM-239), size, persistence, egress, image and digest,
 `update_available`, and the plugin's warnings. `POST
 /targets/{id}/start`, `/stop` and `/recreate` (`{size?}`) answer `202`
 with the target; `409` while a task runs there, for a stop of an

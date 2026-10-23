@@ -41,20 +41,34 @@ type createOp struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 
-	mu       sync.Mutex
-	phase    string
+	mu    sync.Mutex
+	phase string
+	// progress is protocol.ProgressImagePull while the image pulls, so
+	// the host doesn't count that time against its deadline (LOOM-221).
+	progress string
 	err      error
 	env      protocol.Environment
 	finished time.Time
 }
 
-func (o *createOp) setPhase(s string) {
+func (o *createOp) setPhase(s string) { o.setStep(s, "") }
+
+// setStep is setPhase with the step's progress (see createOp.progress).
+func (o *createOp) setStep(phase, progress string) {
 	if o == nil {
 		return
 	}
 	o.mu.Lock()
-	o.phase = s
+	o.phase, o.progress = phase, progress
 	o.mu.Unlock()
+}
+
+// inFlight is what an op in flight reports: its phase, and its
+// progress.
+func (o *createOp) inFlight() (phase, progress string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.phase, o.progress
 }
 
 func (o *createOp) state() (phase string, err error, finished time.Time) {
@@ -202,7 +216,7 @@ func (p *Plugin) ensureImage(ctx context.Context, eng *engine, ref string, op *c
 	if !isStatus(err, 404) {
 		return p.mapErr(err)
 	}
-	op.setPhase("pulling the image " + ref)
+	op.setStep("pulling the image "+ref, protocol.ProgressImagePull)
 	p.Logger.Printf("pulling %s", ref)
 	body, err := eng.stream(ctx, "POST", "/images/create", pullQuery(ref))
 	if err != nil {
@@ -684,8 +698,9 @@ func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec
 	if p.await(ctx, op) {
 		return p.outcome(op)
 	}
-	phase, _, _ := op.state()
-	return p.pending(spec, cfg, 0, protocol.EnvCreating, phase), nil
+	env := p.pending(spec, cfg, 0, protocol.EnvCreating, "")
+	env.Reason, env.Progress = op.inFlight()
+	return env, nil
 }
 
 // pending is a machine still being made (or whose making failed): the
@@ -712,10 +727,11 @@ func (p *Plugin) environment(ctx context.Context, eng *engine, cfg Config, rec *
 		CreatedAt: createdFrom(rec.Labels, p.Now()),
 	}
 	if op := p.op(spec.ID); op != nil && c == nil {
-		phase, opErr, finished := op.state()
+		_, opErr, finished := op.state()
 		switch {
 		case finished.IsZero():
-			env.Status, env.Reason = op.status, phase
+			env.Status = op.status
+			env.Reason, env.Progress = op.inFlight()
 		case opErr != nil:
 			env.Status, env.Reason = protocol.EnvError, oneLine(opErr.Error())
 		}
@@ -752,9 +768,11 @@ func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment
 	}
 	if rec == nil {
 		if op := p.op(id); op != nil {
-			phase, opErr, finished := op.state()
+			_, opErr, finished := op.state()
 			if finished.IsZero() {
-				return p.pending(op.spec, cfg, op.port, op.status, phase), nil
+				env := p.pending(op.spec, cfg, op.port, op.status, "")
+				env.Reason, env.Progress = op.inFlight()
+				return env, nil
 			}
 			if opErr != nil {
 				return p.pending(op.spec, cfg, op.port, protocol.EnvError, oneLine(opErr.Error())), nil
@@ -951,8 +969,9 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	if p.await(ctx, op) {
 		return p.outcome(op)
 	}
-	phase, _, _ := op.state()
-	return p.pending(spec, cfg, port, protocol.EnvRecreating, phase), nil
+	env := p.pending(spec, cfg, port, protocol.EnvRecreating, "")
+	env.Reason, env.Progress = op.inFlight()
+	return env, nil
 }
 
 func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {

@@ -585,6 +585,7 @@ All additions; nothing existing changes shape or meaning. Each is recorded in th
 | `GET /api/v1/plugins` | installed instances: `{plugins: [{id, name, label, version, available_version, protocol, source, trust, status, status_reason, enabled, capabilities, config (secrets as {set: bool}), check: {ok, problems: [{code, message, severity}]}, machines: n, installed_at, updated_at}]}` |
 | `POST /api/v1/plugins` `{plugin, source?, label, config}` | install; `201` with the instance; `400` (schema), `409` (label), `503` (no master key), `422` with the `check` problems when it starts but can't work |
 | `GET /api/v1/plugins/{id}` | one instance, as in the list |
+| `GET /api/v1/plugins/{id}/targets` | what it offers for a new machine, its `targets.describe` now: `{sizes, persistent_default, egress_options, image, max_environments, environments}` (LOOM-238); `409` when it isn't running or makes no machines |
 | `PUT /api/v1/plugins/{id}/config` | reconfigure; secrets omitted keep their value, `""` clears |
 | `POST /api/v1/plugins/{id}/enable`, `.../disable`, `.../upgrade`, `.../check` | lifecycle; `check` re-runs the plugin's self-test and returns its problems |
 | `DELETE /api/v1/plugins/{id}?targets=destroy\|keep` | uninstall; `409` with the targets when it has any and the parameter is absent |
@@ -598,8 +599,10 @@ All additions; nothing existing changes shape or meaning. Each is recorded in th
   background. `422` when the plugin's `check` isn't ok (the problems in the body), including
   `require_network_policy` refusing.
 - Target responses gain `plugin` (null for a registered host):
-  `{id, name, label, version, environment_id, status, status_reason, size, persistent, egress, image,
-  image_digest, update_available, warnings: [{code, message}], created_at}`. `warnings` carries the plugin's
+  `{id, name, label, version, environment_id, status, status_reason, progress, size, persistent, egress, image,
+  image_digest, update_available, warnings: [{code, message}], created_at}`. `progress` is `image_pull` while
+  a machine coming up pulls its image and empty otherwise (LOOM-239), so a client needn't read it from
+  `status_reason`. `warnings` carries the plugin's
   machine-level warnings (network isolation not enforced). `ready`/`next_step` keep their meaning; `next_step`
   stays null while the machine is coming up, and `plugin.status` says why the target isn't ready.
 - `GET /api/v1/targets/{id}` (new; listed as addable in the freeze review), so the web can poll one target
@@ -685,7 +688,9 @@ can tighten them in the form. The model never sees plugin names beyond that, nor
 
 **Dispatch to a stopped machine.** A `use_workspace`/`provision_workspace`/`run_command` aimed at a target
 whose machine is `stopped` starts it first (a dispatch stage, bounded like a provisioning run, shown in the
-audit trail as an event) and then goes on; `creating`/`starting` waits for readiness up to the same bound;
+audit trail as an event) and then goes on; `creating`/`starting` waits for readiness up to the same bound
+(5 minutes), which stands still while the job following the machine sees its image pulling (`progress:
+image_pull`), up to 30 minutes more, as the job's own deadline does (LOOM-222);
 `error`/`lost`/`detached`-and-unreachable fails the dispatch with `target_unhealthy` and the reason. The
 snapshot's `Problem` says "stopped; will be started" so the model doesn't avoid the target.
 
