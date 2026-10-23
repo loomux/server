@@ -961,6 +961,7 @@ the handful of endpoints used are small and the plugin controls every request).
 | `bind_address` | the docker host's address the agent containers publish 2222 on (its tailnet IP; `127.0.0.1` for a local engine) and what created machines' `host` becomes |
 | `ssh_proxy` | `default` or `none`: how the **host** reaches the created machines (through `LOOMUX_SSH_PROXY` or directly), reported by `targets.describe` |
 | `agent_image`, `sizes`, `max_environments` | as for Kubernetes |
+| `port_range` (optional, LOOM-220) | `LO-HI` in 1024-65535, at least `max_environments` ports: the host ports machines publish sshd on, for a docker host whose firewall or tailnet ACL allows only those. Empty: Docker's ephemeral range |
 
 **Transport.** The plugin dials SSH (pinned host key, its own key, through the proxy if set), runs `docker
 system dial-stdio` on the host, and speaks the Engine API (HTTP) over that session's stdio, the same thing the
@@ -992,7 +993,9 @@ type=volume,source=lx-<id>-data,target=/data`, `--network loomux-agents`, `--pub
 implementation; so `create` probes one once with the helper published on `<bind_address>:0:2222`, reads it
 back from `inspect`, removes the helper and bakes the port into the record and the container; a probe landing
 on a port a stopped machine of this instance has fixed is repeated, and a port found taken at start rebuilds
-the record with a fresh probe), a health check `bash -c 'exec
+the record with a fresh probe; with a `port_range` the plugin walks the range from its low end instead, skipping
+ports its records fix and having the helper publish each candidate until one binds, with choosing and recording
+under one lock), a health check `bash -c 'exec
 3<>/dev/tcp/127.0.0.1/2222'` every 5 s standing in for the readiness probe (`running` means healthy),
 `--restart unless-stopped`, env `HOME`, `CLAUDE_CONFIG_DIR`, `TZ` as for the pod, labels as above. Nothing
 from the host is mounted; `/var/run/docker.sock` is never passed. The image isn't pulled by the engine: a

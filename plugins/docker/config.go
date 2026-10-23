@@ -54,6 +54,9 @@ type Config struct {
 	Timezone        string
 	Sizes           []protocol.Size
 	MaxEnvironments int
+	// PortRange is where machines' sshd ports come from; zero for the
+	// docker host's ephemeral range (LOOM-220).
+	PortRange portRange
 
 	// signer is the plugin's own key to the docker host; hostKey the
 	// docker host's pinned key, nil until the user trusts the scanned
@@ -178,12 +181,62 @@ func parseConfig(m map[string]any) (Config, error) {
 	if c.MaxEnvironments < 1 {
 		return c, invalid("max_environments must be at least 1")
 	}
+	if s := str(m, "port_range"); s != "" {
+		r, err := parsePortRange(s)
+		if err != nil {
+			return c, err
+		}
+		if r.size() < c.MaxEnvironments {
+			return c, invalid("port_range %s holds %d ports, fewer than max_environments (%d): every machine needs its own", r, r.size(), c.MaxEnvironments)
+		}
+		c.PortRange = r
+	}
 	sizes, err := parseSizes(m["sizes"])
 	if err != nil {
 		return c, err
 	}
 	c.Sizes = sizes
 	return c, nil
+}
+
+// portRange is an inclusive range of host ports, Lo 0 for none.
+type portRange struct{ Lo, Hi int }
+
+func (r portRange) size() int { return r.Hi - r.Lo + 1 }
+
+func (r portRange) String() string { return strconv.Itoa(r.Lo) + "-" + strconv.Itoa(r.Hi) }
+
+// parsePortRange reads LO-HI, both in 1024-65535: the ports below are
+// the docker host's own services.
+func parsePortRange(s string) (portRange, error) {
+	bad := invalid("port_range must be LO-HI, two ports in 1024-65535 with LO at most HI, such as 32000-32099")
+	lo, hi, ok := strings.Cut(s, "-")
+	if !ok {
+		return portRange{}, bad
+	}
+	r := portRange{Lo: portNumber(lo), Hi: portNumber(hi)}
+	if r.Lo < 1024 || r.Hi < 1024 || r.Lo > r.Hi {
+		return portRange{}, bad
+	}
+	return r, nil
+}
+
+// portNumber is s as a port, 0 unless it is 1-5 digits and at most 65535.
+func portNumber(s string) int {
+	if len(s) == 0 || len(s) > 5 {
+		return 0
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	if n > 65535 {
+		return 0
+	}
+	return n
 }
 
 // parseEngine reads ssh://user@host[:port] or unix:///path. Nothing

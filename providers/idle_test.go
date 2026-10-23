@@ -50,8 +50,18 @@ func idleMachine(t *testing.T, persistent bool) (*harness, *registry.Target, *id
 	act := &stubActivity{}
 	h.m.Now = clock.now
 	h.m.IdleStop, h.m.Activity = time.Hour, act.get
-	target, _ := h.create(t, "idle", persistent)
+	target, env := h.create(t, "idle", persistent)
 	h.waitStatus(t, target.ID, registry.EnvironmentRunning)
+	// The create's job is still registered a moment after the row says
+	// running, and StopIdle passes over a machine a job follows: wait it
+	// out, or a sweep right after skips the machine (LOOM-217's flake).
+	deadline := time.Now().Add(10 * time.Second)
+	for h.m.FollowingForTest(env.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("the create's job still follows the machine 10 s after it ran")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	return h, target, clock, act
 }
 

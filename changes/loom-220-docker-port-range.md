@@ -1,0 +1,3 @@
+### Added
+
+- The Docker plugin takes a `port_range` (LOOM-220), such as `32000-32099`, for the host ports machines publish sshd on, so a firewall or tailnet ACL on the docker host can allow just those. Each new machine takes the range's lowest port that no machine of the instance has fixed (a stopped one keeps its own) and the docker host can bind. It keeps that port for its life, through stop, start and recreate. Configure refuses a malformed range, ports below 1024 and a range smaller than `max_environments`. Without it, ports still come from the docker host's ephemeral range. Changing the range doesn't move existing machines.
