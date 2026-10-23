@@ -88,7 +88,7 @@ func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec
 	if err != nil {
 		return protocol.Environment{}, err
 	}
-	return p.environment(pod, spec, cfg, client, instance, sec), nil
+	return p.environment(ctx, pod, spec, cfg, client, instance, sec), nil
 }
 
 // createRecord makes a new machine's Secret, its record, if the quota
@@ -234,8 +234,10 @@ func (p *Plugin) machine(ctx context.Context, client kubernetes.Interface, cfg C
 }
 
 // environment is a machine as the host sees it: an egress "none" one
-// running only once its node is known to confine it (nodeGate).
-func (p *Plugin) environment(pod *corev1.Pod, spec protocol.EnvironmentSpec, cfg Config, client kubernetes.Interface, instance string, sec *corev1.Secret) protocol.Environment {
+// running only once its node is known to confine it (nodeGate), and one
+// whose image is being pulled saying so, as progress the host waits out
+// (LOOM-203).
+func (p *Plugin) environment(ctx context.Context, pod *corev1.Pod, spec protocol.EnvironmentSpec, cfg Config, client kubernetes.Interface, instance string, sec *corev1.Secret) protocol.Environment {
 	env := protocol.Environment{
 		ID: spec.ID, Address: cfg.address(spec.ID), Size: spec.Size, Persistent: spec.Persistent, Egress: spec.Egress,
 		CreatedAt: createdFrom(sec, p.Now()),
@@ -246,6 +248,11 @@ func (p *Plugin) environment(pod *corev1.Pod, spec protocol.EnvironmentSpec, cfg
 		return env
 	}
 	env.Status, env.Reason = statusOf(pod)
+	if env.Status == protocol.EnvCreating {
+		if reason, ok := p.pulling(ctx, client, cfg, pod); ok {
+			env.Reason, env.Progress = reason, protocol.ProgressImagePull
+		}
+	}
 	if spec.Egress == protocol.EgressNone {
 		env.Status, env.Reason = p.nodeGate(cfg, client, instance, pod, env.Status, env.Reason)
 	}
@@ -262,7 +269,7 @@ func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment
 	if err != nil {
 		return protocol.Environment{}, err
 	}
-	return p.environment(pod, spec, cfg, client, host.InstanceID, sec), nil
+	return p.environment(ctx, pod, spec, cfg, client, host.InstanceID, sec), nil
 }
 
 // listSecrets is this server's machines' records.
@@ -298,7 +305,7 @@ func (p *Plugin) ListTargets(ctx context.Context) ([]protocol.Environment, error
 			p.Logger.Printf("skipping %s: %v", secrets[i].Name, err)
 			continue
 		}
-		out = append(out, p.environment(pods[podName(spec.ID)], spec, cfg, client, host.InstanceID, &secrets[i]))
+		out = append(out, p.environment(ctx, pods[podName(spec.ID)], spec, cfg, client, host.InstanceID, &secrets[i]))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -401,7 +408,7 @@ func (p *Plugin) RecreateTarget(ctx context.Context, id string, spec protocol.En
 	if err != nil {
 		return protocol.Environment{}, err
 	}
-	return p.environment(pod, spec, cfg, client, instance, sec), nil
+	return p.environment(ctx, pod, spec, cfg, client, instance, sec), nil
 }
 
 func (p *Plugin) DestroyTarget(ctx context.Context, id string) error {
@@ -450,7 +457,9 @@ func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.Environm
 	}
 	h := protocol.EnvironmentHealth{Restarts: restartsOf(pod), ImageDigest: digestOf(pod)}
 	h.Status, h.Reason = statusOf(pod)
-	if h.Status == protocol.EnvError || h.Status == protocol.EnvCreating {
+	if reason, ok := p.pulling(ctx, client, cfg, pod); ok && h.Status == protocol.EnvCreating {
+		h.Reason = reason
+	} else if h.Status == protocol.EnvError || h.Status == protocol.EnvCreating {
 		if ev := p.lastEvent(ctx, client, cfg, podName(id)); ev != "" {
 			h.Reason = truncate(h.Reason+" ("+ev+")", 500)
 		}
@@ -463,13 +472,71 @@ func (p *Plugin) TargetHealth(ctx context.Context, id string) (protocol.Environm
 
 // lastEvent is the newest Event about the pod, in the cluster's words.
 func (p *Plugin) lastEvent(ctx context.Context, client kubernetes.Interface, cfg Config, pod string) string {
-	list, err := client.CoreV1().Events(cfg.Namespace).List(ctx, metav1.ListOptions{FieldSelector: "involvedObject.kind=Pod,involvedObject.name=" + pod})
-	if err != nil || len(list.Items) == 0 {
+	items := podEvents(ctx, client, cfg.Namespace, pod)
+	if len(items) == 0 {
 		return ""
 	}
-	items := list.Items
-	sort.Slice(items, func(i, j int) bool { return eventTime(items[i]).After(eventTime(items[j])) })
 	return oneLine(items[0].Reason + ": " + items[0].Message)
+}
+
+// podEvents is the Events about the pod, newest first.
+func podEvents(ctx context.Context, client kubernetes.Interface, namespace, pod string) []corev1.Event {
+	list, err := client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{FieldSelector: "involvedObject.kind=Pod,involvedObject.name=" + pod})
+	if err != nil {
+		return nil
+	}
+	var items []corev1.Event
+	for _, e := range list.Items {
+		if e.InvolvedObject.Name == pod {
+			items = append(items, e)
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool { return eventTime(items[i]).After(eventTime(items[j])) })
+	return items
+}
+
+// The kubelet's Events about pulling a pod's image.
+var pullEvents = map[string]bool{"Pulling": true, "Pulled": true, "Failed": true, "BackOff": true, "ErrImageNeverPull": true, "InspectFailed": true}
+
+// pulling is whether the pod's image is being pulled, and the reason to
+// show for it (LOOM-203): the pod is scheduled, its container hasn't
+// started, and the kubelet's latest word on the image is "Pulling",
+// with no "Pulled", failure or back-off since. A pull that failed is
+// the container's waiting reason, an error (statusOf); one stalled
+// without progress is failed by the runtime (containerd's pull progress
+// timeout), so "Pulling" as the latest word is a pull still moving.
+func (p *Plugin) pulling(ctx context.Context, client kubernetes.Interface, cfg Config, pod *corev1.Pod) (string, bool) {
+	if pod.Status.Phase != corev1.PodPending || pod.Spec.NodeName == "" {
+		return "", false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting == nil || cs.State.Waiting.Reason != "ContainerCreating" {
+			return "", false
+		}
+	}
+	return pullReason(podEvents(ctx, client, cfg.Namespace, pod.Name), pod.Spec.NodeName, p.Now())
+}
+
+// pullReason is pulling's verdict from the pod's events, newest first.
+func pullReason(events []corev1.Event, node string, now time.Time) (string, bool) {
+	for _, e := range events {
+		if !pullEvents[e.Reason] {
+			continue
+		}
+		if e.Reason != "Pulling" {
+			return "", false
+		}
+		since := e.FirstTimestamp.Time
+		if since.IsZero() {
+			since = eventTime(e)
+		}
+		reason := "pulling the image on node " + node
+		if d := now.Sub(since); d > 0 {
+			reason += " (for " + d.Round(time.Second).String() + ")"
+		}
+		return reason + ": " + oneLine(e.Message), true
+	}
+	return "", false
 }
 
 func eventTime(e corev1.Event) time.Time {

@@ -24,7 +24,9 @@ the orphan sweep and attach-info all see an SSH target.
    leaves rows that startup resumes, never an unowned machine.
 4. Asks the plugin (`targets.create`, idempotent on the environment id)
    in a background job bounded by 10 minutes, follows the machine to
-   `running` (`targets.get`), takes its reported address (moving the
+   `running` (`targets.get`; the 10 minutes stand still while the
+   plugin reports `progress: image_pull`, up to `PullTimeout`, 30
+   minutes past them, LOOM-203), takes its reported address (moving the
    target's host, port and pin if the plugin's differs from the
    template's), and probes the target.
 

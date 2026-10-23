@@ -130,9 +130,14 @@ type Address struct {
 
 // Environment is a machine as the plugin sees it.
 type Environment struct {
-	ID          string    `json:"id"`
-	Status      string    `json:"status"`
-	Reason      string    `json:"reason,omitempty"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+	// Progress, while the machine comes up, names a step that is
+	// progressing rather than stuck, which the host waits out instead of
+	// counting it against its deadline (LOOM-203): ProgressImagePull.
+	// Empty otherwise. A host that doesn't know it ignores it.
+	Progress    string    `json:"progress,omitempty"`
 	Address     Address   `json:"address"`
 	ImageDigest string    `json:"image_digest,omitempty"`
 	Size        string    `json:"size"`
@@ -140,6 +145,10 @@ type Environment struct {
 	Egress      string    `json:"egress"`
 	CreatedAt   time.Time `json:"created_at"`
 }
+
+// ProgressImagePull: the machine's image is being pulled, and nothing
+// has failed yet (LOOM-203). A pull that fails is status error.
+const ProgressImagePull = "image_pull"
 
 // EnvironmentHealth is targets.health's result: the plugin's own view.
 type EnvironmentHealth struct {

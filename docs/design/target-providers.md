@@ -346,6 +346,12 @@ plugin's `targets.*` methods. Creating a machine:
    `targets.create`, then poll `targets.get` until `running`, then the normal target probe. Status moves
    `creating → starting → running`; a failure moves it to `error` with the plugin's reason, and the objects
    are left for inspection (like a failed pane), to be destroyed by `DELETE` or retried by `recreate`.
+   While the plugin reports the machine's image being pulled (`progress: image_pull` on the environment,
+   LOOM-203) the 10 minutes stand still, up to 30 minutes past them: a cold pull of the agent image on a slow
+   link (the 542 MB image outlasted both deadlines on TEST) isn't a failure. A pull that fails is `error` with
+   the plugin's reason (`ErrImagePull: …`), and a machine stuck any other way, reporting no progress, fails at
+   the 10 minutes as before. `progress` is optional: a host that doesn't know it ignores it, and a plugin
+   that doesn't send it gets the plain deadline.
 4. From then on the target is a managed remote target: the executor, health, agent probes, provisioning and
    the orphan sweep need no change. The `migrate-ssh`, `scan-host-key`, `pin`/unpin and `generate_ssh_key`
    routes answer `409` for a created machine: its connection is the plugin's to manage.
@@ -846,7 +852,15 @@ Not enforced:
   the user decides on an engine (§10), with the warning in view.
 
 **Image pull.** The agent image is public on GHCR, like the server's; no `imagePullSecrets`. A private image
-would be one more Secret the Role can read and `imagePullSecrets` on the pod.
+would be one more Secret the Role can read and `imagePullSecrets` on the pod. A pod whose image is being pulled
+(scheduled, its container `ContainerCreating`, the kubelet's latest image Event `Pulling` with no `Pulled`,
+`Failed` or `BackOff` since) is `creating` with "pulling the image on node … (for …)" and `progress:
+image_pull` (LOOM-203); a stalled pull is failed by the runtime (containerd's pull progress timeout), so
+"Pulling" as the latest word is one still moving. The canary keeps its 3 minutes: one that runs out mid-pull
+proves nothing (fail closed) and says it was pulling, and the image the kubelet finishes pulling serves the
+next. A first pull can be taken out of the way altogether by pre-pulling the pinned `agent_image` on every
+node (a DaemonSet whose container runs `true` from it, plugin README); that is deployment work, as it needs
+more than the plugin's namespaced Role.
 
 **Ready signal.** `running` once the pod is `Running` with the container ready (tcp 2222 answering); the
 host's target probe (`ssh` + `tmux -V`) then sets `ready`. Both are needed: a pod can be `Running` with sshd

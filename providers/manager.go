@@ -44,8 +44,12 @@ func inFlight(s registry.EnvironmentStatus) bool {
 // Defaults.
 const (
 	DefaultCreateTimeout = 10 * time.Minute
-	DefaultPollInterval  = 2 * time.Second
-	DefaultOrphanTTL     = 24 * time.Hour
+	// DefaultPullTimeout bounds how far an image pull in progress pushes
+	// a job's deadline back (LOOM-203): a cold pull of the 542 MB agent
+	// image over a slow link outlasted CreateTimeout on TEST.
+	DefaultPullTimeout  = 30 * time.Minute
+	DefaultPollInterval = 2 * time.Second
+	DefaultOrphanTTL    = 24 * time.Hour
 	// readyTimeout bounds EnsureRunning's wait for a machine to come up.
 	readyTimeout = 5 * time.Minute
 )
@@ -75,8 +79,13 @@ type Manager struct {
 	TmuxSocket string
 
 	CreateTimeout time.Duration
-	PollInterval  time.Duration
-	OrphanTTL     time.Duration
+	// PullTimeout is how much longer than CreateTimeout a job waits
+	// while the plugin reports the machine's image being pulled
+	// (progress image_pull): the time it does doesn't count against
+	// CreateTimeout, up to this much (LOOM-203).
+	PullTimeout  time.Duration
+	PollInterval time.Duration
+	OrphanTTL    time.Duration
 	// NotifyDelay is how long a machine's targets.changed waits before
 	// its reconcile, so a burst of them is one (LOOM-213).
 	NotifyDelay time.Duration
@@ -113,7 +122,7 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 	life, endLife := context.WithCancel(context.Background())
 	return &Manager{
 		store: store, plugins: pm, logger: logger, met: met, instanceID: instanceID,
-		CreateTimeout: DefaultCreateTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
+		CreateTimeout: DefaultCreateTimeout, PullTimeout: DefaultPullTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
 		NotifyDelay: DefaultNotifyDelay,
 		Now:         time.Now,
 		locks:       map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{},
@@ -415,8 +424,9 @@ func (m *Manager) buildSpec(ctx context.Context, env *registry.Environment, targ
 	}, nil
 }
 
-// startJob runs fn on its own goroutine, bounded by CreateTimeout, and
-// replacing any job for the same environment.
+// startJob runs fn on its own goroutine, bounded by CreateTimeout (and
+// whatever an image pull adds, follow), and replacing any job for the
+// same environment.
 func (m *Manager) startJob(envID string, fn func(ctx context.Context)) {
 	m.mu.Lock()
 	if m.closed {
@@ -426,7 +436,8 @@ func (m *Manager) startJob(envID string, fn func(ctx context.Context)) {
 	if old := m.running[envID]; old != nil {
 		old.cancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), m.CreateTimeout)
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := newJobContext(parent, m.CreateTimeout)
 	j := &job{cancel: cancel}
 	m.running[envID] = j
 	m.jobs.Add(1)
@@ -455,6 +466,9 @@ func (m *Manager) following(envID string) bool {
 func (m *Manager) runCreate(ctx context.Context, envID string) {
 	env, target, err := m.load(ctx, envID)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			m.failJob(ctx, envID, m.deadlineReason(ctx))
+		}
 		return
 	}
 	spec, err := m.buildSpec(ctx, env, target, "")
@@ -495,16 +509,42 @@ func (m *Manager) applyLocked(ctx context.Context, envID string, pe protocol.Env
 // follow polls the plugin until the machine is running (then probes the
 // target), or ends in error or lost, or the job's deadline passes. A
 // job cancelled on purpose leaves the row as the canceller set it.
+// While the plugin reports the machine's image being pulled (progress
+// image_pull) the deadline stands still: what was left of it when the
+// pull was first seen stays left, plus a poll's grace, up to PullTimeout
+// past the deadline as made. So a slow first pull isn't a failure,
+// while a machine stuck any other way, or a pull that never ends, still
+// is (LOOM-203).
 func (m *Manager) follow(ctx context.Context, envID string) {
 	ticker := time.NewTicker(m.PollInterval)
 	defer ticker.Stop()
+	jc, _ := ctx.(*jobContext)
+	var left time.Duration // when the pull was first seen; 0: not pulling
 	for {
 		env, _, err := m.load(ctx, envID)
-		if err != nil || !inFlight(env.Status) {
+		if err != nil {
+			// A read the deadline cut short is the deadline: without
+			// this the machine was left starting for ever.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				m.failJob(ctx, envID, m.deadlineReason(ctx))
+			}
+			return
+		}
+		if !inFlight(env.Status) {
 			return
 		}
 		var pe protocol.Environment
 		err = m.plugins.Call(ctx, env.PluginID, protocol.MethodTargetsGet, protocol.IDParams{ID: env.ID}, &pe)
+		if jc != nil && err == nil && pe.Progress == protocol.ProgressImagePull {
+			if left <= 0 {
+				left = jc.remaining()
+			}
+			if left > 0 {
+				jc.extendTo(time.Now().Add(left+m.PollInterval), m.PullTimeout)
+			}
+		} else {
+			left = 0
+		}
 		switch {
 		case err == nil:
 			if err := m.applyLocked(ctx, envID, pe); err != nil {
@@ -525,7 +565,7 @@ func (m *Manager) follow(ctx context.Context, envID string) {
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				m.failJob(ctx, envID, m.deadlineReason())
+				m.failJob(ctx, envID, m.deadlineReason(ctx))
 			}
 			return
 		case <-ticker.C:
@@ -621,7 +661,7 @@ func (m *Manager) failJob(ctx context.Context, envID, reason string) {
 		return
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		reason = m.deadlineReason()
+		reason = m.deadlineReason(ctx)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1228,7 +1268,17 @@ func (m *Manager) view(ctx context.Context, env *registry.Environment, views map
 	return mv
 }
 
-// deadlineReason is the error a job records when CreateTimeout passes.
-func (m *Manager) deadlineReason() string {
-	return "the machine didn't become ready within " + m.CreateTimeout.String()
+// deadlineReason is the error a job records when its deadline passes:
+// CreateTimeout, and what an image pull added to it.
+func (m *Manager) deadlineReason(ctx context.Context) string {
+	reason := "the machine didn't become ready within " + m.CreateTimeout.String()
+	if jc, ok := ctx.(*jobContext); ok {
+		switch pulled := jc.extended(); {
+		case pulled >= m.PullTimeout:
+			reason += ", besides " + m.PullTimeout.String() + " of pulling its image, which hadn't finished"
+		case pulled > 0:
+			reason += ", besides " + pulled.Round(time.Second).String() + " of pulling its image"
+		}
+	}
+	return reason
 }

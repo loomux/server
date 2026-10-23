@@ -84,6 +84,7 @@ type Plugin struct {
 	domain    string
 	targets   *targetsState
 	notifier  sdk.Notifier
+	pullGate  string
 }
 
 // Notifier makes the fake a notifying plugin (sdk.Notifying, LOOM-213).
@@ -129,6 +130,9 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	}
 	if d, ok := cp.Config["address_domain"].(string); ok && d != "" {
 		p.domain = d
+	}
+	if g, ok := cp.Config["pull_gate"].(string); ok {
+		p.pullGate = g
 	}
 	p.host = cp.Host
 	if dir, ok := cp.Config["pid_dir"].(string); ok && dir != "" {
@@ -237,10 +241,21 @@ const (
 	// (LOOM-213): only a host that heeds the hint sees it before its
 	// next reconcile.
 	TargetsFailNotify = "fail_notify"
+	// TargetsSlowPull: a new machine's image pulls (status starting,
+	// progress image_pull) until the file pull_gate names exists, or for
+	// PullFor without one; then it runs (LOOM-203).
+	TargetsSlowPull = "slow_pull"
+	// TargetsPullForever: the pull never ends.
+	TargetsPullForever = "pull_forever"
+	// TargetsStuck: a new machine stays starting, no progress reported.
+	TargetsStuck = "stuck"
 )
 
 // FailAfter is how long a machine runs in mode fail_notify.
 const FailAfter = 200 * time.Millisecond
+
+// PullFor is how long a machine's image pulls in mode slow_pull.
+const PullFor = 800 * time.Millisecond
 
 // machine is one in-memory environment.
 type machine struct {
@@ -329,6 +344,14 @@ func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment
 	m.gets++
 	switch m.env.Status {
 	case protocol.EnvStarting:
+		switch {
+		case mode == TargetsStuck:
+			return m.env, nil
+		case mode == TargetsPullForever, mode == TargetsSlowPull && p.stillPulling(m):
+			env := m.env
+			env.Reason, env.Progress = "pulling the image", protocol.ProgressImagePull
+			return env, nil
+		}
 		need := 1
 		if mode == TargetsSlowStart {
 			need = 3
@@ -363,6 +386,18 @@ func (p *Plugin) fail(id string) {
 	if ok {
 		p.notifier.TargetsChanged(id, protocol.EnvError)
 	}
+}
+
+// stillPulling is whether a machine's pull goes on in mode slow_pull.
+func (p *Plugin) stillPulling(m *machine) bool {
+	p.mu.Lock()
+	gate := p.pullGate
+	p.mu.Unlock()
+	if gate == "" {
+		return time.Since(m.started) < PullFor
+	}
+	_, err := os.Stat(gate)
+	return err != nil
 }
 
 func (p *Plugin) ListTargets(ctx context.Context) ([]protocol.Environment, error) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,5 +191,48 @@ func TestJobResultDroppedOnceStopped(t *testing.T) {
 	}
 	if e, _ := h.m.Get(ctx, target.ID); e.Status != registry.EnvironmentStopped {
 		t.Errorf("after a stale apply = %s", e.Status)
+	}
+}
+
+// readDeadlineStore holds one read of a starting machine (follow's, the
+// first after the create applied) until the job's deadline passes, then
+// fails it with the context's error, as sqlite does.
+type readDeadlineStore struct {
+	registry.Store
+	held *atomic.Bool
+}
+
+func (s readDeadlineStore) GetEnvironment(ctx context.Context, id string) (*registry.Environment, error) {
+	env, err := s.Store.GetEnvironment(ctx, id)
+	if err == nil && env.Status == registry.EnvironmentStarting && s.held.CompareAndSwap(false, true) {
+		<-ctx.Done()
+		return nil, fmt.Errorf("sqlite: get environment: %w", ctx.Err())
+	}
+	return env, err
+}
+
+// A deadline that passes during follow's read of the machine is still
+// the deadline: the machine is failed, not left starting for ever
+// (LOOM-203; seen as a flake under CI load).
+func TestDeadlineDuringReadRecordsTheDeadline(t *testing.T) {
+	h := newHarness(t, map[string]any{"targets_mode": "stuck"})
+	m := providers.NewManager(readDeadlineStore{h.store, new(atomic.Bool)}, h.pm, "inst", nil, nil)
+	defer m.Close()
+	m.PollInterval = 20 * time.Millisecond
+	m.CreateTimeout = 300 * time.Millisecond
+	p := true
+	target, _, err := m.Create(context.Background(), providers.CreateRequest{
+		Target: registry.Target{Name: "late-read"}, PluginID: h.pluginID, Size: "small", Persistent: &p,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	m.WaitJobsForTest()
+	e, err := m.Get(context.Background(), target.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if e.Status != registry.EnvironmentError || !strings.Contains(e.StatusReason, "didn't become ready within 300ms") {
+		t.Errorf("after the deadline = %s (%q), want error naming the deadline", e.Status, e.StatusReason)
 	}
 }
