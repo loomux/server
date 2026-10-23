@@ -225,7 +225,7 @@ func (p *Plugin) await(ctx context.Context, nc *netcheck, wait time.Duration) (e
 func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface, instance string) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.CanaryTimeout)
 	defer cancel()
-	state, detail, node, ran := p.canary(ctx, cfg, client, cfg.apiHost, instance, nc.node)
+	state, detail, node, ran, made := p.canary(ctx, cfg, client, cfg.apiHost, instance, nc.node)
 	p.mu.Lock()
 	p.seq++
 	nc.state, nc.detail, nc.at, nc.node, nc.doneSeq, nc.probe = state, detail, p.Now(), node, p.seq, ran
@@ -247,14 +247,22 @@ func (p *Plugin) runCanary(nc *netcheck, cfg Config, client kubernetes.Interface
 		p.nodeOf(node).record(nc)
 	}
 	p.mu.Unlock()
+	// Its verdict recorded, the canary goes (LOOM-212), before anyone
+	// waiting is told: a check that has its answer leaves none behind.
+	// A failed delete changes no verdict; the sweep tries it again.
+	if made != "" {
+		p.dropCanary(client.CoreV1().Pods(cfg.Namespace), made)
+	}
 	close(nc.done)
 	p.Logger.Printf("network isolation in %s on node %s: %s (%s)", cfg.Namespace, node, state, detail)
 }
 
 // canary runs the pod, pinned to node unless that is "", and reads its
-// exit code; ranOn is the node it ran on, as far as it got one, and ran
-// when its probe ran.
-func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Interface, apiHost, instance, node string) (state enforcementState, detail, ranOn string, ran probe) {
+// exit code; ranOn is the node it ran on, as far as it got one, ran
+// when its probe ran, and made the pod's name once it was created ("" if
+// it wasn't): the caller deletes it once the verdict is recorded
+// (dropCanary).
+func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Interface, apiHost, instance, node string) (state enforcementState, detail, ranOn string, ran probe, made string) {
 	name := "lx-netcheck-" + p.Rand()
 	pods := client.CoreV1().Pods(cfg.Namespace)
 	p.sweepCanaries(ctx, pods, instance)
@@ -268,21 +276,16 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 	}()
 	ranOn = node
 	if _, err := pods.Create(ctx, canaryPod(name, cfg, instance, apiHost, p.CanaryTimeout, node), metav1.CreateOptions{}); err != nil {
-		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err), ranOn, probe{}
+		return enforcementFailed, "couldn't create the canary pod: " + safeStatus(err), ranOn, probe{}, ""
 	}
-	defer func() {
-		dctx, dcancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer dcancel()
-		_ = pods.Delete(dctx, name, metav1.DeleteOptions{GracePeriodSeconds: ptr(int64(0))})
-	}()
 	var readErr error
 	for {
 		pod, err := pods.Get(ctx, name, metav1.GetOptions{})
 		switch {
 		case kerrors.IsNotFound(err):
-			return enforcementFailed, "the canary pod disappeared", ranOn, probe{}
+			return enforcementFailed, "the canary pod disappeared", ranOn, probe{}, name
 		case kerrors.IsForbidden(err) || kerrors.IsUnauthorized(err):
-			return enforcementFailed, "couldn't read the canary pod: " + safeStatus(err), ranOn, probe{}
+			return enforcementFailed, "couldn't read the canary pod: " + safeStatus(err), ranOn, probe{}, name
 		case err != nil:
 			// Transient (etcd "leader changed" was seen on TEST): poll
 			// again, and report it only if it outlasts the canary. The
@@ -296,28 +299,32 @@ func (p *Plugin) canary(ctx context.Context, cfg Config, client kubernetes.Inter
 				ranOn = pod.Spec.NodeName
 			}
 			if state, detail, done := canaryVerdict(pod); done {
-				return state, detail, ranOn, probeOf(pod)
+				return state, detail, ranOn, probeOf(pod), name
 			}
 		}
 		select {
 		case <-ctx.Done():
 			if readErr != nil {
-				return enforcementFailed, "couldn't read the canary pod: " + safeStatus(readErr), ranOn, probe{}
+				return enforcementFailed, "couldn't read the canary pod: " + safeStatus(readErr), ranOn, probe{}, name
 			}
-			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String(), ranOn, probe{}
+			return enforcementFailed, "the canary didn't finish within " + p.CanaryTimeout.String(), ranOn, probe{}, name
 		case <-time.After(p.Poll):
 		}
 	}
 }
 
 // sweepCanaries deletes this server's canaries left by an earlier check
-// whose own delete failed (the API server was unavailable): those that
-// have terminated, or have outlived any check's wait for them. A live
-// one may be another plugin process's (an old and a new sidecar
-// overlapping in a rollout) and is left alone, as is one this process
-// is still reading (canaries run at once, one per node). Best effort,
-// like that delete: the next check tries again.
+// whose own delete failed (the API server was unavailable). First the
+// ones this process recorded a verdict for (dropCanary): whatever their
+// phase, and in whichever configuration's namespace. Then, by label in
+// pods, those that have terminated, or have outlived any check's wait
+// for them: left by a process that died first. A live one may be
+// another plugin process's (an old and a new sidecar overlapping in a
+// rollout) and is left alone, as is one this process is still reading
+// (canaries run at once, one per node). Best effort, like that delete:
+// the next sweep tries again.
 func (p *Plugin) sweepCanaries(ctx context.Context, pods corev1client.PodInterface, instance string) {
+	p.retryUndeleted(ctx)
 	list, err := pods.List(ctx, metav1.ListOptions{LabelSelector: instanceSelector(instance) + "," + labelCanary + "=true"})
 	if err != nil {
 		return
@@ -331,9 +338,70 @@ func (p *Plugin) sweepCanaries(ctx context.Context, pods corev1client.PodInterfa
 		}
 		terminated := pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 		if terminated || p.Now().Sub(pod.CreationTimestamp.Time) > p.CanaryTimeout+time.Minute {
-			_ = pods.Delete(ctx, pod.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr(int64(0))})
+			_ = deleteCanary(ctx, pods, pod.Name)
 		}
 	}
+}
+
+// undeletedCanary is a canary whose verdict is recorded and whose
+// delete failed: the pods it is in (its configuration's namespace) and
+// when that delete failed.
+type undeletedCanary struct {
+	pods  corev1client.PodInterface
+	since time.Time
+}
+
+// undeletedFor bounds how long a canary's delete is tried again: a
+// failure lasting longer (the Role lost delete) is logged and left to
+// the label sweep and the canary's own deadline.
+const undeletedFor = time.Hour
+
+// dropCanary deletes a canary whose verdict is recorded (LOOM-212). One
+// that can't be deleted now is kept for the sweep (retryUndeleted): a
+// finished canary is out of the quota but would stay listed, Completed,
+// and one that never finished (it couldn't run, or outlived its wait)
+// holds its place until deleted or its deadline.
+func (p *Plugin) dropCanary(pods corev1client.PodInterface, name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := deleteCanary(ctx, pods, name); err != nil {
+		p.mu.Lock()
+		p.undeleted[name] = undeletedCanary{pods: pods, since: p.Now()}
+		p.mu.Unlock()
+		p.Logger.Printf("couldn't delete the canary pod %s, trying again: %s", name, safeStatus(err))
+	}
+}
+
+// retryUndeleted deletes again each canary whose delete failed,
+// forgetting it once gone, or once undeletedFor has passed.
+func (p *Plugin) retryUndeleted(ctx context.Context) {
+	p.mu.Lock()
+	left := make(map[string]undeletedCanary, len(p.undeleted))
+	for name, u := range p.undeleted {
+		left[name] = u
+	}
+	p.mu.Unlock()
+	for name, u := range left {
+		err := deleteCanary(ctx, u.pods, name)
+		p.mu.Lock()
+		switch {
+		case err == nil:
+			delete(p.undeleted, name)
+		case p.Now().Sub(u.since) > undeletedFor:
+			delete(p.undeleted, name)
+			p.Logger.Printf("gave up deleting the canary pod %s after %s: %s", name, undeletedFor, safeStatus(err))
+		}
+		p.mu.Unlock()
+	}
+}
+
+// deleteCanary deletes a canary pod at once; one already gone is fine.
+func deleteCanary(ctx context.Context, pods corev1client.PodInterface, name string) error {
+	err := pods.Delete(ctx, name, metav1.DeleteOptions{GracePeriodSeconds: ptr(int64(0))})
+	if kerrors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // canaryVerdict is the verdict a read of the canary pod gives, once it

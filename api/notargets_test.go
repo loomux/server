@@ -13,6 +13,7 @@ import (
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/app"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/router"
 )
 
@@ -53,8 +54,9 @@ func TestIntegration_Dispatch_NoTargets_ClearAnswerNot500(t *testing.T) {
 	t.Cleanup(llmSrv.Close)
 
 	realApp, err := app.Build(app.Config{
-		DBPath: filepath.Join(t.TempDir(), "test.db"),
-		Router: routerConfigFor(llmSrv.URL),
+		DBPath:     filepath.Join(t.TempDir(), "test.db"),
+		Router:     routerConfigFor(llmSrv.URL),
+		TmuxSocket: tmuxtest.Socket(t),
 	})
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)

@@ -667,6 +667,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	machines := providers.NewManager(store, pluginManager, instanceID, cfg.Logger, met)
 	machines.ActiveTask = providers.ActiveTaskChecker(store)
 	machines.DropSSHKey = func(keyID string) { sshAgents.Drop(keyID) }
+	machines.TmuxSocket = cfg.TmuxSocket
 	pluginManager.MachineCounter = machines.MachineCount
 	pluginManager.UninstallMachines = machines.UninstallMachines
 	pluginManager.OnNotify = machines.HandleNotify

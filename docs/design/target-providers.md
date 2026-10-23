@@ -159,7 +159,7 @@ Methods the host calls (every one has a per-call deadline, 30 s unless noted):
 | `targets.get(id)`, `targets.list()` | `list` returns every environment carrying this instance's label, whether or not the host knows it (reconcile, orphans) |
 | `targets.start(id)`, `targets.stop(id)`, `targets.recreate(id, spec)`, `targets.destroy(id)` | lifecycle; each idempotent and safe to repeat after a crash (2 min) |
 | `targets.health(id)` → `{status, reason, restarts, image_digest}` | the plugin's own view; SSH reachability is the host's probe |
-| `targets.attach_commands(id, session)` → `[{via, command}]` | the `kubectl exec` / `docker exec` form of attach for a person |
+| `targets.attach_commands(id, session, socket)` → `[{via, command}]` | the `kubectl exec` / `docker exec` form of attach for a person, onto `socket`: the instance's tmux socket the host runs the machine's sessions on (LOOM-210; absent from an older host, `loomux`) |
 
 A plugin may send the notification `targets.changed {id, status}` on the same channel; the host treats it as
 a hint to poll sooner and never as the truth. Errors are JSON-RPC errors with a `code` from a fixed list
@@ -594,8 +594,10 @@ name per (workspace, target, agent_type) scope.
 
 **Attach-info**: gains `attach_commands: [{via, command}]` beside the unchanged `attach_command`, from the
 plugin's `targets.attach_commands`: for a Kubernetes machine `via: "kubectl"`, `kubectl -n <ns> exec -it
-<pod> -- tmux -L loomux attach -t <session>` (the pod's DNS name isn't resolvable from a laptop; this is);
-for Docker `via: "docker"`, `ssh <host> docker exec -it <container> tmux -L loomux attach -t <session>`;
+<pod> -- tmux -L <socket> attach -t <session>` (the pod's DNS name isn't resolvable from a laptop; this is);
+for Docker `via: "docker"`, `ssh <host> docker exec -it <container> tmux -L <socket> attach -t <session>`;
+`<socket>` is the instance's (`LOOMUX_TMUX_SOCKET`, default `loomux`), which the host passes in, since the
+image starts no tmux itself and the host runs every session over ssh on that socket (LOOM-210);
 `via: "ssh"` with the plain form for every target. The host validates the returned commands against a
 grammar (no newlines or control characters, bounded) and shows them as text; it never runs them.
 

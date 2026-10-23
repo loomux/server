@@ -68,6 +68,11 @@ type Manager struct {
 	ActiveTask func(ctx context.Context, targetID string) (bool, error)
 	// DropSSHKey stops serving a deleted key (the agent pool); nil skips.
 	DropSSHKey func(keyID string)
+	// TmuxSocket is the instance's tmux socket (its executors'
+	// ExecutorOptions.TmuxSocket), the one a machine's sessions run on:
+	// the plugin's attach commands name it (LOOM-210). Empty is
+	// targets.DefaultTmuxSocket.
+	TmuxSocket string
 
 	CreateTimeout time.Duration
 	PollInterval  time.Duration
@@ -107,6 +112,13 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 		locks: map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{},
 		life: life, endLife: endLife,
 	}
+}
+
+func (m *Manager) tmuxSocket() string {
+	if m.TmuxSocket == "" {
+		return targets.DefaultTmuxSocket
+	}
+	return m.TmuxSocket
 }
 
 func (m *Manager) lock(envID string) func() {
@@ -898,14 +910,14 @@ func (m *Manager) releaseTargetKey(ctx context.Context, keyID string) {
 }
 
 // AttachCommands asks the plugin how a person attaches to session on
-// the machine, validated.
+// the machine, on the instance's tmux socket, validated.
 func (m *Manager) AttachCommands(ctx context.Context, targetID, session string) ([]protocol.AttachCommand, error) {
 	env, _, err := m.managed(ctx, targetID)
 	if err != nil {
 		return nil, err
 	}
 	var res protocol.AttachResult
-	if err := m.plugins.Call(ctx, env.PluginID, protocol.MethodTargetsAttachCommands, protocol.AttachParams{ID: env.ID, Session: session}, &res); err != nil {
+	if err := m.plugins.Call(ctx, env.PluginID, protocol.MethodTargetsAttachCommands, protocol.AttachParams{ID: env.ID, Session: session, Socket: m.tmuxSocket()}, &res); err != nil {
 		var missing *plugins.CapabilityMissingError
 		if errors.As(err, &missing) {
 			return nil, nil

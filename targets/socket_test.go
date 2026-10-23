@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 	"github.com/Loomux/server/targets/executortest"
@@ -27,10 +28,9 @@ func TestTmuxSocket_SeparatesInstances(t *testing.T) {
 		t.Fatal("NewExecutorWith accepted a socket name with a space")
 	}
 
-	sockets := [2]string{fmt.Sprintf("loomux-sockettest-a-%d", os.Getpid()), fmt.Sprintf("loomux-sockettest-b-%d", os.Getpid())}
+	sockets := [2]string{tmuxtest.Socket(t), tmuxtest.Socket(t)}
 	var execs [2]targets.TargetExecutor
 	for i, socket := range sockets {
-		t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
 		e, err := targets.NewExecutorWith(local, targets.ExecutorOptions{TmuxSocket: socket})
 		if err != nil {
 			t.Fatal(err)
@@ -64,8 +64,8 @@ func TestTmuxSocket_SeparatesInstances(t *testing.T) {
 	}
 	wg.Wait()
 
-	if ok, _ := targets.NewLocalExecutor().HasSession(ctx, session(0)); ok {
-		t.Error("the default socket sees an instance's session")
+	if ok, _ := targets.NewLocalExecutor(tmuxtest.Socket(t)).HasSession(ctx, session(0)); ok {
+		t.Error("a third socket sees an instance's session")
 	}
 	if got, want := targets.AttachCommand(sockets[0], "s"), "tmux -L "+sockets[0]+" attach -t s"; got != want {
 		t.Errorf("AttachCommand = %q, want %q", got, want)
@@ -76,8 +76,7 @@ func TestTmuxSocket_SeparatesInstances(t *testing.T) {
 // locally and over SSH: every operation, and every raw tmux command the
 // suite runs through RunOnce, is on that socket (LOOM-202).
 func TestLocalExecutor_OwnSocket(t *testing.T) {
-	socket := fmt.Sprintf("loomux-ownsocket-local-%d", os.Getpid())
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+	socket := tmuxtest.Socket(t)
 	local := &registry.Target{Name: "box", Kind: registry.TargetKindLocal}
 	executortest.Run(t, func(t *testing.T) targets.TargetExecutor {
 		e, err := targets.NewExecutorWith(local, targets.ExecutorOptions{TmuxSocket: socket})
@@ -90,8 +89,7 @@ func TestLocalExecutor_OwnSocket(t *testing.T) {
 }
 
 func TestRemoteExecutor_OwnSocket(t *testing.T) {
-	socket := fmt.Sprintf("loomux-ownsocket-remote-%d", os.Getpid())
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+	socket := tmuxtest.Socket(t)
 	server := sshtest.Start(t)
 	executortest.Run(t, func(t *testing.T) targets.TargetExecutor {
 		return newTestRemoteExecutor(t, server, targets.WithTmuxSocket(socket))

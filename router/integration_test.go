@@ -10,11 +10,13 @@ import (
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/routertest"
 	"github.com/Loomux/server/targets"
+	"github.com/Loomux/server/targets/executortest"
 )
 
 // TestIntegration_RealDispatch proves the full pipeline works
@@ -49,8 +51,10 @@ func TestIntegration_RealDispatch(t *testing.T) {
 		},
 	}
 	markerDir := t.TempDir()
-	detector := completion.NewDetector(store, targets.NewExecutor, agentTypes.CompletionConfig(), markerDir)
-	orch := orchestrator.New(store, targets.NewExecutor, detector)
+	socket := tmuxtest.Socket(t)
+	newExec := executortest.NewExecutor(socket)
+	detector := completion.NewDetector(store, newExec, agentTypes.CompletionConfig(), markerDir)
+	orch := orchestrator.New(store, newExec, detector)
 	resolver := credentials.NewResolver(store)
 	model := &routertest.StubRoutingModel{
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
@@ -61,7 +65,7 @@ func TestIntegration_RealDispatch(t *testing.T) {
 		},
 	}
 
-	r := router.New(store, orch, targets.NewExecutor, resolver, agentTypes, model, markerDir)
+	r := router.New(store, orch, newExec, resolver, agentTypes, model, markerDir)
 
 	reply, err := r.Dispatch(ctx, "conv-real", "do the real thing")
 	if err != nil {
@@ -75,7 +79,7 @@ func TestIntegration_RealDispatch(t *testing.T) {
 	// by having reached this point at all within the test's own
 	// deadline, plus the pane's real output showing up in the reply.
 
-	realExec := targets.NewLocalExecutor()
+	realExec := targets.NewLocalExecutor(socket)
 	t.Cleanup(func() {
 		if err := realExec.Close(); err != nil {
 			t.Errorf("Close: %v", err)

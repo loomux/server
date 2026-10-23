@@ -210,12 +210,17 @@ func testTargetsLifecycle(t *testing.T, launch Launch, o Options) {
 	}
 	if m.HasCapability(protocol.CapTargetsAttachCommands) {
 		var att protocol.AttachResult
-		if err := call(t, conn, o, protocol.MethodTargetsAttachCommands, protocol.AttachParams{ID: id, Session: "loomux-plugintest"}, &att); err != nil {
+		// The commands attach onto the socket the host names, its
+		// instance's, where the machine's sessions run (LOOM-210).
+		if err := call(t, conn, o, protocol.MethodTargetsAttachCommands, protocol.AttachParams{ID: id, Session: "loomux-plugintest", Socket: "loomux-plugintest-socket"}, &att); err != nil {
 			t.Fatalf("targets.attach_commands: %v", err)
 		}
 		for _, c := range att.Commands {
 			if c.Via == "" || c.Command == "" || len(c.Command) > 512 || strings.ContainsAny(c.Command, "\r\n\x00") {
 				t.Errorf("attach command outside the grammar: %+v", c)
+			}
+			if !strings.Contains(c.Command, "tmux -L loomux-plugintest-socket ") {
+				t.Errorf("attach command not on the host's socket loomux-plugintest-socket: %+v", c)
 			}
 		}
 	}

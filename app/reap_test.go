@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/internal/tmuxtest"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
@@ -98,9 +99,11 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	// turn ends counted as idle time, and on a loaded CI runner the
 	// reaper tore the session down before the check (LOOM-195).
 	var ahead atomic.Int64
+	socket := tmuxtest.Socket(t)
 	cfg := Config{
-		DBPath:    dbPath,
-		MasterKey: []byte("01234567890123456789012345678901"[:32]),
+		DBPath:     dbPath,
+		TmuxSocket: socket,
+		MasterKey:  []byte("01234567890123456789012345678901"[:32]),
 		Router: llmrouter.Config{
 			Primary: llmrouter.Tier{BaseURL: srv.URL, APIKey: "test-key", Model: "test-model"},
 		},
@@ -140,7 +143,7 @@ func TestBuild_IdleReaper_TearsDownRealSessionAutomatically(t *testing.T) {
 	}
 	task := tasks[0]
 
-	realExec := targets.NewLocalExecutor()
+	realExec := targets.NewLocalExecutor(socket)
 	t.Cleanup(func() {
 		if err := realExec.Close(); err != nil {
 			t.Errorf("Close: %v", err)

@@ -16,10 +16,11 @@ type LocalExecutor struct {
 	socket string
 }
 
-// NewLocalExecutor constructs a LocalExecutor on DefaultTmuxSocket; an
-// app's come from NewExecutorWith, on its own socket.
-func NewLocalExecutor() *LocalExecutor {
-	return &LocalExecutor{}
+// NewLocalExecutor constructs a LocalExecutor on socket ("" is
+// DefaultTmuxSocket); an app's come from NewExecutorWith, on its own.
+// Tests name one of their own (internal/tmuxtest, LOOM-210).
+func NewLocalExecutor(socket string) *LocalExecutor {
+	return &LocalExecutor{socket: socket}
 }
 
 func (e *LocalExecutor) TmuxSocket() string {

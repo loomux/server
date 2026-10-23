@@ -1,6 +1,9 @@
 package protocol
 
-import "time"
+import (
+	"regexp"
+	"time"
+)
 
 // The targets.* group: a target provider makes machines on demand
 // (docs/design/target-providers.md §1.3, §1.9). The host calls these
@@ -163,11 +166,26 @@ type RecreateParams struct {
 	Spec EnvironmentSpec `json:"spec"`
 }
 
-// AttachParams are targets.attach_commands'.
+// AttachParams are targets.attach_commands'. Socket is the tmux socket
+// the host runs the machine's sessions on, its instance's (LOOM-210):
+// the commands must attach to that one. A host from before LOOM-210
+// sends none, which means DefaultTmuxSocket.
 type AttachParams struct {
 	ID      string `json:"id"`
 	Session string `json:"session"`
+	Socket  string `json:"socket,omitempty"`
 }
+
+// DefaultTmuxSocket is the socket an AttachParams without one names:
+// the host's own default (targets.DefaultTmuxSocket).
+const DefaultTmuxSocket = "loomux"
+
+var tmuxSocketPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+// ValidTmuxSocket reports whether name can be a socket name, the
+// grammar targets.ValidTmuxSocket enforces on the host: it goes into
+// the shell commands a plugin returns, unquoted.
+func ValidTmuxSocket(name string) bool { return tmuxSocketPattern.MatchString(name) }
 
 // ListResult is targets.list's result.
 type ListResult struct {
