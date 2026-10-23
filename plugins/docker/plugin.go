@@ -71,6 +71,10 @@ type Plugin struct {
 	configured bool
 	ops        map[string]*createOp
 	digests    map[string]string
+
+	// ports serializes choosing a machine's port with writing it into
+	// its record (newRecord).
+	ports sync.Mutex
 }
 
 // New returns the plugin for real use.
