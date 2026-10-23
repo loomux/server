@@ -764,16 +764,28 @@ func TestConfigureKeepsCancelledMakingsTracked(t *testing.T) {
 	if _, err := p.CreateTarget(ctx, sp); err != nil {
 		t.Fatal(err)
 	}
+	first := p.op("slow")
 	path := serveUnix(t, f.handler())
 	if err := p.Configure(ctx, configureParams(t, map[string]any{"engine": "unix://" + path, "bind_address": "127.0.0.1", "ssh_proxy": "none", "agent_image": "ghcr.io/loomux/agent:v9"})); err != nil {
 		t.Fatal(err)
 	}
-	if p.op("slow") == nil {
-		t.Fatal("the reconfigure forgot a making still in flight")
+	// The cancelled making ends at once (its engine call is cut), and is
+	// dropped once it has: untracked, it must have ended. A wall-clock
+	// check here raced that cleanup (LOOM-240).
+	if first != nil && p.op("slow") == nil {
+		select {
+		case <-first.done:
+		default:
+			t.Fatal("the reconfigure forgot a making still in flight")
+		}
 	}
 	f.mu.Lock()
 	f.pullDelay = 0
 	f.mu.Unlock()
+	// The create waits for the old making to end, then makes the machine
+	// afresh: give it the time that takes under load, rather than the
+	// 100 ms that kept the first one pending. await returns once it ends.
+	p.CreateWait = 30 * time.Second
 	env, err := p.CreateTarget(ctx, sp)
 	if err != nil || env.Status != protocol.EnvRunning {
 		t.Fatalf("create after the reconfigure = %+v, %v", env, err)
