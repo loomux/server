@@ -22,7 +22,11 @@ const (
 )
 
 // NotifyTargetsChanged is the one notification a plugin may send the
-// host: a hint that a machine's status changed, never the truth.
+// host: a hint that a machine's status changed, never the truth. Part
+// of loomux-plugin/1 from the start, so it needs no version or
+// capability: a peer that doesn't handle a notification ignores it (no
+// id, so no answer), and a plugin that never sends it leaves the host
+// to its periodic reconcile (LOOM-213).
 const NotifyTargetsChanged = "targets.changed"
 
 // HostInfo is what a plugin learns about the host at configure.

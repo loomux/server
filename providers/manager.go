@@ -77,7 +77,10 @@ type Manager struct {
 	CreateTimeout time.Duration
 	PollInterval  time.Duration
 	OrphanTTL     time.Duration
-	Now           func() time.Time
+	// NotifyDelay is how long a machine's targets.changed waits before
+	// its reconcile, so a burst of them is one (LOOM-213).
+	NotifyDelay time.Duration
+	Now         func() time.Time
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
@@ -92,7 +95,10 @@ type Manager struct {
 	running map[string]*job
 	// orphanSeen is when an orphan was first listed, keyed plugin/env.
 	orphanSeen map[string]time.Time
-	closed     bool
+	// notified is each machine a targets.changed reconcile is pending or
+	// running for, keyed plugin/env (HandleNotify).
+	notified map[string]*notifyRun
+	closed   bool
 }
 
 // NewManager makes a Manager over store and the plugin manager.
@@ -108,9 +114,11 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 	return &Manager{
 		store: store, plugins: pm, logger: logger, met: met, instanceID: instanceID,
 		CreateTimeout: DefaultCreateTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
-		Now:   time.Now,
-		locks: map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{},
-		life: life, endLife: endLife,
+		NotifyDelay: DefaultNotifyDelay,
+		Now:         time.Now,
+		locks:       map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{},
+		notified: map[string]*notifyRun{},
+		life:     life, endLife: endLife,
 	}
 }
 
@@ -1038,8 +1046,23 @@ func (m *Manager) cancelJob(envID string) {
 	m.mu.Unlock()
 }
 
+// DefaultNotifyDelay is Manager.NotifyDelay's default.
+const DefaultNotifyDelay = 200 * time.Millisecond
+
+// maxNotified bounds the machines with a targets.changed reconcile
+// pending at once: a plugin naming ids at random can't grow it further.
+const maxNotified = 1024
+
+// notifyRun is one machine's targets.changed reconcile: running once it
+// has started, again when another came in meanwhile.
+type notifyRun struct{ running, again bool }
+
 // HandleNotify is the plugin manager's OnNotify: a targets.changed hint
-// reconciles that machine soon.
+// reconciles that machine (the plugin's own) NotifyDelay on, as the
+// periodic reconcile would (LOOM-213). Hints for one machine coalesce:
+// those within the delay are one reconcile, and those that come while
+// it runs are one more after it, so a state reached mid-reconcile isn't
+// missed. Any other notification is ignored, as a peer must.
 func (m *Manager) HandleNotify(pluginID, method string, params json.RawMessage) {
 	if method != protocol.NotifyTargetsChanged {
 		return
@@ -1048,23 +1071,55 @@ func (m *Manager) HandleNotify(pluginID, method string, params json.RawMessage) 
 	if err := json.Unmarshal(params, &tc); err != nil || tc.ID == "" {
 		return
 	}
+	key := pluginID + "/" + tc.ID
 	// Tracked like a job (LOOM-196): Close cancels it and waits for it,
 	// so it never uses the store after the app has closed it.
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.closed {
-		m.mu.Unlock()
 		return
 	}
+	if run := m.notified[key]; run != nil {
+		if run.running {
+			run.again = true
+		}
+		return
+	}
+	if len(m.notified) >= maxNotified {
+		return
+	}
+	run := &notifyRun{}
+	m.notified[key] = run
 	m.jobs.Add(1)
-	m.mu.Unlock()
-	go func() {
-		defer m.jobs.Done()
+	go m.notifyReconcile(pluginID, tc.ID, key, run)
+}
+
+// notifyReconcile is HandleNotify's reconcile of one machine.
+func (m *Manager) notifyReconcile(pluginID, envID, key string, run *notifyRun) {
+	defer m.jobs.Done()
+	for {
+		select {
+		case <-m.life.Done():
+			return
+		case <-time.After(m.NotifyDelay):
+		}
+		m.mu.Lock()
+		run.running = true
+		m.mu.Unlock()
 		ctx, cancel := context.WithTimeout(m.life, time.Minute)
-		defer cancel()
-		if env, err := m.store.GetEnvironment(ctx, tc.ID); err == nil && env.PluginID == pluginID {
+		if env, err := m.store.GetEnvironment(ctx, envID); err == nil && env.PluginID == pluginID {
 			m.reconcileOne(ctx, env)
 		}
-	}()
+		cancel()
+		m.mu.Lock()
+		if !run.again {
+			delete(m.notified, key)
+			m.mu.Unlock()
+			return
+		}
+		run.running, run.again = false, false
+		m.mu.Unlock()
+	}
 }
 
 // updateGauge recomputes loomux_environments from the rows.

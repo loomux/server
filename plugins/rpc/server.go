@@ -16,20 +16,24 @@ type Handler func(ctx context.Context, method string, params json.RawMessage) (a
 // Serve reads requests from r and answers them on w until r ends or ctx
 // is done (then r is closed if it can be, to unblock the read). Each
 // request is handled on its own goroutine; notifications (no id) are
-// handled without an answer. A frame that isn't JSON gets a parse error
-// with a null id; anything that can't be read at all ends Serve with
-// the error (nil for a clean end of stream).
+// handled without an answer, whatever their method. A frame that isn't
+// JSON gets a parse error with a null id; anything that can't be read
+// at all ends Serve with the error (nil for a clean end of stream).
 func Serve(ctx context.Context, r io.Reader, w io.Writer, h Handler) error {
+	return ServeWriter(ctx, r, NewWriter(w), h)
+}
+
+// ServeWriter is Serve answering through w, which the plugin may send
+// its own notifications through meanwhile (LOOM-213): each frame is
+// written whole.
+func ServeWriter(ctx context.Context, r io.Reader, w *Writer, h Handler) error {
 	br := bufio.NewReaderSize(r, 64<<10)
-	var wmu sync.Mutex
 	write := func(v any) {
 		b, err := json.Marshal(v)
 		if err != nil {
 			return
 		}
-		wmu.Lock()
-		defer wmu.Unlock()
-		_ = WriteFrame(w, b)
+		_ = w.frame(b)
 	}
 	stop := make(chan struct{})
 	defer close(stop)
@@ -81,18 +85,49 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer, h Handler) error {
 	}
 }
 
-// Notify sends a notification (no id, no answer) on w; a plugin uses it
-// for targets.changed. Safe to call concurrently with Serve's answers
-// only through the same writer lock, so plugins send notifications
-// through the SDK, which holds it.
+// Notify sends a notification (no id, no answer) on w. It writes w
+// directly: on a channel Serve answers on, send through its Writer
+// instead, or a frame may interleave with an answer.
 func Notify(w io.Writer, method string, params any) error {
-	raw, err := json.Marshal(params)
-	if err != nil {
-		return err
-	}
-	b, err := json.Marshal(request{JSONRPC: "2.0", Method: method, Params: raw})
+	b, err := notification(method, params)
 	if err != nil {
 		return err
 	}
 	return WriteFrame(w, b)
+}
+
+func notification(method string, params any) ([]byte, error) {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(request{JSONRPC: "2.0", Method: method, Params: raw})
+}
+
+// Writer writes whole frames to one channel, one at a time: Serve's
+// answers and the notifications a plugin sends on the same channel
+// share one (LOOM-213).
+type Writer struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// NewWriter is a Writer onto w.
+func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
+
+func (w *Writer) frame(b []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return WriteFrame(w.w, b)
+}
+
+// Notify sends a notification (no id, no answer), between whole frames
+// of anything else written through w. It blocks while the peer isn't
+// reading.
+func (w *Writer) Notify(method string, params any) error {
+	b, err := notification(method, params)
+	if err != nil {
+		return err
+	}
+	return w.frame(b)
 }

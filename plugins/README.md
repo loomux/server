@@ -19,10 +19,15 @@ target-provider group (`targets.*`, machines on demand) is the next PR.
   parameter and result types of `plugin.*`. Imports nothing of Loomux,
   so the host, the SDK and any plugin share it.
 - `rpc/` — the wire layer: frames of at most 1 MiB, `Conn` (the host's
-  side: calls with deadlines, notifications) and `Serve` (a plugin's).
+  side: calls with deadlines, notifications) and `Serve`/`ServeWriter`
+  (a plugin's), whose `Writer` also carries the plugin's notifications.
 - `sdk/` — what a plugin's `main` calls: implement `Plugin`, hand it to
   `Main`; stdio with no arguments, a socket with `--listen` (the
-  sidecar form).
+  sidecar form). A plugin that implements `Notifying` (return a
+  `*sdk.Notifier`, zero value ready) can call
+  `Notifier().TargetsChanged(id, status)` when a machine changes on its
+  own; the host reconciles it within a moment instead of at its next
+  pass (LOOM-213). It's a hint, dropped when no host is connected.
 - `fake/` + `cmd/loomux-plugin-fake` — the test plugin: scripted
   behaviour (crash, hang, exit after configure) and a check that reports
   any `LOOMUX_*` variable it can see. Not shipped.

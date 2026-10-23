@@ -20,6 +20,7 @@ import (
 	"github.com/Loomux/server/plugins"
 	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/plugins/rpc"
+	"github.com/Loomux/server/plugins/sdk"
 )
 
 // ManifestJSON is the fake's plugin.json, the one its executable serves
@@ -82,7 +83,11 @@ type Plugin struct {
 	tmode     string
 	domain    string
 	targets   *targetsState
+	notifier  sdk.Notifier
 }
+
+// Notifier makes the fake a notifying plugin (sdk.Notifying, LOOM-213).
+func (p *Plugin) Notifier() *sdk.Notifier { return &p.notifier }
 
 // New returns a fake in mode ok.
 func New() *Plugin {
@@ -227,7 +232,15 @@ const (
 	TargetsCreateFails = "create_fails"
 	TargetsVanish      = "vanish"
 	TargetsSlowStart   = "slow_start"
+	// TargetsFailNotify: a machine that came up fails on its own
+	// FailAfter later, and the fake sends targets.changed for it
+	// (LOOM-213): only a host that heeds the hint sees it before its
+	// next reconcile.
+	TargetsFailNotify = "fail_notify"
 )
+
+// FailAfter is how long a machine runs in mode fail_notify.
+const FailAfter = 200 * time.Millisecond
 
 // machine is one in-memory environment.
 type machine struct {
@@ -323,6 +336,9 @@ func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment
 		if m.gets >= need {
 			m.env.Status = protocol.EnvRunning
 			m.started = time.Now()
+			if mode == TargetsFailNotify {
+				time.AfterFunc(FailAfter, func() { p.fail(id) })
+			}
 		}
 	case protocol.EnvRunning:
 		if mode == TargetsVanish && time.Since(m.started) > time.Second {
@@ -331,6 +347,22 @@ func (p *Plugin) GetTarget(ctx context.Context, id string) (protocol.Environment
 		}
 	}
 	return m.env, nil
+}
+
+// fail turns a running machine to error on its own and tells the host.
+func (p *Plugin) fail(id string) {
+	st := p.state()
+	st.mu.Lock()
+	m, ok := st.machines[id]
+	if ok && m.env.Status == protocol.EnvRunning {
+		m.env.Status, m.env.Reason = protocol.EnvError, "the fake failed it"
+	} else {
+		ok = false
+	}
+	st.mu.Unlock()
+	if ok {
+		p.notifier.TargetsChanged(id, protocol.EnvError)
+	}
 }
 
 func (p *Plugin) ListTargets(ctx context.Context) ([]protocol.Environment, error) {

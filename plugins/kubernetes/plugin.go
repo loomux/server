@@ -26,6 +26,7 @@ import (
 	"github.com/Loomux/server/plugins"
 	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/plugins/rpc"
+	"github.com/Loomux/server/plugins/sdk"
 )
 
 // ManifestJSON is the plugin's plugin.json, the one its executable
@@ -132,6 +133,9 @@ type Plugin struct {
 	// policy is what the NetworkPolicies were last found to be, for the
 	// "none" machines running (LOOM-211, nodecheck.go).
 	policy policyRead
+	// notifier tells the host when a machine's status changed on its
+	// own (LOOM-213): a node's verdict that moves its "none" machines.
+	notifier sdk.Notifier
 	// verdictHook, if set, runs once check has its verdict, before it
 	// reports the nodes known open (tests: a node canary finishing then).
 	verdictHook func()
@@ -161,6 +165,9 @@ func randomSuffix() string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+// Notifier makes the plugin a notifying one (sdk.Notifying, LOOM-213).
+func (p *Plugin) Notifier() *sdk.Notifier { return &p.notifier }
 
 func (p *Plugin) Describe(ctx context.Context) (*plugins.Manifest, error) {
 	return plugins.ParseManifest(ManifestJSON)

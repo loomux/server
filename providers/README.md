@@ -50,7 +50,10 @@ plugin lost is made again; an ephemeral one is `lost` and its workspaces
 archived; a `stopped` machine found running is stopped; a `destroying`
 one is finished. Machines the plugin has for this instance that no row
 knows are orphans, destroyed once older than 24 h. A plugin's
-`targets.changed` notification reconciles that machine sooner.
+`targets.changed` notification reconciles that machine sooner:
+`NotifyDelay` (200 ms) on, with every hint for it in that time, and
+those that come while it runs, coalesced into one more reconcile
+(LOOM-213).
 
 `UninstallMachines` serves the plugin manager's uninstall choice:
 destroy each machine, or keep them as `detached` plain hosts.

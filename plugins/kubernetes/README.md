@@ -131,7 +131,9 @@ plugin keeps the verdicts current itself: every minute it looks at the
 nodes of its `none` machines and runs a canary on each whose
 "enforced" is more than 5 minutes old, whether or not the host asks,
 so a machine in use stays `running`. A renewal that gets out turns the
-machines there to `error`; when none can say "enforced" for 10
+machines there to `error` (and a verdict that changes their status
+tells the host at once, `targets.changed`, rather than at its next
+reconcile: LOOM-213); when none can say "enforced" for 10
 minutes, they are `starting` until one does. The verdicts live in the
 plugin process, so a restarted plugin checks each node again, and its
 `none` machines are `starting` until it says "enforced": seconds when the
@@ -180,8 +182,11 @@ started after the change has run (still one at a time per node, and
 not within a minute of the node's last, so the quota above holds). The
 pod is left running: the host records the `error` at its next reconcile
 (`LOOMUX_TARGET_PROBE_INTERVAL`, 5 minutes by default) and refuses to
-dispatch to it; whether to destroy it is yours. The Role can't watch
-policies or read nodes, so the minute's list is the event source.
+dispatch to it; whether to destroy it is yours. A read that changes
+what the policies make of those machines (open, confining, or
+unconfirmed) tells the host at once (`targets.changed`, LOOM-223). The
+Role can't watch policies or read nodes, so the minute's list is the
+event source.
 
 What it trusts. The canary samples a few destinations; it can't prove
 that none other answers. What proves that is the policies, so the
