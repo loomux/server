@@ -47,6 +47,9 @@ const (
 	// PluginTrustSignedPrefix starts a trust value naming the identity
 	// whose signature verified: "signed:<identity>".
 	PluginTrustSignedPrefix = "signed:"
+	// PluginTrustPinnedPrefix starts a trust value naming the digest the
+	// operator pinned the executable to: "pinned:sha256:<hex>" (LOOM-218).
+	PluginTrustPinnedPrefix = "pinned:"
 )
 
 // Plugin is one installed plugin instance.

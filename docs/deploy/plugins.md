@@ -13,10 +13,55 @@ you register the hosts you already use. Design and threat model:
 | Setting | Image default | What is there |
 |---|---|---|
 | `LOOMUX_PLUGIN_BUNDLE_DIR` | `/usr/local/lib/loomux/plugins` | first-party plugins shipped in the image, one directory each with `plugin.json` and `loomux-plugin-<name>`. Trusted as the image is. The Kubernetes plugin (`plugins/kubernetes/README.md`) and the Docker plugin (`plugins/docker/README.md`) are bundled. |
-| `LOOMUX_PLUGIN_DIR` | `plugins/` beside the database | plugins you put there yourself, same layout. Shown as **unsigned** until signed first-party assets exist; installing one means trusting it with the permissions its manifest declares |
+| `LOOMUX_PLUGIN_DIR` | `plugins/` beside the database | plugins you put there yourself, same layout. Installed, upgraded to and started only when verified (below) |
 | `LOOMUX_PLUGIN_SOCKET_DIR` | `/run/loomux/plugins` | sockets served by sidecar containers (`loomux-plugin-<name> --listen /run/loomux/plugins/<name>.sock`). The recommended form on Kubernetes: the plugin container alone holds the cluster credential |
 
 `GET /api/v1/plugins/available` is the catalog of all three.
+
+## Verifying plugins from the plugin directory (LOOM-218)
+
+A plugin from `LOOMUX_PLUGIN_DIR` runs as loomuxd's own user, so
+loomuxd runs only one whose executable something vouches for:
+
+- **a pinned digest:** its sha256 is in `LOOMUX_PLUGIN_DIGESTS`
+  (`sha256:<hex>`, separated by commas or spaces): a build you vetted
+  yourself. Shown as `pinned:sha256:<hex>`.
+- **a signed build:** a Sigstore bundle beside the executable,
+  `loomux-plugin-<name>.sigstore.json`, holding SLSA v1 build provenance
+  over the executable's sha256, signed by a GitHub Actions workflow
+  listed in `LOOMUX_PLUGIN_SIGNERS` (its full URI, for example
+  `https://github.com/acme/loomux-plugin/.github/workflows/release.yml@refs/heads/main`).
+  That's what `actions/attest-build-provenance` makes for a binary, and
+  `gh attestation download` fetches. Shown as `signed:<workflow>`. It
+  is checked against Sigstore's trust root: `LOOMUX_PLUGIN_TRUSTED_ROOT`
+  names a `trusted_root.json` to use (pinned, or for a server without
+  internet), else Sigstore's public-good root comes from its TUF
+  repository, every update authenticated against the root
+  sigstore-go embeds, cached beside the database, and fetched only when a
+  bundle has to be checked. The manifest needs no signature of its own:
+  loomuxd refuses a plugin whose manifest differs from the one its
+  (verified) executable describes.
+
+An unverified plugin is still listed by `GET /api/v1/plugins/available`
+(`trust: "unsigned"`), but its install or upgrade answers `422` with why
+(no bundle and no pinned digest, a bundle for another binary, a signer
+not trusted, …). An installed plugin whose executable no longer
+verifies (replaced since a verified install) is refused at start, status
+`error`; its machines keep working as ordinary targets. One installed
+unverified before this check (or with the opt-out) still starts, with a
+warning in the log.
+
+`LOOMUX_PLUGIN_ALLOW_UNSIGNED=true` turns the requirement off, for local
+development: unverified plugins are installed and started, each with a
+warning, and loomuxd logs at startup that the check is off.
+
+Bundled plugins are trusted as the image is, and sidecars aren't checked
+here: loomuxd sees only their socket, so the image they run is the
+deployment's to pin by digest (and verify with the cluster's admission
+policy, if it has one). First-party plugins are bundled; their
+release-asset binaries aren't published or attested yet, so for now a
+first-party plugin from the plugin directory is verified by pinning its
+digest.
 
 ## What a plugin runs as
 

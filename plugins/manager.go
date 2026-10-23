@@ -119,6 +119,12 @@ type Manager struct {
 	// OnNotify, if set, receives every plugin's notifications with the
 	// plugin instance's id.
 	OnNotify func(pluginID, method string, params json.RawMessage)
+	// RequireVerified refuses to install, upgrade to or start a plugin
+	// from the plugin directory that nothing vouches for (LOOM-218,
+	// verify.go; plugins/attest verifies): the app sets it unless
+	// LOOMUX_PLUGIN_ALLOW_UNSIGNED.
+	// Bundled plugins and sidecars aren't affected.
+	RequireVerified bool
 
 	mu        sync.Mutex // guards the maps below
 	instances map[string]*Instance
@@ -173,6 +179,9 @@ func (m *Manager) Install(ctx context.Context, r InstallRequest) (*View, error) 
 	}
 	a, err := m.catalog.Find(ctx, r.Name, r.Source)
 	if err != nil {
+		return nil, err
+	}
+	if err := m.verified(r.Label, a); err != nil {
 		return nil, err
 	}
 	if err := a.Manifest.HostCompatible(m.host.Version); err != nil {
@@ -373,6 +382,9 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 	}
 	if a.Manifest.Version == p.Version {
 		return m.view(ctx, p)
+	}
+	if err := m.verified(p.Label, a); err != nil {
+		return nil, err
 	}
 	if err := a.Manifest.HostCompatible(m.host.Version); err != nil {
 		if Refused(err) {
@@ -577,6 +589,9 @@ func (m *Manager) startOne(ctx context.Context, id string) error {
 	m.setSecrets(id, p.Secrets)
 	if err := m.adopt(ctx, p); err != nil {
 		return err
+	}
+	if reason := m.stillVerified(ctx, p); reason != "" {
+		return m.fail(ctx, p, reason, nil)
 	}
 	if manifest, err := m.installedManifest(p); err == nil {
 		if err := manifest.HostCompatible(m.host.Version); err != nil {
@@ -1107,4 +1122,42 @@ func safeError(err error) string {
 		s = s[:500] + "…"
 	}
 	return s
+}
+
+// verified refuses a from-the-plugin-directory plugin nothing vouches
+// for, when RequireVerified (LOOM-218); otherwise it is installed as
+// unsigned, with a warning naming why.
+func (m *Manager) verified(label string, a *Available) error {
+	if a.Source != registry.PluginSourceDir || a.Trust != registry.PluginTrustUnsigned {
+		return nil
+	}
+	if m.RequireVerified {
+		return &UnverifiedError{Plugin: a.Manifest.Name, Reason: a.TrustReason}
+	}
+	m.logger.Warn("unverified plugin", "plugin", label, "reason", a.TrustReason)
+	return nil
+}
+
+// stillVerified is why an installed plugin from the plugin directory
+// mustn't start, "" when it may: with RequireVerified, one installed
+// verified whose executable no longer verifies (replaced since) is
+// refused, so the stand-in can't run (with the opt-out, a local build
+// replaced is the point: a warning). One installed unverified (before
+// LOOM-218, or with the opt-out) starts, with a warning. Its machines
+// keep working either way: they are managed SSH targets.
+func (m *Manager) stillVerified(ctx context.Context, p *registry.Plugin) string {
+	if p.Source != registry.PluginSourceDir {
+		return ""
+	}
+	a, err := m.catalog.Find(ctx, p.Name, p.Source)
+	if err != nil {
+		return "" // the start reports the plugin missing
+	}
+	switch {
+	case verifiedTrust(p.Trust) && !verifiedTrust(a.Trust) && m.RequireVerified:
+		return "its executable no longer verifies (" + a.TrustReason + "); it was installed " + p.Trust + ". Put the verified build back, or upgrade to one that verifies"
+	case !verifiedTrust(a.Trust):
+		m.logger.Warn("unverified plugin started", "plugin", p.Label, "reason", a.TrustReason)
+	}
+	return ""
 }

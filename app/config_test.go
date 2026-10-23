@@ -120,6 +120,33 @@ func TestLoadConfig_MachineIdleStop(t *testing.T) {
 	}
 }
 
+// LOOM-218: what vouches for plugins, checked at load; the opt-out is
+// on or off.
+func TestLoadConfig_PluginVerification(t *testing.T) {
+	setRouterEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil || len(cfg.PluginDigests) != 0 || len(cfg.PluginSigners) != 0 || cfg.PluginAllowUnsigned {
+		t.Fatalf("unset: %+v, %v", cfg, err)
+	}
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	signer := "https://github.com/acme/plugin/.github/workflows/release.yml@refs/heads/main"
+	t.Setenv(envPluginDigests, digest+", sha256:"+strings.Repeat("cd", 32))
+	t.Setenv(envPluginSigners, signer)
+	t.Setenv(envPluginAllowUnsigned, "true")
+	cfg, err = LoadConfig()
+	if err != nil || len(cfg.PluginDigests) != 2 || len(cfg.PluginSigners) != 1 || !cfg.PluginAllowUnsigned {
+		t.Fatalf("set: digests %v, signers %v, allow %v, %v", cfg.PluginDigests, cfg.PluginSigners, cfg.PluginAllowUnsigned, err)
+	}
+	for env, bad := range map[string]string{envPluginDigests: "sha256:abc", envPluginSigners: "acme/plugin", envPluginAllowUnsigned: "maybe"} {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv(env, bad)
+			if _, err := LoadConfig(); err == nil {
+				t.Errorf("%s=%q accepted", env, bad)
+			}
+		})
+	}
+}
+
 func TestLoadConfig_CustomReapTiming(t *testing.T) {
 	setRouterEnv(t)
 	t.Setenv(envReapIdleThreshold, "48h")
