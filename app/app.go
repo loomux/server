@@ -691,6 +691,16 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		if err := pluginManager.StartAll(reaperCtx); err != nil && cfg.Logger != nil {
 			cfg.Logger.Warn("some plugins didn't start", "error", err.Error())
 		}
+		if cfg.PluginsSeed != nil {
+			// After the installed plugins are up: what the seed changes
+			// starts or reconfigures them. An entry whose plugin isn't
+			// there yet (a sidecar still starting) is tried again for a
+			// while (LOOM-219).
+			seed, dryRun := cfg.PluginsSeed, cfg.PluginsSeedDryRun
+			if pluginManager.RunSeed(reaperCtx, seed, dryRun) {
+				bg.Go(func() { retrySeed(reaperCtx, pluginManager, seed) })
+			}
+		}
 		reconcileEvery := cfg.TargetProbeInterval
 		if reconcileEvery == 0 {
 			reconcileEvery = defaultTargetProbeInterval
@@ -851,4 +861,30 @@ func instanceIDFor(store registry.Store) (string, error) {
 		return "", fmt.Errorf("app: instance id: %w", err)
 	}
 	return id, nil
+}
+
+// seedRetries and seedRetryEvery bound how long a plugin seed's pending
+// entries are tried again: a sidecar's socket appears within a minute
+// or two of the pod starting.
+const (
+	seedRetries    = 20
+	seedRetryEvery = 30 * time.Second
+)
+
+// retrySeed applies the seed again until nothing is pending, the tries
+// run out (the entries stay as the log says until the next start) or
+// ctx ends.
+func retrySeed(ctx context.Context, pm *plugins.Manager, seed *plugins.Seed) {
+	ticker := time.NewTicker(seedRetryEvery)
+	defer ticker.Stop()
+	for range seedRetries {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !pm.RunSeed(ctx, seed, false) {
+			return
+		}
+	}
 }

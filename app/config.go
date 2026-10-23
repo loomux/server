@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Loomux/server/notify"
+	"github.com/Loomux/server/plugins"
 	"github.com/Loomux/server/registry/sqlite"
 	"github.com/Loomux/server/router"
 	"github.com/Loomux/server/router/llmrouter"
@@ -105,6 +106,12 @@ type Config struct {
 	PluginBundleDir string
 	PluginDir       string
 	PluginSocketDir string
+	// PluginsSeed is LOOMUX_PLUGINS_SEED parsed: plugin instances the
+	// deployment declares (LOOM-219, plugins/seed.go); nil for none.
+	// PluginsSeedDryRun (LOOMUX_PLUGINS_SEED_DRY_RUN) only logs what it
+	// would do.
+	PluginsSeed       *plugins.Seed
+	PluginsSeedDryRun bool
 	// SessionRetention is how long a session row is kept after it
 	// expired, DispatchRetention how long a dispatch is kept after it
 	// finished, and ConfirmationRetention how long a confirmation is kept
@@ -163,6 +170,8 @@ const (
 	envPluginBundleDir     = "LOOMUX_PLUGIN_BUNDLE_DIR"
 	envPluginDir           = "LOOMUX_PLUGIN_DIR"
 	envPluginSocketDir     = "LOOMUX_PLUGIN_SOCKET_DIR"
+	envPluginsSeed         = "LOOMUX_PLUGINS_SEED"
+	envPluginsSeedDryRun   = "LOOMUX_PLUGINS_SEED_DRY_RUN"
 	envSessionRetention    = "LOOMUX_SESSION_RETENTION"
 	envDispatchRetention   = "LOOMUX_DISPATCH_RETENTION"
 	envConfirmRetention    = "LOOMUX_CONFIRMATION_RETENTION"
@@ -326,6 +335,24 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("app: %s %q: letters, digits, '-' and '_' only", envTmuxSocket, tmuxSocket)
 	}
 
+	// A malformed seed stops the server, like any malformed setting:
+	// nothing is applied from a file that isn't what the operator meant
+	// (LOOM-219). What can only fail when it is applied (a plugin not in
+	// the catalog yet, a secret file missing) is logged then, and the
+	// server runs.
+	pluginsSeed, err := plugins.ParseSeed(os.Getenv(envPluginsSeed))
+	if err != nil {
+		return Config{}, fmt.Errorf("app: %s: %w", envPluginsSeed, err)
+	}
+	pluginsSeedDryRun := false
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv(envPluginsSeedDryRun))); v {
+	case "", "off", "false", "0", "no":
+	case "on", "true", "1", "yes":
+		pluginsSeedDryRun = true
+	default:
+		return Config{}, fmt.Errorf("app: %s %q: on or off", envPluginsSeedDryRun, v)
+	}
+
 	localTargetsOff := false
 	switch v := strings.ToLower(strings.TrimSpace(os.Getenv(envLocalTargets))); v {
 	case "", "on", "true", "1", "yes":
@@ -358,6 +385,8 @@ func LoadConfig() (Config, error) {
 		PluginBundleDir:       os.Getenv(envPluginBundleDir),
 		PluginDir:             os.Getenv(envPluginDir),
 		PluginSocketDir:       os.Getenv(envPluginSocketDir),
+		PluginsSeed:           pluginsSeed,
+		PluginsSeedDryRun:     pluginsSeedDryRun,
 		// JSON on stderr: one record per line, for the container log.
 		Logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})),
 	}, nil

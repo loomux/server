@@ -1114,6 +1114,11 @@ root (no `go.work` is committed: the root's tooling stays in module mode), and C
 19. **Plugin configuration source** — the database, through the UI and API *(recommended)*, with an optional
     `LOOMUX_PLUGINS_SEED` JSON (applied once when the database has no such instance) for GitOps-style
     deployments as a follow-up if wanted, vs environment-only configuration (no UI). §1.5, §10.
+    *Implemented in LOOM-219, refined:* the seed installs what is missing and also reconfigures the
+    instances it made (their ids in the `plugins_seed_owned` setting), never one made through the UI or API;
+    secrets only as `{env}`/`{file}` references; an instance it no longer lists is kept unless `prune`, and
+    even then not while it owns machines; a malformed seed stops startup, an entry that fails to apply is
+    logged and retried for a while. `docs/deploy/plugins.md` has the format.
 
 ## 14. Decisions for the user
 
