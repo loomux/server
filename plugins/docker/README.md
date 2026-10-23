@@ -41,7 +41,7 @@ to), `ssh_proxy` (`default` or `none`: how loomuxd reaches the
 machines), `agent_image`, `sizes` (`{name: {cpu, memory, disk}}` in
 Kubernetes quantities; cpu and memory become `--cpus` and `--memory`,
 disk is advisory since a volume isn't capped), `max_environments`,
-`timezone`.
+`port_range` (`LO-HI`, below), `timezone`.
 
 ## What it does with the engine
 
@@ -91,6 +91,18 @@ by field, including the JSON the engine receives.
   fixed (nothing holds it on the host, so the allocator can hand it out
   again) is repeated; a port found taken at start (another process in
   the gap) rebuilds the record with a fresh probe, three attempts.
+- With a `port_range` (LOOM-220; `LO-HI`, both in 1024-65535, at least
+  `max_environments` ports), the plugin chooses the port itself, the
+  range's lowest that no machine of this instance has fixed in its
+  record. The helper publishes that port, so one the docker host holds
+  (another container, a process) fails the helper's start and the next
+  is tried, up to 16 held ones. Choosing and recording a port happen
+  under one lock, so machines made at once don't collide. A port taken
+  at start rebuilds the record with the range's next free port. A
+  machine keeps its port for life, so narrowing the range moves no
+  existing machine; recreate one to move it. Ports held by a *stopped*
+  machine of another plugin instance on the same host aren't visible
+  to this one: give each instance its own range.
 - A port published on an `--internal` network isn't mapped at all, so
   an egress-`none` machine's sshd would be unreachable: **`egress: none`
   is withdrawn**. The manifest declares no `targets.egress_policy`,
