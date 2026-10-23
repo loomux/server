@@ -293,6 +293,14 @@ confines it) or `trusted` (the LAN and the tailnet as well, LOOM-226).
 says exactly what it opens). Loomux never picks it for you and logs
 every machine made with it.
 
+A Kubernetes size can request less than its limits (LOOM-241):
+`{"cc": {"cpu": "2", "memory": "4Gi", "disk": "40Gi", "memory_request": "1536Mi"}}`
+is placed on a node with 1.5 GiB of memory free to request and may use
+4 GiB. Under memory pressure on its node such a machine is among the
+first evicted, losing its tmux sessions (a persistent one keeps its
+volume); the quota counts its request and its limit separately. Without
+the request fields a size requests what it limits, as before.
+
 Credentials for the agents on a machine go in the vault scoped to the
 target (`target_id`); a one-time interactive sign-in kept in the
 machine's home works too, where the plugin keeps the data.

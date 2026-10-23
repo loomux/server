@@ -1,0 +1,3 @@
+### Added
+
+- Kubernetes plugin sizes can request less than their limits (LOOM-241): optional `cpu_request` and `memory_request`, at most the size's `cpu` and `memory`, make the machine's pod Burstable. It is placed on a node by what it requests and may use up to its limits, so a 4 GiB command-center machine requesting 1.5 GiB fits nodes whose memory is mostly requested. The tradeoff is in design §8: under node memory pressure such a machine is among the first evicted, which ends its tmux sessions (a persistent machine keeps its volume). The ResourceQuota counts requests and limits separately. Sizes without the fields still request what they limit.

@@ -72,12 +72,16 @@ const (
 	SSHProxyDefault = "default"
 )
 
-// Size is one machine size the plugin offers.
+// Size is one machine size the plugin offers. CPU and Memory are what a
+// machine may use; CPURequest and MemoryRequest, when set (LOOM-241),
+// what it is guaranteed, at most those: empty is the same as the limit.
 type Size struct {
-	Name   string `json:"name"`
-	CPU    string `json:"cpu"`
-	Memory string `json:"memory"`
-	Disk   string `json:"disk"`
+	Name          string `json:"name"`
+	CPU           string `json:"cpu"`
+	Memory        string `json:"memory"`
+	Disk          string `json:"disk"`
+	CPURequest    string `json:"cpu_request,omitempty"`
+	MemoryRequest string `json:"memory_request,omitempty"`
 }
 
 // TargetsInfo is targets.describe's result: what the plugin offers

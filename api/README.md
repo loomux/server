@@ -224,7 +224,9 @@ built without `WithPlugins`.
 
 `GET /plugins/{id}/targets` is what an instance offers for a new
 machine, as its `targets.describe` says right now (LOOM-238): `sizes`
-(`{name, cpu, memory, disk}`, the first the default),
+(`{name, cpu, memory, disk}`, the limits, plus `cpu_request` and
+`memory_request` when a size asks for less than its limits, LOOM-241;
+the first the default),
 `persistent_default`, `egress_options` (the first the default; `none`
 only while the plugin finds network isolation enforced),
 `image`, `max_environments` (0: no quota) and `environments`. `404` for

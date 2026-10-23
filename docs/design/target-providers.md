@@ -752,7 +752,8 @@ spec:
     image: <agent_image>                       # by digest once known
     env: [{name: HOME, value: /data/home}, {name: CLAUDE_CONFIG_DIR, value: /data/home/.claude}, {name: TZ, value: <host's>}]
     ports: [{name: ssh, containerPort: 2222}]
-    resources: {requests: {cpu: <size>, memory: <size>}, limits: {cpu: <size>, memory: <size>, ephemeral-storage: 2Gi}}
+    resources: {requests: {cpu: <size's cpu_request, else cpu>, memory: <size's memory_request, else memory>},
+                limits: {cpu: <size>, memory: <size>, ephemeral-storage: 2Gi}}   # LOOM-241
     securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
     readinessProbe: {tcpSocket: {port: ssh}, periodSeconds: 5}
     volumeMounts:
@@ -899,6 +900,23 @@ Not enforced:
 - with `require_network_policy: true` the problem's severity is `error`: `check` fails and no machine can be
   created until an engine is installed. **Production should set it to `true`; TEST may run `false`** while
   the user decides on an engine (§10), with the warning in view.
+
+**Sizes with requests below limits (LOOM-241).** A size is `{cpu, memory, disk}`, the pod's limits, and
+requests the same (QoS Guaranteed), unless it gives `cpu_request` and/or `memory_request`, at most the limits:
+then the pod is Burstable, placed by what it requests and allowed up to its limits. This is for a cluster
+whose nodes' memory is mostly requested already (theWyseKube 2026-10-23: 80-88 % on every node, 0.8 to 2.0 GiB
+free), where a 4 GiB Guaranteed machine fits no node: the command-center hub is
+`{"cc": {"cpu": "2", "memory": "4Gi", "disk": "40Gi", "memory_request": "1536Mi"}}`. The tradeoff, which
+the size's owner accepts: the scheduler counts only the request, so the node can be overcommitted; under node
+memory pressure the kubelet evicts pods using more than their request first (a Burstable machine above its
+1.5 GiB is among the first, Guaranteed pods last), and the kernel's OOM killer prefers them too. An evicted
+machine's pod is `Failed` (`Evicted`), so the machine is `error` until it is started or recreated: a persistent
+one keeps its volume (repositories, `~/.claude` and its conversation history), but every tmux session in it,
+the hub's own included, is gone. Using more than the limit is an OOM kill as before (the container restarts).
+The real fix is memory headroom on the nodes; this makes the machine fit meanwhile. Quota: `requests.*` and
+`limits.*` in the namespace's ResourceQuota count separately (§10 item 7), the requests against `requests.*`
+and the limits against `limits.*`, so both must have room; and a LimitRange with `maxLimitRequestRatio` (or a
+`min` above the request) refuses such a pod at admission (the default LimitRange below has neither).
 
 **Image pull.** The agent image is public on GHCR, like the server's; no `imagePullSecrets`. A private image
 would be one more Secret the Role can read and `imagePullSecrets` on the pod. A pod whose image is being pulled
@@ -1065,6 +1083,10 @@ recommended form is the **sidecar**: loomuxd's container never holds a Kubernete
    checked plus the check's own, for each plugin configuration whose canaries are still live, so at least
    `max_environments` + 2 × (nodes + 1) for a restart or rollout, plus (nodes + 1) per further restart within
    4 minutes. 10 is 5 + 2 × (1 + 1) = 9 for one node, and a spare; recompute it for the cluster's node count.
+   With sizes that request less than their limits (LOOM-241, §8), the machines' requests count against
+   `requests.*` and their limits against `limits.*`: a cc machine of 1.5 GiB request / 4 GiB limit takes
+   1.5Gi of `requests.memory` and 4Gi of `limits.memory`, so size `limits.memory` for the sum of the limits
+   (the overcommit the quota allows), not only `requests.memory`.
 8. **PBS backup**: `lx-*-data` PVCs are the user's working copies of repositories, not system state; recommend
    **not** adding them to the nightly PBS set in v1 (git remotes are the backup), stated in the handoff so it
    is a decision, not an omission.
