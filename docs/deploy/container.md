@@ -249,6 +249,10 @@ reached through, relayed by loomuxd itself; see `docs/deploy/ssh.md`),
 `LOOMUX_PLUGIN_DIR` (`plugins/` beside the database) and
 `LOOMUX_PLUGIN_SOCKET_DIR` (`/run/loomux/plugins` in this image): where
 plugins are found (LOOM-178, see [plugins.md](plugins.md)),
+`LOOMUX_PLUGINS_SEED` (plugin instances declared as JSON, or the path of
+a JSON file; secrets by reference only) and `LOOMUX_PLUGINS_SEED_DRY_RUN`
+(`false`: `true` only logs what the seed would do; LOOM-219, see
+[plugins.md](plugins.md)),
 `LOOMUX_LOG_LEVEL` (`info`; JSON records on stderr for routing decisions,
 provisioning and dispatch — see below), and the
 `LOOMUX_ROUTER_ESCALATION_*` trio — all three or none, a partial set is a
