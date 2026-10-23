@@ -711,9 +711,13 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 			// starts or reconfigures them. An entry whose plugin isn't
 			// there yet (a sidecar still starting) is tried again for a
 			// while (LOOM-219).
+			// Its machines (LOOM-236) come after: they need their
+			// instances running.
 			seed, dryRun := cfg.PluginsSeed, cfg.PluginsSeedDryRun
-			if pluginManager.RunSeed(reaperCtx, seed, dryRun) {
-				bg.Go(func() { retrySeed(reaperCtx, pluginManager, seed) })
+			pending := pluginManager.RunSeed(reaperCtx, seed, dryRun)
+			pending = machines.RunMachineSeed(reaperCtx, seed, dryRun) || pending
+			if pending {
+				bg.Go(func() { retrySeed(reaperCtx, pluginManager, machines, seed) })
 			}
 		}
 		reconcileEvery := cfg.TargetProbeInterval
@@ -886,10 +890,10 @@ const (
 	seedRetryEvery = 30 * time.Second
 )
 
-// retrySeed applies the seed again until nothing is pending, the tries
-// run out (the entries stay as the log says until the next start) or
-// ctx ends.
-func retrySeed(ctx context.Context, pm *plugins.Manager, seed *plugins.Seed) {
+// retrySeed applies the seed (instances, then machines) again until
+// nothing is pending, the tries run out (the entries stay as the log says
+// until the next start) or ctx ends.
+func retrySeed(ctx context.Context, pm *plugins.Manager, ms *providers.Manager, seed *plugins.Seed) {
 	ticker := time.NewTicker(seedRetryEvery)
 	defer ticker.Stop()
 	for range seedRetries {
@@ -898,7 +902,8 @@ func retrySeed(ctx context.Context, pm *plugins.Manager, seed *plugins.Seed) {
 			return
 		case <-ticker.C:
 		}
-		if !pm.RunSeed(ctx, seed, false) {
+		pending := pm.RunSeed(ctx, seed, false)
+		if !ms.RunMachineSeed(ctx, seed, false) && !pending {
 			return
 		}
 	}

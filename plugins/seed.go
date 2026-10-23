@@ -38,6 +38,11 @@ import (
 // Secrets are references, never values: a field the plugin's schema
 // marks secret is refused in "config" and read from the environment
 // variable or file "secrets" names, when the seed is applied.
+//
+// "machines" (LOOM-236) declares machines of those instances, by target
+// name; providers.(*Manager).ApplyMachineSeed applies them after the
+// instances (providers/seed.go). Parsing and checking them is here, so a
+// bad machine entry stops startup like any other part of the seed.
 
 // Seed is LOOMUX_PLUGINS_SEED.
 type Seed struct {
@@ -45,6 +50,81 @@ type Seed struct {
 	// (those without machines).
 	Prune   bool        `json:"prune"`
 	Plugins []SeedEntry `json:"plugins"`
+	// Machines are persistent machines to make on those instances
+	// (LOOM-236): made when missing, their policy kept as the seed says,
+	// never destroyed (prune doesn't apply to them).
+	Machines []SeedMachine `json:"machines"`
+}
+
+// SeedMachine is one machine the seed declares: a target a plugin
+// instance makes, as POST /api/v1/targets with a plugin object would.
+// Name is the target's name, and is what the seed matches it by. A
+// pointer field left out says nothing: the API's default on a create,
+// the machine's current value after that.
+type SeedMachine struct {
+	Name string `json:"name"`
+	// Plugin is the label of the plugin instance that makes it (seeded
+	// or not).
+	Plugin string `json:"plugin"`
+	// Size, Persistent and Egress shape the machine; empty or left out
+	// is the plugin's default. On an existing machine they are only
+	// compared: changing one needs a recreate or a new machine, which the
+	// seed logs and leaves to the API.
+	Size       string `json:"size"`
+	Persistent *bool  `json:"persistent"`
+	Egress     string `json:"egress"`
+	// The target options a machine takes (POST and PUT /api/v1/targets);
+	// these can change on an existing machine, and the seed keeps them.
+	PermissionMode      *string   `json:"permission_mode"`
+	Purpose             *string   `json:"purpose"`
+	AllowedAgentTypes   *[]string `json:"allowed_agent_types"`
+	AllowProvision      *bool     `json:"allow_provision"`
+	AllowShell          *bool     `json:"allow_shell"`
+	RequireConfirmation *bool     `json:"require_confirmation"`
+	Relay               *string   `json:"relay"`
+}
+
+// ApplyTargetOptions sets on t the target options m gives, spelled the
+// way the store keeps them (as the API's target decoding does).
+func (m SeedMachine) ApplyTargetOptions(t *registry.Target) {
+	if m.PermissionMode != nil {
+		t.PermissionMode = strings.ReplaceAll(*m.PermissionMode, "_", "-")
+	}
+	if m.Purpose != nil {
+		t.Policy.Purpose = *m.Purpose
+	}
+	if m.AllowedAgentTypes != nil {
+		t.Policy.AllowedAgentTypes = slices.Clone(*m.AllowedAgentTypes)
+		if len(t.Policy.AllowedAgentTypes) == 0 {
+			t.Policy.AllowedAgentTypes = nil
+		}
+	}
+	if m.AllowProvision != nil {
+		t.Policy.NoProvision = !*m.AllowProvision
+	}
+	if m.AllowShell != nil {
+		t.Policy.NoShell = !*m.AllowShell
+	}
+	if m.RequireConfirmation != nil {
+		t.Policy.RequireConfirmation = *m.RequireConfirmation
+	}
+	if m.Relay != nil {
+		t.Policy.Relay = *m.Relay
+	}
+}
+
+// check is what ParseSeed can tell of a machine entry without the
+// plugin: a name, a valid instance label, target options the store
+// accepts.
+func (m SeedMachine) check() error {
+	if !ValidPluginLabel(m.Plugin) {
+		return fmt.Errorf("plugin %q isn't a valid plugin instance label", m.Plugin)
+	}
+	// The plugin sets the connection; a stand-in one lets Validate check
+	// the name, permission mode and policy as it will on the real target.
+	t := registry.Target{Name: m.Name, Kind: registry.TargetKindRemote, Host: "machine.invalid", User: "agent"}
+	m.ApplyTargetOptions(&t)
+	return t.Validate()
 }
 
 // SeedEntry is one plugin instance the seed declares.
@@ -118,6 +198,22 @@ func ParseSeed(raw string) (*Seed, error) {
 			}
 		}
 	}
+	names := map[string]bool{}
+	for i := range s.Machines {
+		mc := &s.Machines[i]
+		mc.Name = strings.TrimSpace(mc.Name)
+		where := fmt.Sprintf("plugins seed: machine %d", i)
+		switch {
+		case mc.Name == "":
+			return nil, fmt.Errorf("%s: no name", where)
+		case names[mc.Name]:
+			return nil, fmt.Errorf("%s: name %q is listed twice", where, mc.Name)
+		}
+		names[mc.Name] = true
+		if err := mc.check(); err != nil {
+			return nil, fmt.Errorf("%s (%s): %w", where, mc.Name, err)
+		}
+	}
 	return &s, nil
 }
 
@@ -132,11 +228,16 @@ const (
 	SeedError     = "error"
 )
 
-// SeedAction is what ApplySeed did, or would do, with one instance.
+// SeedAction is what ApplySeed did, or would do, with one instance (or
+// ApplyMachineSeed with one machine, Label then its name).
 type SeedAction struct {
 	Label  string
 	Do     string
 	Detail string
+	// Warning is what the seed asks for and didn't do because only the
+	// API may (a machine change that needs a recreate): logged as a
+	// warning beside the action.
+	Warning string
 }
 
 // ApplySeed brings the installed plugins in line with s, as its doc
@@ -382,7 +483,7 @@ func rowByID(rows []*registry.Plugin, id string) *registry.Plugin {
 // a warning). It reports whether entries are pending (ApplySeed).
 func (m *Manager) RunSeed(ctx context.Context, s *Seed, dryRun bool) bool {
 	plan, _ := m.ApplySeed(ctx, s, true)
-	m.logger.Info("plugins seed plan", "dry_run", dryRun, "plan", seedSummary(plan))
+	m.logger.Info("plugins seed plan", "dry_run", dryRun, "plan", SeedSummary(plan))
 	if dryRun {
 		return false
 	}
@@ -397,8 +498,8 @@ func (m *Manager) RunSeed(ctx context.Context, s *Seed, dryRun bool) bool {
 	return pending
 }
 
-// seedSummary is actions on one line: "label: do (detail); …".
-func seedSummary(actions []SeedAction) string {
+// SeedSummary is actions on one line: "label: do (detail) [warning]; …".
+func SeedSummary(actions []SeedAction) string {
 	parts := make([]string, 0, len(actions))
 	for _, a := range actions {
 		part := a.Label + ": " + a.Do
@@ -407,6 +508,9 @@ func seedSummary(actions []SeedAction) string {
 		}
 		if a.Detail != "" {
 			part += " (" + a.Detail + ")"
+		}
+		if a.Warning != "" {
+			part += " [not done: " + a.Warning + "]"
 		}
 		parts = append(parts, part)
 	}
