@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Loomux/server/plugins/fake"
+	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/registry"
 )
 
@@ -174,5 +175,31 @@ func TestDispatchToAStuckMachineStillGivesUp(t *testing.T) {
 	}
 	if err == nil || err.Error() != "providers: the machine didn't become ready within 300ms" {
 		t.Errorf("EnsureRunning = %v, want the wait, with no pull in it", err)
+	}
+}
+
+// LOOM-239: a machine's view says its image is pulling while the job
+// following it sees that, and nothing once it runs.
+func TestViewShowsThePull(t *testing.T) {
+	gate := filepath.Join(t.TempDir(), "pulled")
+	h := pullHarness(t, fake.TargetsSlowPull, time.Hour, time.Minute, map[string]any{"pull_gate": gate})
+	target, _ := h.create(t, "slow-pull", true)
+	pullingSoon(t, h, target.ID)
+	v, err := h.m.View(t.Context(), target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Progress != protocol.ProgressImagePull {
+		t.Errorf("progress while pulling = %q", v.Progress)
+	}
+	if views, err := h.m.Views(t.Context()); err != nil || views[target.ID].Progress != protocol.ProgressImagePull {
+		t.Errorf("the list while pulling: %+v, %v", views[target.ID], err)
+	}
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.waitStatus(t, target.ID, registry.EnvironmentRunning)
+	if v, err := h.m.View(t.Context(), target.ID); err != nil || v.Progress != "" {
+		t.Errorf("progress once running = %q, %v", v.Progress, err)
 	}
 }

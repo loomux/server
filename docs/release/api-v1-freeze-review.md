@@ -303,6 +303,8 @@ These can all be added after 1.0 without breaking anything:
   `GET /workspaces/{id}` in LOOM-215.*
 - `POST /workspaces` (today workspaces are only created through chat).
   *Added in LOOM-215.*
+- A machine's progress as a field, not only words in `status_reason`.
+  *`plugin.progress` added in LOOM-239.*
 - Filters on `GET /conversations` (by workspace, by status).
 - A `relay` control in the web client (waits on the UI direction).
 

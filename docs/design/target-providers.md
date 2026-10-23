@@ -599,8 +599,10 @@ All additions; nothing existing changes shape or meaning. Each is recorded in th
   background. `422` when the plugin's `check` isn't ok (the problems in the body), including
   `require_network_policy` refusing.
 - Target responses gain `plugin` (null for a registered host):
-  `{id, name, label, version, environment_id, status, status_reason, size, persistent, egress, image,
-  image_digest, update_available, warnings: [{code, message}], created_at}`. `warnings` carries the plugin's
+  `{id, name, label, version, environment_id, status, status_reason, progress, size, persistent, egress, image,
+  image_digest, update_available, warnings: [{code, message}], created_at}`. `progress` is `image_pull` while
+  a machine coming up pulls its image and empty otherwise (LOOM-239), so a client needn't read it from
+  `status_reason`. `warnings` carries the plugin's
   machine-level warnings (network isolation not enforced). `ready`/`next_step` keep their meaning; `next_step`
   stays null while the machine is coming up, and `plugin.status` says why the target isn't ready.
 - `GET /api/v1/targets/{id}` (new; listed as addable in the freeze review), so the web can poll one target

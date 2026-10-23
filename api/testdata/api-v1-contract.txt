@@ -114,6 +114,7 @@ DELETE /api/v1/targets/{id}/pin response .plugin.image_digest string
 DELETE /api/v1/targets/{id}/pin response .plugin.label string
 DELETE /api/v1/targets/{id}/pin response .plugin.name string
 DELETE /api/v1/targets/{id}/pin response .plugin.persistent boolean
+DELETE /api/v1/targets/{id}/pin response .plugin.progress string
 DELETE /api/v1/targets/{id}/pin response .plugin.size string
 DELETE /api/v1/targets/{id}/pin response .plugin.status string
 DELETE /api/v1/targets/{id}/pin response .plugin.status_reason string
@@ -576,6 +577,7 @@ GET /api/v1/targets response .targets[].plugin.image_digest string
 GET /api/v1/targets response .targets[].plugin.label string
 GET /api/v1/targets response .targets[].plugin.name string
 GET /api/v1/targets response .targets[].plugin.persistent boolean
+GET /api/v1/targets response .targets[].plugin.progress string
 GET /api/v1/targets response .targets[].plugin.size string
 GET /api/v1/targets response .targets[].plugin.status string
 GET /api/v1/targets response .targets[].plugin.status_reason string
@@ -639,6 +641,7 @@ GET /api/v1/targets/{id} response .plugin.image_digest string
 GET /api/v1/targets/{id} response .plugin.label string
 GET /api/v1/targets/{id} response .plugin.name string
 GET /api/v1/targets/{id} response .plugin.persistent boolean
+GET /api/v1/targets/{id} response .plugin.progress string
 GET /api/v1/targets/{id} response .plugin.size string
 GET /api/v1/targets/{id} response .plugin.status string
 GET /api/v1/targets/{id} response .plugin.status_reason string
@@ -1226,6 +1229,7 @@ POST /api/v1/targets response .plugin.image_digest string
 POST /api/v1/targets response .plugin.label string
 POST /api/v1/targets response .plugin.name string
 POST /api/v1/targets response .plugin.persistent boolean
+POST /api/v1/targets response .plugin.progress string
 POST /api/v1/targets response .plugin.size string
 POST /api/v1/targets response .plugin.status string
 POST /api/v1/targets response .plugin.status_reason string
@@ -1318,6 +1322,7 @@ POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.image_digest strin
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.label string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.name string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.persistent boolean
+POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.progress string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.size string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.status string
 POST /api/v1/targets/{id}/migrate-ssh response .target.plugin.status_reason string
@@ -1402,6 +1407,7 @@ POST /api/v1/targets/{id}/pin response .plugin.image_digest string
 POST /api/v1/targets/{id}/pin response .plugin.label string
 POST /api/v1/targets/{id}/pin response .plugin.name string
 POST /api/v1/targets/{id}/pin response .plugin.persistent boolean
+POST /api/v1/targets/{id}/pin response .plugin.progress string
 POST /api/v1/targets/{id}/pin response .plugin.size string
 POST /api/v1/targets/{id}/pin response .plugin.status string
 POST /api/v1/targets/{id}/pin response .plugin.status_reason string
@@ -1496,6 +1502,7 @@ POST /api/v1/targets/{id}/recreate response .plugin.image_digest string
 POST /api/v1/targets/{id}/recreate response .plugin.label string
 POST /api/v1/targets/{id}/recreate response .plugin.name string
 POST /api/v1/targets/{id}/recreate response .plugin.persistent boolean
+POST /api/v1/targets/{id}/recreate response .plugin.progress string
 POST /api/v1/targets/{id}/recreate response .plugin.size string
 POST /api/v1/targets/{id}/recreate response .plugin.status string
 POST /api/v1/targets/{id}/recreate response .plugin.status_reason string
@@ -1585,6 +1592,7 @@ POST /api/v1/targets/{id}/start response .plugin.image_digest string
 POST /api/v1/targets/{id}/start response .plugin.label string
 POST /api/v1/targets/{id}/start response .plugin.name string
 POST /api/v1/targets/{id}/start response .plugin.persistent boolean
+POST /api/v1/targets/{id}/start response .plugin.progress string
 POST /api/v1/targets/{id}/start response .plugin.size string
 POST /api/v1/targets/{id}/start response .plugin.status string
 POST /api/v1/targets/{id}/start response .plugin.status_reason string
@@ -1653,6 +1661,7 @@ POST /api/v1/targets/{id}/stop response .plugin.image_digest string
 POST /api/v1/targets/{id}/stop response .plugin.label string
 POST /api/v1/targets/{id}/stop response .plugin.name string
 POST /api/v1/targets/{id}/stop response .plugin.persistent boolean
+POST /api/v1/targets/{id}/stop response .plugin.progress string
 POST /api/v1/targets/{id}/stop response .plugin.size string
 POST /api/v1/targets/{id}/stop response .plugin.status string
 POST /api/v1/targets/{id}/stop response .plugin.status_reason string
@@ -1969,6 +1978,7 @@ PUT /api/v1/targets/{id} response .plugin.image_digest string
 PUT /api/v1/targets/{id} response .plugin.label string
 PUT /api/v1/targets/{id} response .plugin.name string
 PUT /api/v1/targets/{id} response .plugin.persistent boolean
+PUT /api/v1/targets/{id} response .plugin.progress string
 PUT /api/v1/targets/{id} response .plugin.size string
 PUT /api/v1/targets/{id} response .plugin.status string
 PUT /api/v1/targets/{id} response .plugin.status_reason string

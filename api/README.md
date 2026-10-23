@@ -242,7 +242,8 @@ egress}`) asks that installed plugin for a machine: `kind` must be
 target, its `plugin.status` `creating`, and the machine comes up in the
 background (poll `GET /targets/{id}`). Every target carries `plugin`
 (null for a registered host): the owning plugin, the machine's status
-and reason, size, persistence, egress, image and digest,
+and reason, `progress` (`image_pull` while a machine coming up pulls
+its image, else empty; LOOM-239), size, persistence, egress, image and digest,
 `update_available`, and the plugin's warnings. `POST
 /targets/{id}/start`, `/stop` and `/recreate` (`{size?}`) answer `202`
 with the target; `409` while a task runs there, for a stop of an
