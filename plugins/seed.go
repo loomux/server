@@ -82,6 +82,9 @@ type SeedMachine struct {
 	AllowShell          *bool     `json:"allow_shell"`
 	RequireConfirmation *bool     `json:"require_confirmation"`
 	Relay               *string   `json:"relay"`
+	// KeepIdleSessions exempts the machine's sessions from the idle
+	// reaper (LOOM-227), as a hub's must be.
+	KeepIdleSessions *bool `json:"keep_idle_sessions"`
 }
 
 // ApplyTargetOptions sets on t the target options m gives, spelled the
@@ -110,6 +113,9 @@ func (m SeedMachine) ApplyTargetOptions(t *registry.Target) {
 	}
 	if m.Relay != nil {
 		t.Policy.Relay = *m.Relay
+	}
+	if m.KeepIdleSessions != nil {
+		t.Policy.KeepIdleSessions = *m.KeepIdleSessions
 	}
 }
 

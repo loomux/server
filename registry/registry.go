@@ -137,6 +137,10 @@ type TargetPolicy struct {
 	// third-party API) may see: RelayFull, RelayLastMessage or RelayNone.
 	// Empty means the purpose's default (EffectiveRelay).
 	Relay string
+	// KeepIdleSessions exempts the target's sessions from the idle
+	// reaper (LOOM-227): one left waiting for a follow-up stays open
+	// however long it waits, as a hub's own session must.
+	KeepIdleSessions bool
 }
 
 // What the router models may see of a target's work (TargetPolicy.Relay,

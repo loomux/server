@@ -1717,6 +1717,9 @@ type targetResponse struct {
 	// RelayEffective is what applies (a work machine's default is none).
 	Relay          string `json:"relay"`
 	RelayEffective string `json:"relay_effective"`
+	// KeepIdleSessions: the idle reaper leaves this target's sessions
+	// open however long they wait for a follow-up (LOOM-227).
+	KeepIdleSessions bool `json:"keep_idle_sessions"`
 	// SSHPort overrides the SSH config's port when non-zero (LOOM-114).
 	SSHPort int `json:"ssh_port"`
 	// PinnedHostKeys are the host keys pinned through the API (LOOM-114),
@@ -1792,6 +1795,7 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		RequireConfirmation: t.Policy.RequireConfirmation,
 		Relay:               t.Policy.Relay,
 		RelayEffective:      t.Policy.EffectiveRelay(),
+		KeepIdleSessions:    t.Policy.KeepIdleSessions,
 		SSHPort:             t.SSHPort,
 		PinnedHostKeys:      pinnedHostKeys(t),
 		SSHMode:             sshMode(t),
@@ -1823,6 +1827,9 @@ type targetRequest struct {
 	RequireConfirmation *bool     `json:"require_confirmation"`
 	// Relay is optional the same way: "" sets the purpose's default.
 	Relay *string `json:"relay"`
+	// KeepIdleSessions is optional the same way; on a create, omitted
+	// means the reaper may close the target's idle sessions.
+	KeepIdleSessions *bool `json:"keep_idle_sessions"`
 	// SSHPort is optional the same way (LOOM-114); 0 means the SSH
 	// config's port.
 	SSHPort *int `json:"ssh_port"`
@@ -1953,6 +1960,9 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	}
 	if req.Relay != nil {
 		target.Policy.Relay = *req.Relay
+	}
+	if req.KeepIdleSessions != nil {
+		target.Policy.KeepIdleSessions = *req.KeepIdleSessions
 	}
 	if req.WorkspaceRoot != nil {
 		target.WorkspaceRoot = *req.WorkspaceRoot

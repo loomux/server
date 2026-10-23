@@ -63,7 +63,8 @@ func seedOwnedIDs(t *testing.T, h *harness) []string {
 }
 
 const ccSeed = `{"machines": [{"name": "cc", "plugin": "fake", "size": "small", "persistent": true,
-	"egress": "internet", "require_confirmation": true, "relay": "last_message", "permission_mode": "accept_edits"}]}`
+	"egress": "internet", "require_confirmation": true, "relay": "last_message", "permission_mode": "accept_edits",
+	"keep_idle_sessions": true}]}`
 
 func TestSeedMachineCreatedThenNothingToDo(t *testing.T) {
 	h := newHarness(t, nil)
@@ -77,7 +78,8 @@ func TestSeedMachineCreatedThenNothingToDo(t *testing.T) {
 	if cc == nil {
 		t.Fatal("no target cc")
 	}
-	if !cc.Policy.RequireConfirmation || cc.Policy.Relay != registry.RelayLastMessage || cc.PermissionMode != registry.PermissionModeAcceptEdits {
+	if !cc.Policy.RequireConfirmation || cc.Policy.Relay != registry.RelayLastMessage || cc.PermissionMode != registry.PermissionModeAcceptEdits ||
+		!cc.Policy.KeepIdleSessions {
 		t.Errorf("target options not carried: mode %q policy %+v", cc.PermissionMode, cc.Policy)
 	}
 	env := h.waitStatus(t, cc.ID, registry.EnvironmentRunning)
@@ -108,19 +110,20 @@ func TestSeedMachineSafeUpdate(t *testing.T) {
 
 	changed := machineSeed(t, `{"machines": [{"name": "cc", "plugin": "fake", "size": "small", "persistent": true,
 		"require_confirmation": false, "relay": "none", "permission_mode": "manual", "allowed_agent_types": ["claude-code"],
-		"allow_shell": false}]}`)
+		"allow_shell": false, "keep_idle_sessions": false}]}`)
 	got := applyMachines(t, h, changed, false)["cc"]
 	if got.Do != plugins.SeedUpdate || got.Warning != "" {
 		t.Fatalf("apply = %+v, want update", got)
 	}
-	for _, f := range []string{"permission_mode", "allowed_agent_types", "allow_shell", "require_confirmation", "relay"} {
+	for _, f := range []string{"permission_mode", "allowed_agent_types", "allow_shell", "require_confirmation", "relay", "keep_idle_sessions"} {
 		if !strings.Contains(got.Detail, f) {
 			t.Errorf("detail %q doesn't name %s", got.Detail, f)
 		}
 	}
 	after := targetNamed(t, h, "cc")
 	if after.PermissionMode != registry.PermissionModeManual || after.Policy.Relay != registry.RelayNone ||
-		after.Policy.RequireConfirmation || !after.Policy.NoShell || !slices.Equal(after.Policy.AllowedAgentTypes, []string{"claude-code"}) {
+		after.Policy.RequireConfirmation || !after.Policy.NoShell || !slices.Equal(after.Policy.AllowedAgentTypes, []string{"claude-code"}) ||
+		after.Policy.KeepIdleSessions {
 		t.Errorf("target after update: mode %q policy %+v", after.PermissionMode, after.Policy)
 	}
 	if after.Host != cc.Host || after.SSHKeyRef != cc.SSHKeyRef || after.HostKeys != cc.HostKeys {

@@ -43,6 +43,14 @@ import (
 // it open for a follow-up that hasn't arrived yet — is a state where
 // "idle since UpdatedAt" actually means "idle."
 //
+// Two things keep a session open however long it waits (LOOM-227): a
+// threshold of zero, which turns idle reaping off altogether, and a
+// target whose policy says KeepIdleSessions, such as the one a hub's own
+// conversation runs on: its session waits days for the next message,
+// and reaping it would lose its context. A target that can't be read is
+// treated the same way for that sweep: not knowing isn't a reason to
+// close a session.
+//
 // The sweep also resolves workspaces stuck provisioning (LOOM-60): the
 // router bounds its own provisioning and fails the workspace when that
 // bound passes, but only while the process that started it is alive. A
@@ -111,7 +119,8 @@ func WithEventRetention(d time.Duration) ReaperOption {
 }
 
 // NewReaper constructs a Reaper. threshold is how long a reapable task
-// can go without a state change before Sweep tears its session down.
+// can go without a state change before Sweep tears its session down;
+// zero (or less) reaps none.
 func NewReaper(orch *Orchestrator, threshold time.Duration, opts ...ReaperOption) *Reaper {
 	r := &Reaper{orch: orch, threshold: threshold, logf: log.Printf, now: time.Now}
 	for _, opt := range opts {
@@ -168,7 +177,23 @@ func (r *Reaper) Sweep(ctx context.Context) {
 			r.logf("orchestrator: reaper: deleted %d dispatch events older than %s", n, r.eventRetention)
 		}
 	}
+	if r.threshold <= 0 {
+		return
+	}
+	keep := map[string]bool{} // by target id, read once per sweep
 	for _, ws := range workspaces {
+		kept, seen := keep[ws.TargetID]
+		if !seen {
+			target, err := r.orch.store.GetTarget(ctx, ws.TargetID)
+			if err != nil {
+				r.logf("orchestrator: reaper: sweep: get target %s: %v (its sessions are kept this sweep)", ws.TargetID, err)
+			}
+			kept = err != nil || target.Policy.KeepIdleSessions
+			keep[ws.TargetID] = kept
+		}
+		if kept {
+			continue
+		}
 		tasks, err := r.orch.store.ListTasksByWorkspace(ctx, ws.ID)
 		if err != nil {
 			r.logf("orchestrator: reaper: sweep: list tasks for workspace %s: %v", ws.ID, err)
