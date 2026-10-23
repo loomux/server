@@ -130,7 +130,8 @@ func ApplyAffinity(d Decision, open *OpenTaskSnapshot) (out Decision, overridden
 	// else: leaving the task as surely as leave_open_task. What gets
 	// overridden is the router answering a follow-up itself, or sending
 	// it to another workspace — the failures affinity exists for.
-	leaves := d.LeaveOpenTask || d.Action == ActionRunCommand || d.Action == ActionProvisionWorkspace
+	leaves := d.LeaveOpenTask || d.Action == ActionRunCommand || d.Action == ActionProvisionWorkspace ||
+		d.Action == ActionProvisionTarget
 	if !continues && !leaves {
 		overriddenFrom = string(d.Action)
 		d = Decision{Action: ActionUseWorkspace, WorkspaceID: open.WorkspaceID, Model: d.Model, Tier: d.Tier}

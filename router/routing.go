@@ -25,6 +25,11 @@ const (
 	// otherwise the user is asked to confirm the exact command first —
 	// see Router's runCommand.
 	ActionRunCommand DecisionAction = "run_command"
+	// ActionProvisionTarget proposes a new machine from a plugin
+	// (LOOM-216). Nothing is created on the decision: the user is shown
+	// what would be made, resolved from the plugin's offer, and it is
+	// created only if their next message confirms it.
+	ActionProvisionTarget DecisionAction = "provision_target"
 )
 
 // WorkspaceSnapshot is the compact workspace projection design spec §6
@@ -156,6 +161,9 @@ type Decision struct {
 	// dispatch to.
 	AgentType string
 
+	// NewTarget is set when Action == ActionProvisionTarget.
+	NewTarget MachineSpec
+
 	// TargetID and Command are set when Action == ActionRunCommand: the
 	// registered target to run on, and the command — copied from the
 	// user's message, never composed by the model if it can help it.
@@ -262,6 +270,11 @@ type DispatchOptions struct {
 	OpenTask          *OpenTaskSnapshot
 	LastWorkspaceID   string
 	LastWorkspaceName string
+
+	// Machines are where a new machine can be created (LOOM-216), filled
+	// in by the router; provision_target is offered only when there is
+	// one.
+	Machines []MachineOffer
 }
 
 // ConversationTurn is one earlier message in a conversation.
@@ -293,6 +306,11 @@ const (
 	HistoryRunes        = 2400
 	OpenTaskReplyRunes  = 600
 )
+
+// withMachines sets the machine offers on a Decide call (LOOM-216).
+func withMachines(offers []MachineOffer) DispatchOption {
+	return func(o *DispatchOptions) { o.Machines = offers }
+}
 
 // withConversation sets the conversation context on a Decide call.
 func withConversation(history []ConversationTurn, open *OpenTaskSnapshot, lastWorkspaceID, lastWorkspaceName string) DispatchOption {

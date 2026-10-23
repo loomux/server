@@ -81,6 +81,9 @@ type Router struct {
 	// tmuxSocket is the instance's tmux socket, named in the attach
 	// commands replies give (LOOM-202); see WithTmuxSocket.
 	tmuxSocket string
+	// machineMaker creates machines a chat asks for (LOOM-216); nil
+	// offers none.
+	machineMaker MachineMaker
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -273,7 +276,11 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		r.resolveOffer(ctx, log, p, registry.ConfirmationExpired)
 	} else {
 		if isConfirmation(message, p) {
-			ctx = r.withTurnOrigin(ctx, p.targetID)
+			// A machine not yet made touches no target: the turn's
+			// origin stays none.
+			if p.targetID != "" {
+				ctx = r.withTurnOrigin(ctx, p.targetID)
+			}
 			refusal, err := r.offerRefusal(ctx, p)
 			if err != nil {
 				// Nothing runs: its card mustn't stay pending (LOOM-133).
@@ -309,6 +316,14 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				}, true, start, m)
 			case pendingPolicyConfirm:
 				reply, err := r.confirmPolicy(ctx, log, conversationID, p, start, m)
+				if err != nil {
+					m.outcome = metrics.OutcomeFailure
+					m.errClass = classifyDispatchError(err)
+				}
+				return reply, err
+			case pendingCreateTarget:
+				m.action = "create_target"
+				reply, err := r.confirmMachine(ctx, log, conversationID, message, p, start)
 				if err != nil {
 					m.outcome = metrics.OutcomeFailure
 					m.errClass = classifyDispatchError(err)
@@ -368,7 +383,8 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		m.errClass = classifyDispatchError(err)
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
-	decideOpts := append(append([]DispatchOption(nil), opts...), withConversation(history, openTask, lastWS, lastWSName))
+	offers := r.machineOffers(ctx, log)
+	decideOpts := append(append([]DispatchOption(nil), opts...), withConversation(history, openTask, lastWS, lastWSName), withMachines(offers))
 	var hinted DispatchOptions
 	for _, opt := range opts {
 		opt(&hinted)
@@ -399,6 +415,13 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	if len(targets) == 0 && (decision.Action == ActionProvisionWorkspace || decision.Action == ActionRunCommand) {
 		log.Info("no targets registered", "decided_action", string(decision.Action))
 		decision = Decision{Action: ActionAnswerDirectly, DirectAnswer: NoTargetsReply, Model: decision.Model, Tier: decision.Tier}
+	}
+	// Likewise a new machine with no plugin to make it (LOOM-216). It
+	// was a request for a machine, not for the open task, if any.
+	if decision.Action == ActionProvisionTarget && len(offers) == 0 {
+		log.Info("no machine plugin to create a machine")
+		decision = Decision{Action: ActionAnswerDirectly, DirectAnswer: NoMachinePluginReply, LeaveOpenTask: true,
+			Model: decision.Model, Tier: decision.Tier}
 	}
 	decision, affinityFrom := ApplyAffinity(decision, openTask)
 	var substitutedFrom, targetName string
@@ -557,6 +580,18 @@ func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, mess
 		}
 		return reply, err
 
+	case ActionProvisionTarget:
+		m.action = string(decision.Action)
+		if r.machineMaker == nil {
+			return r.finishTurn(ctx, log, conversationID, message, "", NoMachinePluginReply, string(decision.Action), start)
+		}
+		reply, err := r.proposeMachine(ctx, log, conversationID, message, decision, start)
+		if err != nil {
+			m.outcome = metrics.OutcomeFailure
+			m.errClass = classifyDispatchError(err)
+		}
+		return reply, err
+
 	default:
 		log.Error("dispatch failed", "stage", "route", "action", string(decision.Action), "error", "unknown decision action")
 		m.outcome = metrics.OutcomeFailure
@@ -677,6 +712,9 @@ func logDecision(log *slog.Logger, d Decision, agentSubstitutedFrom, affinityOve
 	case ActionRunCommand:
 		// The command is the user's text: only its length is logged.
 		attrs = append(attrs, "target_id", d.TargetID, "command_len", len(d.Command))
+	case ActionProvisionTarget:
+		attrs = append(attrs, "plugin", d.NewTarget.PluginID, "target_name", d.NewTarget.Name, "size", d.NewTarget.Size,
+			"egress", d.NewTarget.Egress)
 	}
 	log.Info("routing decision", attrs...)
 }

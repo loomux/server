@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -52,6 +53,24 @@ func (p *Plugin) DescribeTargets(ctx context.Context) (protocol.TargetsInfo, err
 		User:              "agent",
 		Port:              sshPort,
 	}, nil
+}
+
+// DescribeTargetsFor is DescribeTargets for a machine named name
+// (sdk.NamedDescriber, LOOM-216): trusted is offered only when
+// trusted_machines lists the name, as create would allow it.
+func (p *Plugin) DescribeTargetsFor(ctx context.Context, name string) (protocol.TargetsInfo, error) {
+	info, err := p.DescribeTargets(ctx)
+	if err != nil {
+		return info, err
+	}
+	cfg, _, _, err := p.state()
+	if err != nil {
+		return protocol.TargetsInfo{}, err
+	}
+	if !cfg.trusted(name) {
+		info.EgressOptions = slices.DeleteFunc(info.EgressOptions, func(e string) bool { return e == protocol.EgressTrusted })
+	}
+	return info, nil
 }
 
 func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec) (protocol.Environment, error) {

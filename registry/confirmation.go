@@ -23,6 +23,10 @@ const (
 	ConfirmationInstallAgent = "install_agent"
 	ConfirmationCloneRemote  = "clone_remote"
 	ConfirmationPolicy       = "policy"
+	// ConfirmationCreateTarget creates a machine from a plugin
+	// (LOOM-216): TargetName is the new target's name, Command the
+	// machine on one line (plugin, size, data, egress).
+	ConfirmationCreateTarget = "create_target"
 )
 
 // Confirmation is the record of an offer the router made and is waiting

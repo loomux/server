@@ -504,7 +504,7 @@ func TestDecide_ProvisionSpecValidated(t *testing.T) {
 		}
 	}
 
-	tool := decideTool([]string{"claude-code"}, nil, []string{"target-1"}, false)
+	tool := decideTool([]string{"claude-code"}, nil, []string{"target-1"}, false, nil)
 	raw, _ := json.Marshal(tool.schema)
 	for _, gone := range []string{"provision_command", `"path"`} {
 		if strings.Contains(string(raw), gone) {

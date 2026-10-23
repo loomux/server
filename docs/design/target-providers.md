@@ -154,7 +154,7 @@ Methods the host calls (every one has a per-call deadline, 30 s unless noted):
 | `plugin.configure({config, host: {version, instance_id, data_dir}})` | the plugin's configuration, secrets included (the channel is private to the two processes), plus what it needs to label its objects; called at every start and after a config change |
 | `plugin.check()` → `{ok, problems: [{code, message}]}` | credentials and reachability: can it list pods in its namespace, does the docker engine answer |
 | `plugin.shutdown()` | stop cleanly; the host kills after 10 s |
-| `targets.describe()` → `{sizes, persistent_default, egress_options, image, max_environments, environments}` | what the UI offers; may change with configuration |
+| `targets.describe({name?})` → `{sizes, persistent_default, egress_options, image, max_environments, environments, for_name?}` | what the UI offers; may change with configuration. With `name` (LOOM-216), a plugin whose offer depends on the machine's name (`sdk.NamedDescriber`) answers for that name and says so in `for_name`; one that can't ignores it and answers without `for_name` |
 | `targets.create(spec)` → environment | returns at once with status `creating` or `starting`; idempotent on `spec.id` (§1.9) |
 | `targets.get(id)`, `targets.list()` | `list` returns every environment carrying this instance's label, whether or not the host knows it (reconcile, orphans) |
 | `targets.start(id)`, `targets.stop(id)`, `targets.recreate(id, spec)`, `targets.destroy(id)` | lifecycle; each idempotent and safe to repeat after a crash (2 min) |
@@ -685,7 +685,8 @@ policy (`TargetSnapshot`), plus two new fields: `CreatedBy` (the plugin name, or
 The prompt says what they mean: "a machine Loomux created; only its own workspaces are there; an ephemeral
 one loses its files when it is destroyed". Policy defaults for created machines are the permissive ones
 (purpose personal, provision and shell allowed, no confirmation), since nothing else runs there, and the user
-can tighten them in the form. The model never sees plugin names beyond that, nor configuration.
+can tighten them in the form. The model never sees plugin names beyond that and the machine plugins' offers
+(below), nor any configuration.
 
 **Dispatch to a stopped machine.** A `use_workspace`/`provision_workspace`/`run_command` aimed at a target
 whose machine is `stopped` starts it first (a dispatch stage, bounded like a provisioning run, shown in the
@@ -695,11 +696,33 @@ image_pull`), up to 30 minutes more, as the job's own deadline does (LOOM-222);
 `error`/`lost`/`detached`-and-unreachable fails the dispatch with `target_unhealthy` and the reason. The
 snapshot's `Problem` says "stopped; will be started" so the model doesn't avoid the target.
 
-**No machine creation by the router in v1.** `provision_target` as a routing action (the model asking for a
-new machine, behind a require-confirmation offer with the plugin, size and what it costs shown, like a clone
-it wasn't told about) is a natural follow-up once a plugin has been used by hand for a while. Until then
-machines are made from the Machines page or `POST /targets`, and a request that needs one gets the LOOM-68
-style direct answer naming the page.
+**Creating a machine from chat (`provision_target`, LOOM-216).** The routing model may *propose* a machine,
+never create one:
+
+- **What the model sees.** While a plugin instance is installed, enabled, running and declares
+  `targets.create`, each routing call lists it as a machine plugin: its id, plugin name and label, its sizes
+  (name, CPU, memory, disk), which kinds of machine it makes and its default, its egress options, and its
+  machine count and limit, all from its `targets.describe` (bounded as for `GET /plugins/{id}/targets`,
+  reused for 30 s). Never its configuration. The `new_target` fields (`plugin_id`, `name`, `size`,
+  `keep_data`, `egress`) are bound to those lists in the schema and checked per plugin in Go. With no such
+  plugin, `provision_target` isn't offered and a request for a machine gets a direct answer naming how to get
+  one (install a plugin, or `POST /targets`); the router gives that answer itself if a model proposes one anyway.
+- **The offer.** Nothing is made on the decision. The name must be a workspace-style slug that no target
+  has. The request is resolved as `POST /targets` would resolve it (`providers.Manager.Plan`: the plugin's
+  default size, persistence and non-trusted egress filled in, its quota checked), and shown in full: name,
+  plugin, size with any requests (LOOM-241), whether data is kept, the network, and how many machines the
+  plugin has. It waits for the conversation's next message under the same rules as the other offers (a fixed
+  list of whole-message confirmations, one-shot, 15 minutes, in memory, a web card of kind `create_target`).
+- **Egress `trusted`.** Never a default. The router plans it only with `NamedTrust`: the host asks the plugin's
+  `targets.describe` for that machine's name and goes on only when the answer is for that name (`for_name`)
+  and lists `trusted`, which the Kubernetes plugin does only for a name `trusted_machines` lists. Any other
+  name is refused before an offer is made, and a plugin older than LOOM-216, which can't answer for a name,
+  is a no. A plan whose egress came back `trusted` without being asked for is refused too. The API's create
+  is unchanged: there the plugin's own create refuses an unlisted name.
+- **The yes.** The request is planned again and created only if it would make the same machine that was shown
+  (the plugin's counts aside); otherwise nothing is created and the user is told to ask again. The target gets
+  a created machine's permissive default policy (above), as from the API, and comes up in the background. The
+  reply says so; the turn doesn't carry the original request on, since a machine takes minutes to come up.
 
 ## 8. The Kubernetes plugin (LOOM-179)
 

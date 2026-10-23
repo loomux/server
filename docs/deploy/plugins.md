@@ -341,4 +341,8 @@ beside the executable `loomux-plugin-<name>`. `plugins/fake` is a
 complete example, and `plugins/plugintest.Run` is the conformance suite
 yours must pass. The protocol is JSON-RPC 2.0 with `Content-Length`
 framing (the LSP/MCP convention), so a plugin can be written in any
-language; the methods are in `plugins/protocol`.
+language; the methods are in `plugins/protocol`. A plugin whose offer depends on the
+machine's name (as the Kubernetes plugin's egress `trusted` does) also
+implements `sdk.NamedDescriber`, so `targets.describe` with a `name`
+answers for that machine (LOOM-216); a machine proposed from chat is
+offered `trusted` only that way.

@@ -39,6 +39,8 @@ func (r *Router) recordDecision(ctx context.Context, conversationID string, d De
 	case ActionRunCommand:
 		e.TargetID = d.TargetID
 		e.Command = r.redactAllSecrets(ctx, d.Command)
+	case ActionProvisionTarget:
+		e.Detail = joinDetail("new machine "+d.NewTarget.Name+" from plugin "+d.NewTarget.PluginID, overrides)
 	}
 	r.recordEvent(ctx, conversationID, e)
 }

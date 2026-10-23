@@ -41,6 +41,8 @@ const (
 	// pendingPolicyConfirm carries out a plan its target's policy made
 	// wait for a "yes" (LOOM-89).
 	pendingPolicyConfirm
+	// pendingCreateTarget creates a machine from a plugin (LOOM-216).
+	pendingCreateTarget
 )
 
 // pendingInstall is an offer awaiting the user's confirmation — an agent
@@ -72,7 +74,10 @@ type pendingInstall struct {
 	// decision is, for pendingPolicyConfirm, the plan a "yes" carries out
 	// (LOOM-89).
 	decision *Decision
-	expires  time.Time
+	// machine is, for pendingCreateTarget, the machine a "yes" creates,
+	// as the offer showed it (LOOM-216).
+	machine *MachinePlan
+	expires time.Time
 }
 
 // pendingActions holds at most one offer per conversation, in memory. A
@@ -210,6 +215,11 @@ func isConfirmation(message string, p pendingInstall) bool {
 	case pendingRunCommand:
 		switch m {
 		case "run", "run it", "yes run it":
+			return true
+		}
+	case pendingCreateTarget:
+		switch m {
+		case "create", "create it", "yes create it":
 			return true
 		}
 	}

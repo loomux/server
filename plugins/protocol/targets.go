@@ -103,6 +103,19 @@ type TargetsInfo struct {
 	// User and Port are sshd's in the machine.
 	User string `json:"user"`
 	Port int    `json:"port"`
+	// ForName is DescribeParams.Name when the plugin answered for that
+	// machine name (LOOM-216): EgressOptions are then that machine's,
+	// so trusted is listed only for a name the plugin allows it. Empty
+	// for a name-independent answer.
+	ForName string `json:"for_name,omitempty"`
+}
+
+// DescribeParams is targets.describe's optional parameter (LOOM-216):
+// with Name, a plugin that can answers for a machine of that name (see
+// TargetsInfo.ForName). Without it, or from a plugin that ignores it,
+// the answer is the name-independent one.
+type DescribeParams struct {
+	Name string `json:"name,omitempty"`
 }
 
 // SSHBootstrap is what a machine needs to be reachable: the target's

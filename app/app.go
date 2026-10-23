@@ -727,7 +727,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 			}
 			return err
 		},
-	))
+	), router.WithMachineMaker(newMachineMaker(machines)))
 	bg.Go(func() {
 		if err := pluginManager.StartAll(reaperCtx); err != nil && cfg.Logger != nil {
 			cfg.Logger.Warn("some plugins didn't start", "error", err.Error())

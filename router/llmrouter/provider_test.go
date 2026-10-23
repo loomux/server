@@ -450,7 +450,7 @@ func TestSupportsEffort(t *testing.T) {
 }
 
 func TestStrictSchema_LeavesInputAlone(t *testing.T) {
-	in := decideTool([]string{"claude-code"}, []string{"ws-1"}, []string{"t-1"}, false).schema
+	in := decideTool([]string{"claude-code"}, []string{"ws-1"}, []string{"t-1"}, false, nil).schema
 	before, _ := json.Marshal(in)
 	_ = anthropicInputSchema(in)
 	after, _ := json.Marshal(in)
