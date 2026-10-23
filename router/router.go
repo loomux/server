@@ -682,28 +682,51 @@ func logDecision(log *slog.Logger, d Decision, agentSubstitutedFrom, affinityOve
 // this; registry.Store is pluggable.
 func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, spec ProvisionSpec) (string, error) {
 	log := r.logger.With("conversation_id", conversationID, "target_id", spec.TargetID, "workspace_name", spec.Name)
-	if spec.TargetID == "" {
-		log.Error("provisioning failed", "stage", "resolve target", "error", "no target_id given")
-		return "", fmt.Errorf("provision workspace: no target_id given")
-	}
-	target, err := r.store.GetTarget(ctx, spec.TargetID)
+	target, err := r.provisionTarget(ctx, log, spec)
 	if err != nil {
-		log.Error("provisioning failed", "stage", "resolve target", "error", err)
-		return "", fmt.Errorf("provision workspace: resolve target %q: %w", spec.TargetID, err)
-	}
-	// The spec comes from the routing model: validated here, before any
-	// row is written, whatever the model's own validation did (LOOM-90).
-	if err := spec.Validate(); err != nil {
-		log.Error("provisioning failed", "stage", "validate", "error", err)
-		return "", fmt.Errorf("provision workspace: %w", err)
+		return "", err
 	}
 	if err := r.requireHealthyTarget(ctx, target, true); err != nil {
 		log.Error("provisioning failed", "stage", "target health", "error", err)
 		return "", fmt.Errorf("provision workspace: %w", err)
 	}
+	ws, err := r.createProvisioningRow(ctx, log, spec)
+	if err != nil {
+		return "", err
+	}
+	if err := r.runProvisioning(ctx, log.With("workspace_id", ws.ID), conversationID, target, ws, spec, false); err != nil {
+		return "", err
+	}
+	return ws.ID, nil
+}
 
-	// Path stays empty until the recipe reports the directory it
-	// resolved inside the workspace root.
+// provisionTarget resolves and validates what provisioning needs before
+// anything is written: the target (LOOM-64: the routing model's
+// target_id must not be trusted, and a row whose target doesn't exist
+// can never be launched) and the spec (LOOM-90).
+func (r *Router) provisionTarget(ctx context.Context, log *slog.Logger, spec ProvisionSpec) (*registry.Target, error) {
+	if spec.TargetID == "" {
+		log.Error("provisioning failed", "stage", "resolve target", "error", "no target_id given")
+		return nil, fmt.Errorf("provision workspace: no target_id given")
+	}
+	target, err := r.store.GetTarget(ctx, spec.TargetID)
+	if err != nil {
+		log.Error("provisioning failed", "stage", "resolve target", "error", err)
+		return nil, fmt.Errorf("provision workspace: resolve target %q: %w", spec.TargetID, err)
+	}
+	// The spec comes from the routing model: validated here, before any
+	// row is written, whatever the model's own validation did (LOOM-90).
+	if err := spec.Validate(); err != nil {
+		log.Error("provisioning failed", "stage", "validate", "error", err)
+		return nil, fmt.Errorf("provision workspace: %w", err)
+	}
+	return target, nil
+}
+
+// createProvisioningRow writes the workspace row, status provisioning;
+// its path stays empty until the recipe reports the directory it
+// resolved inside the workspace root.
+func (r *Router) createProvisioningRow(ctx context.Context, log *slog.Logger, spec ProvisionSpec) (*registry.Workspace, error) {
 	ws := &registry.Workspace{
 		ID:          uuid.NewString(),
 		Name:        spec.Name,
@@ -716,16 +739,23 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 	}
 	if err := r.store.CreateWorkspace(ctx, ws); err != nil {
 		log.Error("provisioning failed", "stage", "create workspace", "error", err)
-		return "", fmt.Errorf("provision workspace: %w", err)
+		return nil, fmt.Errorf("provision workspace: %w", err)
 	}
+	return ws, nil
+}
 
+// runProvisioning runs ws's recipe on target and records the outcome on
+// the row: idle with its path, or failed with why. With checkHealth (the
+// API's provisioning, LOOM-215, whose row is written first) the target
+// is first started if it is a stopped machine, and checked, within
+// provisionPrepareTimeout; a failure there fails the workspace too.
+func (r *Router) runProvisioning(ctx context.Context, log *slog.Logger, conversationID string, target *registry.Target, ws *registry.Workspace, spec ProvisionSpec, checkHealth bool) error {
 	// From here on a failure leaves the row behind (see above), marked
 	// failed (LOOM-71) — never left active or provisioning, and no longer
 	// offered to the routing model. Each failure record names the row and
 	// its status, re-read rather than taken from ws so it reports what
 	// was actually persisted. WithoutCancel so a wait that failed on ctx
 	// cancellation still gets the row marked and its status read.
-	log = log.With("workspace_id", ws.ID)
 	//
 	// Why is recorded too (LOOM-77): on the task (reason, class, output
 	// tail) and on the workspace (status_reason). A task that already
@@ -755,6 +785,16 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 		log.Error("provisioning failed", attrs...)
 	}
 
+	if checkHealth {
+		hctx, cancel := context.WithTimeout(ctx, provisionPrepareTimeout)
+		err := r.requireHealthyTarget(hctx, target, true)
+		cancel()
+		if err != nil {
+			fail("target health", "", taskFailure(registry.ErrorClassTargetUnhealthy, err, ""), err)
+			return fmt.Errorf("provision workspace: %w", err)
+		}
+	}
+
 	// The recipe is the pane's own process, run as a command task: its
 	// exit is its completion (status 0 success, anything else a failure
 	// reported in its own output), recorded with the exact script that
@@ -773,7 +813,7 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 			class = registry.ErrorClassLaunchFailed
 		}
 		fail("run", res.taskID, taskFailure(class, err, ""), err)
-		return "", fmt.Errorf("provision workspace: %w", err)
+		return fmt.Errorf("provision workspace: %w", err)
 	}
 	if res.exitCode != 0 {
 		tail := quoteOutput(r.redactAllSecrets(ctx, res.output))
@@ -783,28 +823,28 @@ func (r *Router) provisionWorkspace(ctx context.Context, conversationID string, 
 			Reason:     fmt.Sprintf("provisioning ended with %s", res.ended),
 			OutputTail: tail,
 		}, err)
-		return "", fmt.Errorf("provision workspace: %w", err)
+		return fmt.Errorf("provision workspace: %w", err)
 	}
 	path := parseProvisionedPath(res.output, nonce)
 	if path == "" {
 		fail("run", res.taskID, taskFailure(registry.ErrorClassProvisionFailed, errNoProvisionedPath, ""), errNoProvisionedPath)
-		return "", fmt.Errorf("provision workspace: %w", errNoProvisionedPath)
+		return fmt.Errorf("provision workspace: %w", errNoProvisionedPath)
 	}
 
 	cur, err := r.store.GetWorkspace(ctx, ws.ID)
 	if err != nil {
 		fail("record path", "", taskFailure(registry.ErrorClassInternal, err, ""), err)
-		return "", fmt.Errorf("provision workspace: %w", err)
+		return fmt.Errorf("provision workspace: %w", err)
 	}
 	cur.Path = path
 	cur.Status = registry.WorkspaceStatusIdle
 	cur.StatusReason = ""
 	if err := r.store.UpdateWorkspace(ctx, cur); err != nil {
 		fail("record path", "", taskFailure(registry.ErrorClassInternal, err, ""), err)
-		return "", fmt.Errorf("provision workspace: %w", err)
+		return fmt.Errorf("provision workspace: %w", err)
 	}
 	log.Info("workspace provisioned", "task_id", res.taskID)
-	return ws.ID, nil
+	return nil
 }
 
 // dispatchToAgent finds the task already open for this workspace +

@@ -630,6 +630,28 @@ func TestFinishCommand(t *testing.T) {
 	}
 }
 
+// A provisioning recipe that exits leaves its workspace provisioning: the
+// router owns that status and sets it idle only with the path the recipe
+// printed (LOOM-215), so the workspace is never idle without a path.
+func TestFinishCommand_LeavesProvisioningToTheRouter(t *testing.T) {
+	store, ws, _, _, o := setup(t)
+	ctx := context.Background()
+	ws.Status = registry.WorkspaceStatusProvisioning
+	if err := store.UpdateWorkspace(ctx, ws); err != nil {
+		t.Fatalf("UpdateWorkspace: %v", err)
+	}
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindCommand, "", "true")
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if err := o.FinishCommand(ctx, task.ID, 0); err != nil {
+		t.Fatalf("FinishCommand: %v", err)
+	}
+	if got, _ := store.GetWorkspace(ctx, ws.ID); got.Status != registry.WorkspaceStatusProvisioning {
+		t.Errorf("workspace after FinishCommand = %q, want still provisioning", got.Status)
+	}
+}
+
 func TestFinishCommand_RefusesNonCommandTask(t *testing.T) {
 	_, ws, _, _, o := setup(t)
 	ctx := context.Background()

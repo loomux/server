@@ -250,6 +250,12 @@ func (o *Orchestrator) FinishCommand(ctx context.Context, taskID string, exitCod
 	if err != nil {
 		return fmt.Errorf("orchestrator: finish command: %w", err)
 	}
+	// A provisioning recipe's workspace stays provisioning: the router
+	// sets it idle with the path the recipe printed, or failed (see
+	// Launch) — idle here would be a workspace without its path.
+	if ws.Status != registry.WorkspaceStatusActive {
+		return nil
+	}
 	ws.Status = registry.WorkspaceStatusIdle
 	if err := o.store.UpdateWorkspace(ctx, ws); err != nil {
 		return fmt.Errorf("orchestrator: finish command: %w", err)

@@ -771,6 +771,23 @@ GET /api/v1/workspaces response-header Content-Type
 GET /api/v1/workspaces status 200
 GET /api/v1/workspaces status 401
 GET /api/v1/workspaces status 500
+GET /api/v1/workspaces/{id}
+GET /api/v1/workspaces/{id} request-header Authorization
+GET /api/v1/workspaces/{id} response - object
+GET /api/v1/workspaces/{id} response .description string
+GET /api/v1/workspaces/{id} response .id string
+GET /api/v1/workspaces/{id} response .last_used_at time omitempty nullable
+GET /api/v1/workspaces/{id} response .name string
+GET /api/v1/workspaces/{id} response .rolling_summary string
+GET /api/v1/workspaces/{id} response .status string
+GET /api/v1/workspaces/{id} response .status_reason string omitempty
+GET /api/v1/workspaces/{id} response .tags []string
+GET /api/v1/workspaces/{id} response .target_id string
+GET /api/v1/workspaces/{id} response-header Content-Type
+GET /api/v1/workspaces/{id} status 200
+GET /api/v1/workspaces/{id} status 401
+GET /api/v1/workspaces/{id} status 404
+GET /api/v1/workspaces/{id} status 500
 PATCH /api/v1/workspaces/{id}
 PATCH /api/v1/workspaces/{id} request - object
 PATCH /api/v1/workspaces/{id} request .status string
@@ -1768,6 +1785,36 @@ POST /api/v1/web/update status 409
 POST /api/v1/web/update status 500
 POST /api/v1/web/update status 502
 POST /api/v1/web/update status 503
+POST /api/v1/workspaces
+POST /api/v1/workspaces request - object
+POST /api/v1/workspaces request .description string
+POST /api/v1/workspaces request .git_remote string
+POST /api/v1/workspaces request .kind string
+POST /api/v1/workspaces request .name string
+POST /api/v1/workspaces request .tags []string
+POST /api/v1/workspaces request .target_id string
+POST /api/v1/workspaces request-header Authorization
+POST /api/v1/workspaces response - object
+POST /api/v1/workspaces response .conversation_id string omitempty
+POST /api/v1/workspaces response .description string
+POST /api/v1/workspaces response .id string
+POST /api/v1/workspaces response .last_used_at time omitempty nullable
+POST /api/v1/workspaces response .name string
+POST /api/v1/workspaces response .rolling_summary string
+POST /api/v1/workspaces response .status string
+POST /api/v1/workspaces response .status_reason string omitempty
+POST /api/v1/workspaces response .tags []string
+POST /api/v1/workspaces response .target_id string
+POST /api/v1/workspaces response-header Content-Type
+POST /api/v1/workspaces response-header Location
+POST /api/v1/workspaces status 200
+POST /api/v1/workspaces status 202
+POST /api/v1/workspaces status 400
+POST /api/v1/workspaces status 401
+POST /api/v1/workspaces status 409
+POST /api/v1/workspaces status 413
+POST /api/v1/workspaces status 500
+POST /api/v1/workspaces status 501
 PUT /api/v1/credentials/{id}/value
 PUT /api/v1/credentials/{id}/value request - object
 PUT /api/v1/credentials/{id}/value request .value string

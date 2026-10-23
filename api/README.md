@@ -174,6 +174,7 @@ Specific codes, where a handler tells apart a case a client can act on:
 | `conversation_busy` | `POST /api/v1/dispatch` `409` when the conversation already has a dispatch in flight; the body also carries that dispatch's `dispatch_id` |
 | `idempotency_conflict` | `POST /api/v1/dispatch` `422` when the `Idempotency-Key` was already used for a different request |
 | `unsupported_api_version` | `404` for any `/api` path outside `/api/v1`; the body also carries `supported_versions` |
+| `workspace_name_taken` | `POST /api/v1/workspaces` `409` when another workspace has the name (LOOM-215) |
 
 New codes may be added within v1 (a client should treat an unknown code
 like the status's default); a code once given to a case doesn't change.
@@ -355,6 +356,28 @@ plain ssh form.
     timestamp now that the Phase 2 web fleet-status page consumes them
     (LOOM-44). Wraps `WorkspaceLister.ListWorkspaces`, a narrow seam
     mirroring `SessionStore`, satisfied structurally by `*app.App.Store()`.
+  - `POST /api/v1/workspaces` — auth-gated (LOOM-215), provisions a
+    workspace on a chosen target, as a chat's `provision_workspace` does:
+    `{target_id, name, kind?, git_remote?, description?, tags?}`, `kind`
+    one of `empty`, `git_clone`, `existing_dir` (default `git_clone` with
+    a `git_remote`, else `empty`). It answers once the workspace row
+    exists: `202` with the workspace (status `provisioning`), a
+    `Location: /api/v1/workspaces/{id}` to follow, and `conversation_id`,
+    the conversation its provisioning run is recorded under (its command,
+    output and events, as for any turn). The run goes on in the
+    background: a stopped machine a plugin made is started first, the
+    target checked, then the confined recipe runs (bounded by its 10
+    minutes), ending the workspace `idle` with its path or `failed` with
+    `status_reason`. The same name on the same target from the same
+    source again is `200` with that workspace (no second one); `400` for
+    a request to correct (`target_id`/`name` missing, an unknown target,
+    a name or remote outside the grammar); `409 workspace_name_taken`
+    when another workspace has the name (on another target, from another
+    source, or one that failed or was archived: delete or reopen it);
+    `501` on a server without provisioning.
+  - `GET /api/v1/workspaces/{id}` — auth-gated (LOOM-215), one workspace
+    as `GET /workspaces` lists it; what a client polls while one
+    provisions. `404` if unknown.
   - `GET /api/v1/conversations` — auth-gated (LOOM-18), one summary row
     per distinct `conversation_id`, most-recently-updated first:
     `{conversations: [{conversation_id, workspace_id, status,
