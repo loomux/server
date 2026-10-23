@@ -133,6 +133,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithTmuxSocket(loomux.TmuxSocket()),
 		api.WithTargetProber(loomux),
 		api.WithWorkspaceManager(loomux),
+		api.WithWorkspaceProvisioner(loomux),
 		api.WithTaskCanceller(loomux),
 		api.WithAgentTypes(loomux.AgentTypeNames()),
 		api.WithTaskTurns(loomux.Store()),

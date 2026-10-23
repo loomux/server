@@ -95,6 +95,9 @@ type SessionStore interface {
 // pattern.
 type WorkspaceLister interface {
 	ListWorkspaces(ctx context.Context) ([]*registry.Workspace, error)
+	// GetWorkspace backs GET /api/v1/workspaces/{id} (LOOM-215);
+	// registry.ErrNotFound for an unknown id.
+	GetWorkspace(ctx context.Context, id string) (*registry.Workspace, error)
 }
 
 // TaskLister is the unfiltered task-listing slice of registry.Store this
@@ -222,29 +225,32 @@ const streamHeartbeatInterval = 15 * time.Second
 // TLS/networking (deployment assumption: plain HTTP behind a reverse
 // proxy that terminates TLS — see README.md).
 type Server struct {
-	dispatcher       Dispatcher
-	sessions         SessionStore
-	workspaces       WorkspaceLister
-	tasks            TaskLister
-	messages         MessageLister
-	streamQ          streamQueries
-	attachInfo       AttachInfoStore
-	targets          TargetStore
-	targetProber     TargetProber
-	taskTurns        TaskTurnStore
-	events           EventStore
-	scanHostKey      HostKeyScanner
-	hostKeys         HostKeyStore
-	scans            *scanResults
-	workspaceManager WorkspaceManager
-	taskCanceller    TaskCanceller
-	credentials      CredentialStore
-	sshKeys          SSHKeyStore
-	routerSettings   RouterSettings
-	plugins          Plugins
-	machines         Machines
-	dropSSHKey       func(id string)
-	resolveSSHConfig SSHConfigResolver
+	dispatcher Dispatcher
+	sessions   SessionStore
+	workspaces WorkspaceLister
+	// workspaceProvisioner backs POST /api/v1/workspaces (LOOM-215); nil
+	// answers 501.
+	workspaceProvisioner WorkspaceProvisioner
+	tasks                TaskLister
+	messages             MessageLister
+	streamQ              streamQueries
+	attachInfo           AttachInfoStore
+	targets              TargetStore
+	targetProber         TargetProber
+	taskTurns            TaskTurnStore
+	events               EventStore
+	scanHostKey          HostKeyScanner
+	hostKeys             HostKeyStore
+	scans                *scanResults
+	workspaceManager     WorkspaceManager
+	taskCanceller        TaskCanceller
+	credentials          CredentialStore
+	sshKeys              SSHKeyStore
+	routerSettings       RouterSettings
+	plugins              Plugins
+	machines             Machines
+	dropSSHKey           func(id string)
+	resolveSSHConfig     SSHConfigResolver
 	// migrating is held while a migrate-ssh is applied (LOOM-138).
 	migrating          sync.Mutex
 	agentTypes         []string
@@ -432,6 +438,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/dispatches/{id}", s.requireAuth(s.handleGetDispatch))
 	mux.HandleFunc("POST /api/v1/dispatches/{id}/cancel", s.requireAuth(s.handleCancelDispatch))
 	mux.HandleFunc("GET /api/v1/workspaces", s.requireAuth(s.handleListWorkspaces))
+	mux.HandleFunc("POST /api/v1/workspaces", s.requireAuth(s.handleCreateWorkspace))
+	mux.HandleFunc("GET /api/v1/workspaces/{id}", s.requireAuth(s.handleGetWorkspace))
 	mux.HandleFunc("DELETE /api/v1/workspaces/{id}", s.requireAuth(s.handleDeleteWorkspace))
 	mux.HandleFunc("PATCH /api/v1/workspaces/{id}", s.requireAuth(s.handlePatchWorkspace))
 	mux.HandleFunc("GET /api/v1/conversations", s.requireAuth(s.handleListConversations))
@@ -723,17 +731,7 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]workspaceSummary, 0, len(workspaces))
 	for _, ws := range workspaces {
-		out = append(out, workspaceSummary{
-			ID:             ws.ID,
-			Name:           ws.Name,
-			TargetID:       ws.TargetID,
-			Status:         string(ws.Status),
-			Tags:           orEmpty(ws.Tags),
-			Description:    ws.Description,
-			RollingSummary: ws.RollingSummary,
-			LastUsedAt:     ws.LastUsedAt,
-			StatusReason:   ws.StatusReason,
-		})
+		out = append(out, newWorkspaceSummary(ws))
 	}
 	writeJSON(w, http.StatusOK, listWorkspacesResponse{Workspaces: out})
 }

@@ -299,8 +299,10 @@ vault"; check loomux/web's credentials page before deciding.
 
 These can all be added after 1.0 without breaking anything:
 - `GET /targets/{id}`, `GET /workspaces/{id}` and `GET /tasks/{id}` (today
-  clients filter lists).
+  clients filter lists). *`GET /targets/{id}` added in LOOM-178,
+  `GET /workspaces/{id}` in LOOM-215.*
 - `POST /workspaces` (today workspaces are only created through chat).
+  *Added in LOOM-215.*
 - Filters on `GET /conversations` (by workspace, by status).
 - A `relay` control in the web client (waits on the UI direction).
 
