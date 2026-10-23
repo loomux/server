@@ -42,7 +42,9 @@ optionally another size; same data and address), `DeleteTarget` (the
 cascade of design §5: workspaces with their tasks, target-scoped
 credentials, the machine through the plugin, the generated key, the
 rows), `EnsureRunning` (what the router calls before dispatching to a
-stopped machine), `AttachCommands`.
+stopped machine: it waits `ReadyTimeout`, 5 minutes, for one coming up,
+not counting the time its image is pulling, up to `PullTimeout`;
+LOOM-222), `AttachCommands`.
 
 ## Reconcile
 

@@ -1,6 +1,7 @@
 package providers_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,5 +105,74 @@ func TestEndlessPullFailsAfterPullTimeout(t *testing.T) {
 	}
 	if !strings.Contains(env.StatusReason, "didn't become ready within 3s, besides 1s of pulling its image, which hadn't finished") {
 		t.Errorf("reason = %q", env.StatusReason)
+	}
+}
+
+// ensureRunning runs EnsureRunning for targetID in the background; its
+// error arrives on the channel.
+func ensureRunning(h *harness, targetID string) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- h.m.EnsureRunning(context.Background(), targetID) }()
+	return done
+}
+
+// LOOM-222: a dispatch to a machine whose image is still pulling waits
+// the pull out: the time it takes doesn't count against ReadyTimeout.
+func TestDispatchWaitsOutAPull(t *testing.T) {
+	const readyTimeout = time.Second
+	gate := filepath.Join(t.TempDir(), "pulled")
+	h := pullHarness(t, fake.TargetsSlowPull, time.Hour, time.Minute, map[string]any{"pull_gate": gate})
+	h.m.ReadyTimeout = readyTimeout
+	target, _ := h.create(t, "slow-pull", true)
+	pullingSoon(t, h, target.ID)
+	done := ensureRunning(h, target.ID)
+	select {
+	case err := <-done:
+		t.Fatalf("EnsureRunning returned while the image pulled: %v", err)
+	case <-time.After(readyTimeout + time.Second):
+	}
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("EnsureRunning after the pull: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("EnsureRunning didn't return after the pull ended")
+	}
+}
+
+// A pull that never ends fails the dispatch once it has used
+// PullTimeout too, saying so.
+func TestDispatchGivesUpOnAnEndlessPull(t *testing.T) {
+	const readyTimeout, pullTimeout = time.Second, time.Second
+	h := pullHarness(t, fake.TargetsPullForever, time.Hour, pullTimeout, nil)
+	h.m.ReadyTimeout = readyTimeout
+	target, _ := h.create(t, "pull-forever", true)
+	pullingSoon(t, h, target.ID)
+	start := time.Now()
+	err := <-ensureRunning(h, target.ID)
+	if took := time.Since(start); took < readyTimeout+pullTimeout-100*time.Millisecond {
+		t.Errorf("gave up after %s, before ReadyTimeout plus PullTimeout", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "didn't become ready within 1s, besides 1s of pulling its image, which hadn't finished") {
+		t.Errorf("EnsureRunning = %v", err)
+	}
+}
+
+// With no progress reported, the dispatch's wait applies as before.
+func TestDispatchToAStuckMachineStillGivesUp(t *testing.T) {
+	h := pullHarness(t, fake.TargetsStuck, time.Hour, time.Minute, nil)
+	h.m.ReadyTimeout = 300 * time.Millisecond
+	target, _ := h.create(t, "stuck", true)
+	start := time.Now()
+	err := <-ensureRunning(h, target.ID)
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("gave up after %s", took)
+	}
+	if err == nil || err.Error() != "providers: the machine didn't become ready within 300ms" {
+		t.Errorf("EnsureRunning = %v, want the wait, with no pull in it", err)
 	}
 }

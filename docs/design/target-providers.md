@@ -685,7 +685,9 @@ can tighten them in the form. The model never sees plugin names beyond that, nor
 
 **Dispatch to a stopped machine.** A `use_workspace`/`provision_workspace`/`run_command` aimed at a target
 whose machine is `stopped` starts it first (a dispatch stage, bounded like a provisioning run, shown in the
-audit trail as an event) and then goes on; `creating`/`starting` waits for readiness up to the same bound;
+audit trail as an event) and then goes on; `creating`/`starting` waits for readiness up to the same bound
+(5 minutes), which stands still while the job following the machine sees its image pulling (`progress:
+image_pull`), up to 30 minutes more, as the job's own deadline does (LOOM-222);
 `error`/`lost`/`detached`-and-unreachable fails the dispatch with `target_unhealthy` and the reason. The
 snapshot's `Problem` says "stopped; will be started" so the model doesn't avoid the target.
 
