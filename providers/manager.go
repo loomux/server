@@ -26,6 +26,10 @@ import (
 // removes a newer job's entry.
 type job struct {
 	cancel context.CancelFunc
+	ctx    context.Context
+	// progress is what the plugin last said the machine is doing, as the
+	// job's poll saw it: protocol.ProgressImagePull, or "" (LOOM-222).
+	progress string
 }
 
 // errStale is a job's signal that the machine moved on while it wasn't
@@ -50,8 +54,9 @@ const (
 	DefaultPullTimeout  = 30 * time.Minute
 	DefaultPollInterval = 2 * time.Second
 	DefaultOrphanTTL    = 24 * time.Hour
-	// readyTimeout bounds EnsureRunning's wait for a machine to come up.
-	readyTimeout = 5 * time.Minute
+	// DefaultReadyTimeout bounds EnsureRunning's wait for a machine to
+	// come up.
+	DefaultReadyTimeout = 5 * time.Minute
 )
 
 // Manager turns machines a plugin makes into targets and keeps them in
@@ -84,6 +89,10 @@ type Manager struct {
 	Activity Activity
 
 	CreateTimeout time.Duration
+	// ReadyTimeout bounds a dispatch's wait (EnsureRunning) for a machine
+	// to come up; the time its image is pulling doesn't count, up to
+	// PullTimeout (LOOM-222).
+	ReadyTimeout time.Duration
 	// PullTimeout is how much longer than CreateTimeout a job waits
 	// while the plugin reports the machine's image being pulled
 	// (progress image_pull): the time it does doesn't count against
@@ -130,7 +139,7 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 	life, endLife := context.WithCancel(context.Background())
 	return &Manager{
 		store: store, plugins: pm, logger: logger, met: met, instanceID: instanceID,
-		CreateTimeout: DefaultCreateTimeout, PullTimeout: DefaultPullTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
+		CreateTimeout: DefaultCreateTimeout, ReadyTimeout: DefaultReadyTimeout, PullTimeout: DefaultPullTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
 		NotifyDelay: DefaultNotifyDelay,
 		Now:         time.Now,
 		locks:       map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{}, lastUse: map[string]time.Time{},
@@ -446,7 +455,7 @@ func (m *Manager) startJob(envID string, fn func(ctx context.Context)) {
 	}
 	parent, cancel := context.WithCancel(context.Background())
 	ctx := newJobContext(parent, m.CreateTimeout)
-	j := &job{cancel: cancel}
+	j := &job{cancel: cancel, ctx: ctx}
 	m.running[envID] = j
 	m.jobs.Add(1)
 	m.mu.Unlock()
@@ -461,6 +470,27 @@ func (m *Manager) startJob(envID string, fn func(ctx context.Context)) {
 		}
 		m.mu.Unlock()
 	}()
+}
+
+// setProgress records progress as what the job running under ctx last
+// saw of the machine; a job replaced since records nothing.
+func (m *Manager) setProgress(ctx context.Context, envID, progress string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j := m.running[envID]; j != nil && j.ctx == ctx {
+		j.progress = progress
+	}
+}
+
+// progress is what the job following the machine last saw it doing:
+// protocol.ProgressImagePull, or "" (none, or no job).
+func (m *Manager) progress(envID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j := m.running[envID]; j != nil {
+		return j.progress
+	}
+	return ""
 }
 
 // following reports whether a job is following the machine.
@@ -543,6 +573,11 @@ func (m *Manager) follow(ctx context.Context, envID string) {
 		}
 		var pe protocol.Environment
 		err = m.plugins.Call(ctx, env.PluginID, protocol.MethodTargetsGet, protocol.IDParams{ID: env.ID}, &pe)
+		if err == nil {
+			m.setProgress(ctx, envID, pe.Progress)
+		} else {
+			m.setProgress(ctx, envID, "")
+		}
 		if jc != nil && err == nil && pe.Progress == protocol.ProgressImagePull {
 			if left <= 0 {
 				left = jc.remaining()
@@ -1002,6 +1037,9 @@ func (m *Manager) AttachCommands(ctx context.Context, targetID, session string) 
 
 // EnsureRunning starts a stopped machine and waits for it to be
 // running; a machine already running returns at once. For dispatch.
+// The wait is ReadyTimeout, which stands still while the job following
+// the machine sees its image pulling, up to PullTimeout more: a cold
+// pull isn't a machine that won't come up (LOOM-222).
 func (m *Manager) EnsureRunning(ctx context.Context, targetID string) (err error) {
 	env, err := m.Get(ctx, targetID)
 	if err != nil {
@@ -1023,17 +1061,28 @@ func (m *Manager) EnsureRunning(ctx context.Context, targetID string) (err error
 	default:
 		return &BadStateError{Op: "use", Status: env.Status}
 	}
-	deadline := time.After(readyTimeout)
+	envID := env.ID
+	last := time.Now()
+	deadline := last.Add(m.ReadyTimeout)
+	latest := deadline.Add(m.PullTimeout)
+	var pulled time.Duration
 	ticker := time.NewTicker(m.PollInterval / 2)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-deadline:
-			return fmt.Errorf("providers: the machine didn't become ready within %s", readyTimeout)
 		case <-ticker.C:
 		}
+		now := time.Now()
+		if m.progress(envID) == protocol.ProgressImagePull {
+			step := now.Sub(last)
+			pulled += step
+			if deadline = deadline.Add(step); deadline.After(latest) {
+				deadline = latest
+			}
+		}
+		last = now
 		env, err := m.Get(ctx, targetID)
 		if err != nil {
 			return err
@@ -1044,7 +1093,23 @@ func (m *Manager) EnsureRunning(ctx context.Context, targetID string) (err error
 		case registry.EnvironmentError, registry.EnvironmentLost, registry.EnvironmentDetached, registry.EnvironmentStopped:
 			return &BadStateError{Op: "use", Status: env.Status}
 		}
+		if now.After(deadline) {
+			return m.readyTimeoutError(pulled)
+		}
 	}
+}
+
+// readyTimeoutError is EnsureRunning's error when its wait ends: the
+// wait, and what an image pull added to it.
+func (m *Manager) readyTimeoutError(pulled time.Duration) error {
+	reason := "providers: the machine didn't become ready within " + m.ReadyTimeout.String()
+	switch {
+	case pulled >= m.PullTimeout:
+		reason += ", besides " + m.PullTimeout.String() + " of pulling its image, which hadn't finished"
+	case pulled > 0:
+		reason += ", besides " + pulled.Round(time.Second).String() + " of pulling its image"
+	}
+	return errors.New(reason)
 }
 
 // MachineCount is how many machines plugin pluginID owns, for the plugin
