@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -124,7 +125,7 @@ func TestCanaryTransientReadError(t *testing.T) {
 	cs := fake.NewClientset(append(kindPolicies(t), &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "loomux-agents", Namespace: testNS}})...)
 	canaryExits(cs, exitBlocked)
 	failed := false
-	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if !failed {
 			failed = true
 			return true, nil, errors.New("etcdserver: leader changed")
@@ -140,20 +141,29 @@ func TestCanaryTransientReadError(t *testing.T) {
 
 // A read error the canary recovers from isn't reported when the canary
 // later times out for another reason (a slow pull): the timeout is.
+//
+// What the test needs is the error, then a read that succeeds, both
+// before the canary's time is up: with 50 ms, a loaded machine spent it
+// all making the pod, the one read came at the deadline and failed, and
+// that is a persistent error by any rule (TestCanaryPersistentReadError's
+// case), one run in hundreds under -race. 500 ms is a hundred reads'
+// room; the test checks it got its second.
 func TestCanaryStaleReadErrorNotReported(t *testing.T) {
 	cs := fake.NewClientset(kindPolicies(t)...)
-	failed := false
-	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		if !failed {
-			failed = true
+	var reads atomic.Int32
+	prependReactor(cs, "get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if reads.Add(1) == 1 {
 			return true, nil, errors.New("etcdserver: leader changed")
 		}
 		return false, nil, nil
 	})
-	p := configured(t, cs, nil, func(p *Plugin) { p.CanaryTimeout = 50 * time.Millisecond }) // the canary never finishes: no kubelet
+	p := configured(t, cs, nil, func(p *Plugin) { p.CanaryTimeout = 500 * time.Millisecond }) // the canary never finishes: no kubelet
 	res, _ := p.Check(ctx)
+	if n := reads.Load(); n < 2 {
+		t.Fatalf("the canary read its pod %d time(s) in %s: the machine is too loaded for this test's premise", n, p.CanaryTimeout)
+	}
 	msg := failedMessage(res)
-	if !failed || !strings.Contains(msg, "didn't finish within") || strings.Contains(msg, "leader changed") {
+	if !strings.Contains(msg, "didn't finish within") || strings.Contains(msg, "leader changed") {
 		t.Fatalf("check = %+v", res)
 	}
 }
@@ -161,7 +171,7 @@ func TestCanaryStaleReadErrorNotReported(t *testing.T) {
 // Forbidden or Unauthorized won't heal by waiting: reported at once.
 func TestCanaryForbiddenReadFailsFast(t *testing.T) {
 	cs := fake.NewClientset(kindPolicies(t)...)
-	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "lx-netcheck-abcd", errors.New("no"))
 	})
 	p := configured(t, cs, nil, func(p *Plugin) { p.CanaryTimeout = time.Minute })
@@ -186,7 +196,7 @@ func failedMessage(res protocol.CheckResult) string {
 // last error.
 func TestCanaryPersistentReadError(t *testing.T) {
 	cs := fake.NewClientset(kindPolicies(t)...)
-	cs.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("etcdserver: leader changed")
 	})
 	p := configured(t, cs, nil, func(p *Plugin) { p.CanaryTimeout = 50 * time.Millisecond })

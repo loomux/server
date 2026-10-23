@@ -61,6 +61,30 @@ func touchPolicies(t *testing.T, cs *fake.Clientset, port int32) {
 
 // runningOn is a checked plugin with a "none" machine, conf1, running on
 // n1, whose canaries say "enforced" (as n0's, the check's, do).
+// nodeIdleSoon waits up to 5 s for node's canary to have finished. A
+// verdict is timed when its canary finishes, by the test clock, and a
+// re-check waits a minute after that: a canary still running when a
+// test advances the clock finished "later" and held the next one back
+// past the minute the test meant (TestNonePolicyRemovedWithdraws, one
+// run in hundreds under -race).
+func nodeIdleSoon(t *testing.T, p *Plugin, node string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p.mu.Lock()
+		n := p.nodes[node]
+		idle := n != nil && n.running == nil
+		p.mu.Unlock()
+		if idle {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node %s's canary is still running", node)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func runningOn(t *testing.T, setup ...func(*Plugin)) (*fake.Clientset, *canaryNodes, *Plugin, *testClock) {
 	t.Helper()
 	cs, nodes, p, clock := nodeSetup(t, "n0", map[string]int32{"n0": exitBlocked, "n1": exitBlocked}, setup...)
@@ -105,6 +129,7 @@ func TestNonePolicyRemovedWithdraws(t *testing.T) {
 	if !nodes.pinnedSoon("n1", 2) {
 		t.Fatalf("canaries pinned to n1 = %d, want 2: the first, the change's", nodes.pinnedTo("n1"))
 	}
+	nodeIdleSoon(t, p, "n1")
 	for _, np := range removed {
 		np.ResourceVersion = ""
 		if _, err := nps.Create(ctx, np, metav1.CreateOptions{}); err != nil {
@@ -146,7 +171,7 @@ func TestNoneRecheckThatCantRunIsNoPass(t *testing.T) {
 	if !nodes.pinnedSoon("n1", 2) {
 		t.Fatalf("canaries pinned to n1 = %d, want 2: the change's re-check", nodes.pinnedTo("n1"))
 	}
-	time.Sleep(50 * time.Millisecond) // it fails at once
+	nodeIdleSoon(t, p, "n1") // it fails at once
 	if env, _ := p.GetTarget(ctx, "conf1"); env.Status != protocol.EnvRunning {
 		t.Errorf("a minute on, the re-check couldn't run: %s (%s), want running on the verdict of a minute ago", env.Status, env.Reason)
 	}
@@ -154,6 +179,7 @@ func TestNoneRecheckThatCantRunIsNoPass(t *testing.T) {
 	if !nodes.pinnedSoon("n1", 3) {
 		t.Fatalf("canaries pinned to n1 = %d, want 3: the re-check tried again, still pending", nodes.pinnedTo("n1"))
 	}
+	nodeIdleSoon(t, p, "n1")
 	clock.advance(9 * time.Minute) // past verdictTTL since the last "enforced"
 	reasonSoon(t, p, "conf1", protocol.EnvStarting, "n1")
 	nodes.set("n1", exitBlocked)
@@ -168,7 +194,7 @@ func TestNonePolicyReadFailureIsNoPass(t *testing.T) {
 	var failing atomic.Bool
 	cs, _, p, clock := runningOn(t)
 	settleCanaries(t, p) // before changing the fake's reactors
-	cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
 		if failing.Load() {
 			return true, nil, errors.New("etcdserver: request timed out")
 		}
@@ -194,7 +220,7 @@ func TestNoneRecheckNoStorm(t *testing.T) {
 	var reads atomic.Int32
 	cs, nodes, p, clock := runningOn(t, func(p *Plugin) { p.CanaryTimeout = time.Minute })
 	settleCanaries(t, p) // before changing the fake's reactors
-	cs.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
 		reads.Add(1)
 		return false, nil, nil
 	})

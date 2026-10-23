@@ -100,12 +100,23 @@ func spec(id string) protocol.EnvironmentSpec {
 	}
 }
 
+// prependReactor is cs.PrependReactor made safe beside the plugin's
+// goroutines. Its renewer (from configure on) and canaries call the
+// clientset on their own, and the fake's Invokes reads the reactor
+// chain under the fake's lock, which PrependReactor doesn't take: a
+// reactor a test added meanwhile raced them under -race.
+func prependReactor(cs *fake.Clientset, verb, resource string, fn k8stesting.ReactionFunc) {
+	cs.Lock()
+	defer cs.Unlock()
+	cs.PrependReactor(verb, resource, fn)
+}
+
 // canaryExits makes every canary pod the fake creates exit with code,
 // or with what the returned value is changed to.
 func canaryExits(cs *fake.Clientset, code int32) *atomic.Int32 {
 	exit := new(atomic.Int32)
 	exit.Store(code)
-	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
 		if ok && pod.Labels[labelCanary] == "true" {
 			pod.Status.Phase = corev1.PodSucceeded
@@ -770,7 +781,7 @@ func TestCheck(t *testing.T) {
 	})
 	t.Run("canary refused", func(t *testing.T) {
 		cs := fake.NewClientset(kindPolicies(t)...)
-		cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "x", errors.New("no"))
 		})
 		p := configured(t, cs, nil)
@@ -793,7 +804,7 @@ func TestCheck(t *testing.T) {
 	})
 	t.Run("service forbidden", func(t *testing.T) {
 		cs := fake.NewClientset(kindPolicies(t)...)
-		cs.PrependReactor("get", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		prependReactor(cs, "get", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "services"}, "loomux-agents", errors.New("no"))
 		})
 		canaryExits(cs, exitBlocked)
@@ -805,7 +816,7 @@ func TestCheck(t *testing.T) {
 	})
 	t.Run("forbidden", func(t *testing.T) {
 		cs := fake.NewClientset(kindPolicies(t)...)
-		cs.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		prependReactor(cs, "list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, kerrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("no role"))
 		})
 		p := configured(t, cs, nil)

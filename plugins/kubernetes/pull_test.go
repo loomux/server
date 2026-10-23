@@ -132,7 +132,7 @@ func TestPullInProgressIsProgress(t *testing.T) {
 // (fail closed, LOOM-208), and says it was pulling.
 func TestCanaryTimeoutWhilePulling(t *testing.T) {
 	cs := fake.NewClientset(kindPolicies(t)...)
-	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
 		if ok && pod.Labels[labelCanary] == "true" {
 			pod.Spec.NodeName = "n1"

@@ -386,7 +386,7 @@ func TestNonePoliciesReadEveryTime(t *testing.T) {
 // says so (an error when required) and "none" isn't offered.
 func TestNonePoliciesForbidden(t *testing.T) {
 	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
-	cs.PrependReactor("list", "networkpolicies", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "list", "networkpolicies", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, kerrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "networkpolicies"}, "", errors.New("no"))
 	})
 	canaryExits(cs, exitBlocked)
@@ -406,7 +406,7 @@ func TestNonePoliciesReadAfterTheCanary(t *testing.T) {
 	cs := fake.NewClientset(append(kindPolicies(t), agentsService())...)
 	canaryExits(cs, exitBlocked)
 	open := egressPolicy("allow-metadata", map[string]string{labelRole: roleAgent}, cidr("169.254.169.254/32"))
-	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod); ok && pod.Labels[labelCanary] == "true" {
 			if err := cs.Tracker().Add(open); err != nil {
 				t.Error(err)
@@ -436,7 +436,7 @@ func TestNonePoliciesReadBeforeThePod(t *testing.T) {
 		t.Fatal(err)
 	}
 	open := egressPolicy("allow-metadata", map[string]string{labelRole: roleAgent}, cidr("169.254.169.254/32"))
-	cs.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	prependReactor(cs, "delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if action.(k8stesting.DeleteAction).GetName() == podName("conf1") {
 			if err := cs.Tracker().Add(open); err != nil && !strings.Contains(err.Error(), "exists") {
 				t.Error(err)
