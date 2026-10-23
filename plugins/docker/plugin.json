@@ -25,6 +25,7 @@
       "agent_image": {"type": "string", "x-format": "image-reference", "default": "ghcr.io/loomux/agent:main", "description": "the image machines run, pulled by the docker host on first use; pin it by digest in production"},
       "sizes": {"type": "object", "additionalProperties": {"type": "object", "properties": {"cpu": {"type": "string"}, "memory": {"type": "string"}, "disk": {"type": "string"}}}, "description": "machine sizes by name, each {cpu, memory, disk} in Kubernetes quantities (cpu and memory become --cpus and --memory; disk is advisory, a volume isn't capped); small/medium/large when empty"},
       "max_environments": {"type": "integer", "minimum": 1, "default": 5, "description": "how many machines this plugin makes at most; Docker has no quota beyond per-container limits, so this is the host's cap"},
+      "port_range": {"type": "string", "description": "LO-HI, the host ports machines publish sshd on (such as 32000-32099, to match a firewall rule); each machine keeps the lowest free one for its life. Empty for the docker host's ephemeral range. It must hold at least max_environments ports"},
       "timezone": {"type": "string", "default": "UTC", "description": "TZ inside machines"}
     }
   }

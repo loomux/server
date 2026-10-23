@@ -241,15 +241,21 @@ func (p *Plugin) ensureImage(ctx context.Context, eng *engine, ref string, op *c
 }
 
 // probePort learns a free host port the way Docker allocates one: a
-// helper publishing sshd's port on an ephemeral host port, read back
-// from inspect, then removed. The port is then fixed in the record and
-// the container, since an ephemeral one changes at every start.
-func (p *Plugin) probePort(ctx context.Context, eng *engine, cfg Config, host protocol.HostInfo, id, image string) (int, error) {
+// helper publishing sshd's port on an ephemeral host port (or on want,
+// when it isn't 0), read back from inspect, then removed. The port is
+// then fixed in the record and the container, since an ephemeral one
+// changes at every start. A wanted port the host holds fails the
+// helper's start: portTaken.
+func (p *Plugin) probePort(ctx context.Context, eng *engine, cfg Config, host protocol.HostInfo, id, image string, want int) (int, error) {
 	name := helperName(id)
 	if err := p.removeContainer(ctx, eng, name); err != nil {
 		return 0, err
 	}
-	if err := eng.post(ctx, "/containers/create", url.Values{"name": {name}}, helperFor(id, image, cfg, host.InstanceID, helperProbe), nil); err != nil {
+	helper := helperFor(id, image, cfg, host.InstanceID, helperProbe)
+	if want != 0 {
+		helper.HostConfig.PortBindings["2222/tcp"][0].HostPort = strconv.Itoa(want)
+	}
+	if err := eng.post(ctx, "/containers/create", url.Values{"name": {name}}, helper, nil); err != nil {
 		return 0, p.mapErr(err)
 	}
 	defer func() { _ = p.removeContainer(context.WithoutCancel(ctx), eng, name) }()
@@ -274,6 +280,7 @@ func (p *Plugin) probePort(ctx context.Context, eng *engine, cfg Config, host pr
 // fixed in its record: a stopped machine holds nothing on the host, so
 // the allocator (wrapped around, or restarted with the daemon) can
 // hand its port out again; the probe is repeated until it doesn't.
+// With a port_range the plugin walks the range itself (rangePort).
 func (p *Plugin) freePort(ctx context.Context, eng *engine, cfg Config, host protocol.HostInfo, id, image string) (int, error) {
 	recs, err := p.records(ctx, eng, host)
 	if err != nil {
@@ -285,8 +292,11 @@ func (p *Plugin) freePort(ctx context.Context, eng *engine, cfg Config, host pro
 			taken[portFrom(r.Labels)] = true
 		}
 	}
+	if cfg.PortRange.Lo != 0 {
+		return p.rangePort(ctx, eng, cfg, host, id, image, taken)
+	}
 	for attempt := 0; attempt < 5; attempt++ {
-		port, err := p.probePort(ctx, eng, cfg, host, id, image)
+		port, err := p.probePort(ctx, eng, cfg, host, id, image, 0)
 		if err != nil {
 			return 0, err
 		}
@@ -296,6 +306,37 @@ func (p *Plugin) freePort(ctx context.Context, eng *engine, cfg Config, host pro
 		p.Logger.Printf("%s: port %d belongs to a stopped machine; probing again", id, port)
 	}
 	return 0, &rpc.Error{Code: rpc.CodeUnavailable, Message: "every port the docker host offered belongs to a stopped machine of this instance"}
+}
+
+// heldPortsTried bounds how many ports of a port_range something else
+// on the docker host holds before rangePort gives up: each try is a
+// helper made, started and removed.
+const heldPortsTried = 16
+
+// rangePort is the lowest port of port_range that no machine of this
+// instance has fixed and the docker host can bind, found by the helper
+// publishing each candidate in turn; one the host holds is skipped.
+func (p *Plugin) rangePort(ctx context.Context, eng *engine, cfg Config, host protocol.HostInfo, id, image string, taken map[int]bool) (int, error) {
+	r, mine, held := cfg.PortRange, 0, 0
+	for port := r.Lo; port <= r.Hi && held < heldPortsTried; port++ {
+		if taken[port] {
+			mine++
+			continue
+		}
+		got, err := p.probePort(ctx, eng, cfg, host, id, image, port)
+		if portTaken(err) {
+			held++
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if got != port {
+			return 0, &rpc.Error{Code: rpc.CodeUnavailable, Message: fmt.Sprintf("the engine published the probe on port %d, not %d", got, port)}
+		}
+		return port, nil
+	}
+	return 0, &rpc.Error{Code: rpc.CodeUnavailable, Message: fmt.Sprintf("no free port in port_range %s: %d belong to this instance's machines and %d tried are held by something else on the docker host", r, mine, held)}
 }
 
 // publishedPort is the host port sshd is published on, 0 when none.
@@ -381,6 +422,24 @@ func (p *Plugin) startContainer(ctx context.Context, eng *engine, name string) e
 	return nil
 }
 
+// newRecord makes the machine's record with port, chosen first when it
+// is 0. Choosing and recording happen under p.ports, so two makings
+// can't both be handed the same free port (a port_range hands out its
+// lowest free one).
+func (p *Plugin) newRecord(ctx context.Context, eng *engine, cfg Config, host protocol.HostInfo, spec protocol.EnvironmentSpec, port int, created time.Time, op *createOp) (*volumeInfo, int, error) {
+	p.ports.Lock()
+	defer p.ports.Unlock()
+	if port == 0 {
+		op.setPhase("choosing a port")
+		var err error
+		if port, err = p.freePort(ctx, eng, cfg, host, spec.ID, spec.Image); err != nil {
+			return nil, 0, err
+		}
+	}
+	rec, err := p.ensureVolume(ctx, eng, recordName(spec.ID), recordLabels(spec, host.InstanceID, port, created))
+	return rec, port, err
+}
+
 // build makes a machine from its record on, or from nothing: the
 // record (with port, probed unless known), its files, the data volume,
 // the container, started. A port found taken at start rebuilds the
@@ -393,13 +452,7 @@ func (p *Plugin) build(ctx context.Context, eng *engine, cfg Config, host protoc
 			return protocol.Environment{}, err
 		}
 		if rec == nil {
-			if port == 0 {
-				op.setPhase("choosing a port")
-				if port, err = p.freePort(ctx, eng, cfg, host, spec.ID, spec.Image); err != nil {
-					return protocol.Environment{}, err
-				}
-			}
-			if rec, err = p.ensureVolume(ctx, eng, recordName(spec.ID), recordLabels(spec, host.InstanceID, port, created)); err != nil {
+			if rec, port, err = p.newRecord(ctx, eng, cfg, host, spec, port, created, op); err != nil {
 				return protocol.Environment{}, err
 			}
 		}

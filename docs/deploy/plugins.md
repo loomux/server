@@ -321,6 +321,12 @@ The first check reports `host_key_unpinned` with the host's key type,
 fingerprint and the line to trust: put it in `ssh_host_key` and check
 again. Until then the plugin never connects.
 
+Machines' sshd ports come from the docker host's ephemeral range unless
+you set `port_range` (LOOM-220), such as `32000-32099`. Allow that range
+from loomuxd in the host's firewall or tailnet ACL; it must hold at
+least `max_environments` ports. Each machine keeps its port for life.
+Give two plugin instances on one host separate ranges.
+
 What Docker can't give: no network isolation (a machine can reach the
 LAN and the tailnet its host is on; the plugin offers no `egress`
 choice, since Docker publishes no port on an internal network), no
