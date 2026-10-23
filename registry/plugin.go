@@ -86,4 +86,8 @@ const (
 	// SettingInstanceID is this server's instance id, generated on first
 	// start: what labels everything a plugin makes as this server's.
 	SettingInstanceID = "instance_id"
+	// SettingPluginsSeedOwned is the ids of the plugin instances
+	// LOOMUX_PLUGINS_SEED made, as a JSON array: the seed reconfigures and
+	// prunes those only (LOOM-219, plugins/seed.go).
+	SettingPluginsSeedOwned = "plugins_seed_owned"
 )
