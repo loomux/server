@@ -29,7 +29,8 @@ func (m *Manager) RunReconcile(ctx context.Context, interval time.Duration) {
 // again, an ephemeral one that vanished is lost and its workspaces
 // archived, a stopped one found running is stopped, a destroying one is
 // finished; and machines a plugin has that no row knows are orphans,
-// destroyed once older than OrphanTTL.
+// destroyed once older than OrphanTTL. Then, with IdleStop set, idle
+// machines are stopped (StopIdle).
 func (m *Manager) Reconcile(ctx context.Context) {
 	envs, err := m.store.ListEnvironments(ctx)
 	if err != nil {
@@ -53,6 +54,7 @@ func (m *Manager) Reconcile(ctx context.Context) {
 		m.reconcileOne(ctx, env)
 	}
 	m.sweepOrphans(ctx, byPlugin)
+	m.StopIdle(ctx)
 	m.updateGauge(ctx)
 }
 

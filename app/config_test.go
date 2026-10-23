@@ -95,6 +95,31 @@ func TestLoadConfig_PluginsSeed(t *testing.T) {
 	}
 }
 
+// LOOM-217: LOOMUX_MACHINE_IDLE_STOP is off unless set; 0 is off too.
+func TestLoadConfig_MachineIdleStop(t *testing.T) {
+	setRouterEnv(t)
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.MachineIdleStop != 0 {
+		t.Errorf("MachineIdleStop unset = %v, want 0 (off)", cfg.MachineIdleStop)
+	}
+	for raw, want := range map[string]time.Duration{"4h": 4 * time.Hour, "0": 0, "90m": 90 * time.Minute} {
+		t.Setenv(envMachineIdleStop, raw)
+		cfg, err := LoadConfig()
+		if err != nil || cfg.MachineIdleStop != want {
+			t.Errorf("%s=%q: %v, %v; want %v", envMachineIdleStop, raw, cfg.MachineIdleStop, err, want)
+		}
+	}
+	for _, bad := range []string{"soon", "-1h"} {
+		t.Setenv(envMachineIdleStop, bad)
+		if _, err := LoadConfig(); err == nil {
+			t.Errorf("LoadConfig with %s=%q: want an error", envMachineIdleStop, bad)
+		}
+	}
+}
+
 func TestLoadConfig_CustomReapTiming(t *testing.T) {
 	setRouterEnv(t)
 	t.Setenv(envReapIdleThreshold, "48h")

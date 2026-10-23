@@ -57,6 +57,14 @@ knows are orphans, destroyed once older than 24 h. A plugin's
 those that come while it runs, coalesced into one more reconcile
 (LOOM-213).
 
+With `IdleStop` set (`LOOMUX_MACHINE_IDLE_STOP`, off by default), each
+reconcile then stops a persistent running machine idle that long
+(`idle.go`, LOOM-217): no unfinished task on it (`Activity`, the store's
+tasks in `TaskActivity`), and the newest of its tasks' last change, its
+start and its last hand-over to a dispatch (`EnsureRunning`) older than
+`IdleStop`. The status reason says so; the next dispatch starts it
+again. Ephemeral machines are left alone (their stop is a destroy).
+
 `UninstallMachines` serves the plugin manager's uninstall choice:
 destroy each machine, or keep them as `detached` plain hosts.
 

@@ -172,7 +172,13 @@ machine's data and frees its compute; start brings it back at the same
 address; recreate applies the plugin's configured image; deleting the
 target destroys the machine, its data, its workspaces and the
 credentials scoped to it. A dispatch to a stopped machine starts it
-first. Loomux reconciles with the plugin on the probe interval: a
+first. With `LOOMUX_MACHINE_IDLE_STOP` set (for example `4h`; off by
+default), a persistent machine nobody has used for that long is stopped
+at the next reconcile, its reason saying so, and the next request to it
+starts it again (LOOM-217): idle means no task there unfinished (running,
+waiting for input or for you, taken over) and nothing dispatched to it
+since. Its data is kept; tmux sessions on it end with the stop. An
+ephemeral machine is never stopped this way. Loomux reconciles with the plugin on the probe interval: a
 machine left creating by a restart is resumed, a persistent one the
 plugin lost is made again, an ephemeral one is marked lost and its
 workspaces archived, and machines the plugin has that Loomux doesn't

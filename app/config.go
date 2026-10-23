@@ -71,6 +71,11 @@ type Config struct {
 	// TargetProbeInterval is how often every target's health is probed
 	// (LOOM-86). Same zero-means-default handling as ReapIdleThreshold.
 	TargetProbeInterval time.Duration
+	// MachineIdleStop stops a persistent machine a plugin created once
+	// it has been idle this long (LOOMUX_MACHINE_IDLE_STOP, LOOM-177);
+	// the next dispatch to it starts it again. Zero, the default, never
+	// stops one.
+	MachineIdleStop time.Duration
 	// Logger receives the router's structured records (LOOM-63). Nil —
 	// as in tests that construct Config directly — means nothing is
 	// logged; LoadConfig always sets one.
@@ -155,6 +160,7 @@ const (
 	envReapIdleThreshold   = "LOOMUX_REAP_IDLE_THRESHOLD"
 	envReapInterval        = "LOOMUX_REAP_INTERVAL"
 	envTargetProbeInterval = "LOOMUX_TARGET_PROBE_INTERVAL"
+	envMachineIdleStop     = "LOOMUX_MACHINE_IDLE_STOP"
 	envLogLevel            = "LOOMUX_LOG_LEVEL"
 	envAgentProfiles       = "LOOMUX_AGENT_PROFILES"
 	envDispatchMaxDuration = "LOOMUX_DISPATCH_MAX_DURATION"
@@ -254,6 +260,14 @@ func LoadConfig() (Config, error) {
 			return Config{}, fmt.Errorf("app: %s is not a valid positive duration: %q", envTargetProbeInterval, raw)
 		}
 		targetProbeInterval = d
+	}
+	var machineIdleStop time.Duration
+	if raw := os.Getenv(envMachineIdleStop); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < 0 {
+			return Config{}, fmt.Errorf("app: %s is not a valid duration (0 never stops a machine): %q", envMachineIdleStop, raw)
+		}
+		machineIdleStop = d
 	}
 
 	var dispatchMaxDuration time.Duration
@@ -375,6 +389,7 @@ func LoadConfig() (Config, error) {
 		ReapIdleThreshold:     reapIdleThreshold,
 		ReapInterval:          reapInterval,
 		TargetProbeInterval:   targetProbeInterval,
+		MachineIdleStop:       machineIdleStop,
 		DispatchMaxDuration:   dispatchMaxDuration,
 		DispatchDrain:         dispatchDrain,
 		TurnRetention:         turnRetention,

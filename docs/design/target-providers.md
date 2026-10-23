@@ -361,6 +361,13 @@ random base32 string, chosen so names fit Kubernetes' 63-character label and DNS
 from user text. `create` is get-or-create per object, so a retry after a crash completes what is missing.
 Target names are unique already (`409`), so a client retrying `POST /targets` can't make two machines.
 
+**Idle machines (LOOM-217, LOOM-177's gap G4).** With `LOOMUX_MACHINE_IDLE_STOP` set (off by default), the
+reconcile then stops a persistent running machine nobody has used for that long: no task on it unfinished, and
+the newest of its tasks' last change, its last start and its last hand-over to a dispatch older than the setting
+(a host that restarted counts from its own start). The status reason names the idle time; the next dispatch
+starts it, as any stopped machine. It frees the pod's CPU and memory and its place in the namespace's `pods`
+quota (the PVC stays); an ephemeral machine is left running, its stop being a destroy.
+
 **Reconcile on restart and on every probe.** At startup once each plugin is up, and then on the target probe
 interval (`LOOMUX_TARGET_PROBE_INTERVAL`, 5 min), the Manager compares the `environments` table with
 `targets.list`:
