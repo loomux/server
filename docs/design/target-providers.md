@@ -1146,6 +1146,9 @@ root (no `go.work` is committed: the root's tooling stays in module mode), and C
     secrets only as `{env}`/`{file}` references; an instance it no longer lists is kept unless `prune`, and
     even then not while it owns machines; a malformed seed stops startup, an entry that fails to apply is
     logged and retried for a while. `docs/deploy/plugins.md` has the format.
+    *Extended in LOOM-236:* an optional `machines` list declares persistent machines by target name: made when
+    missing (their target ids in `machines_seed_owned`), their target options kept as the seed says, a change
+    that needs a recreate or a new machine only logged, and never destroyed, `prune` or not.
 
 ## 14. Decisions for the user
 

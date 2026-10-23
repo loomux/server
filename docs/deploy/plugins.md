@@ -64,6 +64,10 @@ or the path of a file with it (a mounted ConfigMap):
       "config": {"namespace": "loomux-agents", "storage_class": "ceph-rbd-sc-delete"},
       "secrets": {"kubeconfig": {"file": "/run/secrets/loomux-plugin/kubeconfig"}}
     }
+  ],
+  "machines": [
+    {"name": "cc", "plugin": "wysekube", "size": "large", "persistent": true, "egress": "internet",
+     "require_confirmation": true, "relay": "last_message"}
   ]
 }
 ```
@@ -102,6 +106,55 @@ check that fails) is logged per instance and loomuxd runs on; an entry
 whose plugin isn't there yet (a sidecar still starting) is tried again
 every 30 s for 10 minutes. `LOOMUX_PLUGINS_SEED_DRY_RUN=true` logs the
 plan and applies nothing.
+
+### Machines in the seed (LOOM-236)
+
+`machines` (optional) declares persistent machines, the way `POST
+/api/v1/targets` with a `plugin` object makes one. Each entry has:
+
+- `name` (the target's name, which the seed matches it by) and `plugin`
+  (the label of the plugin instance that makes it: one from `plugins` or
+  one installed by hand);
+- the machine's shape: `size`, `persistent` and `egress`, each the
+  plugin's default when left out. Give `persistent: true` explicitly
+  for a machine that must keep its data;
+- the target options a machine takes: `permission_mode`, `purpose`,
+  `allowed_agent_types`, `allow_provision`, `allow_shell`,
+  `require_confirmation` and `relay`, spelled as in the API.
+
+A field left out says nothing: the default when the machine is made, and
+after that whatever the machine has (a change made through the API
+stands).
+
+After the plugin instances, loomuxd logs a second plan line
+(`machines seed plan`) and applies it:
+
+- a machine the seed lists and no target has that name is created, and
+  recorded as the seed's (the `machines_seed_owned` setting, their target
+  ids). A machine whose instance isn't installed or running yet is tried
+  again with the instances (every 30 s for 10 minutes);
+- on a machine the seed made, the target options are kept as the seed
+  says: they change without touching the machine, like `PUT
+  /api/v1/targets/{id}`;
+- what would need the machine made again is **logged as a warning and not
+  done**: a new `size` needs a recreate (`POST
+  /api/v1/targets/{id}/recreate {"size": …}`, which restarts it); a
+  different `persistent` or `egress`, or another plugin instance, needs
+  a new machine. The log line says how;
+- a target with that name made through the UI or API is left alone;
+- **a seed never destroys a machine**, `prune` or not: one it made and no
+  longer lists is kept (and is the seed's again if listed again). Delete
+  it through the API. A seeded machine deleted through the API and still
+  in the seed is made again, empty, at the next start; take it out of
+  the seed first to remove it for good;
+- don't rename a seeded machine through the API: the seed matches by
+  name, so it would make another one and keep the renamed one.
+
+A malformed machine entry (an unknown field, no name, a name twice, an
+invalid label, permission mode, purpose or relay) stops loomuxd at
+startup like the rest of the seed. A dry run plans the machines too; one
+whose instance is only in the seed's plan shows as `create (after its
+plugin instance …)`.
 
 ## Upgrades and compatibility
 

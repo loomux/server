@@ -90,4 +90,8 @@ const (
 	// LOOMUX_PLUGINS_SEED made, as a JSON array: the seed reconfigures and
 	// prunes those only (LOOM-219, plugins/seed.go).
 	SettingPluginsSeedOwned = "plugins_seed_owned"
+	// SettingMachinesSeedOwned is the target ids of the machines the
+	// seed's "machines" made, as a JSON array: the seed keeps those in
+	// line only (LOOM-236, providers/seed.go).
+	SettingMachinesSeedOwned = "machines_seed_owned"
 )
