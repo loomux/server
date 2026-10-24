@@ -469,8 +469,10 @@ GET /api/v1/plugins/{id}/targets response .max_environments number
 GET /api/v1/plugins/{id}/targets response .persistent_default boolean
 GET /api/v1/plugins/{id}/targets response .sizes []object
 GET /api/v1/plugins/{id}/targets response .sizes[].cpu string
+GET /api/v1/plugins/{id}/targets response .sizes[].cpu_request string omitempty
 GET /api/v1/plugins/{id}/targets response .sizes[].disk string
 GET /api/v1/plugins/{id}/targets response .sizes[].memory string
+GET /api/v1/plugins/{id}/targets response .sizes[].memory_request string omitempty
 GET /api/v1/plugins/{id}/targets response .sizes[].name string
 GET /api/v1/plugins/{id}/targets response-header Content-Type
 GET /api/v1/plugins/{id}/targets status 200

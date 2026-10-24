@@ -57,7 +57,8 @@ func (s *stubMachines) Describe(ctx context.Context, pluginID string) (protocol.
 		return protocol.TargetsInfo{}, registry.ErrNotFound
 	}
 	return protocol.TargetsInfo{
-		Sizes:             []protocol.Size{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"}},
+		Sizes: []protocol.Size{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"},
+			{Name: "medium", CPU: "2", Memory: "4Gi", Disk: "20Gi", CPURequest: "500m", MemoryRequest: "3Gi"}},
 		PersistentDefault: true, EgressOptions: []string{"internet", "none"}, Image: "ghcr.io/loomux/agent:v9",
 		MaxEnvironments: 5, Environments: 2, AddressTemplate: "lx-{id}.cluster.invalid", User: "agent", Port: 2222,
 	}, nil
@@ -351,7 +352,7 @@ func TestMachines_DescribePlugin(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"egress_options":["internet","none"],"environments":2,"image":"ghcr.io/loomux/agent:v9","max_environments":5,"persistent_default":true,"sizes":[{"cpu":"1","disk":"10Gi","memory":"2Gi","name":"small"}]}`
+	want := `{"egress_options":["internet","none"],"environments":2,"image":"ghcr.io/loomux/agent:v9","max_environments":5,"persistent_default":true,"sizes":[{"cpu":"1","disk":"10Gi","memory":"2Gi","name":"small"},{"cpu":"2","cpu_request":"500m","disk":"20Gi","memory":"4Gi","memory_request":"3Gi","name":"medium"}]}`
 	if normalized, _ := json.Marshal(got); string(normalized) != want {
 		t.Errorf("describe = %s\nwant       %s", normalized, want)
 	}
