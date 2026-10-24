@@ -150,14 +150,29 @@ func (r *Router) offer(ctx context.Context, conversationID string, a pendingInst
 // resolveOffer records how offer a was answered. Best effort: the record
 // is for display, and the offer itself is already settled in memory.
 func (r *Router) resolveOffer(ctx context.Context, log *slog.Logger, a pendingInstall, status registry.ConfirmationStatus) {
+	r.settleOffer(ctx, log, a, status, "")
+}
+
+// refuseOffer records that offer a's yes was refused afterwards (LOOM-216):
+// denied, since nothing ran, with the reason the chat was told, so its
+// card doesn't read "Approved".
+func (r *Router) refuseOffer(ctx context.Context, log *slog.Logger, a pendingInstall, reason string) {
+	r.settleOffer(ctx, log, a, registry.ConfirmationDenied, reason)
+}
+
+func (r *Router) settleOffer(ctx context.Context, log *slog.Logger, a pendingInstall, status registry.ConfirmationStatus, reason string) {
 	if a.id == "" {
 		return
 	}
-	if err := r.store.ResolveConfirmation(ctx, a.id, status); err != nil {
+	if err := r.store.ResolveConfirmation(ctx, a.id, status, reason); err != nil {
 		log.Warn("confirmation not recorded", "confirmation_id", a.id, "status", string(status), "error", err)
 	}
+	detail := "offer " + a.id
+	if reason != "" {
+		detail += ": " + reason
+	}
 	r.recordEvent(ctx, a.conversationID, registry.DispatchEvent{Kind: registry.EventOfferAnswered,
-		TargetID: a.targetID, Outcome: string(status), Detail: "offer " + a.id})
+		TargetID: a.targetID, Outcome: string(status), Detail: detail})
 }
 
 // offerDetail names what an offer is about besides its command: the

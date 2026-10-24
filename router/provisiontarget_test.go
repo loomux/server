@@ -2,6 +2,7 @@ package router_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,8 @@ type stubMaker struct {
 	trusted []string
 	planned []router.MachineSpec
 	created []router.MachinePlan
+	// createErr, when set, is what Create returns instead of a target.
+	createErr error
 }
 
 func newStubMaker() *stubMaker {
@@ -76,6 +79,9 @@ func (m *stubMaker) Plan(ctx context.Context, spec router.MachineSpec) (router.M
 func (m *stubMaker) Create(ctx context.Context, plan router.MachinePlan) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.createErr != nil {
+		return "", m.createErr
+	}
 	m.created = append(m.created, plan)
 	return "target-new", nil
 }
@@ -161,7 +167,7 @@ func TestProvisionTarget_OfferThenCreateOnYes(t *testing.T) {
 	if *calls != 1 {
 		t.Errorf("the routing model was asked %d times; a yes isn't routed", *calls)
 	}
-	if confs := confirmations(t, store); confs[0].Status != registry.ConfirmationApproved {
+	if confs := confirmations(t, store); confs[0].Status != registry.ConfirmationApproved || confs[0].StatusReason != "" {
 		t.Errorf("confirmation = %+v", confs[0])
 	}
 
@@ -312,6 +318,56 @@ func TestProvisionTarget_ChangedOfferCreatesNothing(t *testing.T) {
 	}
 	if got := maker.createdPlans(); len(got) != 0 {
 		t.Errorf("created = %+v", got)
+	}
+}
+
+// A yes refused afterwards leaves the offer's card denied, with the
+// reason the chat was told, never approved: nothing was created.
+func TestProvisionTarget_RefusedYesIsNotApproved(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before func(store registry.Store, maker *stubMaker)
+		reason string
+	}{
+		{"offer changed", func(store registry.Store, maker *stubMaker) {
+			maker.mu.Lock()
+			maker.offers[0].Sizes[0].Memory = "8Gi"
+			maker.mu.Unlock()
+		}, "the plugin's offer changed since I asked"},
+		{"name taken meanwhile", func(store registry.Store, maker *stubMaker) {
+			if err := store.CreateTarget(context.Background(), &registry.Target{ID: "t-1", Name: "builds", Kind: registry.TargetKindLocal}); err != nil {
+				t.Fatal(err)
+			}
+		}, "a target named builds was registered meanwhile."},
+		{"quota", func(store registry.Store, maker *stubMaker) {
+			maker.createErr = &router.MachineRefusal{Reason: "the plugin's machine limit is reached; delete a machine it made first."}
+		}, "the plugin's machine limit is reached; delete a machine it made first."},
+		{"plugin gone", func(store registry.Store, maker *stubMaker) {
+			maker.mu.Lock()
+			maker.offers = nil
+			maker.mu.Unlock()
+		}, "that plugin isn't installed, enabled and running."},
+		{"create failed", func(store registry.Store, maker *stubMaker) {
+			maker.createErr = errors.New("database is locked")
+		}, "creating it failed in Loomux"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			maker := newStubMaker()
+			store, r, _ := machineRouter(t, maker, proposal("builds", "", ""))
+			ctx := context.Background()
+			if _, err := r.Dispatch(ctx, "conv-1", "a new machine please"); err != nil {
+				t.Fatal(err)
+			}
+			tc.before(store, maker)
+			reply, err := r.Dispatch(ctx, "conv-1", "yes")
+			if err == nil && !strings.Contains(reply, "I didn't create builds") {
+				t.Errorf("reply = %q", reply)
+			}
+			confs := confirmations(t, store)
+			if len(confs) != 1 || confs[0].Status != registry.ConfirmationDenied || !strings.Contains(confs[0].StatusReason, tc.reason) {
+				t.Errorf("confirmation = %+v, want denied with %q", confs, tc.reason)
+			}
+		})
 	}
 }
 

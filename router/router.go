@@ -297,9 +297,10 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				m.action = "policy_refused"
 				return r.finishTurn(ctx, log, conversationID, message, "", refusal, "policy_refused", start)
 			}
-			// A policy confirmation is checked again by confirmPolicy, which
-			// settles its record itself.
-			if p.kind != pendingPolicyConfirm {
+			// A policy confirmation is checked again by confirmPolicy, and
+			// a machine's by confirmMachine, which settle their records
+			// themselves.
+			if p.kind != pendingPolicyConfirm && p.kind != pendingCreateTarget {
 				r.resolveOffer(ctx, log, p, registry.ConfirmationApproved)
 			}
 			if p.kind == pendingCloneRemote || p.kind == pendingPolicyConfirm {

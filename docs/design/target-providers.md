@@ -721,7 +721,9 @@ never create one:
   is a no. A plan whose egress came back `trusted` without being asked for is refused too. The API's create
   is unchanged: there the plugin's own create refuses an unlisted name.
 - **The yes.** The request is planned again and created only if it would make the same machine that was shown
-  (the plugin's counts aside); otherwise nothing is created and the user is told to ask again. The target gets
+  (the plugin's counts aside); otherwise nothing is created and the user is told to ask again. A yes refused
+  there (the offer changed, the name was taken meanwhile, the quota was reached, the plugin went away, the
+  create failed) leaves the card `denied` with the reason in `status_reason`, never `approved`. The target gets
   a created machine's permissive default policy (above), as from the API, and comes up in the background. The
   reply says so; the turn doesn't carry the original request on, since a machine takes minutes to come up.
 

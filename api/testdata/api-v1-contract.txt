@@ -194,6 +194,7 @@ GET /api/v1/conversations/{id} response .confirmations[].id string
 GET /api/v1/conversations/{id} response .confirmations[].kind string
 GET /api/v1/conversations/{id} response .confirmations[].resolved_at time omitempty nullable
 GET /api/v1/conversations/{id} response .confirmations[].status string
+GET /api/v1/conversations/{id} response .confirmations[].status_reason string omitempty
 GET /api/v1/conversations/{id} response .confirmations[].target_id string omitempty
 GET /api/v1/conversations/{id} response .confirmations[].target_name string omitempty
 GET /api/v1/conversations/{id} response .confirmations[].workspace_name string omitempty

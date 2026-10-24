@@ -174,15 +174,22 @@ func (r *Router) proposeMachine(ctx context.Context, log *slog.Logger, conversat
 // confirmMachine creates a confirmed offer's machine. The plugin's
 // offer is resolved again first: if what it would make now differs from
 // what was shown, nothing is created, since a yes creates only what the
-// offer showed.
+// offer showed. It settles the offer's record: approved once the machine
+// is being created, denied with the reason on every other way out.
 func (r *Router) confirmMachine(ctx context.Context, log *slog.Logger, conversationID, message string, p pendingInstall, start time.Time) (string, error) {
 	shown := *p.machine
 	log.Info("machine confirmed", "plugin", shown.PluginID, "size", shown.Size.Name, "egress", shown.Egress)
 	refuse := func(reason string) (string, error) {
+		r.refuseOffer(ctx, log, p, reason)
 		return r.finishTurn(ctx, log, conversationID, message, "", "I didn't create "+shown.Name+": "+reason, "machine_refused", start)
 	}
-	if taken, err := r.targetNameTaken(ctx, shown.Name); err != nil {
+	fail := func(stage string, err error) (string, error) {
+		r.refuseOffer(ctx, log, p, "creating it failed in Loomux; the server log says why.")
+		log.Error("dispatch failed", "stage", stage, "error", err)
 		return "", fmt.Errorf("router: dispatch: provision target: %w", err)
+	}
+	if taken, err := r.targetNameTaken(ctx, shown.Name); err != nil {
+		return fail("check machine name", err)
 	} else if taken {
 		return refuse(fmt.Sprintf("a target named %s was registered meanwhile.", shown.Name))
 	}
@@ -194,8 +201,7 @@ func (r *Router) confirmMachine(ctx context.Context, log *slog.Logger, conversat
 		return refuse(refusal.Reason)
 	}
 	if err != nil {
-		log.Error("dispatch failed", "stage", "plan machine", "error", err)
-		return "", fmt.Errorf("router: dispatch: provision target: %w", err)
+		return fail("plan machine", err)
 	}
 	if !samePlan(plan, shown) {
 		return refuse("the plugin's offer changed since I asked, so it would not be the machine I showed you. " +
@@ -206,9 +212,9 @@ func (r *Router) confirmMachine(ctx context.Context, log *slog.Logger, conversat
 		return refuse(refusal.Reason)
 	}
 	if err != nil {
-		log.Error("dispatch failed", "stage", "create machine", "error", err)
-		return "", fmt.Errorf("router: dispatch: provision target: %w", err)
+		return fail("create machine", err)
 	}
+	r.resolveOffer(ctx, log, p, registry.ConfirmationApproved)
 	r.recordEvent(ctx, conversationID, registry.DispatchEvent{Kind: registry.EventProvision, TargetID: targetID,
 		Outcome: "machine creating", Detail: "machine " + plan.Name + ": " + planSummary(plan)})
 	log.Info("machine created", "target_id", targetID, "plugin", plan.PluginID)

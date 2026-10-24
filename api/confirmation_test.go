@@ -69,4 +69,31 @@ func TestConversation_Confirmations(t *testing.T) {
 	if _, ok := old["workspace"]; ok || old["workspace_name"] != "my-app" {
 		t.Errorf("old = %v, want workspace_name my-app and no workspace", old)
 	}
+	if _, ok := live["status_reason"]; ok {
+		t.Errorf("live = %v, want no status_reason", live)
+	}
+
+	// LOOM-216: a yes refused afterwards is denied, and says why.
+	if err := store.CreateConfirmation(ctx, &registry.Confirmation{ID: "conf-refused", ConversationID: "c1",
+		Kind: registry.ConfirmationCreateTarget, TargetName: "builds", ExpiresAt: now.Add(10 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResolveConfirmation(ctx, "conf-refused", registry.ConfirmationDenied, "the plugin's machine limit is reached."); err != nil {
+		t.Fatal(err)
+	}
+	r2 := authedRequest(t, http.MethodGet, srv.URL+"/api/v1/conversations/c1", token, nil)
+	defer r2.Body.Close()
+	conv.Confirmations = nil
+	if err := json.NewDecoder(r2.Body).Decode(&conv); err != nil {
+		t.Fatal(err)
+	}
+	var refused map[string]any
+	for _, c := range conv.Confirmations {
+		if c["id"] == "conf-refused" {
+			refused = c
+		}
+	}
+	if refused["status"] != "denied" || refused["status_reason"] != "the plugin's machine limit is reached." {
+		t.Errorf("refused = %v", refused)
+	}
 }
