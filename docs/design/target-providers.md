@@ -703,7 +703,8 @@ never create one:
   `targets.create`, each routing call lists it as a machine plugin: its id, plugin name and label, its sizes
   (name, CPU, memory, disk), which kinds of machine it makes and its default, its egress options, and its
   machine count and limit, all from its `targets.describe` (bounded as for `GET /plugins/{id}/targets`,
-  reused for 30 s). Never its configuration. The `new_target` fields (`plugin_id`, `name`, `size`,
+  reused for 30 s; a describe slower than 3 s leaves that plugin out, and a refresh in flight holds up only the
+  message that started it, the others using the last offers). Never its configuration. The `new_target` fields (`plugin_id`, `name`, `size`,
   `keep_data`, `egress`) are bound to those lists in the schema and checked per plugin in Go. With no such
   plugin, `provision_target` isn't offered and a request for a machine gets a direct answer naming how to get
   one (install a plugin, or `POST /targets`); the router gives that answer itself if a model proposes one anyway.

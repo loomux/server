@@ -15,7 +15,7 @@
       "token": {"type": "string", "x-secret": true, "description": "a secret the plugin only reports as set or not (except in mode leak_token)"},
       "greeting": {"type": "string", "default": "hi"},
       "pid_dir": {"type": "string", "description": "a directory the plugin writes a file named after its pid into at configure, so tests can count processes"},
-      "targets_mode": {"type": "string", "enum": ["ok", "create_fails", "vanish", "slow_start", "fail_notify", "slow_pull", "pull_forever", "stuck"], "default": "ok", "description": "how the in-memory machines behave, for tests"},
+      "targets_mode": {"type": "string", "enum": ["ok", "create_fails", "vanish", "slow_start", "fail_notify", "slow_pull", "pull_forever", "stuck", "slow_describe"], "default": "ok", "description": "how the in-memory machines behave, for tests"},
       "pull_gate": {"type": "string", "description": "in targets_mode slow_pull, a file whose existence ends the pull"},
       "address_domain": {"type": "string", "default": "fake.invalid", "description": "machines are addressed as lx-<id>.<address_domain>"},
       "trusted_machines": {"type": "string", "description": "comma-separated machine names offered egress trusted"}

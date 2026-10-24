@@ -256,6 +256,9 @@ const (
 	TargetsPullForever = "pull_forever"
 	// TargetsStuck: a new machine stays starting, no progress reported.
 	TargetsStuck = "stuck"
+	// TargetsSlowDescribe: targets.describe answers after DescribeFor,
+	// as a plugin whose cluster is slow to answer (LOOM-216).
+	TargetsSlowDescribe = "slow_describe"
 )
 
 // FailAfter is how long a machine runs in mode fail_notify.
@@ -263,6 +266,9 @@ const FailAfter = 200 * time.Millisecond
 
 // PullFor is how long a machine's image pulls in mode slow_pull.
 const PullFor = 800 * time.Millisecond
+
+// DescribeFor is how long targets.describe takes in mode slow_describe.
+const DescribeFor = 500 * time.Millisecond
 
 // machine is one in-memory environment.
 type machine struct {
@@ -312,7 +318,14 @@ func (p *Plugin) DescribeTargetsFor(ctx context.Context, name string) (protocol.
 }
 
 func (p *Plugin) DescribeTargets(ctx context.Context) (protocol.TargetsInfo, error) {
-	_, domain, _ := p.targetsMode()
+	mode, domain, _ := p.targetsMode()
+	if mode == TargetsSlowDescribe {
+		select {
+		case <-time.After(DescribeFor):
+		case <-ctx.Done():
+			return protocol.TargetsInfo{}, ctx.Err()
+		}
+	}
 	st := p.state()
 	st.mu.Lock()
 	n := len(st.machines)

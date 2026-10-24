@@ -12,8 +12,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Loomux/server/plugins"
+	"github.com/Loomux/server/plugins/fake"
 	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/router"
@@ -134,5 +136,58 @@ func TestBuild_MachineFromChat(t *testing.T) {
 	env, err := app.Machines().Get(ctx, list[0].ID)
 	if err != nil || env.Egress != "trusted" || env.Size != "medium" || !env.Persistent || env.PluginID != v.ID {
 		t.Errorf("machine = %+v, %v", env, err)
+	}
+}
+
+// Asking the plugins for offers doesn't hold up another chat: while one
+// routing call refreshes them, another gets the last offers (none yet,
+// here) instead of waiting on a slow describe (LOOM-216).
+func TestMachineOffers_RefreshDoesNotBlock(t *testing.T) {
+	cfg := testConfig(t, "http://127.0.0.1:1")
+	cfg.MasterKey = []byte("01234567890123456789012345678901")
+	cfg.PluginBundleDir = buildFakePlugin(t)
+	ctx := context.Background()
+	app, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer app.Close()
+	v, err := app.Plugins().Install(ctx, plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceBundled, Label: "slow",
+		Config: map[string]any{"targets_mode": fake.TargetsSlowDescribe}})
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if _, err := app.Machines().Describe(ctx, v.ID); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	m := newMachineMaker(app.Machines())
+	first := make(chan []router.MachineOffer, 1)
+	go func() {
+		offers, _ := m.Offers(ctx)
+		first <- offers
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for refreshing := false; !refreshing; {
+		if time.Now().After(deadline) {
+			t.Fatal("no refresh began")
+		}
+		m.mu.Lock()
+		refreshing = m.refreshing
+		m.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	if offers, err := m.Offers(ctx); err != nil || len(offers) != 0 {
+		t.Errorf("offers during a refresh = %+v, %v; want none yet", offers, err)
+	}
+	select {
+	case <-first:
+		t.Fatal("the second call waited for the refresh")
+	default:
+	}
+	if offers := <-first; len(offers) != 1 {
+		t.Fatalf("the refresh's offers = %+v", offers)
+	}
+	if offers, err := m.Offers(ctx); err != nil || len(offers) != 1 {
+		t.Errorf("cached offers = %+v, %v", offers, err)
 	}
 }

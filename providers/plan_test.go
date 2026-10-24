@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/Loomux/server/plugins/fake"
 	"github.com/Loomux/server/plugins/protocol"
 	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
@@ -103,5 +105,20 @@ func TestOffers(t *testing.T) {
 	}
 	if offers, err := h.m.Offers(ctx); err != nil || len(offers) != 0 {
 		t.Errorf("offers of a disabled instance = %+v, %v", offers, err)
+	}
+}
+
+// A plugin slow to describe is left out of the offers after
+// OfferTimeout rather than holding up the chat that asked (LOOM-216).
+func TestOffers_SlowPluginLeftOut(t *testing.T) {
+	h := newHarness(t, map[string]any{"targets_mode": fake.TargetsSlowDescribe})
+	h.m.OfferTimeout = 50 * time.Millisecond
+	offers, err := h.m.Offers(context.Background())
+	if err != nil || len(offers) != 0 {
+		t.Errorf("offers = %+v, %v; want the slow plugin left out", offers, err)
+	}
+	// The describe the API serves isn't held to the offers' bound.
+	if _, err := h.m.Describe(context.Background(), h.pluginID); err != nil {
+		t.Errorf("Describe: %v", err)
 	}
 }

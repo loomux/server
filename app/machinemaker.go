@@ -27,19 +27,35 @@ type machineMaker struct {
 	mu      sync.Mutex
 	offers  []router.MachineOffer
 	fetched time.Time
+	// refreshing is set while one call asks the plugins; the others get
+	// the last offers meanwhile rather than wait. creates counts Create:
+	// a refresh begun before one doesn't keep its offers as fresh.
+	refreshing bool
+	creates    int
 }
 
 func newMachineMaker(m *providers.Manager) *machineMaker {
 	return &machineMaker{machines: m, now: time.Now}
 }
 
+// Offers is the offers as last asked of the plugins, asking again once
+// they're machineOffersTTL old. The lock isn't held while asking: a slow
+// plugin (each bounded by providers' OfferTimeout) holds up only the one
+// routing call that asks, never every chat.
 func (m *machineMaker) Offers(ctx context.Context) ([]router.MachineOffer, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.fetched.IsZero() && m.now().Sub(m.fetched) < machineOffersTTL {
-		return m.offers, nil
+	if m.refreshing || (!m.fetched.IsZero() && m.now().Sub(m.fetched) < machineOffersTTL) {
+		offers := m.offers
+		m.mu.Unlock()
+		return offers, nil
 	}
+	m.refreshing = true
+	creates := m.creates
+	m.mu.Unlock()
 	list, err := m.machines.Offers(ctx)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshing = false
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +69,10 @@ func (m *machineMaker) Offers(ctx context.Context) ([]router.MachineOffer, error
 			PersistentDefault: o.Info.PersistentDefault, Persistent: o.Persistent, Ephemeral: o.Ephemeral,
 			Egress: o.Info.EgressOptions, Machines: o.Info.Environments, MaxMachines: o.Info.MaxEnvironments}
 	}
-	m.offers, m.fetched = offers, m.now()
+	m.offers = offers
+	if creates == m.creates {
+		m.fetched = m.now()
+	}
 	return offers, nil
 }
 
@@ -84,6 +103,7 @@ func (m *machineMaker) Create(ctx context.Context, plan router.MachinePlan) (str
 	// The next routing call sees the new count.
 	m.mu.Lock()
 	m.fetched = time.Time{}
+	m.creates++
 	m.mu.Unlock()
 	return target.ID, nil
 }

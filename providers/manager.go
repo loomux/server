@@ -57,6 +57,8 @@ const (
 	// DefaultReadyTimeout bounds EnsureRunning's wait for a machine to
 	// come up.
 	DefaultReadyTimeout = 5 * time.Minute
+	// DefaultOfferTimeout bounds each instance's describe in Offers.
+	DefaultOfferTimeout = 3 * time.Second
 )
 
 // Manager turns machines a plugin makes into targets and keeps them in
@@ -97,7 +99,11 @@ type Manager struct {
 	// while the plugin reports the machine's image being pulled
 	// (progress image_pull): the time it does doesn't count against
 	// CreateTimeout, up to this much (LOOM-203).
-	PullTimeout  time.Duration
+	PullTimeout time.Duration
+	// OfferTimeout bounds each instance's describe in Offers, which a
+	// chat message waits on (LOOM-216): an instance slower than that is
+	// left out of the offers rather than holding up the chat.
+	OfferTimeout time.Duration
 	PollInterval time.Duration
 	OrphanTTL    time.Duration
 	// NotifyDelay is how long a machine's targets.changed waits before
@@ -140,9 +146,9 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 	return &Manager{
 		store: store, plugins: pm, logger: logger, met: met, instanceID: instanceID,
 		CreateTimeout: DefaultCreateTimeout, ReadyTimeout: DefaultReadyTimeout, PullTimeout: DefaultPullTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
-		NotifyDelay: DefaultNotifyDelay,
-		Now:         time.Now,
-		locks:       map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{}, lastUse: map[string]time.Time{},
+		NotifyDelay: DefaultNotifyDelay, OfferTimeout: DefaultOfferTimeout,
+		Now:   time.Now,
+		locks: map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{}, lastUse: map[string]time.Time{},
 		notified: map[string]*notifyRun{},
 		life:     life, endLife: endLife,
 	}
@@ -269,7 +275,8 @@ type Offer struct {
 
 // Offers lists the plugin instances that can make a machine now:
 // installed, enabled, running and declaring targets.create, each with
-// its Describe. An instance whose describe fails is left out.
+// its Describe. An instance whose describe fails, or takes longer than
+// OfferTimeout, is left out.
 func (m *Manager) Offers(ctx context.Context) ([]Offer, error) {
 	views, err := m.plugins.List(ctx)
 	if err != nil {
@@ -281,7 +288,9 @@ func (m *Manager) Offers(ctx context.Context) ([]Offer, error) {
 			!contains(v.Capabilities, protocol.CapTargetsCreate) {
 			continue
 		}
-		info, err := m.Describe(ctx, v.ID)
+		dctx, cancel := context.WithTimeout(ctx, m.OfferTimeout)
+		info, err := m.Describe(dctx, v.ID)
+		cancel()
 		if err != nil {
 			m.logger.Debug("plugin left out of the machine offers", "plugin", v.ID, "error", err)
 			continue
