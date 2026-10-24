@@ -47,7 +47,7 @@ func TestRetentionDeletesInBatches(t *testing.T) {
 		if err := s.CreateConfirmation(ctx, c); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.ResolveConfirmation(ctx, c.ID, registry.ConfirmationApproved); err != nil {
+		if err := s.ResolveConfirmation(ctx, c.ID, registry.ConfirmationApproved, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

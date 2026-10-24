@@ -57,6 +57,8 @@ const (
 	// DefaultReadyTimeout bounds EnsureRunning's wait for a machine to
 	// come up.
 	DefaultReadyTimeout = 5 * time.Minute
+	// DefaultOfferTimeout bounds each instance's describe in Offers.
+	DefaultOfferTimeout = 3 * time.Second
 )
 
 // Manager turns machines a plugin makes into targets and keeps them in
@@ -97,7 +99,11 @@ type Manager struct {
 	// while the plugin reports the machine's image being pulled
 	// (progress image_pull): the time it does doesn't count against
 	// CreateTimeout, up to this much (LOOM-203).
-	PullTimeout  time.Duration
+	PullTimeout time.Duration
+	// OfferTimeout bounds each instance's describe in Offers, which a
+	// chat message waits on (LOOM-216): an instance slower than that is
+	// left out of the offers rather than holding up the chat.
+	OfferTimeout time.Duration
 	PollInterval time.Duration
 	OrphanTTL    time.Duration
 	// NotifyDelay is how long a machine's targets.changed waits before
@@ -140,9 +146,9 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 	return &Manager{
 		store: store, plugins: pm, logger: logger, met: met, instanceID: instanceID,
 		CreateTimeout: DefaultCreateTimeout, ReadyTimeout: DefaultReadyTimeout, PullTimeout: DefaultPullTimeout, PollInterval: DefaultPollInterval, OrphanTTL: DefaultOrphanTTL,
-		NotifyDelay: DefaultNotifyDelay,
-		Now:         time.Now,
-		locks:       map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{}, lastUse: map[string]time.Time{},
+		NotifyDelay: DefaultNotifyDelay, OfferTimeout: DefaultOfferTimeout,
+		Now:   time.Now,
+		locks: map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{}, lastUse: map[string]time.Time{},
 		notified: map[string]*notifyRun{},
 		life:     life, endLife: endLife,
 	}
@@ -175,6 +181,27 @@ type CreateRequest struct {
 	Size       string
 	Persistent *bool
 	Egress     string
+	// NamedTrust makes egress trusted wait for the plugin to say, for
+	// this target's name, that it offers it (LOOM-216): a machine the
+	// router proposes is never trusted on the plugin's name-independent
+	// describe alone. A plugin that can't answer for a name refuses it.
+	NamedTrust bool
+}
+
+// Plan is what Create would make for a request, every default resolved
+// (LOOM-216): what a chat offer shows before anything is created.
+type Plan struct {
+	PluginID    string
+	PluginName  string
+	PluginLabel string
+	Name        string
+	// Size is the plugin's size of that name, as it describes it now.
+	Size       protocol.Size
+	Persistent bool
+	Egress     string
+	// Machines and MaxMachines are the plugin's count and limit (0: none).
+	Machines    int
+	MaxMachines int
 }
 
 // Info is what the plugin offers (targets.describe).
@@ -216,7 +243,7 @@ func (m *Manager) Describe(ctx context.Context, pluginID string) (protocol.Targe
 		Environments:      max(info.Environments, 0),
 	}
 	for _, s := range info.Sizes[:min(len(info.Sizes), maxOffered)] {
-		out.Sizes = append(out.Sizes, protocol.Size{Name: truncate(s.Name, 64), CPU: truncate(s.CPU, 32), Memory: truncate(s.Memory, 32), Disk: truncate(s.Disk, 32)})
+		out.Sizes = append(out.Sizes, boundSize(s))
 	}
 	for _, e := range info.EgressOptions[:min(len(info.EgressOptions), maxOffered)] {
 		out.EgressOptions = append(out.EgressOptions, truncate(e, 32))
@@ -226,6 +253,66 @@ func (m *Manager) Describe(ctx context.Context, pluginID string) (protocol.Targe
 
 // maxOffered bounds the sizes and egress options Describe passes on.
 const maxOffered = 32
+
+// boundSize is s with its strings truncated, requests included (#450).
+func boundSize(s protocol.Size) protocol.Size {
+	return protocol.Size{Name: truncate(s.Name, 64), CPU: truncate(s.CPU, 32), Memory: truncate(s.Memory, 32), Disk: truncate(s.Disk, 32),
+		CPURequest: truncate(s.CPURequest, 32), MemoryRequest: truncate(s.MemoryRequest, 32)}
+}
+
+// Offer is one plugin instance that makes machines, with what it offers
+// now (LOOM-216): the routing model's view of where a machine can be
+// created.
+type Offer struct {
+	PluginID    string
+	PluginName  string
+	PluginLabel string
+	Info        protocol.TargetsInfo
+	// Persistent and Ephemeral say which kinds of machine it makes.
+	Persistent bool
+	Ephemeral  bool
+}
+
+// Offers lists the plugin instances that can make a machine now:
+// installed, enabled, running and declaring targets.create, each with
+// its Describe. An instance whose describe fails, or takes longer than
+// OfferTimeout, is left out.
+func (m *Manager) Offers(ctx context.Context) ([]Offer, error) {
+	views, err := m.plugins.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []Offer
+	for _, v := range views {
+		if v.Status != registry.PluginStatusInstalled || !v.Enabled || v.Instance.State != plugins.StateRunning ||
+			!contains(v.Capabilities, protocol.CapTargetsCreate) {
+			continue
+		}
+		dctx, cancel := context.WithTimeout(ctx, m.OfferTimeout)
+		info, err := m.Describe(dctx, v.ID)
+		cancel()
+		if err != nil {
+			m.logger.Debug("plugin left out of the machine offers", "plugin", v.ID, "error", err)
+			continue
+		}
+		out = append(out, Offer{PluginID: v.ID, PluginName: v.Name, PluginLabel: v.Label, Info: info,
+			Persistent: contains(v.Capabilities, protocol.CapTargetsPersistent),
+			Ephemeral:  contains(v.Capabilities, protocol.CapTargetsEphemeral)})
+	}
+	return out, nil
+}
+
+// trustedFor reports whether the plugin offers egress trusted to a
+// machine named name: its describe asked for that name, answered for it
+// (for_name), with trusted among the options. A plugin that doesn't
+// answer for a name (one older than LOOM-216) is a no.
+func (m *Manager) trustedFor(ctx context.Context, pluginID, name string) (bool, error) {
+	var info protocol.TargetsInfo
+	if err := m.plugins.Call(ctx, pluginID, protocol.MethodTargetsDescribe, protocol.DescribeParams{Name: name}, &info); err != nil {
+		return false, m.mapPluginErr(err)
+	}
+	return info.ForName == name && contains(info.EgressOptions, protocol.EgressTrusted), nil
+}
 
 // mapPluginErr turns a plugin-manager error into this package's.
 func (m *Manager) mapPluginErr(err error) error {
@@ -258,58 +345,93 @@ func (m *Manager) requireRunning(ctx context.Context, pluginID string) (*plugins
 	return v, nil
 }
 
-// Create registers the target and the environment (rows first), then
-// asks the plugin for the machine in the background. It returns once the
-// rows exist; the target becomes ready as the machine comes up.
-func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Target, *registry.Environment, error) {
+// Plan resolves req as Create would, without creating anything: the
+// size, persistence and egress it would use, or why it would refuse.
+func (m *Manager) Plan(ctx context.Context, req CreateRequest) (*Plan, error) {
+	p, _, _, err := m.plan(ctx, req)
+	return p, err
+}
+
+func (m *Manager) plan(ctx context.Context, req CreateRequest) (*Plan, *plugins.View, protocol.TargetsInfo, error) {
+	var info protocol.TargetsInfo
 	view, err := m.requireRunning(ctx, req.PluginID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, info, err
 	}
-	info, err := m.Info(ctx, req.PluginID)
-	if err != nil {
-		return nil, nil, err
+	if info, err = m.Info(ctx, req.PluginID); err != nil {
+		return nil, nil, info, err
 	}
 	caps := map[string]bool{}
 	for _, c := range view.Capabilities {
 		caps[c] = true
 	}
 	if !caps[protocol.CapTargetsCreate] {
-		return nil, nil, &plugins.CapabilityMissingError{Method: protocol.MethodTargetsCreate, Capability: protocol.CapTargetsCreate}
+		return nil, nil, info, &plugins.CapabilityMissingError{Method: protocol.MethodTargetsCreate, Capability: protocol.CapTargetsCreate}
 	}
 	size := req.Size
 	if size == "" && len(info.Sizes) > 0 {
 		size = info.Sizes[0].Name
 	}
 	if !hasSize(info, size) {
-		return nil, nil, &InvalidError{Field: "size", Msg: "must be one of " + sizeNames(info)}
+		return nil, nil, info, &InvalidError{Field: "size", Msg: "must be one of " + sizeNames(info)}
 	}
 	persistent := info.PersistentDefault
 	if req.Persistent != nil {
 		persistent = *req.Persistent
 	}
 	if persistent && !caps[protocol.CapTargetsPersistent] && caps[protocol.CapTargetsEphemeral] {
-		return nil, nil, &InvalidError{Field: "persistent", Msg: "this plugin only makes ephemeral machines"}
+		return nil, nil, info, &InvalidError{Field: "persistent", Msg: "this plugin only makes ephemeral machines"}
 	}
 	if !persistent && !caps[protocol.CapTargetsEphemeral] {
-		return nil, nil, &InvalidError{Field: "persistent", Msg: "this plugin only makes machines that keep their data"}
+		return nil, nil, info, &InvalidError{Field: "persistent", Msg: "this plugin only makes machines that keep their data"}
 	}
 	egress, err := chooseEgress(info.EgressOptions, req.Egress)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, info, err
 	}
+	if egress == protocol.EgressTrusted && req.NamedTrust {
+		ok, err := m.trustedFor(ctx, req.PluginID, strings.TrimSpace(req.Target.Name))
+		if err != nil {
+			return nil, nil, info, err
+		}
+		if !ok {
+			return nil, nil, info, &InvalidError{Field: "egress", Msg: "trusted is only for the machines the plugin's trusted_machines names, and " +
+				strconv.Quote(strings.TrimSpace(req.Target.Name)) + " isn't one"}
+		}
+	}
+	machines := 0
 	if info.MaxEnvironments > 0 {
 		existing, err := m.store.ListEnvironmentsByPlugin(ctx, req.PluginID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, info, err
 		}
-		if len(existing) >= info.MaxEnvironments {
-			return nil, nil, fmt.Errorf("%w (%d)", ErrQuota, info.MaxEnvironments)
+		if machines = len(existing); machines >= info.MaxEnvironments {
+			return nil, nil, info, fmt.Errorf("%w (%d)", ErrQuota, info.MaxEnvironments)
 		}
 	}
 	if info.Port < 1 || info.Port > 65535 || info.User == "" {
-		return nil, nil, &BadAddressError{Detail: "the plugin's describe gives no usable sshd user and port"}
+		return nil, nil, info, &BadAddressError{Detail: "the plugin's describe gives no usable sshd user and port"}
 	}
+	var sz protocol.Size
+	for _, s := range info.Sizes {
+		if s.Name == size {
+			sz = s
+			break
+		}
+	}
+	return &Plan{PluginID: req.PluginID, PluginName: view.Name, PluginLabel: view.Label, Name: strings.TrimSpace(req.Target.Name),
+		Size: sz, Persistent: persistent, Egress: egress, Machines: machines, MaxMachines: info.MaxEnvironments}, view, info, nil
+}
+
+// Create registers the target and the environment (rows first), then
+// asks the plugin for the machine in the background. It returns once the
+// rows exist; the target becomes ready as the machine comes up.
+func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Target, *registry.Environment, error) {
+	plan, view, info, err := m.plan(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	size, persistent, egress := plan.Size.Name, plan.Persistent, plan.Egress
 
 	id, err := newID()
 	if err != nil {

@@ -1814,13 +1814,13 @@ func testConfirmations(t *testing.T, s registry.Store) {
 			t.Fatalf("CreateConfirmation %s: %v", c.ID, err)
 		}
 	}
-	if err := s.ResolveConfirmation(ctx, "c1", registry.ConfirmationApproved); err != nil {
+	if err := s.ResolveConfirmation(ctx, "c1", registry.ConfirmationApproved, ""); err != nil {
 		t.Fatalf("ResolveConfirmation: %v", err)
 	}
-	if err := s.ResolveConfirmation(ctx, "c1", registry.ConfirmationDenied); !errors.Is(err, registry.ErrConflict) {
+	if err := s.ResolveConfirmation(ctx, "c1", registry.ConfirmationDenied, ""); !errors.Is(err, registry.ErrConflict) {
 		t.Errorf("resolving twice = %v, want ErrConflict", err)
 	}
-	if err := s.ResolveConfirmation(ctx, "nope", registry.ConfirmationDenied); !errors.Is(err, registry.ErrNotFound) {
+	if err := s.ResolveConfirmation(ctx, "nope", registry.ConfirmationDenied, ""); !errors.Is(err, registry.ErrNotFound) {
 		t.Errorf("resolving an unknown one = %v, want ErrNotFound", err)
 	}
 	if n, err := s.ExpirePendingConfirmations(ctx); err != nil || n != 2 {
@@ -1834,6 +1834,20 @@ func testConfirmations(t *testing.T, s registry.Store) {
 		list[0].Command != "df -h" || list[0].TargetName != "jet01" ||
 		list[1].Status != registry.ConfirmationExpired || list[1].GitRemote != "https://example.com/r.git" || list[1].Workspace != "server" {
 		t.Errorf("confirmations = %+v %+v", list[0], list[1])
+	}
+	// LOOM-216: a yes refused afterwards is denied with the reason,
+	// which comes back with the record.
+	if err := s.CreateConfirmation(ctx, &registry.Confirmation{ID: "c4", ConversationID: "refused",
+		Kind: registry.ConfirmationCreateTarget, TargetName: "builds", ExpiresAt: exp}); err != nil {
+		t.Fatalf("CreateConfirmation c4: %v", err)
+	}
+	if err := s.ResolveConfirmation(ctx, "c4", registry.ConfirmationDenied, "the plugin's machine limit is reached."); err != nil {
+		t.Fatalf("ResolveConfirmation c4: %v", err)
+	}
+	list, err = s.ListConfirmationsByConversation(ctx, "refused")
+	if err != nil || len(list) != 1 || list[0].Status != registry.ConfirmationDenied ||
+		list[0].StatusReason != "the plugin's machine limit is reached." {
+		t.Errorf("a refused confirmation = %+v, %v", list, err)
 	}
 }
 
@@ -2193,10 +2207,10 @@ func testDeleteConfirmationsResolvedBefore(t *testing.T, s registry.Store) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.ResolveConfirmation(ctx, "c-approved", registry.ConfirmationApproved); err != nil {
+	if err := s.ResolveConfirmation(ctx, "c-approved", registry.ConfirmationApproved, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveConfirmation(ctx, "c-denied", registry.ConfirmationDenied); err != nil {
+	if err := s.ResolveConfirmation(ctx, "c-denied", registry.ConfirmationDenied, ""); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := s.DeleteConfirmationsResolvedBefore(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {

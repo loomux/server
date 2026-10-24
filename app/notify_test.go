@@ -128,7 +128,7 @@ func TestTurnNotifierEventOffer(t *testing.T) {
 		t.Fatalf("event = %+v, %v; want needs_you linking to the conversation", e, ok)
 	}
 
-	if err := store.ResolveConfirmation(ctx, "conf-1", registry.ConfirmationApproved); err != nil {
+	if err := store.ResolveConfirmation(ctx, "conf-1", registry.ConfirmationApproved, ""); err != nil {
 		t.Fatal(err)
 	}
 	if e, _ := n.event(ctx, d); e.Kind != notify.KindDone {

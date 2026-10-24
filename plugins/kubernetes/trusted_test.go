@@ -118,6 +118,14 @@ func TestTrustedOnlyForNamedMachines(t *testing.T) {
 		t.Errorf("egress options = %v, want internet first and trusted last", info.EgressOptions)
 	}
 
+	// Asked for a name (LOOM-216), trusted is offered only to one listed.
+	for name, want := range map[string]bool{"cc": true, "builds": false} {
+		info, err := p.DescribeTargetsFor(ctx, name)
+		if err != nil || slices.Contains(info.EgressOptions, protocol.EgressTrusted) != want || info.EgressOptions[0] != protocol.EgressInternet {
+			t.Errorf("describe for %s = %v, %v; want trusted %v", name, info.EgressOptions, err, want)
+		}
+	}
+
 	if _, err := p.CreateTarget(ctx, trustedSpec("tr2", "builds")); rpcCode(err) != rpc.CodeInvalidParams || !strings.Contains(err.Error(), "trusted_machines") {
 		t.Errorf("trusted create for a name not listed = %v, want invalid_params naming trusted_machines", err)
 	}

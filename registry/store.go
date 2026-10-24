@@ -146,9 +146,10 @@ type Store interface {
 	// ListConfirmationsByConversation and ExpirePendingConfirmations
 	// record offers awaiting the user's yes (LOOM-123).
 	CreateConfirmation(ctx context.Context, c *Confirmation) error
-	// ResolveConfirmation moves a pending confirmation to status;
-	// ErrConflict if it isn't pending any more, ErrNotFound if unknown.
-	ResolveConfirmation(ctx context.Context, id string, status ConfirmationStatus) error
+	// ResolveConfirmation moves a pending confirmation to status, with
+	// reason (Confirmation.StatusReason, may be empty); ErrConflict if it
+	// isn't pending any more, ErrNotFound if unknown.
+	ResolveConfirmation(ctx context.Context, id string, status ConfirmationStatus, reason string) error
 	// ListConfirmationsByConversation returns oldest first.
 	ListConfirmationsByConversation(ctx context.Context, conversationID string) ([]*Confirmation, error)
 	// ExpirePendingConfirmations marks every pending confirmation

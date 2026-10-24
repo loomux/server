@@ -64,7 +64,7 @@ func TestSweep(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.ResolveConfirmation(ctx, "c-done", registry.ConfirmationApproved); err != nil {
+	if err := store.ResolveConfirmation(ctx, "c-done", registry.ConfirmationApproved, ""); err != nil {
 		t.Fatal(err)
 	}
 

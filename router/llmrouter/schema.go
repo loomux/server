@@ -61,7 +61,14 @@ const decideSystemPrompt = `You are Loomux's routing model. Loomux dispatches ch
 	`about code. ` +
 	`Each workspace lists its status, the target it is on, when it was last used and what was last ` +
 	`done there: prefer an idle or active workspace whose description or recent work fits the ` +
-	`message over provisioning a new one; a provisioning workspace isn't ready yet.`
+	`message over provisioning a new one; a provisioning workspace isn't ready yet. ` +
+	`Choose "provision_target" only when the user asks for a new machine (not for work an existing ` +
+	`target can do), and only from a listed machine plugin: fill in new_target with its plugin_id, ` +
+	`a name for the machine, and a size, keep_data and egress from that plugin's lists, or leave ` +
+	`them out for its defaults. Choose the smallest size that fits what the user asked for. Never ` +
+	`choose egress "trusted" unless the user asked for the machine to reach the LAN or the tailnet. ` +
+	`Nothing is created on your decision: Loomux shows the user exactly what it would create and ` +
+	`creates it only after they confirm.`
 
 // systemPrompt is decideSystemPrompt plus the registered agent types,
 // each with its description (LOOM-88).
@@ -120,12 +127,16 @@ const relaySystemPrompt = `You are Loomux's relay model. You are given the raw c
 //
 // leave_open_task (LOOM-87) is offered only when the conversation has a
 // task waiting on the user (openTask).
-func decideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool) toolSpec {
+func decideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool, machines []router.MachineOffer) toolSpec {
 	// Provisioning and direct commands both need a target: with none
 	// registered they aren't offered at all (LOOM-68).
 	actions := []string{"answer_directly", "use_workspace"}
 	if len(targetIDs) > 0 {
 		actions = append(actions, "provision_workspace", "run_command")
+	}
+	// A new machine needs a plugin that makes one (LOOM-216).
+	if len(machines) > 0 {
+		actions = append(actions, "provision_target")
 	}
 	properties := map[string]any{
 		"action": map[string]any{
@@ -177,6 +188,37 @@ func decideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool) too
 		},
 	}
 
+	if len(machines) > 0 {
+		var pluginIDs, sizes, egress []string
+		for _, o := range machines {
+			pluginIDs = appendNew(pluginIDs, o.PluginID)
+			for _, s := range o.Sizes {
+				sizes = appendNew(sizes, s.Name)
+			}
+			for _, e := range o.Egress {
+				egress = appendNew(egress, e)
+			}
+		}
+		properties["new_target"] = map[string]any{
+			"type":        "object",
+			"description": "Set when action == provision_target: the new machine to propose. Loomux shows it to the user and creates it only after they confirm.",
+			"properties": map[string]any{
+				"plugin_id": enumStringProperty("The listed machine plugin to create it with.", pluginIDs),
+				"name": map[string]any{
+					"type":        "string",
+					"pattern":     router.WorkspaceNamePattern,
+					"description": "The new machine's name: lowercase letters, digits, dashes and underscores, starting with a letter or digit; one the user gave, or a short one for what it is for.",
+				},
+				"size": enumStringProperty("One of that plugin's sizes; leave it out for its default.", sizes),
+				"keep_data": map[string]any{
+					"type":        "boolean",
+					"description": "true for a machine that keeps its files across stop and recreate, false for an ephemeral one; leave it out for the plugin's default.",
+				},
+				"egress": enumStringProperty("One of that plugin's egress options; leave it out for its default. trusted only when the user asked for LAN or tailnet access.", egress),
+			},
+		}
+	}
+
 	if openTask {
 		properties["leave_open_task"] = map[string]any{
 			"type": "boolean",
@@ -219,6 +261,16 @@ func relayTool() toolSpec {
 			"required": []string{"reply", "done"},
 		},
 	}
+}
+
+// appendNew appends v to list unless it is there already.
+func appendNew(list []string, v string) []string {
+	for _, s := range list {
+		if s == v {
+			return list
+		}
+	}
+	return append(list, v)
 }
 
 func enumStringProperty(description string, values []string) map[string]any {
@@ -349,6 +401,52 @@ func renderConversation(b *strings.Builder, o router.DispatchOptions) {
 	}
 }
 
+// renderMachines lists where a new machine can be created (LOOM-216):
+// each machine plugin's id, kind, sizes and choices, or, with none, how
+// the user can get one.
+func renderMachines(b *strings.Builder, offers []router.MachineOffer) {
+	if len(offers) == 0 {
+		b.WriteString("\nMachine plugins: (none)\nNo new machine can be created now: if the user asks for one, answer " +
+			"directly that a machine plugin (Kubernetes or Docker) must be installed first, on the Plugins page or with " +
+			"POST /api/v1/plugins, or that they can register a machine they already have with POST /api/v1/targets.\n")
+		return
+	}
+	b.WriteString("\nMachine plugins (a new machine can be created with provision_target):\n")
+	for _, o := range offers {
+		title := o.Plugin
+		if o.Label != "" && o.Label != o.Plugin {
+			title += " (" + o.Label + ")"
+		}
+		fmt.Fprintf(b, "- plugin_id: %s\n  plugin: %s\n", o.PluginID, title)
+		sizes := make([]string, len(o.Sizes))
+		for i, s := range o.Sizes {
+			sizes[i] = fmt.Sprintf("%s (%s CPU, %s memory, %s disk)", s.Name, s.CPU, s.Memory, s.Disk)
+		}
+		fmt.Fprintf(b, "  sizes: %s\n", strings.Join(sizes, ", "))
+		data := "ephemeral by default"
+		if o.PersistentDefault {
+			data = "kept by default"
+		}
+		switch {
+		case o.Persistent && o.Ephemeral:
+			data += "; makes both kinds"
+		case o.Persistent:
+			data += "; only machines that keep their data"
+		case o.Ephemeral:
+			data += "; only ephemeral machines"
+		}
+		fmt.Fprintf(b, "  data: %s\n", data)
+		egress := strings.Join(o.Egress, ", ")
+		if egress == "" {
+			egress = "no choice (internet)"
+		}
+		fmt.Fprintf(b, "  egress: %s\n", egress)
+		if o.MaxMachines > 0 {
+			fmt.Fprintf(b, "  machines: %d of at most %d\n", o.Machines, o.MaxMachines)
+		}
+	}
+}
+
 // decideUserPrompt renders the message, compact workspace registry
 // (design spec §6, enriched with status/target/recency in LOOM-88) and
 // registered targets (LOOM-64: id, name and kind only — plus each one's
@@ -373,9 +471,14 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 	b.WriteString("\nTargets:\n")
 	if len(targets) == 0 {
 		b.WriteString("(none)\n")
-		b.WriteString("\nNo targets are registered, so no workspace can be provisioned and no command run. " +
-			"If the message needs work done on a machine, answer directly and tell the user to register a " +
-			"target first, on the Targets page or with POST /api/v1/targets.\n")
+		b.WriteString("\nNo targets are registered, so no workspace can be provisioned and no command run. ")
+		if len(o.Machines) > 0 {
+			b.WriteString("If the message asks for a machine, propose one with provision_target from a machine plugin below; " +
+				"otherwise, if it needs work done on a machine, answer directly and tell the user to create or register one first.\n")
+		} else {
+			b.WriteString("If the message needs work done on a machine, answer directly and tell the user to register a " +
+				"target first, on the Targets page or with POST /api/v1/targets.\n")
+		}
 	}
 	for _, t := range targets {
 		fmt.Fprintf(&b, "- id: %s\n  name: %s\n  kind: %s\n  agents: %s\n", t.ID, t.Name, t.Kind, renderAgents(t.Agents, t.AgentVersions))
@@ -396,6 +499,7 @@ func decideUserPrompt(message string, workspaces []router.WorkspaceSnapshot, tar
 			fmt.Fprintf(&b, "  policy: %s\n", p)
 		}
 	}
+	renderMachines(&b, o.Machines)
 	if o.WorkspaceHint != "" {
 		fmt.Fprintf(&b, "\nClient hint: the caller suggests this message likely belongs to workspace_id %q. "+
 			"Treat this as advisory only — use your own judgement and the message content to decide.\n", o.WorkspaceHint)

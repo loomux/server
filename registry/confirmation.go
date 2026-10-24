@@ -10,7 +10,8 @@ const (
 	ConfirmationPending  ConfirmationStatus = "pending"
 	ConfirmationApproved ConfirmationStatus = "approved"
 	// ConfirmationDenied: the user said no, or sent anything else, which
-	// cancels an offer.
+	// cancels an offer; or a yes was refused afterwards, as
+	// Confirmation.StatusReason says. Nothing ran either way.
 	ConfirmationDenied ConfirmationStatus = "denied"
 	// ConfirmationExpired: it timed out, or Loomux restarted, which forgets
 	// every offer (fails closed).
@@ -23,6 +24,10 @@ const (
 	ConfirmationInstallAgent = "install_agent"
 	ConfirmationCloneRemote  = "clone_remote"
 	ConfirmationPolicy       = "policy"
+	// ConfirmationCreateTarget creates a machine from a plugin
+	// (LOOM-216): TargetName is the new target's name, Command the
+	// machine on one line (plugin, size, data, egress).
+	ConfirmationCreateTarget = "create_target"
 )
 
 // Confirmation is the record of an offer the router made and is waiting
@@ -46,8 +51,12 @@ type Confirmation struct {
 	Workspace string
 	GitRemote string
 	Status    ConfirmationStatus
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	// StatusReason is why a yes was refused afterwards (LOOM-216: the
+	// offer changed, the name was taken, the quota was reached), as the
+	// chat was told; empty otherwise.
+	StatusReason string
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
 	// ResolvedAt is set once Status leaves pending.
 	ResolvedAt *time.Time
 }

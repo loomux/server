@@ -526,6 +526,14 @@ vendor. Its responsibilities:
     withheld rather than shown unscrubbed. The command itself is never
     logged — only its length.
 
+- **New machines from chat** (`provision_target`, LOOM-216): with a
+  machine plugin running, the routing model may propose a machine from its
+  offer (plugin, name, size, whether it keeps its data, egress). Loomux
+  resolves the proposal against the plugin, shows the machine it would
+  create and creates it only if the next message confirms, with the same
+  offer rules as below; egress `trusted` only for a name the plugin allows
+  it. Design: `target-providers.md` §7.
+
 **Agent availability and install offers (LOOM-71).** An agent-type may
 declare the `Binary` its CLI runs as and an `Install` recipe (a fixed
 install command plus the login step the CLI needs afterwards). Before a

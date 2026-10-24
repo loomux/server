@@ -41,6 +41,8 @@ const (
 	// pendingPolicyConfirm carries out a plan its target's policy made
 	// wait for a "yes" (LOOM-89).
 	pendingPolicyConfirm
+	// pendingCreateTarget creates a machine from a plugin (LOOM-216).
+	pendingCreateTarget
 )
 
 // pendingInstall is an offer awaiting the user's confirmation — an agent
@@ -72,7 +74,10 @@ type pendingInstall struct {
 	// decision is, for pendingPolicyConfirm, the plan a "yes" carries out
 	// (LOOM-89).
 	decision *Decision
-	expires  time.Time
+	// machine is, for pendingCreateTarget, the machine a "yes" creates,
+	// as the offer showed it (LOOM-216).
+	machine *MachinePlan
+	expires time.Time
 }
 
 // pendingActions holds at most one offer per conversation, in memory. A
@@ -145,14 +150,29 @@ func (r *Router) offer(ctx context.Context, conversationID string, a pendingInst
 // resolveOffer records how offer a was answered. Best effort: the record
 // is for display, and the offer itself is already settled in memory.
 func (r *Router) resolveOffer(ctx context.Context, log *slog.Logger, a pendingInstall, status registry.ConfirmationStatus) {
+	r.settleOffer(ctx, log, a, status, "")
+}
+
+// refuseOffer records that offer a's yes was refused afterwards (LOOM-216):
+// denied, since nothing ran, with the reason the chat was told, so its
+// card doesn't read "Approved".
+func (r *Router) refuseOffer(ctx context.Context, log *slog.Logger, a pendingInstall, reason string) {
+	r.settleOffer(ctx, log, a, registry.ConfirmationDenied, reason)
+}
+
+func (r *Router) settleOffer(ctx context.Context, log *slog.Logger, a pendingInstall, status registry.ConfirmationStatus, reason string) {
 	if a.id == "" {
 		return
 	}
-	if err := r.store.ResolveConfirmation(ctx, a.id, status); err != nil {
+	if err := r.store.ResolveConfirmation(ctx, a.id, status, reason); err != nil {
 		log.Warn("confirmation not recorded", "confirmation_id", a.id, "status", string(status), "error", err)
 	}
+	detail := "offer " + a.id
+	if reason != "" {
+		detail += ": " + reason
+	}
 	r.recordEvent(ctx, a.conversationID, registry.DispatchEvent{Kind: registry.EventOfferAnswered,
-		TargetID: a.targetID, Outcome: string(status), Detail: "offer " + a.id})
+		TargetID: a.targetID, Outcome: string(status), Detail: detail})
 }
 
 // offerDetail names what an offer is about besides its command: the
@@ -210,6 +230,11 @@ func isConfirmation(message string, p pendingInstall) bool {
 	case pendingRunCommand:
 		switch m {
 		case "run", "run it", "yes run it":
+			return true
+		}
+	case pendingCreateTarget:
+		switch m {
+		case "create", "create it", "yes create it":
 			return true
 		}
 	}

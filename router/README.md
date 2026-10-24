@@ -31,6 +31,13 @@ replies, and updating each workspace's rolling summary).
   router's exact command and target; otherwise confirm first, showing
   both, via the same pending-offer mechanism as installs), the per-target `shell@<target>` workspace, and
   the verbatim, bounded, vault-redacted output reply.
+- `provisiontarget.go` — new machines from chat (`ActionProvisionTarget`,
+  LOOM-216): the `MachineMaker` seam (app implements it over
+  `providers.Manager`), the machine offers given to `Decide`, and the
+  offer: the proposal resolved against the plugin (`Plan`), shown in full,
+  created only on the next message's "yes", and only if it would still be
+  the machine shown. Egress `trusted` only as asked for, and only for a
+  name the plugin allows it.
 - `routing.go` — `RoutingModel` (the swappable seam), `Decision`,
   `WorkspaceSnapshot` (status, target name, last use, summary — LOOM-88),
   `TargetSnapshot` (agent availability and versions), `ProvisionSpec`,
