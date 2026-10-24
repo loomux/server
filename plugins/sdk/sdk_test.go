@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -108,6 +109,52 @@ func TestServePluginMethods(t *testing.T) {
 	}
 	if !p.ShutdownCalled() {
 		t.Error("Shutdown not delivered")
+	}
+}
+
+// LOOM-216: targets.describe with a name is answered for that name by a
+// plugin that can (sdk.NamedDescriber), which the answer's for_name
+// says; one that can't answers name-independently, without for_name.
+func TestDescribeForName(t *testing.T) {
+	ctx := context.Background()
+	configure := func(c *rpc.Conn) {
+		t.Helper()
+		if err := c.Call(ctx, protocol.MethodConfigure, protocol.ConfigureParams{Config: map[string]any{"trusted_machines": "cc"}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	describe := func(c *rpc.Conn, params any) protocol.TargetsInfo {
+		t.Helper()
+		var info protocol.TargetsInfo
+		if err := c.Call(ctx, protocol.MethodTargetsDescribe, params, &info); err != nil {
+			t.Fatalf("targets.describe: %v", err)
+		}
+		return info
+	}
+	named := serve(t, fake.New())
+	configure(named)
+	if info := describe(named, protocol.DescribeParams{Name: "cc"}); info.ForName != "cc" || !slices.Contains(info.EgressOptions, protocol.EgressTrusted) {
+		t.Errorf("for cc: %+v", info)
+	}
+	if info := describe(named, protocol.DescribeParams{Name: "builds"}); info.ForName != "builds" || slices.Contains(info.EgressOptions, protocol.EgressTrusted) {
+		t.Errorf("for builds: %+v", info)
+	}
+	if info := describe(named, nil); info.ForName != "" || !slices.Contains(info.EgressOptions, protocol.EgressTrusted) {
+		t.Errorf("name-independent: %+v", info)
+	}
+
+	// Only the two interfaces: DescribeTargetsFor isn't there.
+	plain := serve(t, struct {
+		sdk.Plugin
+		sdk.TargetProvider
+	}{fake.New(), fake.New()})
+	configure(plain)
+	if info := describe(plain, protocol.DescribeParams{Name: "builds"}); info.ForName != "" {
+		t.Errorf("a plugin that can't answer for a name said it did: %+v", info)
+	}
+	var rpcErr *rpc.Error
+	if err := plain.Call(ctx, protocol.MethodTargetsDescribe, "not an object", nil); !errors.As(err, &rpcErr) || rpcErr.Code != rpc.CodeInvalidParams {
+		t.Errorf("bad params: %v", err)
 	}
 }
 

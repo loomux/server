@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,6 +86,8 @@ type Plugin struct {
 	targets   *targetsState
 	notifier  sdk.Notifier
 	pullGate  string
+	// trusted are the names offered egress trusted ("trusted_machines").
+	trusted []string
 }
 
 // Notifier makes the fake a notifying plugin (sdk.Notifying, LOOM-213).
@@ -133,6 +136,10 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	}
 	if g, ok := cp.Config["pull_gate"].(string); ok {
 		p.pullGate = g
+	}
+	p.trusted = nil
+	if s, _ := cp.Config["trusted_machines"].(string); s != "" {
+		p.trusted = strings.Split(s, ",")
 	}
 	p.host = cp.Host
 	if dir, ok := cp.Config["pid_dir"].(string); ok && dir != "" {
@@ -249,6 +256,9 @@ const (
 	TargetsPullForever = "pull_forever"
 	// TargetsStuck: a new machine stays starting, no progress reported.
 	TargetsStuck = "stuck"
+	// TargetsSlowDescribe: targets.describe answers after DescribeFor,
+	// as a plugin whose cluster is slow to answer (LOOM-216).
+	TargetsSlowDescribe = "slow_describe"
 )
 
 // FailAfter is how long a machine runs in mode fail_notify.
@@ -256,6 +266,9 @@ const FailAfter = 200 * time.Millisecond
 
 // PullFor is how long a machine's image pulls in mode slow_pull.
 const PullFor = 800 * time.Millisecond
+
+// DescribeFor is how long targets.describe takes in mode slow_describe.
+const DescribeFor = 500 * time.Millisecond
 
 // machine is one in-memory environment.
 type machine struct {
@@ -291,16 +304,42 @@ func notFound(id string) error {
 	return &rpc.Error{Code: rpc.CodeNotFound, Message: "no machine " + id}
 }
 
+// DescribeTargetsFor offers egress trusted only to the names
+// trusted_machines lists (sdk.NamedDescriber, as the Kubernetes plugin).
+func (p *Plugin) DescribeTargetsFor(ctx context.Context, name string) (protocol.TargetsInfo, error) {
+	info, err := p.DescribeTargets(ctx)
+	p.mu.Lock()
+	allowed := slices.Contains(p.trusted, name)
+	p.mu.Unlock()
+	if !allowed {
+		info.EgressOptions = slices.DeleteFunc(info.EgressOptions, func(e string) bool { return e == protocol.EgressTrusted })
+	}
+	return info, err
+}
+
 func (p *Plugin) DescribeTargets(ctx context.Context) (protocol.TargetsInfo, error) {
-	_, domain, _ := p.targetsMode()
+	mode, domain, _ := p.targetsMode()
+	if mode == TargetsSlowDescribe {
+		select {
+		case <-time.After(DescribeFor):
+		case <-ctx.Done():
+			return protocol.TargetsInfo{}, ctx.Err()
+		}
+	}
 	st := p.state()
 	st.mu.Lock()
 	n := len(st.machines)
 	st.mu.Unlock()
+	egress := []string{protocol.EgressInternet, protocol.EgressNone}
+	p.mu.Lock()
+	if len(p.trusted) > 0 {
+		egress = append(egress, protocol.EgressTrusted)
+	}
+	p.mu.Unlock()
 	return protocol.TargetsInfo{
-		Sizes:             []protocol.Size{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"}, {Name: "medium", CPU: "2", Memory: "4Gi", Disk: "20Gi"}},
+		Sizes:             []protocol.Size{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"}, {Name: "medium", CPU: "2", Memory: "4Gi", Disk: "20Gi", MemoryRequest: "3Gi"}},
 		PersistentDefault: true,
-		EgressOptions:     []string{protocol.EgressInternet, protocol.EgressNone},
+		EgressOptions:     egress,
 		Image:             "ghcr.io/loomux/agent:fake",
 		MaxEnvironments:   5,
 		Environments:      n,

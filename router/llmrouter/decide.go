@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,8 +23,19 @@ type decideArguments struct {
 	NewWorkspace decideArgumentsWorkspace `json:"new_workspace"`
 	TargetID     string                   `json:"target_id"`
 	Command      string                   `json:"command"`
+	NewTarget    decideArgumentsTarget    `json:"new_target"`
 	// LeaveOpenTask (LOOM-87) is only offered while a task is open.
 	LeaveOpenTask bool `json:"leave_open_task"`
+}
+
+// decideArgumentsTarget is a proposed machine (LOOM-216): choices from
+// a machine plugin's offer, nothing else.
+type decideArgumentsTarget struct {
+	PluginID string `json:"plugin_id"`
+	Name     string `json:"name"`
+	Size     string `json:"size"`
+	KeepData *bool  `json:"keep_data"`
+	Egress   string `json:"egress"`
 }
 
 // decideArgumentsWorkspace is structured data only (LOOM-90): no command
@@ -94,7 +107,7 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 	}
 
 	ex := newExchange(tier, m.systemPrompt(), decideUserPrompt(message, workspaces, targets, o),
-		decideTool(m.agentTypes, workspaceIDs, targetIDs, o.OpenTask != nil), m.httpClient)
+		decideTool(m.agentTypes, workspaceIDs, targetIDs, o.OpenTask != nil, o.Machines), m.httpClient)
 	// A tool call that can't be used gets one more try on the same tier,
 	// told what was wrong (LOOM-107): a hallucinated id is usually fixed
 	// by saying so, and cheaper than escalating. Both attempts share the
@@ -105,7 +118,7 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return fmt.Errorf("unparseable tool call arguments: %w", err)
 		}
-		d, problem := m.validateDecision(args, workspaceIDs, targetIDs)
+		d, problem := m.validateDecision(args, workspaceIDs, targetIDs, o.Machines)
 		if problem != nil {
 			return problem
 		}
@@ -134,7 +147,7 @@ func correctionPrompt(problem error) string {
 // this call's workspace list, or a provision_workspace decision naming a
 // target_id that wasn't in this call's target list (LOOM-64), or a
 // run_command (LOOM-72) with an unknown target_id or no command.
-func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs []string) (router.Decision, error) {
+func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs []string, machines []router.MachineOffer) (router.Decision, error) {
 	action := router.DecisionAction(args.Action)
 	// With no targets registered, provisioning and direct commands aren't
 	// offered (LOOM-68). A model that picks one anyway wanted a machine
@@ -188,7 +201,40 @@ func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs [
 		}
 		return router.Decision{Action: action, TargetID: args.TargetID, Command: args.Command}, nil
 
+	case router.ActionProvisionTarget:
+		return validateTarget(args.NewTarget, machines)
+
 	default:
 		return router.Decision{}, fmt.Errorf("unknown action %q", args.Action)
 	}
 }
+
+// validateTarget checks a provision_target proposal (LOOM-216) against
+// the offers it was given: a listed plugin, a name, and a size and
+// egress that plugin lists. Whether the plugin can make it is Loomux's
+// to check when it plans the machine.
+func validateTarget(t decideArgumentsTarget, machines []router.MachineOffer) (router.Decision, error) {
+	var offer *router.MachineOffer
+	for i := range machines {
+		if machines[i].PluginID == t.PluginID {
+			offer = &machines[i]
+		}
+	}
+	if offer == nil {
+		return router.Decision{}, fmt.Errorf("provision_target with unknown plugin_id %q", t.PluginID)
+	}
+	if !machineName.MatchString(t.Name) {
+		return router.Decision{}, fmt.Errorf("provision_target: name %q must match %s", t.Name, router.WorkspaceNamePattern)
+	}
+	if t.Size != "" && !slices.ContainsFunc(offer.Sizes, func(s router.MachineSize) bool { return s.Name == t.Size }) {
+		return router.Decision{}, fmt.Errorf("provision_target: plugin %s has no size %q", t.PluginID, t.Size)
+	}
+	if t.Egress != "" && !slices.Contains(offer.Egress, t.Egress) {
+		return router.Decision{}, fmt.Errorf("provision_target: plugin %s offers no egress %q", t.PluginID, t.Egress)
+	}
+	return router.Decision{Action: router.ActionProvisionTarget, NewTarget: router.MachineSpec{
+		PluginID: t.PluginID, Name: t.Name, Size: t.Size, Persistent: t.KeepData, Egress: t.Egress,
+	}}, nil
+}
+
+var machineName = regexp.MustCompile(router.WorkspaceNamePattern)

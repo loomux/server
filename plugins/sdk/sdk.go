@@ -41,6 +41,15 @@ type Plugin interface {
 	Shutdown(ctx context.Context) error
 }
 
+// NamedDescriber is optional beside TargetProvider (LOOM-216): a
+// plugin whose offer depends on the machine's name (the Kubernetes
+// plugin's egress trusted, for the names trusted_machines lists)
+// answers targets.describe for that name here. The SDK sets the
+// answer's for_name; a plugin without it answers name-independently.
+type NamedDescriber interface {
+	DescribeTargetsFor(ctx context.Context, name string) (protocol.TargetsInfo, error)
+}
+
 // TargetProvider is what a plugin implements to make machines on demand
 // (the targets.* group, docs/design/target-providers.md §1.3). Its
 // manifest must declare targets.create (and the other targets.*
@@ -268,7 +277,21 @@ func targetsHandler(ctx context.Context, t TargetProvider, method string, params
 	}
 	switch method {
 	case protocol.MethodTargetsDescribe:
-		info, err := t.DescribeTargets(ctx)
+		var dp protocol.DescribeParams
+		if len(params) != 0 && string(params) != "null" {
+			if err := json.Unmarshal(params, &dp); err != nil {
+				return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: method + ": " + err.Error()}
+			}
+		}
+		var info protocol.TargetsInfo
+		var err error
+		if named, ok := t.(NamedDescriber); ok && dp.Name != "" {
+			info, err = named.DescribeTargetsFor(ctx, dp.Name)
+			info.ForName = dp.Name
+		} else {
+			info, err = t.DescribeTargets(ctx)
+			info.ForName = ""
+		}
 		if err != nil {
 			return nil, toRPC(err)
 		}

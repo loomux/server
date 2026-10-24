@@ -10,7 +10,7 @@ import (
 )
 
 const confirmationColumns = `id, conversation_id, dispatch_id, kind, target_id, target_name, agent_type, command,
-	workspace, git_remote, status, created_at, expires_at, resolved_at`
+	workspace, git_remote, status, status_reason, created_at, expires_at, resolved_at`
 
 func (s *Store) CreateConfirmation(ctx context.Context, c *registry.Confirmation) error {
 	if c.CreatedAt.IsZero() {
@@ -20,9 +20,9 @@ func (s *Store) CreateConfirmation(ctx context.Context, c *registry.Confirmation
 		c.Status = registry.ConfirmationPending
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO confirmations (`+confirmationColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ConversationID, nullIfEmpty(c.DispatchID), c.Kind, c.TargetID, c.TargetName, c.AgentType, c.Command,
-		c.Workspace, c.GitRemote, string(c.Status), c.CreatedAt, c.ExpiresAt, c.ResolvedAt)
+		c.Workspace, c.GitRemote, string(c.Status), c.StatusReason, c.CreatedAt, c.ExpiresAt, c.ResolvedAt)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: confirmation %q exists", registry.ErrConflict, c.ID)
 	}
@@ -32,9 +32,9 @@ func (s *Store) CreateConfirmation(ctx context.Context, c *registry.Confirmation
 	return nil
 }
 
-func (s *Store) ResolveConfirmation(ctx context.Context, id string, status registry.ConfirmationStatus) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE confirmations SET status = ?, resolved_at = ?
-		WHERE id = ? AND status = 'pending'`, string(status), time.Now().UTC(), id)
+func (s *Store) ResolveConfirmation(ctx context.Context, id string, status registry.ConfirmationStatus, reason string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE confirmations SET status = ?, status_reason = ?, resolved_at = ?
+		WHERE id = ? AND status = 'pending'`, string(status), reason, time.Now().UTC(), id)
 	if err != nil {
 		return fmt.Errorf("sqlite: resolve confirmation: %w", err)
 	}
@@ -65,7 +65,7 @@ func (s *Store) ListConfirmationsByConversation(ctx context.Context, conversatio
 		var dispatchID sql.NullString
 		var status string
 		if err := rows.Scan(&c.ID, &c.ConversationID, &dispatchID, &c.Kind, &c.TargetID, &c.TargetName, &c.AgentType,
-			&c.Command, &c.Workspace, &c.GitRemote, &status, &c.CreatedAt, &c.ExpiresAt, &c.ResolvedAt); err != nil {
+			&c.Command, &c.Workspace, &c.GitRemote, &status, &c.StatusReason, &c.CreatedAt, &c.ExpiresAt, &c.ResolvedAt); err != nil {
 			return nil, fmt.Errorf("sqlite: list confirmations: %w", err)
 		}
 		c.DispatchID = dispatchID.String

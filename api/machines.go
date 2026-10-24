@@ -94,11 +94,15 @@ type pluginTargetsResponse struct {
 	Environments    int `json:"environments"`
 }
 
+// sizeResponse: CPU and Memory are the limits; the requests are set
+// only when a size asks for less (LOOM-241).
 type sizeResponse struct {
-	Name   string `json:"name"`
-	CPU    string `json:"cpu"`
-	Memory string `json:"memory"`
-	Disk   string `json:"disk"`
+	Name          string `json:"name"`
+	CPU           string `json:"cpu"`
+	Memory        string `json:"memory"`
+	Disk          string `json:"disk"`
+	CPURequest    string `json:"cpu_request,omitempty"`
+	MemoryRequest string `json:"memory_request,omitempty"`
 }
 
 type warningResponse struct {
@@ -299,7 +303,8 @@ func (s *Server) handleDescribePluginTargets(w http.ResponseWriter, r *http.Requ
 		MaxEnvironments: info.MaxEnvironments, Environments: info.Environments,
 	}
 	for _, sz := range info.Sizes {
-		out.Sizes = append(out.Sizes, sizeResponse{Name: sz.Name, CPU: sz.CPU, Memory: sz.Memory, Disk: sz.Disk})
+		out.Sizes = append(out.Sizes, sizeResponse{Name: sz.Name, CPU: sz.CPU, Memory: sz.Memory, Disk: sz.Disk,
+			CPURequest: sz.CPURequest, MemoryRequest: sz.MemoryRequest})
 	}
 	writeJSON(w, http.StatusOK, out)
 }

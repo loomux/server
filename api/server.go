@@ -1043,12 +1043,15 @@ type confirmationResponse struct {
 	// WorkspaceName is the workspace's name, as target_name is the
 	// target's (renamed from "workspace" before 1.0, API v1 freeze
 	// review item 10).
-	WorkspaceName string     `json:"workspace_name,omitempty"`
-	GitRemote     string     `json:"git_remote,omitempty"`
-	Status        string     `json:"status"`
-	CreatedAt     time.Time  `json:"created_at"`
-	ExpiresAt     time.Time  `json:"expires_at"`
-	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
+	WorkspaceName string `json:"workspace_name,omitempty"`
+	GitRemote     string `json:"git_remote,omitempty"`
+	Status        string `json:"status"`
+	// StatusReason says why a yes was refused afterwards (status
+	// denied, LOOM-216); absent otherwise.
+	StatusReason string     `json:"status_reason,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
 }
 
 // handleGetConversation returns a conversation's full task history (every
@@ -1148,7 +1151,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		confOut = append(confOut, confirmationResponse{
 			ID: c.ID, DispatchID: c.DispatchID, Kind: c.Kind, TargetID: c.TargetID, TargetName: c.TargetName,
 			AgentType: c.AgentType, Command: c.Command, WorkspaceName: c.Workspace, GitRemote: c.GitRemote,
-			Status: string(status), CreatedAt: c.CreatedAt, ExpiresAt: c.ExpiresAt, ResolvedAt: c.ResolvedAt,
+			Status: string(status), StatusReason: c.StatusReason, CreatedAt: c.CreatedAt, ExpiresAt: c.ExpiresAt, ResolvedAt: c.ResolvedAt,
 		})
 	}
 

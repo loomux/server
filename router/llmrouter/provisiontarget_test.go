@@ -1,0 +1,112 @@
+package llmrouter
+
+import (
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/Loomux/server/router"
+)
+
+var testOffers = []router.MachineOffer{{
+	PluginID: "plug-1", Plugin: "kubernetes", Label: "test cluster",
+	Sizes: []router.MachineSize{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"},
+		{Name: "medium", CPU: "2", Memory: "4Gi", Disk: "20Gi"}},
+	PersistentDefault: true, Persistent: true, Ephemeral: true,
+	Egress: []string{"internet", "none", "trusted"}, Machines: 1, MaxMachines: 5,
+}, {
+	PluginID: "plug-2", Plugin: "docker", Sizes: []router.MachineSize{{Name: "large", CPU: "4", Memory: "8Gi", Disk: "40Gi"}},
+	PersistentDefault: true, Persistent: true,
+}}
+
+// LOOM-216: provision_target is in the schema only with a machine plugin
+// to offer, its fields bound to what the offers list.
+func TestDecideTool_ProvisionTarget(t *testing.T) {
+	actions := func(tool toolSpec) []string {
+		return tool.schema["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
+	}
+	without := decideTool([]string{"claude-code"}, nil, []string{"t-1"}, false, nil)
+	if slices.Contains(actions(without), "provision_target") {
+		t.Errorf("offered without a machine plugin: %v", actions(without))
+	}
+	if _, ok := without.schema["properties"].(map[string]any)["new_target"]; ok {
+		t.Error("new_target in the schema without a machine plugin")
+	}
+
+	// No target registered, a plugin to make one: provision_target alone
+	// besides the two that need none.
+	tool := decideTool([]string{"claude-code"}, nil, nil, false, testOffers)
+	if got := actions(tool); !reflect.DeepEqual(got, []string{"answer_directly", "use_workspace", "provision_target"}) {
+		t.Errorf("actions = %v", got)
+	}
+	nt := tool.schema["properties"].(map[string]any)["new_target"].(map[string]any)["properties"].(map[string]any)
+	enum := func(field string) []string { e, _ := nt[field].(map[string]any)["enum"].([]string); return e }
+	if got := enum("plugin_id"); !reflect.DeepEqual(got, []string{"plug-1", "plug-2"}) {
+		t.Errorf("plugin_id enum = %v", got)
+	}
+	if got := enum("size"); !reflect.DeepEqual(got, []string{"small", "medium", "large"}) {
+		t.Errorf("size enum = %v", got)
+	}
+	if got := enum("egress"); !reflect.DeepEqual(got, []string{"internet", "none", "trusted"}) {
+		t.Errorf("egress enum = %v", got)
+	}
+	if nt["name"].(map[string]any)["pattern"] != router.WorkspaceNamePattern {
+		t.Errorf("name = %+v", nt["name"])
+	}
+}
+
+// Each plugin's own lists bound its proposal; the schema's enums are the
+// union.
+func TestValidateTarget(t *testing.T) {
+	yes := true
+	d, err := validateTarget(decideArgumentsTarget{PluginID: "plug-1", Name: "builds", Size: "medium", KeepData: &yes, Egress: "none"}, testOffers)
+	want := router.Decision{Action: router.ActionProvisionTarget, NewTarget: router.MachineSpec{
+		PluginID: "plug-1", Name: "builds", Size: "medium", Persistent: &yes, Egress: "none"}}
+	if err != nil || !reflect.DeepEqual(d, want) {
+		t.Errorf("decision = %+v, %v", d, err)
+	}
+	if d, err := validateTarget(decideArgumentsTarget{PluginID: "plug-2", Name: "box"}, testOffers); err != nil || d.NewTarget.Size != "" || d.NewTarget.Persistent != nil {
+		t.Errorf("defaults left to the plugin: %+v, %v", d, err)
+	}
+	for name, bad := range map[string]decideArgumentsTarget{
+		"unknown plugin":         {PluginID: "plug-9", Name: "x"},
+		"no name":                {PluginID: "plug-1"},
+		"not a slug":             {PluginID: "plug-1", Name: "My Box"},
+		"another plugin's size":  {PluginID: "plug-1", Name: "x", Size: "large"},
+		"an egress not offered":  {PluginID: "plug-2", Name: "x", Egress: "none"},
+		"trusted where none is":  {PluginID: "plug-2", Name: "x", Egress: "trusted"},
+		"a size nobody offers":   {PluginID: "plug-1", Name: "x", Size: "huge"},
+		"an egress nobody knows": {PluginID: "plug-1", Name: "x", Egress: "lan"},
+	} {
+		if _, err := validateTarget(bad, testOffers); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestDecideUserPrompt_Machines(t *testing.T) {
+	prompt := decideUserPrompt("a new machine please", nil, nil, router.DispatchOptions{Machines: testOffers})
+	for _, want := range []string{
+		"Machine plugins (a new machine can be created with provision_target)",
+		"- plugin_id: plug-1\n  plugin: kubernetes (test cluster)",
+		"sizes: small (1 CPU, 2Gi memory, 10Gi disk), medium (2 CPU, 4Gi memory, 20Gi disk)",
+		"data: kept by default; makes both kinds",
+		"egress: internet, none, trusted",
+		"machines: 1 of at most 5",
+		"data: kept by default; only machines that keep their data",
+		"egress: no choice (internet)",
+		"propose one with provision_target",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, prompt)
+		}
+	}
+	none := decideUserPrompt("a new machine please", nil, nil, router.DispatchOptions{})
+	if !strings.Contains(none, "Machine plugins: (none)") || !strings.Contains(none, "a machine plugin (Kubernetes or Docker) must be installed first") {
+		t.Errorf("prompt without a plugin:\n%s", none)
+	}
+	if strings.Contains(none, "provision_target") {
+		t.Errorf("provision_target named without a plugin:\n%s", none)
+	}
+}
