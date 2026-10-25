@@ -59,7 +59,7 @@ const (
 	ProblemForbidden = "forbidden"
 	// ProblemServiceMissing (warning): no headless Service of the
 	// configured subdomain, so machine names won't resolve; or the
-	// credential can't read Services to tell.
+	// credential can't read Services, or the read failed, to tell.
 	ProblemServiceMissing = "service_missing"
 	// ProblemNetworkPolicyNotEnforced (warning; error when required): a
 	// confined canary pod reached the API server, kube-dns beyond port
@@ -251,6 +251,11 @@ func (p *Plugin) Check(ctx context.Context) (protocol.CheckResult, error) {
 		res.Problems = append(res.Problems, protocol.Problem{
 			Code: ProblemServiceMissing, Severity: protocol.SeverityWarning,
 			Message: fmt.Sprintf("can't read Service %q in namespace %s (the Role lacks services get): whether machine names resolve is unknown", cfg.Subdomain, cfg.Namespace),
+		})
+	case err != nil:
+		res.Problems = append(res.Problems, protocol.Problem{
+			Code: ProblemServiceMissing, Severity: protocol.SeverityWarning,
+			Message: fmt.Sprintf("can't read Service %q in namespace %s: %s: whether machine names resolve is unknown", cfg.Subdomain, cfg.Namespace, safeStatus(err)),
 		})
 	}
 	state, detail := p.enforcement(ctx, cfg, client, host.InstanceID, p.CanaryWait)
