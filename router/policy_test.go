@@ -169,7 +169,11 @@ func TestPolicy_RequireConfirmation_RecheckedOnYes(t *testing.T) {
 	// Its card says nothing ran, not "Approved" (LOOM-123 review).
 	confs, err := h.store.ListConfirmationsByConversation(ctx, "conv-1")
 	if err != nil || len(confs) != 1 || confs[0].Status != registry.ConfirmationDenied {
-		t.Errorf("confirmations = %+v, %v; want the refused offer denied", confs, err)
+		t.Fatalf("confirmations = %+v, %v; want the refused offer denied", confs, err)
+	}
+	// With the reason the chat was told.
+	if r := confs[0].StatusReason; r == "" || !strings.Contains(reply, r) || !strings.Contains(r, "new workspaces") {
+		t.Errorf("reason = %q, want the refusal %q", r, reply)
 	}
 }
 
@@ -216,6 +220,15 @@ func TestPolicy_OffersRecheckedOnYes(t *testing.T) {
 			t.Errorf("reply = %q, want the refusal (%q)", reply, want)
 		}
 		h.noSideEffects(t)
+		// The offer's card reads denied, with the refusal as its reason.
+		confs, err := h.store.ListConfirmationsByConversation(ctx, "conv-1")
+		if err != nil || len(confs) == 0 {
+			t.Fatalf("confirmations = %+v, %v", confs, err)
+		}
+		if c := confs[len(confs)-1]; c.Status != registry.ConfirmationDenied || c.StatusReason == "" ||
+			!strings.Contains(reply, c.StatusReason) || !strings.Contains(c.StatusReason, want) {
+			t.Errorf("confirmation = %s %q, want denied with the refusal %q", c.Status, c.StatusReason, reply)
+		}
 	}
 	offered := func(t *testing.T, h *availabilityHarness, message string) {
 		t.Helper()

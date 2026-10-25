@@ -52,8 +52,9 @@ type Confirmation struct {
 	GitRemote string
 	Status    ConfirmationStatus
 	// StatusReason is why a yes was refused afterwards (LOOM-216: the
-	// offer changed, the name was taken, the quota was reached), as the
-	// chat was told; empty otherwise.
+	// offer changed, the name was taken, the quota was reached; or the
+	// target's policy was tightened since), as the chat was told; empty
+	// otherwise.
 	StatusReason string
 	CreatedAt    time.Time
 	ExpiresAt    time.Time
