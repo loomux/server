@@ -88,7 +88,17 @@ type Plugin struct {
 	pullGate  string
 	// trusted are the names offered egress trusted ("trusted_machines").
 	trusted []string
+	// longSizes adds LongSizeName and LongCPUSize to the sizes
+	// ("long_sizes": "true"), for the host's bounds on describe.
+	longSizes bool
 }
+
+// LongSizeName is a size name longer than the host passes on; LongCPUSize
+// is a size whose CPU string is (config "long_sizes").
+var (
+	LongSizeName = strings.Repeat("n", 70)
+	LongCPUSize  = protocol.Size{Name: "wide", CPU: strings.Repeat("9", 40), Memory: "8Gi", Disk: "40Gi"}
+)
 
 // Notifier makes the fake a notifying plugin (sdk.Notifying, LOOM-213).
 func (p *Plugin) Notifier() *sdk.Notifier { return &p.notifier }
@@ -137,6 +147,7 @@ func (p *Plugin) Configure(ctx context.Context, cp protocol.ConfigureParams) err
 	if g, ok := cp.Config["pull_gate"].(string); ok {
 		p.pullGate = g
 	}
+	p.longSizes = cp.Config["long_sizes"] == "true"
 	p.trusted = nil
 	if s, _ := cp.Config["trusted_machines"].(string); s != "" {
 		p.trusted = strings.Split(s, ",")
@@ -335,9 +346,13 @@ func (p *Plugin) DescribeTargets(ctx context.Context) (protocol.TargetsInfo, err
 	if len(p.trusted) > 0 {
 		egress = append(egress, protocol.EgressTrusted)
 	}
+	sizes := []protocol.Size{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"}, {Name: "medium", CPU: "2", Memory: "4Gi", Disk: "20Gi", MemoryRequest: "3Gi"}}
+	if p.longSizes {
+		sizes = append(sizes, protocol.Size{Name: LongSizeName, CPU: "4", Memory: "8Gi", Disk: "40Gi"}, LongCPUSize)
+	}
 	p.mu.Unlock()
 	return protocol.TargetsInfo{
-		Sizes:             []protocol.Size{{Name: "small", CPU: "1", Memory: "2Gi", Disk: "10Gi"}, {Name: "medium", CPU: "2", Memory: "4Gi", Disk: "20Gi", MemoryRequest: "3Gi"}},
+		Sizes:             sizes,
 		PersistentDefault: true,
 		EgressOptions:     egress,
 		Image:             "ghcr.io/loomux/agent:fake",

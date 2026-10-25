@@ -183,3 +183,43 @@ func TestCreateExpectedPlan(t *testing.T) {
 		t.Fatalf("Create of the shown plan: %v", err)
 	}
 }
+
+// Describe (the create form and the chat's offers) and Plan see the same
+// sizes, bounded the same way (#456 pre-review nits): a size whose name
+// is too long to pass on isn't offered, nor planned, since a truncated
+// name could never be created; a long CPU string is shown truncated in
+// the plan as in the offer.
+func TestSizesBoundedAlike(t *testing.T) {
+	h := newHarness(t, map[string]any{"long_sizes": "true"})
+	ctx := context.Background()
+	info, err := h.m.Describe(ctx, h.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wide protocol.Size
+	for _, s := range info.Sizes {
+		if strings.HasPrefix(s.Name, "nnnn") {
+			t.Errorf("a size named past the bound is offered: %q", s.Name)
+		}
+		if s.Name == fake.LongCPUSize.Name {
+			wide = s
+		}
+	}
+	if wide.Name == "" || wide.CPU == fake.LongCPUSize.CPU || !strings.HasPrefix(fake.LongCPUSize.CPU, strings.TrimSuffix(wide.CPU, "…")) {
+		t.Fatalf("sizes = %+v, want wide with its CPU truncated", info.Sizes)
+	}
+	offers, err := h.m.Offers(ctx)
+	if err != nil || len(offers) != 1 || len(offers[0].Info.Sizes) != len(info.Sizes) {
+		t.Fatalf("offers = %+v, %v", offers, err)
+	}
+
+	plan, err := h.m.Plan(ctx, providers.CreateRequest{Target: registry.Target{Name: "w"}, PluginID: h.pluginID, Size: "wide"})
+	if err != nil || plan.Size != wide {
+		t.Errorf("plan size = %+v, %v; want the offer's %+v", plan, err, wide)
+	}
+	var invalid *providers.InvalidError
+	_, err = h.m.Plan(ctx, providers.CreateRequest{Target: registry.Target{Name: "n"}, PluginID: h.pluginID, Size: fake.LongSizeName})
+	if !errors.As(err, &invalid) || invalid.Field != "size" || strings.Contains(invalid.Msg, "nnnn") {
+		t.Errorf("planning the unoffered size: %v, want a size refusal naming only offered sizes", err)
+	}
+}

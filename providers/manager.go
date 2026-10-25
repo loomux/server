@@ -247,9 +247,7 @@ func (m *Manager) Describe(ctx context.Context, pluginID string) (protocol.Targe
 		MaxEnvironments:   max(info.MaxEnvironments, 0),
 		Environments:      max(info.Environments, 0),
 	}
-	for _, s := range info.Sizes[:min(len(info.Sizes), maxOffered)] {
-		out.Sizes = append(out.Sizes, boundSize(s))
-	}
+	out.Sizes = append(out.Sizes, offeredSizes(info.Sizes)...)
 	for _, e := range info.EgressOptions[:min(len(info.EgressOptions), maxOffered)] {
 		out.EgressOptions = append(out.EgressOptions, truncate(e, 32))
 	}
@@ -259,9 +257,30 @@ func (m *Manager) Describe(ctx context.Context, pluginID string) (protocol.Targe
 // maxOffered bounds the sizes and egress options Describe passes on.
 const maxOffered = 32
 
+// maxSizeName is the longest size name passed on: a longer one would be
+// truncated, and a truncated name can't be created.
+const maxSizeName = 64
+
+// offeredSizes is the sizes a plugin's describe offers as Loomux passes
+// them on, to the create form, the chat's offers and Plan alike: at most
+// maxOffered, their strings truncated, and none whose name is longer than
+// maxSizeName.
+func offeredSizes(sizes []protocol.Size) []protocol.Size {
+	var out []protocol.Size
+	for _, s := range sizes {
+		if len(out) == maxOffered {
+			break
+		}
+		if len(s.Name) <= maxSizeName {
+			out = append(out, boundSize(s))
+		}
+	}
+	return out
+}
+
 // boundSize is s with its strings truncated, requests included (#450).
 func boundSize(s protocol.Size) protocol.Size {
-	return protocol.Size{Name: truncate(s.Name, 64), CPU: truncate(s.CPU, 32), Memory: truncate(s.Memory, 32), Disk: truncate(s.Disk, 32),
+	return protocol.Size{Name: truncate(s.Name, maxSizeName), CPU: truncate(s.CPU, 32), Memory: truncate(s.Memory, 32), Disk: truncate(s.Disk, 32),
 		CPURequest: truncate(s.CPURequest, 32), MemoryRequest: truncate(s.MemoryRequest, 32)}
 }
 
@@ -383,6 +402,8 @@ func (m *Manager) plan(ctx context.Context, req CreateRequest) (*Plan, *plugins.
 	if info, err = m.Info(ctx, req.PluginID); err != nil {
 		return nil, nil, info, err
 	}
+	// Only a size Describe offers, as it shows it.
+	info.Sizes = offeredSizes(info.Sizes)
 	caps := map[string]bool{}
 	for _, c := range view.Capabilities {
 		caps[c] = true
