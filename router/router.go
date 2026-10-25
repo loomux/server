@@ -291,8 +291,9 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				return "", fmt.Errorf("router: dispatch: policy: %w", err)
 			}
 			if refusal != "" {
-				// Nothing runs, so its card mustn't read "Approved".
-				r.resolveOffer(ctx, log, p, registry.ConfirmationDenied)
+				// Nothing runs, so its card mustn't read "Approved": it
+				// reads denied, with the refusal as its reason.
+				r.refuseOffer(ctx, log, p, refusal)
 				log.Info("confirmed offer refused by target policy", "target_id", p.targetID, "agent_type", p.agentType)
 				m.action = "policy_refused"
 				return r.finishTurn(ctx, log, conversationID, message, "", refusal, "policy_refused", start)

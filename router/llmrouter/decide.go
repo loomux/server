@@ -122,7 +122,7 @@ func (m *Model) decideWith(ctx context.Context, tierName string, tier Tier, time
 		if problem != nil {
 			return problem
 		}
-		d.LeaveOpenTask = o.OpenTask != nil && args.LeaveOpenTask
+		d.LeaveOpenTask = o.OpenTask != nil && (args.LeaveOpenTask || d.LeaveOpenTask)
 		d.Model, d.Tier = tier.Model, tierName
 		decision = d
 		return nil
@@ -155,6 +155,12 @@ func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs [
 	// treated as a model failure to escalate or surface as an error.
 	if len(targetIDs) == 0 && (action == router.ActionProvisionWorkspace || action == router.ActionRunCommand) {
 		return router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: router.NoTargetsReply}, nil
+	}
+	// Likewise a new machine with no machine plugin to make it (LOOM-216):
+	// answered with how to get one. It was a request for a machine, so an
+	// open task is left alone.
+	if len(machines) == 0 && action == router.ActionProvisionTarget {
+		return router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: router.NoMachinePluginReply, LeaveOpenTask: true}, nil
 	}
 	switch action {
 	case router.ActionAnswerDirectly:

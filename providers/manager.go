@@ -186,6 +186,11 @@ type CreateRequest struct {
 	// router proposes is never trusted on the plugin's name-independent
 	// describe alone. A plugin that can't answer for a name refuses it.
 	NamedTrust bool
+	// Expect, when set, is the plan Create must make (LOOM-216): what a
+	// chat offer showed. If the request resolves to anything else by the
+	// time Create plans it, nothing is made and Create returns
+	// ErrPlanChanged. The counts aren't compared.
+	Expect *Plan
 }
 
 // Plan is what Create would make for a request, every default resolved
@@ -242,9 +247,7 @@ func (m *Manager) Describe(ctx context.Context, pluginID string) (protocol.Targe
 		MaxEnvironments:   max(info.MaxEnvironments, 0),
 		Environments:      max(info.Environments, 0),
 	}
-	for _, s := range info.Sizes[:min(len(info.Sizes), maxOffered)] {
-		out.Sizes = append(out.Sizes, boundSize(s))
-	}
+	out.Sizes = append(out.Sizes, offeredSizes(info.Sizes)...)
 	for _, e := range info.EgressOptions[:min(len(info.EgressOptions), maxOffered)] {
 		out.EgressOptions = append(out.EgressOptions, truncate(e, 32))
 	}
@@ -254,9 +257,30 @@ func (m *Manager) Describe(ctx context.Context, pluginID string) (protocol.Targe
 // maxOffered bounds the sizes and egress options Describe passes on.
 const maxOffered = 32
 
+// maxSizeName is the longest size name passed on: a longer one would be
+// truncated, and a truncated name can't be created.
+const maxSizeName = 64
+
+// offeredSizes is the sizes a plugin's describe offers as Loomux passes
+// them on, to the create form, the chat's offers and Plan alike: at most
+// maxOffered, their strings truncated, and none whose name is longer than
+// maxSizeName.
+func offeredSizes(sizes []protocol.Size) []protocol.Size {
+	var out []protocol.Size
+	for _, s := range sizes {
+		if len(out) == maxOffered {
+			break
+		}
+		if len(s.Name) <= maxSizeName {
+			out = append(out, boundSize(s))
+		}
+	}
+	return out
+}
+
 // boundSize is s with its strings truncated, requests included (#450).
 func boundSize(s protocol.Size) protocol.Size {
-	return protocol.Size{Name: truncate(s.Name, 64), CPU: truncate(s.CPU, 32), Memory: truncate(s.Memory, 32), Disk: truncate(s.Disk, 32),
+	return protocol.Size{Name: truncate(s.Name, maxSizeName), CPU: truncate(s.CPU, 32), Memory: truncate(s.Memory, 32), Disk: truncate(s.Disk, 32),
 		CPURequest: truncate(s.CPURequest, 32), MemoryRequest: truncate(s.MemoryRequest, 32)}
 }
 
@@ -302,16 +326,33 @@ func (m *Manager) Offers(ctx context.Context) ([]Offer, error) {
 	return out, nil
 }
 
-// trustedFor reports whether the plugin offers egress trusted to a
-// machine named name: its describe asked for that name, answered for it
-// (for_name), with trusted among the options. A plugin that doesn't
-// answer for a name (one older than LOOM-216) is a no.
-func (m *Manager) trustedFor(ctx context.Context, pluginID, name string) (bool, error) {
+// trustedFor is nil when the plugin offers egress trusted to a machine
+// named name, and otherwise the *InvalidError saying why not
+// (trustRefusal), from its describe asked for that name.
+func (m *Manager) trustedFor(ctx context.Context, pluginID, name string) error {
 	var info protocol.TargetsInfo
 	if err := m.plugins.Call(ctx, pluginID, protocol.MethodTargetsDescribe, protocol.DescribeParams{Name: name}, &info); err != nil {
-		return false, m.mapPluginErr(err)
+		return m.mapPluginErr(err)
 	}
-	return info.ForName == name && contains(info.EgressOptions, protocol.EgressTrusted), nil
+	return trustRefusal(name, info)
+}
+
+// trustRefusal is nil when info, a describe asked for name, answered for
+// it (for_name) with trusted among the options, and otherwise why
+// trusted is refused. A plugin that doesn't answer for a name (one older
+// than LOOM-216) is a no, saying so: its trusted_machines may well list
+// name.
+func trustRefusal(name string, info protocol.TargetsInfo) error {
+	if info.ForName == "" {
+		return &InvalidError{Field: "egress", Msg: "trusted is only for the machines the plugin's trusted_machines names, " +
+			"and this plugin is too old to say which names those are; update it, or create the machine " +
+			"on the Targets page or with POST /api/v1/targets"}
+	}
+	if info.ForName == name && contains(info.EgressOptions, protocol.EgressTrusted) {
+		return nil
+	}
+	return &InvalidError{Field: "egress", Msg: "trusted is only for the machines the plugin's trusted_machines names, and " +
+		strconv.Quote(name) + " isn't one"}
 }
 
 // mapPluginErr turns a plugin-manager error into this package's.
@@ -361,6 +402,8 @@ func (m *Manager) plan(ctx context.Context, req CreateRequest) (*Plan, *plugins.
 	if info, err = m.Info(ctx, req.PluginID); err != nil {
 		return nil, nil, info, err
 	}
+	// Only a size Describe offers, as it shows it.
+	info.Sizes = offeredSizes(info.Sizes)
 	caps := map[string]bool{}
 	for _, c := range view.Capabilities {
 		caps[c] = true
@@ -390,13 +433,8 @@ func (m *Manager) plan(ctx context.Context, req CreateRequest) (*Plan, *plugins.
 		return nil, nil, info, err
 	}
 	if egress == protocol.EgressTrusted && req.NamedTrust {
-		ok, err := m.trustedFor(ctx, req.PluginID, strings.TrimSpace(req.Target.Name))
-		if err != nil {
+		if err := m.trustedFor(ctx, req.PluginID, strings.TrimSpace(req.Target.Name)); err != nil {
 			return nil, nil, info, err
-		}
-		if !ok {
-			return nil, nil, info, &InvalidError{Field: "egress", Msg: "trusted is only for the machines the plugin's trusted_machines names, and " +
-				strconv.Quote(strings.TrimSpace(req.Target.Name)) + " isn't one"}
 		}
 	}
 	machines := 0
@@ -430,6 +468,9 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Targ
 	plan, view, info, err := m.plan(ctx, req)
 	if err != nil {
 		return nil, nil, err
+	}
+	if req.Expect != nil && !samePlan(*plan, *req.Expect) {
+		return nil, nil, ErrPlanChanged
 	}
 	size, persistent, egress := plan.Size.Name, plan.Persistent, plan.Egress
 
@@ -491,6 +532,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Targ
 	m.updateGauge(ctx)
 	m.startJob(env.ID, func(ctx context.Context) { m.runCreate(ctx, env.ID) })
 	return &target, env, nil
+}
+
+// samePlan reports whether a and b make the same machine; the plugin's
+// counts are not part of it.
+func samePlan(a, b Plan) bool {
+	a.Machines, a.MaxMachines, b.Machines, b.MaxMachines = 0, 0, 0, 0
+	return a == b
 }
 
 // chooseEgress is the machine's egress: the one asked for, if offered;

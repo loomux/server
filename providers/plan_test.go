@@ -3,6 +3,7 @@ package providers_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,5 +121,105 @@ func TestOffers_SlowPluginLeftOut(t *testing.T) {
 	// The describe the API serves isn't held to the offers' bound.
 	if _, err := h.m.Describe(context.Background(), h.pluginID); err != nil {
 		t.Errorf("Describe: %v", err)
+	}
+}
+
+// A plugin that can't answer describe for a name (older than LOOM-216)
+// is refused trusted with that reason, not told the name isn't listed:
+// its operator would chase the wrong cause (#456 pre-review finding 6).
+func TestTrustRefusal(t *testing.T) {
+	trusted := []string{protocol.EgressInternet, protocol.EgressTrusted}
+	for _, tc := range []struct {
+		name string
+		info protocol.TargetsInfo
+		want string // "" for no refusal
+	}{
+		{"listed", protocol.TargetsInfo{ForName: "cc", EgressOptions: trusted}, ""},
+		{"not listed", protocol.TargetsInfo{ForName: "cc", EgressOptions: []string{protocol.EgressInternet}}, `"cc" isn't one`},
+		{"answered for another name", protocol.TargetsInfo{ForName: "other", EgressOptions: trusted}, `"cc" isn't one`},
+		{"can't answer for a name", protocol.TargetsInfo{EgressOptions: trusted}, "too old to say which names"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := providers.TrustRefusalForTest("cc", tc.info)
+			if tc.want == "" {
+				if err != nil {
+					t.Errorf("refused: %v", err)
+				}
+				return
+			}
+			var invalid *providers.InvalidError
+			if !errors.As(err, &invalid) || invalid.Field != "egress" || !strings.Contains(invalid.Msg, tc.want) {
+				t.Errorf("refusal = %v, want an egress refusal saying %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// With Expect, Create makes only the plan the user was shown: a plugin
+// whose offer resolves differently by then makes nothing (#456
+// pre-review finding 7). Its counts aren't part of the plan.
+func TestCreateExpectedPlan(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	req := providers.CreateRequest{Target: registry.Target{Name: "builds"}, PluginID: h.pluginID, Size: "medium"}
+	shown, err := h.m.Plan(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := *shown
+	changed.Size.Memory = "8Gi"
+	req.Expect = &changed
+	if _, _, err := h.m.Create(ctx, req); !errors.Is(err, providers.ErrPlanChanged) {
+		t.Fatalf("Create of a changed plan: %v, want ErrPlanChanged", err)
+	}
+	if envs, _ := h.store.ListEnvironmentsByPlugin(ctx, h.pluginID); len(envs) != 0 {
+		t.Fatalf("a changed plan made %d machines", len(envs))
+	}
+
+	same := *shown
+	same.Machines, same.MaxMachines = 3, 9
+	req.Expect = &same
+	if _, _, err := h.m.Create(ctx, req); err != nil {
+		t.Fatalf("Create of the shown plan: %v", err)
+	}
+}
+
+// Describe (the create form and the chat's offers) and Plan see the same
+// sizes, bounded the same way (#456 pre-review nits): a size whose name
+// is too long to pass on isn't offered, nor planned, since a truncated
+// name could never be created; a long CPU string is shown truncated in
+// the plan as in the offer.
+func TestSizesBoundedAlike(t *testing.T) {
+	h := newHarness(t, map[string]any{"long_sizes": "true"})
+	ctx := context.Background()
+	info, err := h.m.Describe(ctx, h.pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wide protocol.Size
+	for _, s := range info.Sizes {
+		if strings.HasPrefix(s.Name, "nnnn") {
+			t.Errorf("a size named past the bound is offered: %q", s.Name)
+		}
+		if s.Name == fake.LongCPUSize.Name {
+			wide = s
+		}
+	}
+	if wide.Name == "" || wide.CPU == fake.LongCPUSize.CPU || !strings.HasPrefix(fake.LongCPUSize.CPU, strings.TrimSuffix(wide.CPU, "…")) {
+		t.Fatalf("sizes = %+v, want wide with its CPU truncated", info.Sizes)
+	}
+	offers, err := h.m.Offers(ctx)
+	if err != nil || len(offers) != 1 || len(offers[0].Info.Sizes) != len(info.Sizes) {
+		t.Fatalf("offers = %+v, %v", offers, err)
+	}
+
+	plan, err := h.m.Plan(ctx, providers.CreateRequest{Target: registry.Target{Name: "w"}, PluginID: h.pluginID, Size: "wide"})
+	if err != nil || plan.Size != wide {
+		t.Errorf("plan size = %+v, %v; want the offer's %+v", plan, err, wide)
+	}
+	var invalid *providers.InvalidError
+	_, err = h.m.Plan(ctx, providers.CreateRequest{Target: registry.Target{Name: "n"}, PluginID: h.pluginID, Size: fake.LongSizeName})
+	if !errors.As(err, &invalid) || invalid.Field != "size" || strings.Contains(invalid.Msg, "nnnn") {
+		t.Errorf("planning the unoffered size: %v, want a size refusal naming only offered sizes", err)
 	}
 }

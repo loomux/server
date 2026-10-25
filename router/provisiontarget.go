@@ -89,7 +89,9 @@ type MachineMaker interface {
 	// says that name may have it.
 	Plan(ctx context.Context, spec MachineSpec) (MachinePlan, error)
 	// Create makes plan's target and machine, returning the target's id
-	// once its row exists; the machine comes up in the background.
+	// once its row exists; the machine comes up in the background. It
+	// makes exactly plan: a plugin whose offer resolves differently by
+	// then is a *MachineRefusal, and nothing is made.
 	Create(ctx context.Context, plan MachinePlan) (targetID string, err error)
 }
 

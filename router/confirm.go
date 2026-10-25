@@ -153,9 +153,9 @@ func (r *Router) resolveOffer(ctx context.Context, log *slog.Logger, a pendingIn
 	r.settleOffer(ctx, log, a, status, "")
 }
 
-// refuseOffer records that offer a's yes was refused afterwards (LOOM-216):
-// denied, since nothing ran, with the reason the chat was told, so its
-// card doesn't read "Approved".
+// refuseOffer records that offer a's yes was refused afterwards (LOOM-216,
+// or by its target's policy since): denied, since nothing ran, with the
+// reason the chat was told, so its card doesn't read "Approved".
 func (r *Router) refuseOffer(ctx context.Context, log *slog.Logger, a pendingInstall, reason string) {
 	r.settleOffer(ctx, log, a, registry.ConfirmationDenied, reason)
 }
