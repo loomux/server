@@ -431,6 +431,7 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 	plain, secrets := schema.Split(cfg)
 	running := p.Enabled && p.Status != registry.PluginStatusDisabled
 	var candidate *Instance
+	var res protocol.CheckResult
 	if running {
 		candidate, err = m.startInstance(ctx, p, &a.Manifest, a.Source, a.Path, mergedConfig(plain, secrets))
 		if err != nil {
@@ -442,7 +443,7 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 			}
 			return view, &CheckFailedError{Reason: reason}
 		}
-		res, err := candidate.Check(ctx)
+		res, err = candidate.Check(ctx)
 		if err != nil || !res.OK {
 			_ = candidate.Stop(ctx)
 			reason := fmt.Sprintf("upgrade to %s: ", a.Manifest.Version)
@@ -458,8 +459,39 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 			}
 			return view, &CheckFailedError{Reason: reason, Problems: m.redactProblems(id, res.Problems)}
 		}
-		// The new version works: swap it in and stop the old one. (The
-		// result is redacted before the lock: redact takes it too.)
+	}
+	// Store the new version before it serves (LOOM-245): if either write
+	// fails, the old version keeps running and stays stored as it was.
+	next := *p
+	next.Config, next.Secrets = plain, secrets
+	next.Version, next.Protocol, next.Path, next.Trust = a.Manifest.Version, a.Manifest.Protocol, a.Path, a.Trust
+	next.Capabilities = append([]string{}, a.Manifest.Capabilities...)
+	next.Manifest = manifestJSON
+	status := p.Status
+	if running {
+		status = registry.PluginStatusInstalled
+	}
+	if err := m.store.SetPluginConfig(ctx, id, plain, secrets); err != nil {
+		if candidate != nil {
+			_ = candidate.Stop(ctx)
+		}
+		return nil, err
+	}
+	if err := m.setStatus(ctx, &next, status, ""); err != nil {
+		if candidate != nil {
+			_ = candidate.Stop(ctx)
+		}
+		if rerr := m.store.SetPluginConfig(context.WithoutCancel(ctx), id, p.Config, p.Secrets); rerr != nil {
+			m.logger.Error("plugin upgrade: the old configuration couldn't be put back", "plugin", p.Label, "err", rerr)
+		}
+		return nil, err
+	}
+	p = &next
+	m.setSecrets(id, secrets)
+	if running {
+		// The new version works and is stored: swap it in and stop the
+		// old one. (The result is redacted before the lock: redact takes
+		// it too.)
 		redacted := m.redactResult(id, res)
 		m.mu.Lock()
 		old := m.instances[id]
@@ -469,21 +501,6 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 		if old != nil {
 			_ = old.Stop(ctx)
 		}
-	}
-	if err := m.store.SetPluginConfig(ctx, id, plain, secrets); err != nil {
-		return nil, err
-	}
-	p.Config, p.Secrets = plain, secrets
-	m.setSecrets(id, secrets)
-	p.Version, p.Protocol, p.Path, p.Trust = a.Manifest.Version, a.Manifest.Protocol, a.Path, a.Trust
-	p.Capabilities = append([]string{}, a.Manifest.Capabilities...)
-	p.Manifest = manifestJSON
-	status := p.Status
-	if running {
-		status = registry.PluginStatusInstalled
-	}
-	if err := m.setStatus(ctx, p, status, ""); err != nil {
-		return nil, err
 	}
 	return m.view(ctx, p)
 }

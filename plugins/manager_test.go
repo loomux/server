@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -622,5 +623,84 @@ func TestManagerEnableAdoptsALateSidecar(t *testing.T) {
 	got, err := m2.Enable(context.Background(), v.ID)
 	if err != nil || got.Version != "0.2.0" || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
 		t.Errorf("Enable = version %s %s %q instance %q, %v; want 0.2.0 running", got.Version, got.Status, got.StatusReason, got.Instance.State, err)
+	}
+}
+
+// failingStore fails SetPluginConfig or UpdatePlugin while armed.
+type failingStore struct {
+	registry.Store
+	failConfig, failRow atomic.Bool
+}
+
+var errStoreDown = errors.New("disk full")
+
+func (s *failingStore) SetPluginConfig(ctx context.Context, id string, config map[string]any, secrets map[string]string) error {
+	if s.failConfig.Load() {
+		return errStoreDown
+	}
+	return s.Store.SetPluginConfig(ctx, id, config, secrets)
+}
+
+func (s *failingStore) UpdatePlugin(ctx context.Context, p *registry.Plugin) error {
+	if s.failRow.Load() {
+		return errStoreDown
+	}
+	return s.Store.UpdatePlugin(ctx, p)
+}
+
+// An upgrade whose new version checks out but can't be stored, its
+// configuration or its row, fails and leaves the old version serving
+// and stored as it was (LOOM-245); the next upgrade goes through.
+func TestManagerUpgradeStoreFailure(t *testing.T) {
+	for _, write := range []string{"config", "row"} {
+		t.Run(write, func(t *testing.T) {
+			ctx := context.Background()
+			bundle := t.TempDir()
+			fakeDir(t, bundle)
+			store := &failingStore{Store: newStore(t, filepath.Join(t.TempDir(), "m.db"))}
+			m := managerOn(t, store, bundle)
+			v := install(t, m, "up", map[string]any{"token": "t"})
+			dir := fakeDirVersion(t, bundle, "0.2.0", fakeBin2)
+			// The new version adds a setting, so its configuration
+			// differs from the stored one.
+			data, _ := os.ReadFile(filepath.Join(dir, plugins.ManifestFile))
+			changed := strings.Replace(string(data), `"properties": {`, `"properties": {"extra": {"type": "string", "default": "x"}, `, 1)
+			if err := os.WriteFile(filepath.Join(dir, plugins.ManifestFile), []byte(changed), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if write == "config" {
+				store.failConfig.Store(true)
+			} else {
+				store.failRow.Store(true)
+			}
+			if _, err := m.Upgrade(ctx, v.ID); !errors.Is(err, errStoreDown) {
+				t.Fatalf("Upgrade with the %s write failing = %v, want the store's error", write, err)
+			}
+			store.failConfig.Store(false)
+			store.failRow.Store(false)
+
+			var serving plugins.Manifest
+			if err := m.Call(ctx, v.ID, protocol.MethodDescribe, nil, &serving); err != nil || serving.Version != "0.1.0" {
+				t.Errorf("serving after the failed upgrade = %q, %v; want the old 0.1.0", serving.Version, err)
+			}
+			row, err := store.GetPlugin(ctx, v.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.Version != "0.1.0" || row.Status != registry.PluginStatusInstalled || row.Secrets["token"] != "t" {
+				t.Errorf("row after the failed upgrade = version %s %s secrets %v", row.Version, row.Status, row.Secrets)
+			}
+			if _, ok := row.Config["extra"]; ok {
+				t.Errorf("the new version's configuration was stored: %v", row.Config)
+			}
+
+			up, err := m.Upgrade(ctx, v.ID)
+			if err != nil || up.Version != "0.2.0" || up.Instance.State != plugins.StateRunning || up.Config["extra"] != "x" {
+				t.Fatalf("Upgrade once the store is back = %+v, %v", up, err)
+			}
+			if err := m.Call(ctx, v.ID, protocol.MethodDescribe, nil, &serving); err != nil || serving.Version != "0.2.0" {
+				t.Errorf("serving after the upgrade = %q, %v", serving.Version, err)
+			}
+		})
 	}
 }
