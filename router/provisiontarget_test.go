@@ -439,3 +439,142 @@ func TestProvisionTarget_NoPluginLeavesOpenTask(t *testing.T) {
 		t.Error("the request for a machine was typed into the open task's pane")
 	}
 }
+
+// A create_target offer's card answers it as a typed reply does: Approve
+// creates it once, without routing; Deny creates nothing.
+func TestProvisionTarget_CardApproveAndDeny(t *testing.T) {
+	ctx := context.Background()
+	t.Run("approve", func(t *testing.T) {
+		maker := newStubMaker()
+		store, r, calls := machineRouter(t, maker, proposal("builds", "", ""))
+		if _, err := r.Dispatch(ctx, "conv-1", "a new machine please"); err != nil {
+			t.Fatal(err)
+		}
+		c := confirmations(t, store)[0]
+		reply, err := r.Dispatch(ctx, "conv-1", "yes", router.WithConfirmationID(c.ID))
+		if err != nil || !strings.Contains(reply, "Creating builds") {
+			t.Fatalf("reply = %q, %v", reply, err)
+		}
+		if got := maker.createdPlans(); len(got) != 1 || *calls != 1 {
+			t.Fatalf("created = %+v, routed %d times", got, *calls)
+		}
+		if got := confirmations(t, store)[0]; got.Status != registry.ConfirmationApproved {
+			t.Errorf("after approve: %+v", got)
+		}
+		// A second click creates nothing more and isn't routed.
+		reply, err = r.Dispatch(ctx, "conv-1", "yes", router.WithConfirmationID(c.ID))
+		if err != nil || !strings.Contains(reply, "no longer waiting") {
+			t.Errorf("second approve: %q, %v", reply, err)
+		}
+		if got := maker.createdPlans(); len(got) != 1 || *calls != 1 {
+			t.Errorf("second approve: created %+v, routed %d times", got, *calls)
+		}
+	})
+	t.Run("deny", func(t *testing.T) {
+		maker := newStubMaker()
+		store, r, _ := machineRouter(t, maker, proposal("builds", "", ""))
+		if _, err := r.Dispatch(ctx, "conv-1", "a new machine please"); err != nil {
+			t.Fatal(err)
+		}
+		c := confirmations(t, store)[0]
+		if _, err := r.Dispatch(ctx, "conv-1", "no", router.WithConfirmationID(c.ID)); err != nil {
+			t.Fatal(err)
+		}
+		if got := maker.createdPlans(); len(got) != 0 {
+			t.Errorf("created after a deny: %+v", got)
+		}
+		if got := confirmations(t, store)[0]; got.Status != registry.ConfirmationDenied {
+			t.Errorf("after deny: %+v", got)
+		}
+	})
+}
+
+// The card of an offer a newer one replaced creates nothing, and leaves
+// the newer offer awaiting its answer.
+func TestProvisionTarget_StaleCardCreatesNothing(t *testing.T) {
+	ctx := context.Background()
+	maker := newStubMaker()
+	store, r, calls := machineRouter(t, maker, proposal("builds", "", ""))
+	if _, err := r.Dispatch(ctx, "conv-1", "a new machine please"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Dispatch(ctx, "conv-1", "a bigger one, actually"); err != nil {
+		t.Fatal(err)
+	}
+	confs := confirmations(t, store)
+	if len(confs) != 2 || confs[0].Status != registry.ConfirmationDenied || confs[1].Status != registry.ConfirmationPending {
+		t.Fatalf("confirmations = %+v", confs)
+	}
+	routed := *calls
+	reply, err := r.Dispatch(ctx, "conv-1", "yes", router.WithConfirmationID(confs[0].ID))
+	if err != nil || !strings.Contains(reply, "no longer waiting") {
+		t.Fatalf("stale approve: %q, %v", reply, err)
+	}
+	if got := maker.createdPlans(); len(got) != 0 || *calls != routed {
+		t.Fatalf("stale approve: created %+v, routed %v", got, *calls != routed)
+	}
+	if _, err := r.Dispatch(ctx, "conv-1", "yes", router.WithConfirmationID(confs[1].ID)); err != nil {
+		t.Fatal(err)
+	}
+	if got := maker.createdPlans(); len(got) != 1 {
+		t.Errorf("the live offer's approve created %+v, want one machine", got)
+	}
+}
+
+// A yes after the offer expired creates nothing: the offer is recorded
+// expired, and the yes is routed as any other message.
+func TestProvisionTarget_ExpiredYesCreatesNothing(t *testing.T) {
+	ctx := context.Background()
+	maker := newStubMaker()
+	store, r, calls := machineRouter(t, maker, proposal("builds", "", ""))
+	if _, err := r.Dispatch(ctx, "conv-1", "a new machine please"); err != nil {
+		t.Fatal(err)
+	}
+	router.ExpireOffer(r, "conv-1")
+	if _, err := r.Dispatch(ctx, "conv-1", "yes"); err != nil {
+		t.Fatal(err)
+	}
+	if got := maker.createdPlans(); len(got) != 0 {
+		t.Errorf("created on an expired offer: %+v", got)
+	}
+	if *calls != 2 {
+		t.Errorf("the routing model was asked %d times; the late yes is routed", *calls)
+	}
+	if got := confirmations(t, store)[0]; got.Status != registry.ConfirmationExpired {
+		t.Errorf("confirmation = %+v, want expired", got)
+	}
+}
+
+// A Create that fails in Loomux, not a refusal, fails the turn: an error
+// rather than a reply, the dispatch recorded as a failure, and the offer
+// denied with a reason pointing at the server log.
+func TestProvisionTarget_CreateErrorFailsTheTurn(t *testing.T) {
+	ctx := context.Background()
+	maker := newStubMaker()
+	store, r, _ := machineRouter(t, maker, proposal("builds", "", ""))
+	if _, err := r.Dispatch(ctx, "conv-1", "a new machine please"); err != nil {
+		t.Fatal(err)
+	}
+	maker.createErr = errors.New("database is locked")
+	reply, err := r.Dispatch(ctx, "conv-1", "yes")
+	if err == nil || !strings.Contains(err.Error(), "database is locked") || reply != "" {
+		t.Fatalf("reply = %q, err = %v; want the error, no reply", reply, err)
+	}
+	events, err := store.ListDispatchEventsByConversation(ctx, "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcomes []string
+	for _, e := range events {
+		if e.Kind == registry.EventOutcome {
+			outcomes = append(outcomes, e.Outcome+" "+e.Detail)
+		}
+	}
+	if n := len(outcomes); n != 2 || outcomes[1] != "failure create_target" {
+		t.Errorf("dispatch outcomes = %q, want the yes's to be failure create_target", outcomes)
+	}
+	c := confirmations(t, store)[0]
+	if c.Status != registry.ConfirmationDenied || !strings.Contains(c.StatusReason, "the server log says why") {
+		t.Errorf("confirmation = %+v", c)
+	}
+}

@@ -1,6 +1,7 @@
 package llmrouter
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"strings"
@@ -108,5 +109,41 @@ func TestDecideUserPrompt_Machines(t *testing.T) {
 	}
 	if strings.Contains(none, "provision_target") {
 		t.Errorf("provision_target named without a plugin:\n%s", none)
+	}
+}
+
+// withOffers gives a Decide call machine offers, as Router.Dispatch does.
+func withOffers(offers []router.MachineOffer) router.DispatchOption {
+	return func(o *router.DispatchOptions) { o.Machines = offers }
+}
+
+// A name that isn't a slug is fixed by the corrective retry, told the
+// pattern, on the same tier (LOOM-107).
+func TestDecide_ProvisionTargetBadName_RecoversByCorrectiveRetry(t *testing.T) {
+	h, bodies := sequenceHandler(
+		toolCallHandler(t, decideToolName, map[string]any{"action": "provision_target",
+			"new_target": map[string]any{"plugin_id": "plug-1", "name": "Build Box"}}),
+		toolCallHandler(t, decideToolName, map[string]any{"action": "provision_target",
+			"new_target": map[string]any{"plugin_id": "plug-1", "name": "build-box"}}),
+	)
+	primarySrv, primaryCount := newFakeServer(t, h)
+	escalationSrv, escalationCount := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{"action": "answer_directly", "direct_answer": "from escalation"}))
+	escalation := tierFor(escalationSrv, "escalation-model")
+	m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := m.Decide(context.Background(), "a new machine for builds", nil, nil, withOffers(testOffers))
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if dec.Action != router.ActionProvisionTarget || dec.NewTarget.Name != "build-box" || dec.NewTarget.PluginID != "plug-1" {
+		t.Fatalf("Decide = %+v, want provision_target build-box", dec)
+	}
+	if *primaryCount != 2 || *escalationCount != 0 {
+		t.Errorf("primary called %d times, escalation %d; want 2 and 0", *primaryCount, *escalationCount)
+	}
+	if b := bodies(); len(b) != 2 || !strings.Contains(b[1], "was rejected") || !strings.Contains(b[1], "Build Box") {
+		t.Errorf("the retry doesn't say what was wrong: %v", b)
 	}
 }
