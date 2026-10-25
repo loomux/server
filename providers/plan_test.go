@@ -3,6 +3,7 @@ package providers_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,5 +121,36 @@ func TestOffers_SlowPluginLeftOut(t *testing.T) {
 	// The describe the API serves isn't held to the offers' bound.
 	if _, err := h.m.Describe(context.Background(), h.pluginID); err != nil {
 		t.Errorf("Describe: %v", err)
+	}
+}
+
+// A plugin that can't answer describe for a name (older than LOOM-216)
+// is refused trusted with that reason, not told the name isn't listed:
+// its operator would chase the wrong cause (#456 pre-review finding 6).
+func TestTrustRefusal(t *testing.T) {
+	trusted := []string{protocol.EgressInternet, protocol.EgressTrusted}
+	for _, tc := range []struct {
+		name string
+		info protocol.TargetsInfo
+		want string // "" for no refusal
+	}{
+		{"listed", protocol.TargetsInfo{ForName: "cc", EgressOptions: trusted}, ""},
+		{"not listed", protocol.TargetsInfo{ForName: "cc", EgressOptions: []string{protocol.EgressInternet}}, `"cc" isn't one`},
+		{"answered for another name", protocol.TargetsInfo{ForName: "other", EgressOptions: trusted}, `"cc" isn't one`},
+		{"can't answer for a name", protocol.TargetsInfo{EgressOptions: trusted}, "too old to say which names"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := providers.TrustRefusalForTest("cc", tc.info)
+			if tc.want == "" {
+				if err != nil {
+					t.Errorf("refused: %v", err)
+				}
+				return
+			}
+			var invalid *providers.InvalidError
+			if !errors.As(err, &invalid) || invalid.Field != "egress" || !strings.Contains(invalid.Msg, tc.want) {
+				t.Errorf("refusal = %v, want an egress refusal saying %q", err, tc.want)
+			}
+		})
 	}
 }

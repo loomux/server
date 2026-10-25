@@ -302,16 +302,33 @@ func (m *Manager) Offers(ctx context.Context) ([]Offer, error) {
 	return out, nil
 }
 
-// trustedFor reports whether the plugin offers egress trusted to a
-// machine named name: its describe asked for that name, answered for it
-// (for_name), with trusted among the options. A plugin that doesn't
-// answer for a name (one older than LOOM-216) is a no.
-func (m *Manager) trustedFor(ctx context.Context, pluginID, name string) (bool, error) {
+// trustedFor is nil when the plugin offers egress trusted to a machine
+// named name, and otherwise the *InvalidError saying why not
+// (trustRefusal), from its describe asked for that name.
+func (m *Manager) trustedFor(ctx context.Context, pluginID, name string) error {
 	var info protocol.TargetsInfo
 	if err := m.plugins.Call(ctx, pluginID, protocol.MethodTargetsDescribe, protocol.DescribeParams{Name: name}, &info); err != nil {
-		return false, m.mapPluginErr(err)
+		return m.mapPluginErr(err)
 	}
-	return info.ForName == name && contains(info.EgressOptions, protocol.EgressTrusted), nil
+	return trustRefusal(name, info)
+}
+
+// trustRefusal is nil when info, a describe asked for name, answered for
+// it (for_name) with trusted among the options, and otherwise why
+// trusted is refused. A plugin that doesn't answer for a name (one older
+// than LOOM-216) is a no, saying so: its trusted_machines may well list
+// name.
+func trustRefusal(name string, info protocol.TargetsInfo) error {
+	if info.ForName == "" {
+		return &InvalidError{Field: "egress", Msg: "trusted is only for the machines the plugin's trusted_machines names, " +
+			"and this plugin is too old to say which names those are; update it, or create the machine " +
+			"on the Targets page or with POST /api/v1/targets"}
+	}
+	if info.ForName == name && contains(info.EgressOptions, protocol.EgressTrusted) {
+		return nil
+	}
+	return &InvalidError{Field: "egress", Msg: "trusted is only for the machines the plugin's trusted_machines names, and " +
+		strconv.Quote(name) + " isn't one"}
 }
 
 // mapPluginErr turns a plugin-manager error into this package's.
@@ -390,13 +407,8 @@ func (m *Manager) plan(ctx context.Context, req CreateRequest) (*Plan, *plugins.
 		return nil, nil, info, err
 	}
 	if egress == protocol.EgressTrusted && req.NamedTrust {
-		ok, err := m.trustedFor(ctx, req.PluginID, strings.TrimSpace(req.Target.Name))
-		if err != nil {
+		if err := m.trustedFor(ctx, req.PluginID, strings.TrimSpace(req.Target.Name)); err != nil {
 			return nil, nil, info, err
-		}
-		if !ok {
-			return nil, nil, info, &InvalidError{Field: "egress", Msg: "trusted is only for the machines the plugin's trusted_machines names, and " +
-				strconv.Quote(strings.TrimSpace(req.Target.Name)) + " isn't one"}
 		}
 	}
 	machines := 0
