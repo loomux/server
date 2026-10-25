@@ -53,6 +53,9 @@ var (
 	ErrEphemeralStop = errors.New("providers: an ephemeral machine keeps nothing when stopped; destroy it instead")
 	// ErrQuota: the plugin's max_environments is reached.
 	ErrQuota = errors.New("providers: the plugin's machine limit is reached")
+	// ErrPlanChanged: what Create would make now isn't the plan it was
+	// asked to make (CreateRequest.Expect).
+	ErrPlanChanged = errors.New("providers: the plugin's offer changed since it was planned")
 )
 
 // BadStateError: the operation doesn't apply to the machine's state.

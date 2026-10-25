@@ -154,3 +154,32 @@ func TestTrustRefusal(t *testing.T) {
 		})
 	}
 }
+
+// With Expect, Create makes only the plan the user was shown: a plugin
+// whose offer resolves differently by then makes nothing (#456
+// pre-review finding 7). Its counts aren't part of the plan.
+func TestCreateExpectedPlan(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	req := providers.CreateRequest{Target: registry.Target{Name: "builds"}, PluginID: h.pluginID, Size: "medium"}
+	shown, err := h.m.Plan(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := *shown
+	changed.Size.Memory = "8Gi"
+	req.Expect = &changed
+	if _, _, err := h.m.Create(ctx, req); !errors.Is(err, providers.ErrPlanChanged) {
+		t.Fatalf("Create of a changed plan: %v, want ErrPlanChanged", err)
+	}
+	if envs, _ := h.store.ListEnvironmentsByPlugin(ctx, h.pluginID); len(envs) != 0 {
+		t.Fatalf("a changed plan made %d machines", len(envs))
+	}
+
+	same := *shown
+	same.Machines, same.MaxMachines = 3, 9
+	req.Expect = &same
+	if _, _, err := h.m.Create(ctx, req); err != nil {
+		t.Fatalf("Create of the shown plan: %v", err)
+	}
+}

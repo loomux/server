@@ -34,6 +34,8 @@ func TestMachineRefusal(t *testing.T) {
 		{&plugins.CapabilityMissingError{Method: "targets.create", Capability: "targets.create"}, "that plugin doesn't make machines."},
 		{&providers.BadAddressError{Detail: "no port"}, "the plugin's offer can't be used (no port)."},
 		{fmt.Errorf("create: %w", registry.ErrConflict), "a target with that name exists."},
+		{providers.ErrPlanChanged, "the plugin's offer changed since I asked, so it would not be the machine I showed you. " +
+			"Ask again to see what it offers now."},
 	} {
 		var refusal *router.MachineRefusal
 		if err := machineRefusal(tc.err); !errors.As(err, &refusal) || refusal.Reason != tc.want {
@@ -56,6 +58,24 @@ func TestMachineRequest(t *testing.T) {
 	}
 	if !reflect.DeepEqual(req.Target.Policy, registry.TargetPolicy{}) {
 		t.Errorf("policy = %+v, want a created machine's default", req.Target.Policy)
+	}
+}
+
+// A confirmed plan is created as exactly that plan: the request says
+// what it must resolve to, every field the offer showed.
+func TestMachineCreateRequest(t *testing.T) {
+	plan := router.MachinePlan{PluginID: "p", Plugin: "kubernetes", Label: "lab", Name: "builds",
+		Size:       router.MachineSize{Name: "medium", CPU: "2", Memory: "4Gi", Disk: "20Gi", CPURequest: "1", MemoryRequest: "3Gi"},
+		Persistent: false, Egress: "none", Machines: 1, MaxMachines: 5}
+	req := createRequest(plan)
+	if req.Expect == nil {
+		t.Fatal("no expected plan")
+	}
+	if got := machinePlan(*req.Expect); got != plan {
+		t.Errorf("expected plan = %+v, want %+v", got, plan)
+	}
+	if req.Size != "medium" || req.Persistent == nil || *req.Persistent || req.Egress != "none" || !req.NamedTrust {
+		t.Errorf("request = %+v", req)
 	}
 }
 

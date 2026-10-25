@@ -89,14 +89,16 @@ func (m *machineMaker) Plan(ctx context.Context, spec router.MachineSpec) (route
 	if err != nil {
 		return router.MachinePlan{}, machineRefusal(err)
 	}
+	return machinePlan(*p), nil
+}
+
+func machinePlan(p providers.Plan) router.MachinePlan {
 	return router.MachinePlan{PluginID: p.PluginID, Plugin: p.PluginName, Label: p.PluginLabel, Name: p.Name,
-		Size: machineSize(p.Size), Persistent: p.Persistent, Egress: p.Egress, Machines: p.Machines, MaxMachines: p.MaxMachines}, nil
+		Size: machineSize(p.Size), Persistent: p.Persistent, Egress: p.Egress, Machines: p.Machines, MaxMachines: p.MaxMachines}
 }
 
 func (m *machineMaker) Create(ctx context.Context, plan router.MachinePlan) (string, error) {
-	persistent := plan.Persistent
-	target, _, err := m.machines.Create(ctx, request(router.MachineSpec{PluginID: plan.PluginID, Name: plan.Name,
-		Size: plan.Size.Name, Persistent: &persistent, Egress: plan.Egress}))
+	target, _, err := m.machines.Create(ctx, createRequest(plan))
 	if err != nil {
 		return "", machineRefusal(err)
 	}
@@ -106,6 +108,20 @@ func (m *machineMaker) Create(ctx context.Context, plan router.MachinePlan) (str
 	m.creates++
 	m.mu.Unlock()
 	return target.ID, nil
+}
+
+// createRequest is the request that makes plan, and only plan: the
+// plugin's offer is resolved once more as it is created, and a plan
+// that differs by then makes nothing (providers.ErrPlanChanged).
+func createRequest(plan router.MachinePlan) providers.CreateRequest {
+	persistent := plan.Persistent
+	req := request(router.MachineSpec{PluginID: plan.PluginID, Name: plan.Name,
+		Size: plan.Size.Name, Persistent: &persistent, Egress: plan.Egress})
+	req.Expect = &providers.Plan{PluginID: plan.PluginID, PluginName: plan.Plugin, PluginLabel: plan.Label, Name: plan.Name,
+		Size: protocol.Size{Name: plan.Size.Name, CPU: plan.Size.CPU, Memory: plan.Size.Memory, Disk: plan.Size.Disk,
+			CPURequest: plan.Size.CPURequest, MemoryRequest: plan.Size.MemoryRequest},
+		Persistent: plan.Persistent, Egress: plan.Egress, Machines: plan.Machines, MaxMachines: plan.MaxMachines}
+	return req
 }
 
 func machineSize(s protocol.Size) router.MachineSize {
@@ -130,6 +146,9 @@ func machineRefusal(err error) error {
 		return &router.MachineRefusal{Reason: "that plugin doesn't make machines."}
 	case errors.As(err, &badAddr):
 		return &router.MachineRefusal{Reason: "the plugin's offer can't be used (" + badAddr.Detail + ")."}
+	case errors.Is(err, providers.ErrPlanChanged):
+		return &router.MachineRefusal{Reason: "the plugin's offer changed since I asked, so it would not be the machine I showed you. " +
+			"Ask again to see what it offers now."}
 	case errors.Is(err, registry.ErrConflict):
 		return &router.MachineRefusal{Reason: "a target with that name exists."}
 	}

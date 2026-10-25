@@ -186,6 +186,11 @@ type CreateRequest struct {
 	// router proposes is never trusted on the plugin's name-independent
 	// describe alone. A plugin that can't answer for a name refuses it.
 	NamedTrust bool
+	// Expect, when set, is the plan Create must make (LOOM-216): what a
+	// chat offer showed. If the request resolves to anything else by the
+	// time Create plans it, nothing is made and Create returns
+	// ErrPlanChanged. The counts aren't compared.
+	Expect *Plan
 }
 
 // Plan is what Create would make for a request, every default resolved
@@ -443,6 +448,9 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Targ
 	if err != nil {
 		return nil, nil, err
 	}
+	if req.Expect != nil && !samePlan(*plan, *req.Expect) {
+		return nil, nil, ErrPlanChanged
+	}
 	size, persistent, egress := plan.Size.Name, plan.Persistent, plan.Egress
 
 	id, err := newID()
@@ -503,6 +511,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Targ
 	m.updateGauge(ctx)
 	m.startJob(env.ID, func(ctx context.Context) { m.runCreate(ctx, env.ID) })
 	return &target, env, nil
+}
+
+// samePlan reports whether a and b make the same machine; the plugin's
+// counts are not part of it.
+func samePlan(a, b Plan) bool {
+	a.Machines, a.MaxMachines, b.Machines, b.MaxMachines = 0, 0, 0, 0
+	return a == b
 }
 
 // chooseEgress is the machine's egress: the one asked for, if offered;
