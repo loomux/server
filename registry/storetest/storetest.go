@@ -27,6 +27,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("Settings", func(t *testing.T) { testSettings(t, newStore(t)) })
 	t.Run("Environment", func(t *testing.T) { testEnvironmentCRUD(t, newStore(t)) })
 	t.Run("EnvironmentPluginRestrict", func(t *testing.T) { testEnvironmentPluginRestrict(t, newStore(t)) })
+	t.Run("EnvironmentWithin", func(t *testing.T) { testEnvironmentWithin(t, newStore(t)) })
 	t.Run("CredentialTargetScope", func(t *testing.T) { testCredentialTargetScope(t, newStore(t)) })
 	t.Run("Target", func(t *testing.T) { testTargetCRUD(t, newStore(t)) })
 	t.Run("TargetNotFound", func(t *testing.T) { testTargetNotFound(t, newStore(t)) })

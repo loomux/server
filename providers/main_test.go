@@ -53,6 +53,16 @@ type harness struct {
 
 func newHarness(t *testing.T, config map[string]any) *harness {
 	t.Helper()
+	return newHarnessAt(t, config, filepath.Join(t.TempDir(), "p.db"), "", nil)
+}
+
+// newHarnessAt is newHarness over the database at dbPath, each harness
+// a server process of its own: its own connections, plugin manager and
+// fake plugin process. Given pluginID, the plugin is already installed
+// there (another harness on the same file installed it) and is started
+// instead; wrap, if set, stands between the harness and its store.
+func newHarnessAt(t *testing.T, config map[string]any, dbPath, pluginID string, wrap func(registry.Store) registry.Store) *harness {
+	t.Helper()
 	bundle := t.TempDir()
 	dir := filepath.Join(bundle, "fake")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -68,9 +78,13 @@ func newHarness(t *testing.T, config map[string]any) *harness {
 	if err := os.WriteFile(filepath.Join(dir, plugins.ExecutableName("fake")), data, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	store, err := sqlite.Open(filepath.Join(t.TempDir(), "p.db"), sqlite.WithMasterKey([]byte("01234567890123456789012345678901")))
+	db, err := sqlite.Open(dbPath, sqlite.WithMasterKey([]byte("01234567890123456789012345678901")))
 	if err != nil {
 		t.Fatal(err)
+	}
+	var store registry.Store = db
+	if wrap != nil {
+		store = wrap(db)
 	}
 	h := &harness{store: store}
 	h.pm = plugins.NewManager(store, &plugins.Catalog{BundleDir: bundle}, protocol.HostInfo{Version: "test", InstanceID: "inst"}, nil, nil)
@@ -98,16 +112,23 @@ func newHarness(t *testing.T, config map[string]any) *harness {
 	if config == nil {
 		config = map[string]any{}
 	}
+	t.Cleanup(func() {
+		h.m.Close()
+		_ = h.pm.Close(context.Background())
+		_ = db.Close()
+	})
+	if pluginID != "" {
+		if err := h.pm.StartAll(context.Background()); err != nil {
+			t.Fatalf("start the fake: %v", err)
+		}
+		h.pluginID = pluginID
+		return h
+	}
 	v, err := h.pm.Install(context.Background(), plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceBundled, Label: "fake", Config: config})
 	if err != nil {
 		t.Fatalf("install the fake: %v", err)
 	}
 	h.pluginID = v.ID
-	t.Cleanup(func() {
-		h.m.Close()
-		_ = h.pm.Close(context.Background())
-		_ = store.Close()
-	})
 	return h
 }
 

@@ -278,7 +278,13 @@ type Store interface {
 	// ErrNotFound; GetEnvironmentByTarget is ErrNotFound for a target
 	// with none. A target with an environment can't be deleted
 	// (ErrConflict), nor a plugin that environments still name.
+	// CreateEnvironmentWithin is CreateEnvironment admitting the row only
+	// while fewer than max environments name its plugin (ErrQuota, and
+	// nothing written, otherwise), the count and the insert one atomic
+	// step for every connection and process on the store, so two creates
+	// can't both take the last place (LOOM-244); max 0 is no limit.
 	CreateEnvironment(ctx context.Context, e *Environment) error
+	CreateEnvironmentWithin(ctx context.Context, e *Environment, max int) error
 	GetEnvironment(ctx context.Context, id string) (*Environment, error)
 	GetEnvironmentByTarget(ctx context.Context, targetID string) (*Environment, error)
 	ListEnvironments(ctx context.Context) ([]*Environment, error)

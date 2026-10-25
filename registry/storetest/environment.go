@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/Loomux/server/registry"
@@ -221,5 +222,59 @@ func testCredentialTargetScope(t *testing.T, store registry.Store) {
 	same := &registry.Credential{ID: "cred-ws-same", Name: "TOKEN", WorkspaceID: ws.ID, TargetID: onA.ID, Value: "v"}
 	if err := store.CreateCredential(ctx, same); err != nil {
 		t.Errorf("workspace on that target: %v", err)
+	}
+}
+
+// testEnvironmentWithin: CreateEnvironmentWithin admits a row only under
+// its plugin's limit (LOOM-244).
+func testEnvironmentWithin(t *testing.T, store registry.Store) {
+	ctx := context.Background()
+	plugin, other := newPlugin("within"), newPlugin("within-other")
+	for _, p := range []*registry.Plugin{plugin, other} {
+		p.Secrets = nil
+		if err := store.CreatePlugin(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := 0
+	env := func(pluginID string) *registry.Environment {
+		n++
+		target := &registry.Target{ID: fmt.Sprintf("t-within-%d", n), Name: fmt.Sprintf("within-%d", n), Kind: registry.TargetKindRemote, Host: fmt.Sprintf("w%d.fake.invalid", n), User: "agent"}
+		if err := store.CreateTarget(ctx, target); err != nil {
+			t.Fatal(err)
+		}
+		e := newEnvironment(target.ID, pluginID)
+		e.ID = fmt.Sprintf("within%d", n)
+		return e
+	}
+
+	first := env(plugin.ID)
+	first.Status = registry.EnvironmentError // every status counts
+	if err := store.CreateEnvironmentWithin(ctx, first, 2); err != nil {
+		t.Fatalf("first of 2: %v", err)
+	}
+	if err := store.CreateEnvironmentWithin(ctx, env(other.ID), 1); err != nil {
+		t.Fatalf("another plugin's first of 1: %v", err)
+	}
+	if err := store.CreateEnvironmentWithin(ctx, env(plugin.ID), 2); err != nil {
+		t.Fatalf("second of 2 (another plugin's rows don't count): %v", err)
+	}
+	refused := env(plugin.ID)
+	if err := store.CreateEnvironmentWithin(ctx, refused, 2); !errors.Is(err, registry.ErrQuota) {
+		t.Fatalf("third of 2: want ErrQuota, got %v", err)
+	}
+	if _, err := store.GetEnvironment(ctx, refused.ID); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("a refused environment was written: %v", err)
+	}
+	if err := store.CreateEnvironmentWithin(ctx, refused, 0); err != nil {
+		t.Errorf("max 0 is no limit: %v", err)
+	}
+	dup := env(plugin.ID)
+	dup.ID = first.ID
+	if err := store.CreateEnvironmentWithin(ctx, dup, 0); !errors.Is(err, registry.ErrConflict) {
+		t.Errorf("a duplicate id: want ErrConflict, got %v", err)
+	}
+	if list, _ := store.ListEnvironmentsByPlugin(ctx, plugin.ID); len(list) != 3 {
+		t.Errorf("environments = %d, want 3", len(list))
 	}
 }
