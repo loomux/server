@@ -28,10 +28,12 @@ func Socket(t testing.TB) string {
 }
 
 // Kill kills socket's tmux server, if one runs, and removes its socket
-// file.
+// file and the <socket>.lock tmux leaves when its server is killed while
+// starting (LOOM-243).
 func Kill(socket string) {
 	_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
 	_ = os.Remove(Path(socket))
+	_ = os.Remove(Path(socket) + ".lock")
 }
 
 // Path is where tmux puts socket's file: $TMUX_TMPDIR, else /tmp, then
