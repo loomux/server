@@ -147,3 +147,37 @@ func TestDecide_ProvisionTargetBadName_RecoversByCorrectiveRetry(t *testing.T) {
 		t.Errorf("the retry doesn't say what was wrong: %v", b)
 	}
 }
+
+// With no machine plugin, a provision_target the model picks anyway is
+// answered with how to get one, as LOOM-68 answers a provisioning with
+// no target: no corrective retry, no escalation, and an open task is
+// left alone, since it was a request for a machine.
+func TestDecide_ProvisionTargetWithoutPlugin_Answers(t *testing.T) {
+	primarySrv, primaryCount := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{"action": "provision_target",
+		"new_target": map[string]any{"plugin_id": "plug-1", "name": "builds"}, "leave_open_task": false}))
+	escalationSrv, escalationCount := newFakeServer(t, toolCallHandler(t, decideToolName, map[string]any{"action": "answer_directly", "direct_answer": "from escalation"}))
+	escalation := tierFor(escalationSrv, "escalation-model")
+	m, err := New(Config{Primary: tierFor(primarySrv, "test-model"), Escalation: &escalation}, []string{"claude-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, open := range map[string]*router.OpenTaskSnapshot{"no open task": nil, "open task": {TaskID: "task-1", WorkspaceID: "ws-1"}} {
+		t.Run(name, func(t *testing.T) {
+			*primaryCount, *escalationCount = 0, 0
+			dec, err := m.Decide(context.Background(), "a new machine please", nil, []router.TargetSnapshot{{ID: "t-1"}},
+				func(o *router.DispatchOptions) { o.OpenTask = open })
+			if err != nil {
+				t.Fatalf("Decide: %v", err)
+			}
+			if dec.Action != router.ActionAnswerDirectly || dec.DirectAnswer != router.NoMachinePluginReply {
+				t.Errorf("Decide = %+v, want the no-plugin answer", dec)
+			}
+			if dec.LeaveOpenTask != (open != nil) {
+				t.Errorf("LeaveOpenTask = %v with open task %v", dec.LeaveOpenTask, open)
+			}
+			if *primaryCount != 1 || *escalationCount != 0 {
+				t.Errorf("primary called %d times, escalation %d; want 1 and 0", *primaryCount, *escalationCount)
+			}
+		})
+	}
+}
