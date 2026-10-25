@@ -520,7 +520,9 @@ func (p *Plugin) runCreate(ctx context.Context, cfg Config, eng *engine, host pr
 			return protocol.Environment{}, err
 		}
 		// Records, and makings in flight that have none yet: two creates
-		// racing past the cap both see the other.
+		// racing past the cap both see the other. That holds within this
+		// process; across processes, the host's admission holds the
+		// limit (LOOM-244).
 		ids := map[string]bool{}
 		for _, r := range recs {
 			ids[r.Labels[protocol.LabelEnvironment]] = true

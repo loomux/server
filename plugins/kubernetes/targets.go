@@ -118,7 +118,10 @@ func (p *Plugin) CreateTarget(ctx context.Context, spec protocol.EnvironmentSpec
 // createRecord makes a new machine's Secret, its record, if the quota
 // has room. Creates are serialized from the count to the Secret, so two
 // at once can't both take the last place; two plugin processes (a
-// rollout's overlap) still could, and the host counts too.
+// rollout's overlap) still could. The host's admission is what holds
+// the limit across processes (LOOM-244): it inserts the machine's row,
+// counted atomically, before asking for it; this count also sees
+// machines the host has no row for (kept ones, orphans).
 func (p *Plugin) createRecord(ctx context.Context, client kubernetes.Interface, cfg Config, spec protocol.EnvironmentSpec, instance string) (*corev1.Secret, error) {
 	p.createMu.Lock()
 	defer p.createMu.Unlock()

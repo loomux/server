@@ -518,9 +518,15 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*registry.Targ
 		Status: registry.EnvironmentCreating, Size: size, Persistent: persistent, Egress: egress, Image: info.Image,
 		HostKey: hostKey.public, HostPrivateKey: hostKey.privatePEM,
 	}
-	if err := m.store.CreateEnvironment(ctx, env); err != nil {
+	// plan's count refuses early; this insert decides, atomically, so a
+	// create racing this one (another request, another process) can't
+	// take the same last place (LOOM-244).
+	if err := m.store.CreateEnvironmentWithin(ctx, env, plan.MaxMachines); err != nil {
 		_ = m.store.DeleteTarget(ctx, target.ID)
 		m.releaseKey(ctx, key.ID)
+		if errors.Is(err, registry.ErrQuota) {
+			return nil, nil, fmt.Errorf("%w (%d)", ErrQuota, plan.MaxMachines)
+		}
 		return nil, nil, err
 	}
 	if egress == protocol.EgressTrusted {

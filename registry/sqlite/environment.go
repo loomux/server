@@ -19,6 +19,14 @@ const environmentColumns = `id, target_id, plugin_id, plugin_name, plugin_versio
 	size, persistent, egress, image, image_digest, host_key, host_private_key, created_at, updated_at`
 
 func (s *Store) CreateEnvironment(ctx context.Context, e *registry.Environment) error {
+	return s.CreateEnvironmentWithin(ctx, e, 0)
+}
+
+// CreateEnvironmentWithin counts and inserts in one statement: a
+// statement that writes takes SQLite's write lock before it reads, so
+// no other connection or process can insert between the count and the
+// row (LOOM-244).
+func (s *Store) CreateEnvironmentWithin(ctx context.Context, e *registry.Environment, max int) error {
 	if s.masterKey == nil {
 		return fmt.Errorf("sqlite: create environment: %w", registry.ErrNoMasterKey)
 	}
@@ -28,11 +36,13 @@ func (s *Store) CreateEnvironment(ctx context.Context, e *registry.Environment) 
 	}
 	now := time.Now().UTC()
 	e.CreatedAt, e.UpdatedAt = now, now
-	_, err = s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO environments (`+environmentColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE ? <= 0 OR (SELECT COUNT(*) FROM environments WHERE plugin_id = ?) < ?`,
 		e.ID, e.TargetID, nullIfEmpty(e.PluginID), e.PluginName, e.PluginVersion, string(e.Status), e.StatusReason,
-		e.Size, e.Persistent, e.Egress, e.Image, e.ImageDigest, e.HostKey, sealed, e.CreatedAt, e.UpdatedAt)
+		e.Size, e.Persistent, e.Egress, e.Image, e.ImageDigest, e.HostKey, sealed, e.CreatedAt, e.UpdatedAt,
+		max, nullIfEmpty(e.PluginID), max)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target %q already has an environment", registry.ErrConflict, e.TargetID)
 	}
@@ -41,6 +51,13 @@ func (s *Store) CreateEnvironment(ctx context.Context, e *registry.Environment) 
 	}
 	if err != nil {
 		return fmt.Errorf("sqlite: create environment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("sqlite: create environment: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: the plugin already has its %d machines", registry.ErrQuota, max)
 	}
 	return nil
 }

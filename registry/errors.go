@@ -10,6 +10,10 @@ var ErrNotFound = errors.New("registry: not found")
 // key referencing a row that doesn't exist or still has dependents).
 var ErrConflict = errors.New("registry: conflict")
 
+// ErrQuota is returned when a create would take a plugin instance past
+// its machine limit (CreateEnvironmentWithin, LOOM-244).
+var ErrQuota = errors.New("registry: limit reached")
+
 // ConflictError is an ErrConflict (errors.Is matches it) carrying a
 // reason a person can act on — what blocks the operation, worded to be
 // shown to them as is.
