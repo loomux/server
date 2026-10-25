@@ -814,6 +814,19 @@ func TestCheck(t *testing.T) {
 			t.Fatalf("a forbidden Service read must be reported, not read as present: %+v", res)
 		}
 	})
+	t.Run("service read fails", func(t *testing.T) {
+		cs := fake.NewClientset(kindPolicies(t)...)
+		prependReactor(cs, "get", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, kerrors.NewInternalError(errors.New("etcdserver: request timed out"))
+		})
+		canaryExits(cs, exitBlocked)
+		p := configured(t, cs, nil)
+		res, _ := p.Check(ctx)
+		pr := problem(res, ProblemServiceMissing)
+		if pr == nil || pr.Severity != protocol.SeverityWarning || !strings.Contains(pr.Message, "request timed out") {
+			t.Fatalf("a failed Service read must be reported, not read as present (LOOM-246): %+v", res)
+		}
+	})
 	t.Run("forbidden", func(t *testing.T) {
 		cs := fake.NewClientset(kindPolicies(t)...)
 		prependReactor(cs, "list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
