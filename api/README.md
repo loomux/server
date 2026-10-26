@@ -466,8 +466,10 @@ plain ssh form.
     events: [{id, dispatch_id?, created_at, kind, model?, tier?,
     target_id?, workspace_id?, task_id?, command?, outcome?, error_class?,
     duration_ms, detail?}, ...]}`. `kind` is `decision`, `command`,
-    `provision`, `offer`, `offer_answered`, `agent_turn`, `relay` (late
-    output) or `outcome`; commands are redacted like transcripts. An
+    `provision`, `machine` (a machine created from chat: `target_id`, no
+    `workspace_id`; `provision` before LOOM-247), `offer`,
+    `offer_answered`, `agent_turn`, `relay` (late output) or `outcome`;
+    commands are redacted like transcripts. An
     unknown conversation, or one past `LOOMUX_EVENT_RETENTION`, has an
     empty list. Backed by `EventStore` (`WithEvents`); `501` without it.
   - `GET /api/v1/conversations/{id}/stream` — auth-gated (LOOM-21),

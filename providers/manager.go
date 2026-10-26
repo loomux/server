@@ -131,6 +131,10 @@ type Manager struct {
 	// to a dispatch, as this process saw it (idle.go).
 	lastUse map[string]time.Time
 	closed  bool
+
+	// warnedSizes is each plugin/size name warnDroppedSize has logged.
+	warnMu      sync.Mutex
+	warnedSizes map[string]bool
 }
 
 // NewManager makes a Manager over store and the plugin manager.
@@ -149,8 +153,8 @@ func NewManager(store registry.Store, pm *plugins.Manager, instanceID string, lo
 		NotifyDelay: DefaultNotifyDelay, OfferTimeout: DefaultOfferTimeout,
 		Now:   time.Now,
 		locks: map[string]*sync.Mutex{}, running: map[string]*job{}, orphanSeen: map[string]time.Time{}, lastUse: map[string]time.Time{},
-		notified: map[string]*notifyRun{},
-		life:     life, endLife: endLife,
+		notified: map[string]*notifyRun{}, warnedSizes: map[string]bool{},
+		life: life, endLife: endLife,
 	}
 }
 
@@ -247,7 +251,7 @@ func (m *Manager) Describe(ctx context.Context, pluginID string) (protocol.Targe
 		MaxEnvironments:   max(info.MaxEnvironments, 0),
 		Environments:      max(info.Environments, 0),
 	}
-	out.Sizes = append(out.Sizes, offeredSizes(info.Sizes)...)
+	out.Sizes = append(out.Sizes, m.offeredSizes(pluginID, info.Sizes)...)
 	for _, e := range info.EgressOptions[:min(len(info.EgressOptions), maxOffered)] {
 		out.EgressOptions = append(out.EgressOptions, truncate(e, 32))
 	}
@@ -261,11 +265,15 @@ const maxOffered = 32
 // truncated, and a truncated name can't be created.
 const maxSizeName = 64
 
-// offeredSizes is the sizes a plugin's describe offers as Loomux passes
-// them on, to the create form, the chat's offers and Plan alike: at most
-// maxOffered, their strings truncated, and none whose name is longer than
-// maxSizeName.
-func offeredSizes(sizes []protocol.Size) []protocol.Size {
+// maxWarnedSizes bounds the sizes warnDroppedSize remembers: a plugin
+// sending ever new long names isn't warned about past it.
+const maxWarnedSizes = 256
+
+// offeredSizes is the sizes plugin instance pluginID's describe offers as
+// Loomux passes them on, to the create form, the chat's offers and Plan
+// alike: at most maxOffered, their strings truncated, and none whose name
+// is longer than maxSizeName, which is warned about (LOOM-247).
+func (m *Manager) offeredSizes(pluginID string, sizes []protocol.Size) []protocol.Size {
 	var out []protocol.Size
 	for _, s := range sizes {
 		if len(out) == maxOffered {
@@ -273,9 +281,29 @@ func offeredSizes(sizes []protocol.Size) []protocol.Size {
 		}
 		if len(s.Name) <= maxSizeName {
 			out = append(out, boundSize(s))
+		} else {
+			m.warnDroppedSize(pluginID, s.Name)
 		}
 	}
 	return out
+}
+
+// warnDroppedSize logs, once per plugin instance and name, that a size
+// was left out for its name's length, so an operator sees why it is
+// missing. Describe runs for every chat message's offers and every
+// create form, so it isn't logged each time.
+func (m *Manager) warnDroppedSize(pluginID, name string) {
+	key := pluginID + "/" + name
+	m.warnMu.Lock()
+	seen := m.warnedSizes[key] || len(m.warnedSizes) >= maxWarnedSizes
+	if !seen {
+		m.warnedSizes[key] = true
+	}
+	m.warnMu.Unlock()
+	if !seen {
+		m.logger.Warn("plugin size left out: its name is longer than 64 characters", "plugin", pluginID,
+			"size", truncate(name, maxSizeName), "length", len(name))
+	}
 }
 
 // boundSize is s with its strings truncated, requests included (#450).
@@ -403,7 +431,7 @@ func (m *Manager) plan(ctx context.Context, req CreateRequest) (*Plan, *plugins.
 		return nil, nil, info, err
 	}
 	// Only a size Describe offers, as it shows it.
-	info.Sizes = offeredSizes(info.Sizes)
+	info.Sizes = m.offeredSizes(req.PluginID, info.Sizes)
 	caps := map[string]bool{}
 	for _, c := range view.Capabilities {
 		caps[c] = true

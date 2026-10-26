@@ -1,9 +1,14 @@
 package providers_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -222,4 +227,62 @@ func TestSizesBoundedAlike(t *testing.T) {
 	if !errors.As(err, &invalid) || invalid.Field != "size" || strings.Contains(invalid.Msg, "nnnn") {
 		t.Errorf("planning the unoffered size: %v, want a size refusal naming only offered sizes", err)
 	}
+}
+
+// LOOM-247: a size left out for its name's length is warned about, so an
+// operator sees why it is missing, but once per plugin and name however
+// often the sizes are read: every chat message's offers read them.
+func TestDroppedSizeWarnedOnce(t *testing.T) {
+	var logs syncBuffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	h := newHarnessLogged(t, map[string]any{"long_sizes": "true"}, filepath.Join(t.TempDir(), "p.db"), "", nil, logger)
+	ctx := context.Background()
+	for range 3 {
+		if _, err := h.m.Describe(ctx, h.pluginID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.m.Offers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.m.Plan(ctx, providers.CreateRequest{Target: registry.Target{Name: "w"}, PluginID: h.pluginID, Size: "wide"}); err != nil {
+		t.Fatal(err)
+	}
+	var warned []map[string]any
+	for line := range strings.Lines(logs.String()) {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		if strings.HasPrefix(rec["msg"].(string), "plugin size left out") {
+			warned = append(warned, rec)
+		}
+	}
+	if len(warned) != 1 {
+		t.Fatalf("warned %d times, want once:\n%s", len(warned), logs.String())
+	}
+	w := warned[0]
+	if w["level"] != "WARN" || w["plugin"] != h.pluginID || w["length"] != float64(len(fake.LongSizeName)) ||
+		w["size"] != fake.LongSizeName[:64]+"…" {
+		t.Errorf("warning = %v", w)
+	}
+}
+
+// syncBuffer is a log the manager's goroutines may write while a test
+// reads it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
