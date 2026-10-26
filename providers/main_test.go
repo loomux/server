@@ -3,6 +3,7 @@ package providers_test
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,13 @@ func newHarness(t *testing.T, config map[string]any) *harness {
 // instead; wrap, if set, stands between the harness and its store.
 func newHarnessAt(t *testing.T, config map[string]any, dbPath, pluginID string, wrap func(registry.Store) registry.Store) *harness {
 	t.Helper()
+	return newHarnessLogged(t, config, dbPath, pluginID, wrap, nil)
+}
+
+// newHarnessLogged is newHarnessAt with the providers manager logging to
+// logger.
+func newHarnessLogged(t *testing.T, config map[string]any, dbPath, pluginID string, wrap func(registry.Store) registry.Store, logger *slog.Logger) *harness {
+	t.Helper()
 	bundle := t.TempDir()
 	dir := filepath.Join(bundle, "fake")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -92,7 +100,7 @@ func newHarnessAt(t *testing.T, config map[string]any, dbPath, pluginID string, 
 		o.RestartBackoff = 10 * time.Millisecond
 		o.StopTimeout = 500 * time.Millisecond
 	}
-	h.m = providers.NewManager(store, h.pm, "inst", nil, nil)
+	h.m = providers.NewManager(store, h.pm, "inst", logger, nil)
 	h.m.PollInterval = 20 * time.Millisecond
 	h.m.CreateTimeout = 10 * time.Second
 	h.m.Probe = func(ctx context.Context, targetID string) error {

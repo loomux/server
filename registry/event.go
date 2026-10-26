@@ -12,6 +12,9 @@ const (
 	EventCommand = "command"
 	// EventProvision: a workspace's provisioning ran on a target.
 	EventProvision = "provision"
+	// EventMachine: a machine was created from chat (LOOM-247): its
+	// target, no workspace. Before LOOM-247 it was an EventProvision.
+	EventMachine = "machine"
 	// EventOffer: the router offered something and waits for a yes;
 	// EventOfferAnswered: how the offer was answered.
 	EventOffer         = "offer"

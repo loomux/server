@@ -170,6 +170,25 @@ func TestProvisionTarget_OfferThenCreateOnYes(t *testing.T) {
 	if confs := confirmations(t, store); confs[0].Status != registry.ConfirmationApproved || confs[0].StatusReason != "" {
 		t.Errorf("confirmation = %+v", confs[0])
 	}
+	// LOOM-247: the audit trail logs it as a machine, on its target, not
+	// as a workspace's provisioning.
+	events, err := store.ListDispatchEventsByConversation(ctx, "conv-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var machines []*registry.DispatchEvent
+	for _, e := range events {
+		switch e.Kind {
+		case registry.EventMachine:
+			machines = append(machines, e)
+		case registry.EventProvision:
+			t.Errorf("machine creation logged as a provision: %+v", e)
+		}
+	}
+	if len(machines) != 1 || machines[0].TargetID != "target-new" || machines[0].WorkspaceID != "" ||
+		machines[0].Outcome != "machine creating" || !strings.Contains(machines[0].Detail, "machine builds: plugin kubernetes") {
+		t.Errorf("machine events = %+v", machines)
+	}
 
 	// One-shot: another yes creates nothing more.
 	if _, err := r.Dispatch(ctx, "conv-1", "yes"); err != nil {

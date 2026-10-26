@@ -217,7 +217,7 @@ func (r *Router) confirmMachine(ctx context.Context, log *slog.Logger, conversat
 		return fail("create machine", err)
 	}
 	r.resolveOffer(ctx, log, p, registry.ConfirmationApproved)
-	r.recordEvent(ctx, conversationID, registry.DispatchEvent{Kind: registry.EventProvision, TargetID: targetID,
+	r.recordEvent(ctx, conversationID, registry.DispatchEvent{Kind: registry.EventMachine, TargetID: targetID,
 		Outcome: "machine creating", Detail: "machine " + plan.Name + ": " + planSummary(plan)})
 	log.Info("machine created", "target_id", targetID, "plugin", plan.PluginID)
 	reply := fmt.Sprintf("Creating %s with the %s plugin. It is coming up now, which takes a minute or two "+
