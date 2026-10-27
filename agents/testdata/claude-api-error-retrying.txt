@@ -1,0 +1,10 @@
+❯ fix the failing test in api/body_test.go
+
+  ⎿  API Error (Request timed out.) · Retrying in 4 seconds… (attempt 3/10)
+
+✻ Pondering… (esc to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

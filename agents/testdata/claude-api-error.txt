@@ -1,0 +1,9 @@
+❯ summarize the open issues in this repository
+
+  ⎿  API Error: Claude Opus 5.5's safeguards flagged this session as potentially violating our
+     Usage Policy. Try rephrasing the request or starting a new session.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

@@ -1812,6 +1812,9 @@ func newTargetResponse(t *registry.Target) targetResponse {
 // field: ids are server-minted (see handleCreateTarget), so a client
 // that sends one has it ignored rather than silently honoured.
 type targetRequest struct {
+	// Name, Kind, Host and User are required on a create; on a PUT,
+	// omitted (or "") keeps what's stored (LOOM-256), except that a
+	// target turned local has no host or user.
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 	Host string `json:"host"`
@@ -1906,19 +1909,30 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 		}
 		req.Kind = string(registry.TargetKindRemote)
 	}
-	target = &registry.Target{
-		Name: strings.TrimSpace(req.Name),
-		Kind: registry.TargetKind(req.Kind),
-		Host: req.Host,
-		User: req.User,
-	}
-	// base is the stored target on an update: its optional fields stand
-	// unless the request names them (LOOM-119).
+	target = &registry.Target{}
+	// base is the stored target on an update: its fields stand unless the
+	// request names them (LOOM-119, LOOM-256).
 	if base != nil {
+		target.Name, target.Kind, target.Host, target.User = base.Name, base.Kind, base.Host, base.User
 		target.SSHKeyRef, target.WorkspaceRoot, target.PermissionMode = base.SSHKeyRef, base.WorkspaceRoot, base.PermissionMode
 		target.Policy = base.Policy
 		target.SSHPort = base.SSHPort
 		target.SSHProxy = base.SSHProxy
+		if req.Kind == string(registry.TargetKindLocal) {
+			target.Host, target.User = "", ""
+		}
+	}
+	if name := strings.TrimSpace(req.Name); name != "" || base == nil {
+		target.Name = name
+	}
+	if req.Kind != "" || base == nil {
+		target.Kind = registry.TargetKind(req.Kind)
+	}
+	if req.Host != "" || base == nil {
+		target.Host = req.Host
+	}
+	if req.User != "" || base == nil {
+		target.User = req.User
 	}
 	if req.SSHPort != nil {
 		target.SSHPort = *req.SSHPort

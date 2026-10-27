@@ -1,0 +1,14 @@
+❯ fix the failing test in api/body_test.go
+
+● I'll start by running the test to see the failure.
+
+● Bash(go test ./api/ -run TestBody)
+  ⎿  FAIL: TestBody (0.00s)
+
+  ⎿  API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal
+     server error"}}
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

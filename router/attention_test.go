@@ -37,6 +37,9 @@ func attentionHarness(t *testing.T, opts ...router.Option) (registry.Store, *fak
 		case "LIMIT":
 			return &registry.Attention{Kind: registry.AttentionUsageLimit, Title: "Usage limit reached",
 				Detail: "5-hour limit reached ∙ resets 5pm (Europe/Istanbul)", Resets: "5pm (Europe/Istanbul)"}
+		case "APIERR":
+			return &registry.Attention{Kind: registry.AttentionAPIError, Title: "Agent API error",
+				Detail: "API Error: Claude Opus 5.5's safeguards flagged this session"}
 		}
 		return nil
 	}
@@ -236,6 +239,32 @@ func TestDispatch_UsageLimit(t *testing.T) {
 	}
 	task := onlyTask(t, store, ws.ID)
 	assertFailed(t, task, registry.ErrorClassAgentRateLimited, "resets 5pm (Europe/Istanbul)")
+}
+
+// LOOM-253: an agent that stops on an API error, with no completion
+// signal, fails the turn at once with agent_api_error quoting the error,
+// instead of waiting out the no-progress timeout.
+func TestDispatch_APIError(t *testing.T) {
+	store, exec, r, ws := attentionHarness(t)
+	exec.capture = "APIERR"
+	start := time.Now()
+	_, err := r.Dispatch(context.Background(), "conv-1", "hello")
+	if err == nil {
+		t.Fatal("Dispatch: nil error for an agent stopped on an API error")
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("Dispatch took %s, want it to fail fast", took)
+	}
+	for _, want := range []string{"stopped on an API error", "safeguards flagged this session"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	if got := router.ClassifyError(err); got != registry.ErrorClassAgentAPIError {
+		t.Errorf("ClassifyError = %q, want agent_api_error for the dispatch job", got)
+	}
+	task := onlyTask(t, store, ws.ID)
+	assertFailed(t, task, registry.ErrorClassAgentAPIError, "stopped on an API error")
 }
 
 // LOOM-202: the attach command a reply gives names the instance's tmux

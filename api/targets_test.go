@@ -531,6 +531,13 @@ func TestUpdateTarget_OmittedOptionalFieldsKept(t *testing.T) {
 	if got.WorkspaceRoot != "" {
 		t.Errorf("after a PUT with \"\": workspace_root=%q, want cleared", got.WorkspaceRoot)
 	}
+	// Name, kind, host and user too (LOOM-256): a one-field PUT needs
+	// nothing else.
+	got = put(map[string]any{"workspace_root": "/srv/other"})
+	if got.Name != "jet01" || got.Kind != registry.TargetKindRemote || got.Host != "jet01.example.net" ||
+		got.User != "orski2" || got.WorkspaceRoot != "/srv/other" {
+		t.Errorf("after a one-field PUT: %+v, want only workspace_root changed", got)
+	}
 }
 
 // LOOM-141: with local targets off, registering one (or turning a target

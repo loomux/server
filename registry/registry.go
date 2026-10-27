@@ -60,6 +60,12 @@ type Target struct {
 	SSHProxy  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// ConnectionChangedAt is when how Loomux reaches the target last
+	// changed (LOOM-256): its kind, host, user, port, key, proxy or
+	// workspace root, or its host key pin. A probe older than that says
+	// nothing about the target; a new name, permission mode or policy
+	// doesn't make one stale. Set by the store.
+	ConnectionChangedAt time.Time
 }
 
 // SSHProxyNone is Target.SSHProxy for a managed target reached without
@@ -447,6 +453,10 @@ const (
 	// (LOOM-109). Nothing to answer: the task fails with
 	// ErrorClassAgentRateLimited, saying when the limit resets.
 	AttentionUsageLimit AttentionKind = "usage_limit"
+	// AttentionAPIError: the agent CLI ended its turn on an API error
+	// from its model provider (LOOM-253), a refusal included. Nothing to
+	// answer: the task fails with ErrorClassAgentAPIError.
+	AttentionAPIError AttentionKind = "api_error"
 )
 
 // Attention is a prompt read off an agent's pane (LOOM-97): what a chat
@@ -532,6 +542,9 @@ const (
 	// ErrorClassAgentRateLimited: the agent's account hit its usage
 	// limit (LOOM-109); its reason says when it resets.
 	ErrorClassAgentRateLimited ErrorClass = "agent_rate_limited"
+	// ErrorClassAgentAPIError: the agent CLI stopped on an API error
+	// from its model provider (LOOM-253); its reason quotes the error.
+	ErrorClassAgentAPIError ErrorClass = "agent_api_error"
 	// ErrorClassCompactionLoop: the agent kept compacting its context
 	// within one turn without finishing it (LOOM-109); Loomux
 	// interrupted it.
