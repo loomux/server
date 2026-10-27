@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Loomux/server/credentials"
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/registry"
 )
@@ -22,11 +23,15 @@ const withheldSummary = "Open Loomux to see it."
 // turnNotifier tells the user when a turn they may not be watching ends
 // (LOOM-102): done, failed, or stopped on a prompt only they can answer.
 // A turn shorter than minDuration is skipped — they were most likely
-// still looking at it.
+// still looking at it — unless it needs them (LOOM-250): that is blocked
+// work, and they may have walked away right after sending.
 type turnNotifier struct {
 	store       registry.Store
 	filter      *notify.Filter
 	minDuration time.Duration
+	// metrics counts each notification's outcome (LOOM-249); nil counts
+	// none.
+	metrics *metrics.Metrics
 	// publicURL is where the web client is served, for the link; empty
 	// means no link.
 	publicURL string
@@ -44,6 +49,7 @@ func (n *turnNotifier) async(f func(), log *slog.Logger) {
 		return
 	}
 	if !n.bg.Go(f) {
+		n.metrics.RecordNotification("", metrics.NotifyDropped)
 		log.Warn("notification dropped: shutting down")
 	}
 }
@@ -86,12 +92,20 @@ func (n *turnNotifier) lateReplyEvent(ctx context.Context, task *registry.Task, 
 	return n.finish(ctx, e, task.ConversationID)
 }
 
+// send passes e to the filter, and logs and counts what became of it.
 func (n *turnNotifier) send(ctx context.Context, e notify.Event, log *slog.Logger) {
-	sent, err := n.filter.Notify(ctx, e)
+	outcome, err := n.filter.Notify(ctx, e)
 	switch {
+	case outcome == notify.OptedOut:
+		n.metrics.RecordNotification(string(e.Kind), metrics.NotifyOptedOut)
+	case outcome == notify.Held:
+		n.metrics.RecordNotification(string(e.Kind), metrics.NotifyHeld)
+		log.Info("notification held: rate limit spent, it goes out in the next digest")
 	case err != nil:
+		n.metrics.RecordNotification(string(e.Kind), metrics.NotifyError)
 		log.Warn("notification not delivered", "error", err)
-	case sent:
+	default:
+		n.metrics.RecordNotification(string(e.Kind), metrics.NotifySent)
 		log.Info("notification sent")
 	}
 }
@@ -106,9 +120,6 @@ func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.
 	start := d.CreatedAt
 	if d.StartedAt != nil {
 		start = *d.StartedAt
-	}
-	if d.FinishedAt.Sub(start) < n.minDuration {
-		return notify.Event{}, false
 	}
 
 	e := notify.Event{Kind: notify.KindDone, Summary: strings.TrimSpace(d.Reply)}
@@ -131,6 +142,13 @@ func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.
 	}
 	if d.Status == registry.DispatchStatusFailed {
 		e.Kind, e.Summary = notify.KindFailed, d.Error
+	}
+	if took := d.FinishedAt.Sub(start); took < n.minDuration && e.Kind != notify.KindNeedsYou {
+		n.metrics.RecordNotification(string(e.Kind), metrics.NotifySkippedShort)
+		if n.logger != nil {
+			n.logger.Info("notification skipped: short turn", "dispatch_id", d.ID, "kind", string(e.Kind), "took", took)
+		}
+		return notify.Event{}, false
 	}
 	// A notification leaves Loomux like a router model's input: under a
 	// target's relay policy none, the body says nothing of its work —

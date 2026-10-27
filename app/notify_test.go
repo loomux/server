@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Loomux/server/internal/metrics"
 	"github.com/Loomux/server/notify"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/registry/sqlite"
@@ -303,4 +309,105 @@ func TestTurnNotifierRelayPolicy(t *testing.T) {
 			check("offer", e)
 		})
 	}
+}
+
+// LOOM-250: a turn that stopped on a prompt notifies however short it
+// was; a short done or failed turn is still skipped, and the skip is
+// logged and counted (LOOM-249).
+func TestTurnNotifierShortNeedsYou(t *testing.T) {
+	ctx := context.Background()
+	store := openNotifyStore(t)
+	if err := store.CreateTarget(ctx, &registry.Target{ID: "t", Name: "jet01", Kind: registry.TargetKindLocal}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateWorkspace(ctx, &registry.Workspace{ID: "w", Name: "ws", Path: "/p", TargetID: "t", Status: registry.WorkspaceStatusIdle}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().UTC().Add(-time.Minute)
+	if err := store.CreateTask(ctx, &registry.Task{
+		ID: "task", WorkspaceID: "w", Kind: registry.TaskKindAgent, TmuxSession: "s",
+		Status: registry.TaskStatusNeedsAttention, ConversationID: "c",
+		Attention: &registry.Attention{Question: "Do you want to proceed?"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	met := metrics.NewDiscard()
+	n := &turnNotifier{store: store, minDuration: 30 * time.Second, metrics: met,
+		logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	quick := start.Add(15 * time.Second)
+	d := &registry.Dispatch{ID: "d", ConversationID: "c", Status: registry.DispatchStatusSucceeded,
+		CreatedAt: start, StartedAt: &start, FinishedAt: &quick}
+
+	e, ok := n.event(ctx, d)
+	if !ok || e.Kind != notify.KindNeedsYou || e.Summary != "Do you want to proceed?" {
+		t.Fatalf("15s needs-you turn: event = %+v, %v; want a needs-you", e, ok)
+	}
+
+	task, _ := store.GetTask(ctx, "task")
+	task.Status, task.Attention = registry.TaskStatusAwaitingInput, nil
+	if err := store.UpdateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := n.event(ctx, d); ok {
+		t.Fatalf("an event for a 15s done turn")
+	}
+	if got := notificationCount(t, met, "done", metrics.NotifySkippedShort); got != 1 {
+		t.Errorf("skipped_short counter = %v, want 1", got)
+	}
+	if !strings.Contains(logs.String(), "notification skipped: short turn") {
+		t.Errorf("no log line for the skip:\n%s", logs.String())
+	}
+}
+
+// LOOM-249: an event the rate limit holds back is logged and counted,
+// not dropped silently; one sent is counted too.
+func TestTurnNotifierSendCountsOutcomes(t *testing.T) {
+	var logs bytes.Buffer
+	met := metrics.NewDiscard()
+	rec := &recordingNotifier{}
+	n := &turnNotifier{metrics: met, filter: notify.NewFilter(rec, notify.FilterConfig{
+		Events: map[notify.Kind]bool{notify.KindDone: true}, Burst: 1, Refill: time.Hour,
+		AfterFunc: func(time.Duration, func()) func() bool { return func() bool { return true } },
+	})}
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	ctx := context.Background()
+	n.send(ctx, notify.Event{Kind: notify.KindDone}, log)
+	n.send(ctx, notify.Event{Kind: notify.KindDone}, log)
+	n.send(ctx, notify.Event{Kind: notify.KindFailed}, log)
+	for outcome, want := range map[string]int{metrics.NotifySent: 1, metrics.NotifyHeld: 1} {
+		if got := notificationCount(t, met, "done", outcome); got != want {
+			t.Errorf("done %s = %d, want %d", outcome, got, want)
+		}
+	}
+	if got := notificationCount(t, met, "failed", metrics.NotifyOptedOut); got != 1 {
+		t.Errorf("failed opted_out = %v, want 1", got)
+	}
+	if !strings.Contains(logs.String(), "notification held") {
+		t.Errorf("no log line for the held event:\n%s", logs.String())
+	}
+}
+
+type recordingNotifier struct{ n atomic.Int32 }
+
+func (r *recordingNotifier) Notify(context.Context, notify.Event) error { r.n.Add(1); return nil }
+
+// notificationCount scrapes met for loomux_notifications_total{kind,
+// outcome}; 0 when it isn't there.
+func notificationCount(t *testing.T, met *metrics.Metrics, kind, outcome string) int {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	met.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body, _ := io.ReadAll(rec.Body)
+	prefix := `loomux_notifications_total{kind="` + kind + `",outcome="` + outcome + `"} `
+	for _, line := range strings.Split(string(body), "\n") {
+		if v, ok := strings.CutPrefix(line, prefix); ok {
+			var n int
+			if _, err := fmt.Sscan(v, &n); err != nil {
+				t.Fatalf("parse %q: %v", line, err)
+			}
+			return n
+		}
+	}
+	return 0
 }

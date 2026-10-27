@@ -34,6 +34,18 @@ const (
 	TokenKindTotal      = "total"
 )
 
+// Notification outcomes (LOOM-249): what became of a turn's notification.
+const (
+	NotifySent         = "sent"
+	NotifyError        = "error"
+	NotifyHeld         = "held"
+	NotifyOptedOut     = "opted_out"
+	NotifySkippedShort = "skipped_short"
+	NotifyDropped      = "dropped"
+	NotifyDigestSent   = "digest_sent"
+	NotifyDigestError  = "digest_error"
+)
+
 // Task status label for the terminal "failed" state.
 const TaskStatusFailed = "failed"
 
@@ -68,6 +80,9 @@ type Metrics struct {
 	RetentionDeleted     *prometheus.CounterVec
 	RetentionErrors      *prometheus.CounterVec
 	RetentionLastSweep   prometheus.Gauge
+	// Notifications counts turn notifications by kind and outcome
+	// (LOOM-249), so one held back or skipped is seen, not silent.
+	Notifications *prometheus.CounterVec
 }
 
 // NewMetrics creates a Metrics bundle and registers its collectors with
@@ -163,6 +178,10 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "loomux_retention_last_sweep_timestamp_seconds",
 			Help: "Unix time the retention sweep last finished.",
 		}),
+		Notifications: factory.NewCounterVec(prometheus.CounterOpts{
+			Name: "loomux_notifications_total",
+			Help: "Turn notifications by kind and outcome (sent, error, held, opted_out, skipped_short, dropped, digest_sent, digest_error).",
+		}, []string{"kind", "outcome"}),
 	}
 }
 
@@ -385,6 +404,18 @@ func (m *Metrics) SetRetentionSweep(t time.Time) {
 		return
 	}
 	m.RetentionLastSweep.Set(float64(t.Unix()))
+}
+
+// RecordNotification records what became of a turn notification of kind
+// (LOOM-249): one of the Notify* outcomes.
+func (m *Metrics) RecordNotification(kind, outcome string) {
+	if m == nil {
+		return
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	m.Notifications.WithLabelValues(kind, outcome).Inc()
 }
 
 // TargetOpErrorReason maps common target errors to a stable reason label.
