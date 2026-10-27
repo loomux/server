@@ -170,6 +170,15 @@ random-uid policy for everything *except* ssh.
 sessions, the credential vault) and must be a PersistentVolume. Everything
 else in the image is disposable.
 
+The database runs in WAL mode (LOOM-248): beside `loomux.db` live
+`loomux.db-wal` (commits not yet checkpointed into the file) and
+`loomux.db-shm`, so the directory must stay writable. WAL needs shared
+memory between every process opening the file: keep the volume on a local
+or block filesystem (not NFS/SMB), and anything else reading it (a backup
+job, a debug pod) on the same node. Copy the database with `sqlite3
+loomux.db ".backup FILE"`, or with loomuxd stopped copy `loomux.db` together
+with its `-wal`: the file alone can miss the latest commits.
+
 `/tmp` must be writable: `targets/remote.go` puts its SSH ControlMaster
 sockets under `${TMPDIR}/loomux/ssh-cm` (both levels created or made 0700,
 and refused if a symlink or another user's: LOOM-166), and multiplexing

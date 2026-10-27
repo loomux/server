@@ -24,7 +24,11 @@ Three mechanisms cover the database:
 3. **Pre-migration snapshot.** Before each `loomuxd` pod start, an init
    container copies `/data/loomux.db` to
    `/data/loomux.db.pre-migration-<timestamp>`, keeping the last 5 copies.
-   This protects against a failed or bad goose migration.
+   This protects against a failed or bad goose migration. Since LOOM-248
+   the database runs in WAL mode: after a clean stop everything is in
+   `loomux.db`, but after a crash the latest commits are still in
+   `loomux.db-wal`, so the copy must take that file too (or use
+   `sqlite3 ".backup"`, as the nightly job does).
 
 ## Restore a backup
 
@@ -75,9 +79,9 @@ These steps assume you have access to a consistent backup file (either from
    sqlite3 /backup/loomux-YYYYMMDD-HHMMSS.db "PRAGMA integrity_check;"   # must print "ok"
    cp -p /data/loomux.db /data/loomux.db.pre-restore-$(date +%Y%m%d-%H%M%S)  # keep what you're replacing
    cp /backup/loomux-YYYYMMDD-HHMMSS.db /data/loomux.db
-   # The DB runs with journal_mode=delete (SQLite's default), so a leftover -journal from the
-   # old DB is the file SQLite would treat as hot and roll back onto the restored one; -wal/-shm
-   # are removed too in case the mode ever changes. None of them may survive from the old DB.
+   # The DB runs in WAL mode (since LOOM-248): a leftover -wal from the old DB would be
+   # replayed onto the restored one (a -journal, from before, rolled back onto it). None of
+   # these may survive from the old DB.
    rm -f /data/loomux.db-journal /data/loomux.db-wal /data/loomux.db-shm
    # The debug pod runs as root: restore the ownership/mode loomuxd (uid 10001, fsGroup 10001) needs,
    # or it starts but can't write ("attempt to write a readonly database").
@@ -95,7 +99,7 @@ These steps assume you have access to a consistent backup file (either from
    ```
    It writes and rolls back, leaving nothing behind, and fails with `attempt to write a
    readonly database` if either the file or `/data` isn't writable for 10001 (SQLite
-   creates `loomux.db-journal` beside the file). Don't use `BEGIN IMMEDIATE; ROLLBACK;`
+   creates `loomux.db-wal` or `loomux.db-journal` beside the file). Don't use `BEGIN IMMEDIATE; ROLLBACK;`
    for this: it succeeds even on a read-only file.
 
 4. Exit the debug pod, scale `loomuxd` back up, and resume Flux:

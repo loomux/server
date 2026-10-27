@@ -58,6 +58,17 @@ const sqliteBusyTimeout = 5000
 // timeout on every connection the pool opens. Using DSN parameters instead
 // of db.Exec("PRAGMA ...") is required because PRAGMAs set via Exec only
 // affect the single connection the statement happens to run on (LOOM-67).
+//
+// It also puts the database in WAL mode and begins every transaction
+// IMMEDIATE (LOOM-248). In the rollback journal a reader blocks every
+// commit, so concurrent provisioning runs' reads held off one another's
+// writes past the busy timeout (SQLITE_BUSY); in WAL, readers and the one
+// writer don't wait on each other. A deferred transaction that reads and
+// then writes can't wait for the write lock (SQLite fails it with
+// SQLITE_BUSY at once rather than deadlock, the busy timeout unused);
+// IMMEDIATE takes the lock at BEGIN, where the busy timeout applies.
+// WAL is a property of the file, kept once set: the first Open converts
+// it, and it adds the -wal and -shm files beside it.
 func dsn(path string) string {
 	if path == "" {
 		return path
@@ -66,7 +77,7 @@ func dsn(path string) string {
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
-	return fmt.Sprintf("%s%s_foreign_keys=1&_busy_timeout=%d", path, sep, sqliteBusyTimeout)
+	return fmt.Sprintf("%s%s_foreign_keys=1&_busy_timeout=%d&_journal_mode=WAL&_txlock=immediate", path, sep, sqliteBusyTimeout)
 }
 
 func Open(path string, opts ...Option) (*Store, error) {

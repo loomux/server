@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -26,11 +27,18 @@ const v020Schema = 19
 //go:embed testdata/v0.2.0-seed.sql
 var v020Seed string
 
+// legacyDSN is the DSN releases before LOOM-248 opened the database
+// with: no WAL, deferred transactions. The file it makes is in rollback
+// journal mode, as deployed databases are until today's code opens them.
+func legacyDSN(path string) string {
+	return fmt.Sprintf("%s?_foreign_keys=1&_busy_timeout=%d", path, sqliteBusyTimeout)
+}
+
 // seedAt makes dbPath a database as the release whose last migration is
 // schema left it, holding seed.
 func seedAt(t *testing.T, dbPath string, schema int64, seed string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", dsn(dbPath))
+	db, err := sql.Open("sqlite", legacyDSN(dbPath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
