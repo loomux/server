@@ -45,10 +45,10 @@ func TestDispatch_WithDispatchID_StampsMessages(t *testing.T) {
 func TestDispatch_UserMessageLogged_WritesOnlyReply(t *testing.T) {
 	h := newRouterHarness(t)
 	createDispatchRow(t, h.store, "d-2", "conv-2", &registry.Message{
-		ID: uuid.NewString(), ConversationID: "conv-2", Role: registry.MessageRoleUser, Content: "do it",
+		ID: uuid.NewString(), ConversationID: "conv-2", Role: registry.MessageRoleUser, Content: "do the task",
 	})
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-2", "do it",
+	if _, err := h.r.Dispatch(context.Background(), "conv-2", "do the task",
 		router.WithDispatchID("d-2"), router.WithUserMessageLogged()); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestDispatch_ShutdownCancellation_LeavesTaskRunning(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	h.exec.onWaiting = func() { cancel(orchestrator.ErrInterrupted) }
 
-	if _, err := h.r.Dispatch(ctx, "conv-1", "go"); err == nil {
+	if _, err := h.r.Dispatch(ctx, "conv-1", "do the work"); err == nil {
 		t.Fatal("Dispatch succeeded, want the cancellation error")
 	}
 	task := onlyTask(t, h.store, h.ws.ID)

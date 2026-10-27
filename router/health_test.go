@@ -135,7 +135,7 @@ func TestDispatch_RecordedUnreachable_FailsFastWithReason(t *testing.T) {
 	h.scriptHealth(hs)
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	_, err := h.r.Dispatch(context.Background(), "conv-1", "go")
+	_, err := h.r.Dispatch(context.Background(), "conv-1", "do the work")
 	var unhealthy *router.TargetUnhealthyError
 	if !errors.As(err, &unhealthy) || !errors.Is(err, targets.ErrUnreachable) {
 		t.Fatalf("Dispatch err = %v, want a TargetUnhealthyError wrapping ErrUnreachable", err)
@@ -163,7 +163,7 @@ func TestDispatch_RecordedUnreachable_RecoveredGoesAhead(t *testing.T) {
 	h.scriptHealth(hs)
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if hs.probes != 1 {
@@ -185,7 +185,7 @@ func TestDispatch_RecentlyUnreachable_NoReprobe(t *testing.T) {
 	h.scriptHealth(hs)
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	_, err := h.r.Dispatch(context.Background(), "conv-1", "go")
+	_, err := h.r.Dispatch(context.Background(), "conv-1", "do the work")
 	var unhealthy *router.TargetUnhealthyError
 	if !errors.As(err, &unhealthy) || !strings.Contains(err.Error(), "no answer") {
 		t.Fatalf("Dispatch err = %v, want a TargetUnhealthyError with the recorded reason", err)
@@ -205,7 +205,7 @@ func TestDispatch_HealthyTarget_NoReprobe(t *testing.T) {
 	h.scriptHealth(hs)
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if hs.probes != 0 {
@@ -222,7 +222,7 @@ func TestDispatch_ProvisionRefusedOnLowDisk(t *testing.T) {
 	h.scriptHealth(&healthScript{tmux: "tmux 3.4", diskKB: fmt.Sprint(100 << 10)})
 	h.decide(h.provisionDecision("codex"))
 
-	_, err := h.r.Dispatch(context.Background(), "conv-1", "go")
+	_, err := h.r.Dispatch(context.Background(), "conv-1", "do the work")
 	var unhealthy *router.TargetUnhealthyError
 	if !errors.As(err, &unhealthy) || errors.Is(err, targets.ErrUnreachable) {
 		t.Fatalf("Dispatch err = %v, want a TargetUnhealthyError (not unreachable)", err)
@@ -246,7 +246,7 @@ func TestDispatch_LowDisk_ExistingWorkspaceStillUsable(t *testing.T) {
 	h.recordHealth(t, registry.TargetHealth{Reachable: true, TmuxVersion: "tmux 3.4", DiskFreeBytes: 100 << 20})
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 }

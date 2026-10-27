@@ -76,7 +76,7 @@ func TestProvision_InvalidSpecWritesNothing(t *testing.T) {
 		model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 			return router.Decision{Action: router.ActionProvisionWorkspace, AgentType: "claude-code", NewWorkspace: spec}, nil
 		}
-		if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err == nil {
+		if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err == nil {
 			t.Errorf("spec %+v: Dispatch succeeded, want refused", spec)
 		}
 		if list, _ := store.ListWorkspaces(context.Background()); len(list) != 0 {
@@ -124,7 +124,7 @@ func TestOutputRedactedBeforeBounding(t *testing.T) {
 			}
 			return nil
 		}
-		_, err := h.r.Dispatch(context.Background(), "conv-1", "go")
+		_, err := h.r.Dispatch(context.Background(), "conv-1", "do the work")
 		if err == nil {
 			t.Fatal("Dispatch: nil error")
 		}
@@ -173,7 +173,7 @@ func TestOutputRedactedBeforeBounding(t *testing.T) {
 			}
 			return nil
 		}
-		if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+		if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 			t.Fatalf("Dispatch (offer): %v", err)
 		}
 		reply, err := h.r.Dispatch(context.Background(), "conv-1", "yes")

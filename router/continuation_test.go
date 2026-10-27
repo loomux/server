@@ -257,7 +257,7 @@ func TestDispatch_ActiveTaskUnderTakeover_RefusesRatherThanDoubleLaunch(t *testi
 		return router.RelayResult{Reply: "still working", Done: false}, nil
 	}
 
-	if _, err := r.Dispatch(context.Background(), "conv-1", "start"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "start the task"); err != nil {
 		t.Fatalf("Dispatch (turn 1): %v", err)
 	}
 	if len(exec.sessions) != 1 {
@@ -381,7 +381,7 @@ func TestDispatch_AgentDiedBetweenTurns_FallsBackToFreshLaunch(t *testing.T) {
 	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
 		return router.RelayResult{Reply: "turn done", Done: false}, nil
 	}
-	if _, err := r.Dispatch(context.Background(), "conv-1", "start"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "start the task"); err != nil {
 		t.Fatalf("Dispatch (turn 1): %v", err)
 	}
 	tasks, _ := store.ListTasksByWorkspace(context.Background(), ws.ID)

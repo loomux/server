@@ -112,7 +112,7 @@ func TestDispatch_RelaysAgentsLastMessage(t *testing.T) {
 	answer := strings.Join(lines, "\n")
 	h.payload = hookPayload(t, "last_assistant_message", answer)
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if len(h.relayed) != 1 || h.relayed[0] != answer {
@@ -132,7 +132,7 @@ func TestDispatch_LastMessageFallsBackToPane(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newLastMessageHarness(t)
 			h.payload = payload
-			if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+			if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 				t.Fatalf("Dispatch: %v", err)
 			}
 			if len(h.relayed) != 1 || h.relayed[0] != h.exec.capture {
@@ -146,7 +146,7 @@ func TestDispatch_LastMessageFallsBackToPane(t *testing.T) {
 func TestDispatch_LastMessageBounded(t *testing.T) {
 	h := newLastMessageHarness(t)
 	h.payload = hookPayload(t, "last_assistant_message", "start\n"+strings.Repeat("x", 200_000))
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	got := h.relayed[0]
@@ -162,7 +162,7 @@ func TestDispatch_LastMessageBounded(t *testing.T) {
 func TestDispatch_FollowUpClearsStaleMarkerAndPayload(t *testing.T) {
 	h := newLastMessageHarness(t)
 	h.payload = hookPayload(t, "last_assistant_message", "first answer")
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch 1: %v", err)
 	}
 	h.mu.Lock()
@@ -196,7 +196,7 @@ func TestDispatch_RecordsTurnTranscript(t *testing.T) {
 	}
 	h.done = true
 	h.payload = hookPayload(t, "last_assistant_message", "the answer, quoting sk-live-secret-123456")
-	if _, err := h.r.Dispatch(ctx, "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(ctx, "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	tasks, err := h.store.ListTasksByWorkspace(ctx, h.ws.ID)
@@ -211,7 +211,7 @@ func TestDispatch_RecordsTurnTranscript(t *testing.T) {
 		t.Fatalf("turns = %+v, want 1", turns)
 	}
 	turn := turns[0]
-	if turn.UserMessage != "go" || !strings.HasPrefix(turn.AgentMessage, "the answer") || !strings.HasPrefix(turn.Pane, "PANE HISTORY") {
+	if turn.UserMessage != "do the work" || !strings.HasPrefix(turn.AgentMessage, "the answer") || !strings.HasPrefix(turn.Pane, "PANE HISTORY") {
 		t.Errorf("turn = %+v", turn)
 	}
 	if strings.Contains(turn.AgentMessage+turn.Pane, "sk-live-secret-123456") {
@@ -226,7 +226,7 @@ func TestDispatch_RecordsLongTurnMessageRuneSafe(t *testing.T) {
 	ctx := context.Background()
 	h.done = true
 	h.payload = hookPayload(t, "last_assistant_message", "start\n"+strings.Repeat("é", 150_000))
-	if _, err := h.r.Dispatch(ctx, "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(ctx, "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	tasks, err := h.store.ListTasksByWorkspace(ctx, h.ws.ID)
@@ -253,7 +253,7 @@ func TestDispatch_TurnTranscriptOnTheExecutorsSocket(t *testing.T) {
 	h.exec.socket = "loomux-turntest"
 	h.done = true
 	h.payload = hookPayload(t, "last_assistant_message", "the answer")
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	h.mu.Lock()

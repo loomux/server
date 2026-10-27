@@ -169,7 +169,7 @@ func TestDispatch_AffinityOverride_Logged(t *testing.T) {
 	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
 		return router.RelayResult{Reply: "Which option?", Done: false}, nil
 	}
-	if _, err := r.Dispatch(context.Background(), "conv-1", "do it"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "do the task"); err != nil {
 		t.Fatalf("Dispatch 1: %v", err)
 	}
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
@@ -230,7 +230,7 @@ func TestDispatch_NoOpenTask_LastWorkspacePassed(t *testing.T) {
 	h.model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
 		return router.RelayResult{Reply: "done", Done: true}, nil
 	}
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do it"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the task"); err != nil {
 		t.Fatalf("Dispatch 1: %v", err)
 	}
 	h.model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {

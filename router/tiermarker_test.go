@@ -55,7 +55,7 @@ func TestDispatch_TierMarker_InjectsTaskIDAndMarkerPathEnv(t *testing.T) {
 			}
 			r := router.New(store, orch, exec.factory(), resolver, agentTypes, model, markerDir)
 
-			if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+			if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 				t.Fatalf("Dispatch: %v", err)
 			}
 
@@ -110,7 +110,7 @@ func TestDispatch_TierIdle_DoesNotInjectMarkerPathEnv(t *testing.T) {
 		return router.RelayResult{Reply: "done", Done: true}, nil
 	}
 
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
@@ -168,14 +168,14 @@ func TestLaunchAgent_MintsDistinctTaskIDsAcrossLaunches(t *testing.T) {
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
 	}
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch (conv-1): %v", err)
 	}
 
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"}, nil
 	}
-	if _, err := r.Dispatch(context.Background(), "conv-2", "go"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-2", "do the work"); err != nil {
 		t.Fatalf("Dispatch (conv-2): %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestDispatch_CompletionHookArgsAppendedToLaunchCommand(t *testing.T) {
 	}
 	r := router.New(store, orch, exec.factory(), credentials.NewResolver(store), agentTypes, model, markerDir)
 
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	var sess *fakeSession
@@ -255,7 +255,7 @@ func TestDispatch_TierMarker_DefaultMarkerDirResolvedOnTarget(t *testing.T) {
 	}
 	r := router.New(store, orch, exec.factory(), credentials.NewResolver(store), agentTypes, model, "")
 
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	var sess *fakeSession

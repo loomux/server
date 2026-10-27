@@ -65,7 +65,7 @@ func TestDispatch_ErrorAfterLaunch_FailsTaskWithReason(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newRouterHarness(t)
 			tc.breakIt(h.exec, h)
-			if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err == nil {
+			if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err == nil {
 				t.Fatal("Dispatch: got nil error")
 			}
 			assertFailed(t, onlyTask(t, h.store, h.ws.ID), tc.class, tc.reason)
@@ -84,7 +84,7 @@ func TestDispatch_CancelledWait_FailsTaskWithReason(t *testing.T) {
 	// itself, and fail the task as send_failed (CI, #385).
 	h.exec.onWaiting = cancel
 
-	if _, err := h.r.Dispatch(ctx, "conv-1", "go"); !errors.Is(err, context.Canceled) {
+	if _, err := h.r.Dispatch(ctx, "conv-1", "do the work"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Dispatch err = %v, want context.Canceled", err)
 	}
 	assertFailed(t, onlyTask(t, h.store, h.ws.ID), registry.ErrorClassWaitFailed, "context canceled")
@@ -105,7 +105,7 @@ func TestDispatch_AgentExited_RecordsOutputTail(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err == nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err == nil {
 		t.Fatal("Dispatch: got nil error")
 	}
 	task := onlyTask(t, h.store, h.ws.ID)

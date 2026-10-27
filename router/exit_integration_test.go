@@ -80,7 +80,7 @@ func TestIntegration_ProcessExit(t *testing.T) {
 			t.Cleanup(func() { killWorkspaceSessions(t, store, exec) })
 
 			start := time.Now()
-			reply, err := r.Dispatch(ctx, "conv", "go")
+			reply, err := r.Dispatch(ctx, "conv", "do the work")
 			if elapsed := time.Since(start); elapsed > 8*time.Second {
 				t.Errorf("Dispatch took %s; a process exit should end the wait at once, not an idle timeout", elapsed)
 			}

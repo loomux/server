@@ -25,6 +25,10 @@ replies, and updating each workspace's rolling summary).
   next message is an explicit, deterministically matched "yes" (design
   spec §6 "Agent availability and install offers"). Also the bounded,
   credential-redacted quoting of process output used in replies/errors.
+- `affirmative.go` — a bare affirmative ("yes", "ok", "go") that answers
+  no recorded offer is asked about rather than acted on, unless it
+  continues work the conversation has open (design spec §"Answering an
+  offer").
 - `command.go` — direct shell commands (`ActionRunCommand`, LOOM-72):
   `parseRunRequest`/`orderedVerbatim` (run at once only if the whole
   message is ``run `<cmd>` on <target>`` — or the fenced form — naming the

@@ -111,10 +111,10 @@ func TestDispatch_ProfileArgOrder(t *testing.T) {
 			PromptAsArg:    true,
 		},
 	})
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	want := `agent '--perm' 'x' '--trust' '` + ws.Path + `' '--hook' '--' 'go'`
+	want := `agent '--perm' 'x' '--trust' '` + ws.Path + `' '--hook' '--' 'do the work'`
 	if sess := onlySession(t, exec); !strings.HasSuffix(sess.command, want) {
 		t.Fatalf("command = %q, want suffix %q", sess.command, want)
 	}
@@ -197,7 +197,7 @@ func TestDispatch_TrustCommandRunsBeforeLaunch(t *testing.T) {
 		}
 		return "", nil
 	}
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if len(ran) != 1 || ran[0] != "trust "+ws.Path {
@@ -219,7 +219,7 @@ func TestDispatch_TargetPermissionMode(t *testing.T) {
 	if err := store.UpdateTarget(context.Background(), target); err != nil {
 		t.Fatalf("UpdateTarget: %v", err)
 	}
-	if _, err := r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if cmd := onlySession(t, exec).command; !strings.Contains(cmd, `agent '--mode' 'manual'`) {
