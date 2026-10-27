@@ -56,6 +56,9 @@ func TestIntegration_RealAppBehindAuth(t *testing.T) {
 		DBPath:     filepath.Join(t.TempDir(), "test.db"),
 		Router:     routerConfigFor(llmSrv.URL),
 		TmuxSocket: tmuxtest.Socket(t),
+		// A routed message is redacted against the vault, which needs
+		// its key.
+		MasterKey: testMasterKey,
 	})
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)
@@ -158,6 +161,9 @@ func TestIntegration_DispatchThenConversationDetail_ShowsMessages(t *testing.T) 
 		DBPath:     filepath.Join(t.TempDir(), "test.db"),
 		Router:     routerConfigFor(llmSrv.URL),
 		TmuxSocket: tmuxtest.Socket(t),
+		// A routed message is redacted against the vault, which needs
+		// its key.
+		MasterKey: testMasterKey,
 	})
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)
@@ -255,6 +261,9 @@ func TestIntegration_DirectAnswerOnlyConversation_IsListedAndReadable(t *testing
 		DBPath:     filepath.Join(t.TempDir(), "test.db"),
 		Router:     routerConfigFor(llmSrv.URL),
 		TmuxSocket: tmuxtest.Socket(t),
+		// A routed message is redacted against the vault, which needs
+		// its key.
+		MasterKey: testMasterKey,
 	})
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)

@@ -65,7 +65,7 @@ func main() {
 		os.Exit(1)
 	}
 	if cfg.MasterKey == nil {
-		fmt.Fprintln(os.Stderr, "loomuxd: warning: LOOMUX_MASTER_KEY is not set — credential vault operations will fail until it is")
+		fmt.Fprintln(os.Stderr, "loomuxd: warning: LOOMUX_MASTER_KEY is not set — credential vault operations, and so routing chat messages, will fail until it is")
 	}
 
 	loomux, err := app.Build(cfg)

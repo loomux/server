@@ -45,3 +45,16 @@ func ExpireOffer(r *Router, conversationID string) {
 		r.pending.byID[conversationID] = a
 	}
 }
+
+// ConversationHistory is the history the routing model would be given
+// on conversationID's next turn.
+func ConversationHistory(ctx context.Context, r *Router, conversationID string) ([]ConversationTurn, error) {
+	history, _, _, _, err := r.conversationContext(ctx, conversationID, nil)
+	return history, err
+}
+
+// EarlierConversation is the note a fresh agent in workspaceID would get
+// in front of message on conversationID.
+func EarlierConversation(ctx context.Context, r *Router, conversationID, workspaceID, message string) (string, error) {
+	return r.earlierConversation(ctx, conversationID, workspaceID, message)
+}

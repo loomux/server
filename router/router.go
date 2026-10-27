@@ -400,8 +400,19 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		log.Debug("workspaces offered to routing capped", "workspaces", n, "offered", len(offered))
 	}
 
+	// The routing model gets the message with no vault value in it, as
+	// it does the history; the agent still gets it as typed. If the vault
+	// can't be read, the message isn't routed.
+	routed, err := credentials.RedactAll(ctx, r.store, message)
+	if err != nil {
+		log.Error("dispatch failed", "stage", "redact message", "error", err)
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = string(registry.ErrorClassInternal)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
+
 	routeStart := time.Now()
-	decision, err := r.model.Decide(ctx, message, offered, targetSnapshots, decideOpts...)
+	decision, err := r.model.Decide(ctx, routed, offered, targetSnapshots, decideOpts...)
 	routeTook := time.Since(routeStart)
 	r.metrics.RecordDispatchDuration("route", routeTook)
 	if err != nil {

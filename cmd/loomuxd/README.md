@@ -43,7 +43,8 @@ All via environment variables:
 LOOMUX_DB_PATH               SQLite file path (default: loomux.db)
 LOOMUX_MARKER_DIR             completion-marker directory (default: completion's own package default)
 LOOMUX_MASTER_KEY             base64 AES-256 key for the credential vault (optional; a startup
-                               warning is printed if unset, since credential operations will then fail)
+                               warning is printed if unset, since credential operations will then fail,
+                               and with them routing chat messages, which are redacted against the vault)
 LOOMUX_REAP_IDLE_THRESHOLD    idle reaper threshold, time.ParseDuration syntax (default: 24h)
 LOOMUX_REAP_INTERVAL          idle reaper sweep interval, time.ParseDuration syntax (default: 1h)
 LOOMUX_TARGET_PROBE_INTERVAL  how often every target's health is probed (default: 5m; LOOM-86)
