@@ -161,6 +161,13 @@ type Decision struct {
 	// dispatch to.
 	AgentType string
 
+	// RoutingText is, for ActionUseWorkspace and
+	// ActionProvisionWorkspace, the parts of the message that only told
+	// Loomux where to send it ("use codex in api-server"), quoted from it
+	// (LOOM-258). The agent is sent the message without them: see
+	// AgentTask.
+	RoutingText []string
+
 	// NewTarget is set when Action == ActionProvisionTarget.
 	NewTarget MachineSpec
 

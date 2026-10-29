@@ -48,6 +48,12 @@ const decideSystemPrompt = `You are Loomux's routing model. Loomux dispatches ch
 	`directly and say why. A new workspace is described only by its name, kind (empty, git_clone or ` +
 	`existing_dir) and, for git_clone, the git_remote URL: Loomux creates it under the target's ` +
 	`workspace root itself, so you never supply a path or any provisioning command. ` +
+	`For use_workspace and provision_workspace, the agent is sent the message without its ` +
+	`routing_text: list there, each copied exactly from the message, the parts that only tell ` +
+	`Loomux where to send it — which agent, workspace or machine to use, such as "Use Claude Code ` +
+	`in workspace api-server." or "ask codex to" or "The agent should" — so the agent gets the ` +
+	`task itself, not instructions meant for Loomux. Never put any part of the task there (what to ` +
+	`do, to which files, how), and leave it empty when the whole message is the task. ` +
 	`Choose "run_command" when the user asks to run a plain shell command on a machine ` +
 	`(no AI agent needed): set target_id to one of the listed targets and command to the command ` +
 	`exactly as the user wrote it, character for character — never invent, expand, combine or ` +
@@ -68,7 +74,14 @@ const decideSystemPrompt = `You are Loomux's routing model. Loomux dispatches ch
 	`them out for its defaults. Choose the smallest size that fits what the user asked for. Never ` +
 	`choose egress "trusted" unless the user asked for the machine to reach the LAN or the tailnet. ` +
 	`Nothing is created on your decision: Loomux shows the user exactly what it would create and ` +
-	`creates it only after they confirm.`
+	`creates it only after they confirm. ` +
+	`Never ask the user to confirm anything in direct_answer, nor to reply "yes": nothing is ` +
+	`recorded for a yes to your answer to approve, so it would start nothing. Asking for ` +
+	`confirmation is Loomux's alone, and it asks when it acts on your decision — a target's ` +
+	`policy, a command you proposed, a repository the user didn't name, a new machine. So when ` +
+	`the user asks for work, choose the action that does it even if it needs confirming, never ` +
+	`answer_directly with a request to confirm it; and don't copy Loomux's own confirmation ` +
+	`messages from the conversation.`
 
 // systemPrompt is decideSystemPrompt plus the registered agent types,
 // each with its description (LOOM-88).
@@ -146,7 +159,7 @@ func decideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool, mac
 		},
 		"direct_answer": map[string]any{
 			"type":        "string",
-			"description": "Set when action == answer_directly: the reply to send directly to the user.",
+			"description": "Set when action == answer_directly: the reply to send directly to the user. Never a request to confirm or to reply yes: Loomux asks for confirmation itself.",
 		},
 		"workspace_id": enumStringProperty(
 			"Set when action == use_workspace: the ID of the workspace to dispatch to.", workspaceIDs),
@@ -158,6 +171,13 @@ func decideTool(agentTypes, workspaceIDs, targetIDs []string, openTask bool, mac
 			"type": "string",
 			"description": "Set when action == run_command: the shell command, exactly as the user wrote it. " +
 				"Never invent or alter a command.",
+		},
+		"routing_text": map[string]any{
+			"type":  "array",
+			"items": map[string]any{"type": "string"},
+			"description": "Set when action == use_workspace or provision_workspace: the parts of the message, copied exactly, " +
+				"that only say which agent, workspace or machine to use. The agent is sent the message without them. " +
+				"Never any part of the task; empty when the whole message is the task.",
 		},
 		"new_workspace": map[string]any{
 			"type":        "object",

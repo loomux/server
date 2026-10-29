@@ -116,6 +116,9 @@ func oracleDecide(fx *Fixtures, prompt string) (map[string]any, bool) {
 		agent = best.OpenTask.AgentType
 	}
 	args := map[string]any{"action": string(e.Action), "leave_open_task": e.LeaveOpenTask != nil && *e.LeaveOpenTask}
+	if len(best.RoutingText) > 0 {
+		args["routing_text"] = best.RoutingText
+	}
 	switch e.Action {
 	case "answer_directly":
 		args["direct_answer"] = "An answer."

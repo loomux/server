@@ -315,6 +315,7 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 				m.action = "clone_remote"
 				return r.act(ctx, log, conversationID, p.message, Decision{
 					Action: ActionProvisionWorkspace, AgentType: p.agentType, NewWorkspace: *p.provision,
+					RoutingText: p.routingText,
 				}, true, start, m)
 			case pendingPolicyConfirm:
 				reply, err := r.confirmPolicy(ctx, log, conversationID, p, start, m)
@@ -446,6 +447,12 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 		m.errClass = classifyDispatchError(err)
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
+	// Only an offer Loomux records can be confirmed: an answer asking for
+	// a yes is asking for one that would approve nothing (LOOM-255).
+	confirmRemoved := false
+	if decision.Action == ActionAnswerDirectly {
+		decision.DirectAnswer, confirmRemoved = withoutConfirmationRequest(decision.DirectAnswer)
+	}
 	var substitutedFrom, targetName string
 	// The open task's pane is already running its agent: nothing to check.
 	if openTask == nil || decision.WorkspaceID != openTask.WorkspaceID {
@@ -469,6 +476,10 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	if askedFirst {
 		log.Info("bare affirmative with nothing to confirm", "decided_action", string(decided))
 		overrides = append(overrides, "asked instead of "+string(decided)+": bare affirmative with nothing to confirm")
+	}
+	if confirmRemoved {
+		log.Info("confirmation request taken out of a direct answer: no offer to confirm")
+		overrides = append(overrides, "confirmation request taken out of the answer: no offer to confirm")
 	}
 	r.recordDecision(ctx, conversationID, decision, routeTook, strings.Join(overrides, "; "))
 
@@ -625,8 +636,14 @@ func (r *Router) act(ctx context.Context, log *slog.Logger, conversationID, mess
 		return "", fmt.Errorf("router: dispatch: unknown decision action %q", decision.Action)
 	}
 
+	// The agent gets the task, not what told Loomux where to send it
+	// (LOOM-258).
+	task := AgentTask(message, decision.RoutingText)
+	if task != message {
+		log.Info("routing text left out of the agent's message", "message_len", len(message), "task_len", len(task))
+	}
 	agentStart := time.Now()
-	reply, err := r.dispatchToAgent(ctx, workspaceID, conversationID, decision.AgentType, message)
+	reply, err := r.dispatchToAgent(ctx, workspaceID, conversationID, decision.AgentType, message, task)
 	r.metrics.RecordDispatchDuration("agent", time.Since(agentStart))
 	if err != nil {
 		var unavailable *AgentUnavailableError
@@ -661,11 +678,12 @@ func (r *Router) askToClone(ctx context.Context, log *slog.Logger, conversationI
 		return "", fmt.Errorf("router: dispatch: provision workspace: resolve target %q: %w", spec.TargetID, err)
 	}
 	if err := r.offer(ctx, conversationID, pendingInstall{
-		kind:      pendingCloneRemote,
-		agentType: decision.AgentType,
-		targetID:  target.ID,
-		provision: &spec,
-		message:   message,
+		kind:        pendingCloneRemote,
+		agentType:   decision.AgentType,
+		targetID:    target.ID,
+		provision:   &spec,
+		message:     message,
+		routingText: decision.RoutingText,
 	}, registry.Confirmation{Kind: registry.ConfirmationCloneRemote, TargetName: target.Name,
 		Workspace: spec.Name, GitRemote: spec.GitRemote}); err != nil {
 		log.Error("dispatch failed", "stage", "record offer", "error", err)
@@ -945,7 +963,10 @@ func (r *Router) runProvisioning(ctx context.Context, log *slog.Logger, conversa
 // The turn is logged (LOOM-63) as "agent dispatch started"/"finished",
 // or "agent dispatch failed" at error level with whatever task it had
 // reached — a failure here can leave a task or workspace stuck.
-func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationID, agentType, message string) (reply string, err error) {
+//
+// message is the user's, as typed: what the turn is recorded and relayed
+// against. agentText is what the agent is sent for it (see AgentTask).
+func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationID, agentType, message, agentText string) (reply string, err error) {
 	start := time.Now()
 	log := r.logger.With("conversation_id", conversationID, "workspace_id", workspaceID, "agent_type", agentType)
 	var taskID string
@@ -987,9 +1008,9 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 	}
 	resumed := task != nil
 	promptSent := false
-	agentMessage := message
+	agentMessage := agentText
 	if note := turnLogFrom(ctx).agentNote; note != "" {
-		agentMessage = note + "\n\n" + message
+		agentMessage = note + "\n\n" + agentText
 	}
 	if err := checkMessageSize(agentMessage); err != nil {
 		return "", err

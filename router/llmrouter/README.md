@@ -42,6 +42,10 @@ forced one (`tool_choice` pinned to it). `Decide`'s `route_decision` schema mirr
 `agent_type` and `workspace_id` are enum-constrained to the
 caller-supplied valid sets when non-empty, which constrains the model's
 choice at the schema level rather than only validating after the fact.
+`routing_text` (LOOM-258) quotes the parts of the message that only say
+which agent, workspace or machine to use; the router leaves them out of
+what the agent is sent (`router.AgentTask`), checking them against the
+message as typed, since the model saw it redacted.
 `Relay`'s `condense_output` schema is just `{reply, done}` — `done`
 (design spec §3 step 3: "if the task itself, not just the turn, is
 finished") is what tells `Router.Dispatch` whether to tear the task's
@@ -242,8 +246,10 @@ regression check.
 ### Evaluation harness (any tier, offline or live)
 
 `routereval` (LOOM-187) scores one tier on its own against a fixture
-set. The built-in set is `routereval/fixtures/escalation.json`: 24
-routing and 6 relay cases, all synthetic. It reports accuracy (overall,
+set. The built-in set is `routereval/fixtures/escalation.json`: 27
+routing and 6 relay cases, all synthetic. A routing case may check what
+the agent would be sent (`task_has`, `task_excludes`, with the oracle's
+`routing_text`), and a direct answer asking for a yes is always wrong. It reports accuracy (overall,
 on answered calls, and for routing and relay separately), errors by
 class, corrective retries, latency p50/p95 and tokens, with cost at a
 built-in price table (copied from a cached model list, not the pricing

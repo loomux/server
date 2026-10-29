@@ -28,7 +28,7 @@ func TestRun_OfflineDefault(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
-	for _, want := range []string{"offline (fake endpoint", "Accuracy | 100.0%", "Live estimate for claude-haiku-5-5, 3 runs per case: 90 calls",
+	for _, want := range []string{"offline (fake endpoint", "Accuracy | 100.0%", "Live estimate for claude-haiku-5-5, 3 runs per case: 99 calls",
 		"at $0.10/$0.50 per MTok (built-in price table, unverified"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output lacks %q:\n%s", want, stdout)
@@ -39,7 +39,7 @@ func TestRun_OfflineDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rep routereval.Report
-	if err := json.Unmarshal(data, &rep); err != nil || !rep.Offline || rep.Summary.Calls != 90 {
+	if err := json.Unmarshal(data, &rep); err != nil || !rep.Offline || rep.Summary.Calls != 99 {
 		t.Fatalf("report: %v %+v", err, rep.Summary)
 	}
 }

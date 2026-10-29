@@ -325,3 +325,38 @@ func TestWriteComparison(t *testing.T) {
 		t.Errorf("an unchanged case is listed:\n%s", md)
 	}
 }
+
+// The readiness run's F11 and F8 (LOOM-258, LOOM-255) as the router
+// behaved before: a decision with no routing_text sends the agent the
+// message verbatim, routing instructions included, and an answer that
+// asks for a yes confirms nothing. Both are scored wrong.
+func TestRun_ScoresRoutingTextAndModelConfirmation(t *testing.T) {
+	fx := fixtures(t)
+	oracle := Oracle(fx)
+	fake := llmroutertest.NewAnthropicCompat("sk-ant-test-0000", func(r llmroutertest.Request) llmroutertest.Reply {
+		if strings.Contains(r.User, "Message:\nactually, go ahead in billing") {
+			return llmroutertest.Reply{ToolArgs: map[string]any{"action": "answer_directly",
+				"direct_answer": `Please confirm starting new work in billing on buildbox. Reply "yes" to go ahead.`}}
+		}
+		reply := oracle(r)
+		if args, ok := reply.ToolArgs.(map[string]any); ok {
+			delete(args, "routing_text")
+		}
+		return reply
+	})
+	defer fake.Close()
+	rep := offline(t, fake, "claude-haiku-5-5", Options{Cases: []string{"routing-text-", "no-model-authored-confirmation"}})
+	got := map[string]CaseResult{}
+	for _, c := range rep.Cases {
+		got[c.Name] = c
+	}
+	for name, want := range map[string]string{
+		"routing-text-stays-with-loomux": "want none of",
+		"routing-text-new-workspace":     "want none of",
+		"no-model-authored-confirmation": "asks for a confirmation no offer records",
+	} {
+		if c := got[name]; c.Wrong != 1 || !strings.Contains(strings.Join(c.Failures, ""), want) {
+			t.Errorf("%s: %+v, want it scored wrong: %s", name, c, want)
+		}
+	}
+}
