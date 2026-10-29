@@ -221,8 +221,9 @@ The digests are in the release notes and in the run's `publish` job
 summaries; verify them with `gh attestation verify` before pinning.
 Flux image automation is not used: TEST deploys are deliberate and
 reviewed, and production is pinned by hand. After the rollout the
-server adopts the new sidecar version at its next start, or on Enable
-when the sidecar wasn't answering at that moment, as long as the
+server adopts the new sidecar version at its next start (a sidecar
+that comes up after the server is waited for, up to 10 minutes), or on
+Enable after that, as long as the
 plugin's capabilities and schema are unchanged (the usual case); when
 they changed, the plugin shows "upgrade the plugin" and Upgrade moves
 it.

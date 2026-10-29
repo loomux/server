@@ -227,9 +227,14 @@ equal to the plugin's previous default follows its new default at that
 point (the `agent_image` pin of a release, for instance); one that
 differs from the previous default stays. The server can't tell a value
 you set from the default it equals, so to freeze an image, pin a value
-other than the one the plugin shipped with. A sidecar that wasn't
-answering when the server started is in status `error`; enabling it
-again adopts it the same way once it is up. When the capabilities or
+other than the one the plugin shipped with. A sidecar that isn't up
+yet when the server starts (no socket, or nothing listening on it) is
+waited for (#465): the plugin shows `restarting`, "waiting for the
+sidecar's socket", and the start is retried with backoff (1 s, doubling
+to 30 s) for 10 minutes, adopting the new version the same way once the
+sidecar answers. After that it is in status `error`; enabling it again
+waits another 10 minutes. A socket that answers but fails the handshake
+fails at once. When the capabilities or
 the schema's shape changed, the plugin stays stopped in status `error`
 with a reason naming the new version ("upgrade the plugin"): the old
 binary is no longer there, and only `POST /api/v1/plugins/{id}/upgrade`,

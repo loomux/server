@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -125,9 +127,16 @@ type Manager struct {
 	// LOOMUX_PLUGIN_ALLOW_UNSIGNED.
 	// Bundled plugins and sidecars aren't affected.
 	RequireVerified bool
+	// SocketWait is how long a sidecar plugin whose socket isn't there
+	// yet (no such file, or nothing listening on it) keeps being started
+	// again before its row is marked error (#465). The retries back off
+	// from SocketWaitBackoff, doubling, up to SocketWaitMaxBackoff.
+	// NewManager sets the defaults; a zero SocketWait fails at once.
+	SocketWait, SocketWaitBackoff, SocketWaitMaxBackoff time.Duration
 
 	mu        sync.Mutex // guards the maps below
 	instances map[string]*Instance
+	waits     map[string]*socketWait // sidecar plugins waiting for their socket
 	checks    map[string]protocol.CheckResult
 	secrets   map[string][]string    // every secret value configured in this process, for redaction
 	locks     map[string]*sync.Mutex // the lifecycle lock per plugin id
@@ -148,8 +157,29 @@ func NewManager(store registry.Store, catalog *Catalog, host protocol.HostInfo, 
 	return &Manager{
 		store: store, catalog: catalog, host: host, logger: logger, met: met,
 		instances: map[string]*Instance{}, checks: map[string]protocol.CheckResult{},
-		secrets: map[string][]string{}, locks: map[string]*sync.Mutex{},
+		secrets: map[string][]string{}, locks: map[string]*sync.Mutex{}, waits: map[string]*socketWait{},
+		SocketWait: DefaultSocketWait, SocketWaitBackoff: DefaultSocketWaitBackoff, SocketWaitMaxBackoff: DefaultSocketWaitMaxBackoff,
 	}
+}
+
+// Defaults for a Manager's socket wait (#465): as long as the seed
+// retries a missing plugin (LOOM-219).
+const (
+	DefaultSocketWait           = 10 * time.Minute
+	DefaultSocketWaitBackoff    = time.Second
+	DefaultSocketWaitMaxBackoff = 30 * time.Second
+)
+
+// ReasonWaitingForSocket is the instance reason (state restarting) of a
+// sidecar plugin whose socket isn't there yet.
+const ReasonWaitingForSocket = "waiting for the sidecar's socket"
+
+// socketWait is a sidecar plugin's start waiting for its socket.
+type socketWait struct {
+	deadline time.Time
+	lastErr  string        // the last dial's error; guarded by Manager.mu
+	stop     chan struct{} // closed when the wait ends
+	done     chan struct{} // closed when its goroutine has returned
 }
 
 // lock takes the plugin's lifecycle lock and returns its release.
@@ -593,6 +623,11 @@ func (m *Manager) StartAll(ctx context.Context) error {
 // startOne is StartAll for one plugin, under its lock.
 func (m *Manager) startOne(ctx context.Context, id string) error {
 	defer m.lock(id)()
+	return m.startLocked(ctx, id)
+}
+
+// startLocked is startOne with the plugin's lock held.
+func (m *Manager) startLocked(ctx context.Context, id string) error {
 	p, err := m.store.GetPlugin(ctx, id)
 	if err != nil {
 		if p == nil {
@@ -795,8 +830,20 @@ func (m *Manager) Running(id string) bool {
 	return inst != nil && inst.Status().State == StateRunning
 }
 
-// Close stops every running plugin.
+// Close stops every running plugin and ends every socket wait.
 func (m *Manager) Close(ctx context.Context) error {
+	// The waits first: one retrying now may still start an instance.
+	m.mu.Lock()
+	waits := make([]*socketWait, 0, len(m.waits))
+	for id, w := range m.waits {
+		delete(m.waits, id)
+		close(w.stop)
+		waits = append(waits, w)
+	}
+	m.mu.Unlock()
+	for _, w := range waits {
+		<-w.done
+	}
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.instances))
 	for id := range m.instances {
@@ -821,8 +868,12 @@ func (m *Manager) startAndCheck(ctx context.Context, p *registry.Plugin) error {
 	}
 	inst, err := m.startInstance(ctx, p, manifest, p.Source, p.Path, mergedConfig(p.Config, p.Secrets))
 	if err != nil {
+		if p.Source == registry.PluginSourceSocket && socketNotThereYet(err) && m.SocketWait > 0 {
+			return m.awaitSocket(ctx, p, m.redact(p.ID, safeError(err)))
+		}
 		return m.fail(ctx, p, "start: "+m.redact(p.ID, safeError(err)), nil)
 	}
+	m.endWait(p.ID)
 	m.mu.Lock()
 	old := m.instances[p.ID]
 	m.instances[p.ID] = inst
@@ -831,6 +882,110 @@ func (m *Manager) startAndCheck(ctx context.Context, p *registry.Plugin) error {
 		_ = old.Stop(ctx)
 	}
 	return m.check(ctx, p, inst)
+}
+
+// socketNotThereYet reports whether a sidecar's dial failed because the
+// sidecar hasn't come up yet: no socket file, or nothing listening on
+// it (a stale file, or bound and not yet listening). Anything else,
+// a handshake or manifest error included, fails the start at once.
+func socketNotThereYet(err error) bool {
+	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
+}
+
+// awaitSocket leaves p waiting for its sidecar's socket, which wasn't
+// there yet (#465): no instance runs, its view says restarting with
+// ReasonWaitingForSocket, and the start (adoption included, so a late
+// sidecar on a new version is adopted) is tried again with backoff
+// until it works, fails some other way, or SocketWait runs out. A row
+// in error moves to installing meanwhile. Callers hold p's lock.
+func (m *Manager) awaitSocket(ctx context.Context, p *registry.Plugin, dialErr string) error {
+	m.mu.Lock()
+	old := m.instances[p.ID]
+	delete(m.instances, p.ID)
+	w := m.waits[p.ID]
+	fresh := w == nil
+	if fresh {
+		w = &socketWait{deadline: time.Now().Add(m.SocketWait), stop: make(chan struct{}), done: make(chan struct{})}
+		m.waits[p.ID] = w
+	}
+	w.lastErr = dialErr
+	m.mu.Unlock()
+	if old != nil {
+		_ = old.Stop(ctx)
+	}
+	if fresh {
+		m.logger.Warn("plugin waiting for its socket", "plugin", p.Label, "for", m.SocketWait.String(), "reason", dialErr)
+		go m.waitForSocket(p.ID, w)
+	}
+	if p.Status == registry.PluginStatusError {
+		return m.setStatus(ctx, p, registry.PluginStatusInstalling, "")
+	}
+	return nil
+}
+
+// waitForSocket retries a waiting start with backoff until the wait
+// ends.
+func (m *Manager) waitForSocket(id string, w *socketWait) {
+	defer close(w.done)
+	delay := m.SocketWaitBackoff
+	for {
+		select {
+		case <-w.stop:
+			return
+		case <-time.After(delay):
+		}
+		delay = min(2*delay, m.SocketWaitMaxBackoff)
+		if !m.retrySocket(id, w) {
+			return
+		}
+	}
+}
+
+// retrySocket starts the waiting plugin again and reports whether it is
+// still waiting. Once SocketWait has run out, the row is marked error.
+func (m *Manager) retrySocket(id string, w *socketWait) bool {
+	ctx := context.Background()
+	defer m.lock(id)()
+	if !m.waitingOn(id, w) {
+		return false // started, stopped or failed meanwhile
+	}
+	err := m.startLocked(ctx, id)
+	if !m.waitingOn(id, w) {
+		if p, _ := m.store.GetPlugin(ctx, id); err == nil && p != nil {
+			m.logger.Info("plugin started once its socket was up", "plugin", p.Label)
+		}
+		return false
+	}
+	if time.Now().Before(w.deadline) {
+		return true
+	}
+	p, _ := m.store.GetPlugin(ctx, id)
+	if p == nil {
+		m.endWait(id)
+		return false
+	}
+	m.mu.Lock()
+	last := w.lastErr
+	m.mu.Unlock()
+	_ = m.fail(ctx, p, fmt.Sprintf("the sidecar's socket wasn't there after %s: %s", m.SocketWait, strings.TrimPrefix(last, "plugins: ")), nil)
+	return false
+}
+
+// waitingOn reports whether w is still plugin id's socket wait.
+func (m *Manager) waitingOn(id string, w *socketWait) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.waits[id] == w
+}
+
+// endWait ends plugin id's socket wait, if any.
+func (m *Manager) endWait(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if w := m.waits[id]; w != nil {
+		delete(m.waits, id)
+		close(w.stop)
+	}
 }
 
 // startInstance starts an instance for p from manifest at path, without
@@ -961,6 +1116,7 @@ func (m *Manager) instance(id string) *Instance {
 }
 
 func (m *Manager) stopInstance(ctx context.Context, id string) {
+	m.endWait(id)
 	m.mu.Lock()
 	inst := m.instances[id]
 	delete(m.instances, id)
@@ -1067,9 +1223,13 @@ func (m *Manager) view(ctx context.Context, p *registry.Plugin) (*View, error) {
 		v.Check = &r
 	}
 	inst := m.instances[p.ID]
+	_, waiting := m.waits[p.ID]
 	m.mu.Unlock()
-	if inst != nil {
+	switch {
+	case inst != nil:
 		v.Instance = inst.Status()
+	case waiting:
+		v.Instance = InstanceStatus{State: StateRestarting, Reason: ReasonWaitingForSocket}
 	}
 	n, err := m.machines(ctx, p.ID)
 	if err != nil {
