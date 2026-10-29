@@ -162,7 +162,8 @@ to confirm in a direct answer: nothing records a yes to it. When work
 needs confirming, it chooses the action and Loomux asks. An answer that
 asks anyway (copying Loomux's own offer text, say) has the request taken
 out and says nothing is waiting for a yes (`router/selfconfirm.go`,
-LOOM-255).
+LOOM-255). A question asking for information ("Could you confirm which
+workspace you mean?") is not a request for a yes and stays.
 
 A shared work machine such as sc1 is meant to be `purpose: work`,
 `allow_provision: false`, `require_confirmation: true`.

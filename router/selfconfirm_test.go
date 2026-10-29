@@ -22,6 +22,9 @@ func TestAsksForConfirmation(t *testing.T) {
 		"Once you confirm, I'll clone it.",
 		`Just say "yes" and I'll start.`,
 		"Respond with OK to proceed.",
+		"Type yes to go ahead.",
+		"Please confirm.",
+		"Could you confirm that I should start codex there?",
 	}
 	for _, s := range asks {
 		if !router.AsksForConfirmation(s) {
@@ -34,6 +37,12 @@ func TestAsksForConfirmation(t *testing.T) {
 		"I can't confirm the disk is healthy from here; ask me to run df on it.",
 		"The answer is yes: Loomux can run codex there.",
 		"Which workspace should it go in, api-server or billing?",
+		// Questions asking for information, not for a yes.
+		"Could you confirm which workspace you mean: api-server or billing?",
+		"Please confirm the repository URL, and I'll set it up.",
+		"If you confirm the branch name, I can route it.",
+		"Confirm your SSH key is added to jet01, then ask again.",
+		"Type yes in the terminal to accept the host key.",
 		// Loomux's own direct answers.
 		router.NoTargetsReply,
 		router.NoMachinePluginReply,

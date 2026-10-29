@@ -10,14 +10,35 @@ import (
 // to reply yes — what Loomux's own offers say (`Reply "yes" to go
 // ahead. Any other reply cancels.`) and a routing model can copy into
 // an answer of its own (LOOM-255).
+//
+// "Confirm" and "type yes" also ask for information ("Could you confirm
+// which workspace you mean?", "Type yes in the terminal to accept the
+// host key"), and taking such a question out leaves the user without
+// the choice they were asked to make. So they count only when what
+// follows asks for approval (approvalTail): the sentence ends, or goes
+// on with "and I'll …", "you want …", "to go ahead" or the work to be
+// started.
 var confirmationRequest = regexp.MustCompile(`(?i)` +
-	`\b(reply|respond|type|send)(\s+(with|back))?\s*:?\s*["'“”‘’]?(yes|y|ok|okay|confirm|confirmed)\b` +
+	`\b(reply|respond|send)(\s+(with|back))?\s*:?\s*["'“”‘’]?(yes|y|ok|okay|confirm|confirmed)\b` +
 	`|\b(say|answer)\s+(with\s+)?["'“”‘’](yes|y|ok|okay|confirm)["'“”‘’]` +
-	`|^\W*(please\s+)?confirm\b` +
-	`|\bplease\s+confirm\b` +
-	`|\b(can|could|would|will)\s+you\s+(please\s+)?confirm\b` +
-	`|\b(once|when|if|after)\s+you\s+confirm\b` +
+	`|\btype\s*:?\s*["'“”‘’]?(yes|y|ok|okay|confirm|confirmed)["'“”‘’]?` + approvalTail +
+	`|^\W*(please\s+)?confirm` + approvalTail +
+	`|\bplease\s+confirm` + approvalTail +
+	`|\b(can|could|would|will)\s+you\s+(please\s+)?confirm` + approvalTail +
+	`|\b(once|when|if|after)\s+you\s+confirm` + approvalTail +
 	`|\bany other reply cancels\b`)
+
+// approvalTail is what follows "confirm" or "type yes" in a request for
+// approval: the end of the sentence, a clause break, "and I'll …",
+// "(that) you want …", "(that) I should start …", "to go ahead …", or
+// the work itself ("confirm starting new work there").
+const approvalTail = `(\s*[.!?]*["'”’)]*$` +
+	`|\s*[,;]` +
+	`|\s+(and|then)\s+(I|we)\b` +
+	`|\s+(that\s+)?you\s+(want|would\s+like|['’]d\s+like)\b` +
+	`|\s+(that\s+)?(I|we)\s+(should|can|may)\s+(go|start|proceed|run|create|clone)\b` +
+	`|\s+to\s+(go\s+ahead|proceed|start|continue|run|create|clone)\b` +
+	`|\s+(starting|creating|cloning|running|provisioning|proceeding|going\s+ahead|launching|dispatching|deleting|installing|adding)\b)`
 
 // sentence is one sentence of a line: up to and including its ending
 // punctuation (and a closing quote), or the line's unended rest.

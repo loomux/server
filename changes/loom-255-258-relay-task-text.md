@@ -10,4 +10,6 @@
 - The routing model no longer asks for confirmation itself: a direct
   answer asking the user to confirm or reply "yes" (copying Loomux's own
   offer text) has that request taken out and says nothing is waiting for
-  a yes, since no offer was recorded for it to approve (LOOM-255).
+  a yes, since no offer was recorded for it to approve (LOOM-255). A
+  question asking for information ("Could you confirm which workspace you
+  mean?") stays.
