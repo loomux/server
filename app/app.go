@@ -94,6 +94,9 @@ type App struct {
 	bg *background
 	// bgCtx is the background work's context, cancelled by Close.
 	bgCtx context.Context
+	// notifyFilter holds notifications over the rate limit; Close sends
+	// what it holds (LOOM-249). Nil without notifications.
+	notifyFilter *notify.Filter
 	// retention and logger configure StartRetention's sweep (LOOM-193).
 	retention     retention.Config
 	logger        *slog.Logger
@@ -308,6 +311,8 @@ func (a *App) Close() error {
 	if a.bg != nil {
 		a.bg.close()
 	}
+	// With every notification in, those held back go out as a digest.
+	a.notifyFilter.Close()
 	if a.sshAgents != nil {
 		a.sshAgents.Close()
 	}
@@ -406,6 +411,8 @@ const (
 
 // At most notifyBurst notifications go out at once, then one more every
 // notifyRefill (LOOM-102): a string of failures mustn't flood a phone.
+// Those over it are held and go out as one digest at the next token,
+// and a needs-you never waits (LOOM-249).
 const (
 	notifyBurst  = 5
 	notifyRefill = time.Minute
@@ -624,17 +631,21 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// service and of late replies (LOOM-121) from the router.
 	bg := &background{}
 	var notifier *turnNotifier
+	var notifyFilter *notify.Filter
 	if cfg.Notify.NtfyURL != "" {
 		logger := cfg.Logger
 		if logger == nil {
 			logger = slog.New(slog.DiscardHandler)
 		}
+		notifyFilter = notify.NewFilter(notify.NewNtfy(cfg.Notify.NtfyURL, cfg.Notify.NtfyTopic, cfg.Notify.NtfyToken), notify.FilterConfig{
+			Events: cfg.Notify.Events, Burst: notifyBurst, Refill: notifyRefill,
+			Logger: logger, Metrics: met,
+		})
 		notifier = &turnNotifier{
-			store: store,
-			filter: notify.NewFilter(notify.NewNtfy(cfg.Notify.NtfyURL, cfg.Notify.NtfyTopic, cfg.Notify.NtfyToken), notify.FilterConfig{
-				Events: cfg.Notify.Events, Burst: notifyBurst, Refill: notifyRefill,
-			}),
+			store:       store,
+			filter:      notifyFilter,
 			minDuration: cfg.Notify.MinDuration,
+			metrics:     met,
 			publicURL:   cfg.Notify.PublicURL,
 			logger:      logger,
 			bg:          bg,
@@ -863,6 +874,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		proberDone:       proberDone,
 		bg:               bg,
 		bgCtx:            reaperCtx,
+		notifyFilter:     notifyFilter,
 		sweepDone:        sweepDone,
 		retention: retention.Config{
 			Sessions:      cfg.SessionRetention,

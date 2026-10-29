@@ -282,10 +282,14 @@ effective profile per agent type is logged at startup as
 turn ends: done, failed, or stopped on a prompt only you can answer
 ("needs you"). `LOOMUX_NTFY_TOKEN` authenticates to a protected topic (keep
 it in the Secret). `LOOMUX_NOTIFY_EVENTS` narrows which ones are sent
-(`done,failed,needs_you`); `LOOMUX_NOTIFY_MIN_DURATION` (30s) skips turns
-quick enough that you were likely watching; `LOOMUX_PUBLIC_URL` (e.g.
+(`done,failed,needs_you`); `LOOMUX_NOTIFY_MIN_DURATION` (30s) skips done
+and failed turns quick enough that you were likely watching (a needs-you is
+sent however short the turn); `LOOMUX_PUBLIC_URL` (e.g.
 `https://loomux.example`) makes each notification open its conversation.
-At most 5 go out at once, then one a minute.
+At most 5 go out at once, then one a minute: those over the limit are held
+and sent as one digest ("3 more turns ended…") when the next one is due, or
+when Loomux stops. A needs-you is never held. Each notification's fate is
+logged and counted in `loomux_notifications_total{kind,outcome}`.
 
 **Web client updates (LOOM-118, optional):** the web UI can switch the
 web client it serves without rebuilding or redeploying the image.
@@ -356,6 +360,7 @@ or message content. Key series:
 | `loomux_retention_deleted_total` | `table` | Rows the hourly retention sweep deleted: `sessions`, `dispatches`, `confirmations` (LOOM-193) |
 | `loomux_retention_errors_total` | `table` | Retention deletes that failed |
 | `loomux_retention_last_sweep_timestamp_seconds` | — | When the retention sweep last ran |
+| `loomux_notifications_total` | `kind`, `outcome` | Turn notifications: `sent`, `error`, `held` (over the rate limit, in the next digest), `digest_sent`, `digest_error`, `skipped_short`, `opted_out`, `dropped` (arrived during shutdown) (LOOM-249) |
 
 **What the logs contain.** Chat message bodies, direct answers and relayed
 agent output are never logged (only a message's length). But treat the log
