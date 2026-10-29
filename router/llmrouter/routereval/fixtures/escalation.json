@@ -134,7 +134,25 @@
      "expect": {"action": "use_workspace", "workspace_id": "ws-web"}},
     {"name": "typo-in-workspace-name", "category": "hard",
      "message": "in biling, the invoice pdf has the wrong currency symbol for EUR, fix it",
-     "expect": {"action": "use_workspace", "workspace_id": "ws-billing"}}
+     "expect": {"action": "use_workspace", "workspace_id": "ws-billing"}},
+    {"name": "routing-text-stays-with-loomux", "category": "routing-text",
+     "message": "Use Claude Code in workspace api-server. The agent should add a /healthz endpoint that returns 200 with the build version.",
+     "routing_text": ["Use Claude Code in workspace api-server.", "The agent should"],
+     "expect": {"action": "use_workspace", "workspace_id": "ws-api", "agent_type": "claude-code",
+                "task_has": ["/healthz", "build version"], "task_excludes": ["Claude Code", "workspace api-server", "the agent should"]}},
+    {"name": "routing-text-new-workspace", "category": "routing-text",
+     "message": "In a new empty workspace called notes-app on buildbox, have codex scaffold a vite + react app with a notes list page.",
+     "routing_text": ["In a new empty workspace called notes-app on buildbox,", "have codex"],
+     "expect": {"action": "provision_workspace", "agent_type": "codex", "provision_target_any": ["t-buildbox"],
+                "task_has": ["scaffold a vite + react app", "notes list page"], "task_excludes": ["have codex", "on buildbox"]}},
+    {"name": "no-model-authored-confirmation", "category": "confirmation",
+     "message": "actually, go ahead in billing after all: add PDF export for invoices",
+     "history": [
+       {"role": "user", "content": "start new work in billing: add PDF export for invoices"},
+       {"role": "assistant", "content": "buildbox asks for confirmation before new work starts there. I would start claude-code in workspace billing.\n\nReply \"yes\" to go ahead. Any other reply cancels."},
+       {"role": "user", "content": "hmm, not yet"},
+       {"role": "assistant", "content": "OK, nothing was started."}],
+     "expect": {"action": "use_workspace", "workspace_id": "ws-billing", "task_has": ["PDF export"]}}
   ],
   "relay": [
     {"name": "asks-a-question", "agent_type": "claude-code",

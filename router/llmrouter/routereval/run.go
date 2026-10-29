@@ -253,6 +253,10 @@ func scoreDecision(c DecideCase, d router.Decision, open *router.OpenTaskSnapsho
 	}
 	eff, _ := router.ApplyAffinity(d, open)
 	switch {
+	// Only an offer Loomux records can be confirmed (LOOM-255): an answer
+	// asking for a yes is wrong whatever was expected.
+	case eff.Action == router.ActionAnswerDirectly && router.AsksForConfirmation(eff.DirectAnswer):
+		return wrongf("direct answer asks for a confirmation no offer records: %q", clip(eff.DirectAnswer, 80))
 	case eff.Action != e.Action:
 		return wrongf("action %s, want %s", eff.Action, e.Action)
 	case e.WorkspaceID != "" && eff.WorkspaceID != e.WorkspaceID:
@@ -269,6 +273,15 @@ func scoreDecision(c DecideCase, d router.Decision, open *router.OpenTaskSnapsho
 		return wrongf("provision kind %s, want %s", eff.NewWorkspace.Kind, e.ProvisionKind)
 	case e.GitRemote != "" && eff.NewWorkspace.GitRemote != e.GitRemote:
 		return wrongf("git remote %q, want %q", eff.NewWorkspace.GitRemote, e.GitRemote)
+	}
+	task := router.AgentTask(c.Message, eff.RoutingText)
+	for _, want := range e.TaskHas {
+		if !containsAny(task, []string{want}) {
+			return wrongf("agent sent %q, want it to have %q", clip(task, 80), want)
+		}
+	}
+	if containsAny(task, e.TaskExcludes) {
+		return wrongf("agent sent %q, want none of %q", clip(task, 80), e.TaskExcludes)
 	}
 	return nil
 }

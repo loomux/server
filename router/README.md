@@ -29,6 +29,12 @@ replies, and updating each workspace's rolling summary).
   no recorded offer is asked about rather than acted on, unless it
   continues work the conversation has open (design spec §"Answering an
   offer").
+- `selfconfirm.go` — a direct answer that asks the user to confirm or to
+  reply yes has that request taken out (LOOM-255): only an offer Loomux
+  records can be confirmed.
+- `agenttask.go` — `AgentTask` (LOOM-258): the agent is sent the message
+  without the parts the routing model quoted in `Decision.RoutingText`
+  as only routing it.
 - `command.go` — direct shell commands (`ActionRunCommand`, LOOM-72):
   `parseRunRequest`/`orderedVerbatim` (run at once only if the whole
   message is ``run `<cmd>` on <target>`` — or the fenced form — naming the

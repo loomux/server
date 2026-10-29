@@ -157,6 +157,13 @@ task, or go to another workspace the conversation has used while a task
 is open; anything else gets a question back instead
 (`router/affirmative.go`).
 
+**Only Loomux asks for a yes.** The routing model never asks the user
+to confirm in a direct answer: nothing records a yes to it. When work
+needs confirming, it chooses the action and Loomux asks. An answer that
+asks anyway (copying Loomux's own offer text, say) has the request taken
+out and says nothing is waiting for a yes (`router/selfconfirm.go`,
+LOOM-255).
+
 A shared work machine such as sc1 is meant to be `purpose: work`,
 `allow_provision: false`, `require_confirmation: true`.
 
@@ -317,7 +324,12 @@ Lifecycle for an `agent` task:
 2. If no task is currently running for that workspace + conversation, the
    orchestrator opens a tmux pane on that workspace's target and launches
    the configured agent CLI there, interactively. If one's already running,
-   the message is sent into it as the next turn. A freshly launched agent
+   the message is sent into it as the next turn. What the agent is sent is
+   the task: the parts of the message that only told Loomux where to send
+   it ("Use Claude Code in workspace api-server.", "the agent should"),
+   which the routing model quotes in `routing_text`, are taken out of the
+   message as typed — only taken out, never reworded; if nothing but
+   routing would be left, the message goes whole (LOOM-258). A freshly launched agent
    hasn't seen the conversation, so its first turn is the message behind a
    note with what was said before it (bounded like the routing model's
    history): an answer such as "use e2e-loom56 then" still carries the

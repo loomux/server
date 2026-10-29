@@ -74,7 +74,11 @@ type DecideCase struct {
 	OpenTask          *OpenTask                 `json:"open_task"`
 	LastWorkspaceID   string                    `json:"last_workspace_id"`
 	LastWorkspaceName string                    `json:"last_workspace_name"`
-	Expect            DecideExpect              `json:"expect"`
+	// RoutingText is the routing_text a right answer quotes (LOOM-258):
+	// the oracle answers with it. A run is scored on the task the agent
+	// would get (TaskHas, TaskExcludes), not on these exact parts.
+	RoutingText []string     `json:"routing_text"`
+	Expect      DecideExpect `json:"expect"`
 }
 
 // OpenTask is the conversation's task awaiting input.
@@ -100,6 +104,11 @@ type DecideExpect struct {
 	ProvisionKind      router.ProvisionKind `json:"provision_kind"`
 	GitRemote          string               `json:"git_remote"`
 	LeaveOpenTask      *bool                `json:"leave_open_task"`
+	// TaskHas and TaskExcludes check what the agent would be sent
+	// (router.AgentTask, LOOM-258): it contains every one of TaskHas
+	// and none of TaskExcludes, case-insensitively.
+	TaskHas      []string `json:"task_has"`
+	TaskExcludes []string `json:"task_excludes"`
 }
 
 // RelayCase is one captured agent turn to condense.
@@ -170,6 +179,10 @@ func (f *Fixtures) Validate() error {
 		}
 		if c.Message == "" {
 			bad("%s: no message", c.Name)
+		}
+		toAgent := e.Action == router.ActionUseWorkspace || e.Action == router.ActionProvisionWorkspace
+		if !toAgent && (len(e.TaskHas) > 0 || len(e.TaskExcludes) > 0 || len(c.RoutingText) > 0) {
+			bad("%s: a task or routing text, but %s sends nothing to an agent", c.Name, e.Action)
 		}
 		if e.WorkspaceID != "" && !workspaces[e.WorkspaceID] {
 			bad("%s: unknown workspace %q", c.Name, e.WorkspaceID)

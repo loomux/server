@@ -110,10 +110,11 @@ in step 1 is the real cap.
 | Cost per 1k calls | Escalation volume × this is the bill | ≤ baseline |
 
 The fixture set (`router/llmrouter/routereval/fixtures/escalation.json`)
-has 24 routing and 6 relay cases. The routing cases cover provisioning,
+has 27 routing and 6 relay cases. The routing cases cover provisioning,
 commands, agents named in the message, reusing workspaces, direct
-answers, open tasks, follow-ups and harder messages (multi-constraint,
-noisy, misspelt). The data is synthetic, with no user data. Each case is
+answers, open tasks, follow-ups, harder messages (multi-constraint,
+noisy, misspelt), routing text kept out of what the agent is sent
+(LOOM-258) and no confirmation asked for by the model itself (LOOM-255). The data is synthetic, with no user data. Each case is
 scored on the decision the router acts on, after `router.ApplyAffinity`.
 
 ## Budget
@@ -125,7 +126,7 @@ then stops before a call once the spend plus the dearest call so far
 would pass it. The first call, and any call dearer than all before it,
 can still take the spend past the budget, by at most that call's own
 cost: cents at these prices (the worst-case column below, divided by
-90 calls).
+99 calls).
 
 Measured offline: about 2.4K prompt tokens per call. The estimates
 assume 1,024 output tokens per answer. Worst case means every call needs
@@ -134,7 +135,10 @@ table** (see Prices above), unverified as of 2026-10-20. Re-run step 0
 after confirming prices (with `--price-in`/`--price-out` if they
 changed) to get current estimates.
 
-| Run (3 runs × 30 cases = 90 calls), at the harness's price table | Expected | Worst case | `--budget-usd` |
+The figures below were estimated for 90 calls (30 cases); the set now
+has 33 (99 calls), about 10% more. Step 0 prints the current estimate.
+
+| Run (3 runs × 33 cases = 99 calls), at the harness's price table | Expected | Worst case | `--budget-usd` |
 |---|---|---|---|
 | Smoke, per model (`--max-calls 2`) | < $0.01 | < $0.03 | 0.10 |
 | Baseline: current escalation model | depends on model (Sonnet 5.5 ≈ $1.4) | ≈ $3.4 | 2.00 |

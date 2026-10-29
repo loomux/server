@@ -71,6 +71,9 @@ type pendingInstall struct {
 	// message is, for pendingCloneRemote and pendingPolicyConfirm, the
 	// request that will carry on once confirmed.
 	message string
+	// routingText is, for pendingCloneRemote, the parts of message that
+	// only routed it, left out of what the agent is sent (LOOM-258).
+	routingText []string
 	// decision is, for pendingPolicyConfirm, the plan a "yes" carries out
 	// (LOOM-89).
 	decision *Decision

@@ -24,6 +24,9 @@ type decideArguments struct {
 	TargetID     string                   `json:"target_id"`
 	Command      string                   `json:"command"`
 	NewTarget    decideArgumentsTarget    `json:"new_target"`
+	// RoutingText (LOOM-258) is the parts of the message that only say
+	// where to send it, left out of what the agent is sent.
+	RoutingText []string `json:"routing_text"`
 	// LeaveOpenTask (LOOM-87) is only offered while a task is open.
 	LeaveOpenTask bool `json:"leave_open_task"`
 }
@@ -176,7 +179,8 @@ func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs [
 		if !m.isValidAgentType(args.AgentType) {
 			return router.Decision{}, fmt.Errorf("unknown agent_type %q", args.AgentType)
 		}
-		return router.Decision{Action: action, WorkspaceID: args.WorkspaceID, AgentType: args.AgentType}, nil
+		return router.Decision{Action: action, WorkspaceID: args.WorkspaceID, AgentType: args.AgentType,
+			RoutingText: routingText(args.RoutingText)}, nil
 
 	case router.ActionProvisionWorkspace:
 		if !m.isValidAgentType(args.AgentType) {
@@ -196,7 +200,8 @@ func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs [
 		if err := spec.Validate(); err != nil {
 			return router.Decision{}, fmt.Errorf("provision_workspace: %w", err)
 		}
-		return router.Decision{Action: action, AgentType: args.AgentType, NewWorkspace: spec}, nil
+		return router.Decision{Action: action, AgentType: args.AgentType, NewWorkspace: spec,
+			RoutingText: routingText(args.RoutingText)}, nil
 
 	case router.ActionRunCommand:
 		if args.TargetID == "" || !contains(targetIDs, args.TargetID) {
@@ -213,6 +218,19 @@ func (m *Model) validateDecision(args decideArguments, workspaceIDs, targetIDs [
 	default:
 		return router.Decision{}, fmt.Errorf("unknown action %q", args.Action)
 	}
+}
+
+// routingText is the model's routing_text without blank parts. Whether
+// each part is in the message is the router's to check: it holds the
+// message as typed, not as the model saw it.
+func routingText(parts []string) []string {
+	var out []string
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // validateTarget checks a provision_target proposal (LOOM-216) against
