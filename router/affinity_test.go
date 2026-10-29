@@ -274,3 +274,27 @@ func TestApplyAffinity_StructuredActionsLeaveOpenTask(t *testing.T) {
 		}
 	}
 }
+
+// The history the routing model gets is redacted against the vault too.
+func TestDispatch_HistoryPassedToDecideRedactsVaultValues(t *testing.T) {
+	store, _, r, model := setup(t)
+	const secret = "sk-PROBE-history-value-123"
+	if err := store.CreateCredential(context.Background(), &registry.Credential{
+		ID: uuid.NewString(), Name: "MY_TOKEN", Value: secret,
+	}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "ok"}, nil
+	}
+	if _, err := r.Dispatch(context.Background(), "conv-h", "the token is "+secret); err != nil {
+		t.Fatalf("Dispatch 1: %v", err)
+	}
+	if _, err := r.Dispatch(context.Background(), "conv-h", "what next?"); err != nil {
+		t.Fatalf("Dispatch 2: %v", err)
+	}
+	got := model.LastDecideOptions.History
+	if len(got) == 0 || got[0].Content != "the token is [redacted]" {
+		t.Fatalf("history = %+v, want the vault value redacted", got)
+	}
+}

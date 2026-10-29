@@ -274,3 +274,38 @@ func TestDispatch_EarlierConversationLeavesOutUnknownOrigin(t *testing.T) {
 		t.Errorf("the agent got %q, want a message of unknown origin left out", sent)
 	}
 }
+
+// A vault value the user typed in an earlier turn isn't replayed to a
+// freshly started agent: the note is redacted against the whole vault,
+// as everything else that leaves Loomux is. The user's other words stay.
+func TestDispatch_EarlierConversationRedactsVaultValues(t *testing.T) {
+	h := newAvailabilityHarness(t)
+	h.probes.install("claude")
+	h.recordAgents(t, map[string]bool{"claude-code": true})
+	ctx := context.Background()
+	const secret = "sk-PROBE-earlier-turn-value-123"
+	if err := h.store.CreateCredential(ctx, &registry.Credential{
+		ID: uuid.NewString(), Name: "MY_TOKEN", Value: secret,
+	}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+
+	h.decide(router.Decision{Action: router.ActionAnswerDirectly, DirectAnswer: "Noted the token " + secret + "."})
+	if _, err := h.r.Dispatch(ctx, "conv-1", "My deploy token is "+secret+", remember it"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	h.decide(h.provisionDecision("claude-code"))
+	if _, err := h.r.Dispatch(ctx, "conv-1", "Now set up the deploy"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	sent := h.sentToAgent(t, "claude-code")
+	if strings.Contains(sent, secret) || strings.Contains(sent, "sk-PROBE") {
+		t.Errorf("the agent got %q, want the vault value redacted from the earlier conversation", sent)
+	}
+	for _, want := range []string{"My deploy token is [redacted]", "Noted the token [redacted]", "Now set up the deploy"} {
+		if !strings.Contains(sent, want) {
+			t.Errorf("the agent got %q, want it to include %q", sent, want)
+		}
+	}
+}

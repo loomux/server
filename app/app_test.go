@@ -60,6 +60,9 @@ func testConfig(t *testing.T, routerBaseURL string) Config {
 		// Build scrubs its socket's tmux server and runs local sessions
 		// there: the test's own, never loomux (LOOM-210).
 		TmuxSocket: tmuxtest.Socket(t),
+		// A routed message is redacted against the vault, which needs
+		// its key.
+		MasterKey: []byte("01234567890123456789012345678901"),
 	}
 }
 

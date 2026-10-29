@@ -31,6 +31,10 @@ type StubRoutingModel struct {
 	// recent Decide call, so tests can assert what the router model was
 	// told about registered targets without widening DecideFunc.
 	LastDecideTargets []router.TargetSnapshot
+	// LastDecideMessage is the message passed to the most recent Decide
+	// call: what the routing model was given, which may differ from what
+	// the user typed.
+	LastDecideMessage string
 }
 
 func (m *StubRoutingModel) Decide(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot, targets []router.TargetSnapshot, opts ...router.DispatchOption) (router.Decision, error) {
@@ -40,6 +44,7 @@ func (m *StubRoutingModel) Decide(ctx context.Context, message string, workspace
 	}
 	m.LastDecideOptions = o
 	m.LastDecideTargets = targets
+	m.LastDecideMessage = message
 	return m.DecideFunc(ctx, message, workspaces)
 }
 

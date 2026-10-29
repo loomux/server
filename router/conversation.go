@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Loomux/server/credentials"
 	"github.com/Loomux/server/registry"
 )
 
@@ -30,8 +31,11 @@ func (r *Router) conversationContext(ctx context.Context, conversationID string,
 		}
 		kept = append(kept, m)
 	}
-	// What a target's relay policy lets the routing model see of it.
-	history = boundHistory(r.newHistoryPolicies(ctx).filter(kept))
+	// What a target's relay policy lets the routing model see of it,
+	// with no vault value in it. If the vault can't be read, no history.
+	if kept, ok := r.redactHistory(ctx, r.newHistoryPolicies(ctx).filter(kept)); ok {
+		history = boundHistory(kept)
+	}
 
 	tasks, err := r.store.ListTasks(ctx)
 	if err != nil {
@@ -102,6 +106,29 @@ func boundHistory(msgs []*registry.Message) []ConversationTurn {
 		turns = turns[1:]
 	}
 	return turns
+}
+
+// redactHistory is msgs with every credential value in the vault — any
+// scope, any agent type — replaced by a placeholder (credentials.RedactAll).
+// Before boundHistory: a cut through a value would no longer match it
+// (LOOM-133). ok is false when the vault can't be read. msgs is left as
+// it is.
+func (r *Router) redactHistory(ctx context.Context, msgs []*registry.Message) (out []*registry.Message, ok bool) {
+	creds, err := r.store.ListCredentials(ctx)
+	if err != nil {
+		return nil, false
+	}
+	values := make(map[string]string, len(creds))
+	for _, c := range creds {
+		values[c.ID] = c.Value
+	}
+	out = make([]*registry.Message, len(msgs))
+	for i, m := range msgs {
+		redacted := *m
+		redacted.Content = credentials.RedactValues(m.Content, values)
+		out[i] = &redacted
+	}
+	return out, true
 }
 
 // keepEnd keeps the last n runes of s, marking a cut with a leading "…".
@@ -196,6 +223,12 @@ func (r *Router) earlierConversation(ctx context.Context, conversationID, worksp
 			kept = kept[:i]
 			break
 		}
+	}
+	// The note reaches another pane and the agent's vendor: no vault
+	// value goes with it, and if the vault can't be read, no note.
+	kept, ok = r.redactHistory(ctx, kept)
+	if !ok {
+		return "", nil
 	}
 	turns := boundHistory(kept)
 	if len(turns) == 0 {

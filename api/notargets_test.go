@@ -57,6 +57,9 @@ func TestIntegration_Dispatch_NoTargets_ClearAnswerNot500(t *testing.T) {
 		DBPath:     filepath.Join(t.TempDir(), "test.db"),
 		Router:     routerConfigFor(llmSrv.URL),
 		TmuxSocket: tmuxtest.Socket(t),
+		// A routed message is redacted against the vault, which needs
+		// its key.
+		MasterKey: testMasterKey,
 	})
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)
