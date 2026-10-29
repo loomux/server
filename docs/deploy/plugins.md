@@ -233,8 +233,11 @@ waited for (#465): the plugin shows `restarting`, "waiting for the
 sidecar's socket", and the start is retried with backoff (1 s, doubling
 to 30 s) for 10 minutes, adopting the new version the same way once the
 sidecar answers. After that it is in status `error`; enabling it again
-waits another 10 minutes. A socket that answers but fails the handshake
-fails at once. When the capabilities or
+waits another 10 minutes. An install finds only a sidecar that
+answers, but one that goes away between being listed and being started
+is waited for the same way: the install returns with the plugin
+`installing`, not an error. A socket that answers but fails the
+handshake fails at once. When the capabilities or
 the schema's shape changed, the plugin stays stopped in status `error`
 with a reason naming the new version ("upgrade the plugin"): the old
 binary is no longer there, and only `POST /api/v1/plugins/{id}/upgrade`,

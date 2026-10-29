@@ -137,6 +137,7 @@ type Manager struct {
 	mu        sync.Mutex // guards the maps below
 	instances map[string]*Instance
 	waits     map[string]*socketWait // sidecar plugins waiting for their socket
+	closed    bool                   // Close was called: no new socket waits
 	checks    map[string]protocol.CheckResult
 	secrets   map[string][]string    // every secret value configured in this process, for redaction
 	locks     map[string]*sync.Mutex // the lifecycle lock per plugin id
@@ -523,6 +524,7 @@ func (m *Manager) Upgrade(ctx context.Context, id string) (*View, error) {
 		// old one. (The result is redacted before the lock: redact takes
 		// it too.)
 		redacted := m.redactResult(id, res)
+		m.endWait(id)
 		m.mu.Lock()
 		old := m.instances[id]
 		m.instances[id] = candidate
@@ -636,6 +638,9 @@ func (m *Manager) startLocked(ctx context.Context, id string) error {
 		return m.fail(ctx, p, "the stored configuration doesn't decrypt with this server's master key", nil)
 	}
 	if inst := m.instance(id); inst != nil && inst.Status().State == StateRunning {
+		// Started some other way (an Upgrade, say) while it waited for
+		// its socket: the wait is over, or its deadline would fail it.
+		m.endWait(id)
 		return nil
 	}
 	m.setSecrets(id, p.Secrets)
@@ -833,7 +838,10 @@ func (m *Manager) Running(id string) bool {
 // Close stops every running plugin and ends every socket wait.
 func (m *Manager) Close(ctx context.Context) error {
 	// The waits first: one retrying now may still start an instance.
+	// Once closed, a start that finds no socket fails instead of
+	// beginning a wait nothing would end.
 	m.mu.Lock()
+	m.closed = true
 	waits := make([]*socketWait, 0, len(m.waits))
 	for id, w := range m.waits {
 		delete(m.waits, id)
@@ -897,9 +905,14 @@ func socketNotThereYet(err error) bool {
 // ReasonWaitingForSocket, and the start (adoption included, so a late
 // sidecar on a new version is adopted) is tried again with backoff
 // until it works, fails some other way, or SocketWait runs out. A row
-// in error moves to installing meanwhile. Callers hold p's lock.
+// in error moves to installing meanwhile. After Close it fails instead.
+// Callers hold p's lock.
 func (m *Manager) awaitSocket(ctx context.Context, p *registry.Plugin, dialErr string) error {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return fmt.Errorf("plugins: %s: the Manager is closed, so its socket isn't waited for: %s", p.Label, strings.TrimPrefix(dialErr, "plugins: "))
+	}
 	old := m.instances[p.ID]
 	delete(m.instances, p.ID)
 	w := m.waits[p.ID]

@@ -806,6 +806,55 @@ func TestManagerDisableEndsSocketWait(t *testing.T) {
 	}
 }
 
+// An Upgrade that starts the plugin while it waits for its socket ends
+// the wait: the wait's deadline passing later must not fail the plugin
+// the Upgrade started (review of #485).
+func TestManagerUpgradeEndsSocketWait(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	v := installSidecar(t, store, dir)
+
+	// Retries far enough apart that the Upgrade comes between two.
+	const wait = time.Second
+	m := waitingManager(t, store, dir, wait)
+	m.SocketWaitBackoff, m.SocketWaitMaxBackoff = 500*time.Millisecond, 500*time.Millisecond
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	fake.Version = "0.2.0"
+	t.Cleanup(func() { fake.Version = "" })
+	t.Cleanup(serveFakeSocket(t, filepath.Join(dir, "fake.sock")))
+	up, err := m.Upgrade(context.Background(), v.ID)
+	if err != nil || up.Version != "0.2.0" || up.Instance.State != plugins.StateRunning {
+		t.Fatalf("Upgrade while waiting = version %s instance %+v, %v", up.Version, up.Instance, err)
+	}
+	time.Sleep(2 * wait)
+	got, err := m.Get(context.Background(), v.ID)
+	if err != nil || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning || !m.Running(v.ID) {
+		t.Errorf("after the wait's deadline = %s %q instance %+v, %v", got.Status, got.StatusReason, got.Instance, err)
+	}
+}
+
+// A start after Close doesn't begin a socket wait: nothing would end it
+// (review of #485).
+func TestManagerClosedDoesNotWaitForSocket(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	v := installSidecar(t, store, dir)
+
+	m := waitingManager(t, store, dir, time.Minute)
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StartAll(context.Background()); err == nil {
+		t.Error("a start after Close should fail")
+	}
+	got, err := m.Get(context.Background(), v.ID)
+	if err != nil || got.Instance.Reason == plugins.ReasonWaitingForSocket {
+		t.Errorf("after Close = %s instance %+v, %v; want no wait", got.Status, got.Instance, err)
+	}
+}
+
 // failingStore fails SetPluginConfig or UpdatePlugin while armed.
 type failingStore struct {
 	registry.Store
