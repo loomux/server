@@ -67,6 +67,17 @@ func TestDetectPrompt(t *testing.T) {
 		}},
 		{"codex-login.txt", &registry.Attention{Kind: registry.AttentionLogin, Title: "Sign-in required",
 			Detail: "Sign in with ChatGPT to use Codex as part of your paid plan"}},
+		// Codex 0.163's self-update prompt, footer "enter continue · esc
+		// skip" (#482); captured by command-center PR #4.
+		{"codex-update.txt", &registry.Attention{
+			Kind: registry.AttentionQuestion, Title: "Update available · 0.163.0 → 0.165.0",
+			Detail: "Release notes: https://github.com/openai/codex/releases/latest",
+			Options: []registry.AttentionOption{
+				{Label: "Update now (runs `sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)"},
+				{Label: "Skip"},
+				{Label: "Skip until next version"},
+			},
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fixture, func(t *testing.T) {
