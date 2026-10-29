@@ -20,7 +20,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -51,7 +53,16 @@ type Server struct {
 
 	mu         sync.Mutex
 	authorized [][]byte
+
+	// latency delays every exec request (SetLatency).
+	latency atomic.Int64
 }
+
+// SetLatency delays every later exec request by d before its command
+// runs: a slow link to a target, for load tests (LOOM-254). It is per
+// operation, not per packet, which is what a ControlMaster channel costs
+// over a slow path.
+func (s *Server) SetLatency(d time.Duration) { s.latency.Store(int64(d)) }
 
 // Authorize lets the key on an authorized_keys line log in too, as
 // appending it to the user's authorized_keys would (LOOM-138: a key
@@ -196,6 +207,9 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 			continue
 		}
 		req.Reply(true, nil)
+		if d := time.Duration(s.latency.Load()); d > 0 {
+			time.Sleep(d)
+		}
 
 		if s.Exec != nil {
 			if status, handled := s.Exec(payload.Command, channel, channel, channel.Stderr()); handled {

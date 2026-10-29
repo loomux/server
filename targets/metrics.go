@@ -42,7 +42,26 @@ func newMetricsExecutor(inner TargetExecutor, m *metrics.Metrics, kind, name str
 	if m == nil {
 		return inner
 	}
-	return &metricsExecutor{inner: inner, metrics: m, kind: kind, name: name}
+	e := &metricsExecutor{inner: inner, metrics: m, kind: kind, name: name}
+	if p, ok := inner.(Poller); ok {
+		return &metricsPollExecutor{metricsExecutor: e, poller: p}
+	}
+	return e
+}
+
+// metricsPollExecutor is metricsExecutor for an executor that is a
+// Poller (LOOM-254): it stays one, so wrapping doesn't take batched
+// polling away.
+type metricsPollExecutor struct {
+	*metricsExecutor
+	poller Poller
+}
+
+func (e *metricsPollExecutor) Poll(ctx context.Context, req PollRequest) (*PollResult, error) {
+	start := time.Now()
+	res, err := e.poller.Poll(ctx, req)
+	e.metrics.RecordTargetOp(e.kind, "poll", time.Since(start), opErrorReason(err), err)
+	return res, err
 }
 
 func (e *metricsExecutor) TmuxSocket() string { return e.inner.TmuxSocket() }

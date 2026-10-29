@@ -775,8 +775,15 @@ Four independent axes:
   operation fails as `ErrUnreachable`. At most 6 ssh operations run at
   once per target: they share one ControlMaster, and sshd's MaxSessions
   defaults to 10. Completion polling (marker, idle, exit) runs every 1 s,
-  not every 250 ms. Not done yet: batching marker checks into one `ls`
-  per target.
+  not every 250 ms. The marker and exit checks of every turn waiting on
+  a remote target share one poll a second (LOOM-254): one ssh operation
+  that runs `test -e` on each marker file and one `tmux list-panes -a`,
+  rather than two operations per turn, so ten turns cost one round trip
+  a second, not twenty, and other operations on the target don't queue
+  behind them. A pane that poll doesn't see running gets its own
+  `PaneExited`, which says how it ended. The no-progress capture (5 s)
+  backs off to 15 s while the pane is unchanged. Still one operation per
+  turn: those captures and tier-3 idle polling.
 - **Router model unavailable/erroring**: an explicit "routing failed"
   message to the user, never a silently dropped message or a wild guess at
   a workspace.

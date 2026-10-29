@@ -37,6 +37,12 @@ that would have blocked live SSH interaction with a running agent.
   `*orchestrator.ProcessExitedError` (exit status + final output) if the
   pane's process exits first. `TierExit` — every `registry.TaskKindCommand`
   task — completes on the exit alone.
+- `poll.go` — shared polling (LOOM-254): every marker and exit check of
+  the waits on one target goes through one loop that asks a
+  `targets.Poller` about all of them in one operation a tick, instead of
+  a `FileExists` and a `PaneExited` per wait. A pane it doesn't see
+  running gets a `PaneExited` of its own. An executor that isn't a
+  `Poller` (local, test fakes) is polled per wait, as before.
 - `idle.go` — `IdleWatcher`: tier 3, polling `TargetExecutor.CapturePane`
   and treating "no change for the configured idle timeout" as
   completion. Timing is abstracted behind a small `Clock`/`Ticker` pair

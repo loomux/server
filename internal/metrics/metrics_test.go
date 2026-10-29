@@ -77,6 +77,25 @@ func TestRecordTargetOp_RecordsDurationAndErrors(t *testing.T) {
 	}
 }
 
+// TestRecordTargetOp_HasTwoSecondBucket: the target-op p95 bar is 2 s
+// (LOOM-254), so 1.5 s and 2.2 s must land on either side of a bucket.
+func TestRecordTargetOp_HasTwoSecondBucket(t *testing.T) {
+	m := metrics.NewDiscard()
+	m.RecordTargetOp("remote", "poll", 1500*time.Millisecond, "", nil)
+	m.RecordTargetOp("remote", "poll", 2200*time.Millisecond, "", nil)
+
+	body := scrape(t, m)
+	for _, want := range []string{
+		`loomux_target_op_seconds_bucket{kind="remote",op="poll",le="1"} 0`,
+		`loomux_target_op_seconds_bucket{kind="remote",op="poll",le="2"} 1`,
+		`loomux_target_op_seconds_bucket{kind="remote",op="poll",le="2.5"} 2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s in body:\n%s", want, body)
+		}
+	}
+}
+
 func TestRecordRouterCall_RecordsLatencyAndOutcome(t *testing.T) {
 	m := metrics.NewDiscard()
 	m.RecordRouterCall(metrics.RouterOpDecide, "primary", metrics.OutcomeSuccess, 5*time.Millisecond)

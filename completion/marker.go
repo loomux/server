@@ -94,13 +94,15 @@ type MarkerWatcher struct {
 	dir          string
 	pollInterval time.Duration
 	grace        time.Duration // unreachable grace; 0 is the default
+	// hub shares each target's polls among the waits on it (LOOM-254).
+	hub *pollHub
 }
 
 // NewMarkerWatcher constructs a MarkerWatcher. dir is the configured
 // marker directory; empty means the per-user default, resolved on each
 // task's target by ResolveMarkerDir.
 func NewMarkerWatcher(newExecutor orchestrator.ExecutorFactory, dir string, pollInterval time.Duration) *MarkerWatcher {
-	return &MarkerWatcher{newExecutor: newExecutor, dir: dir, pollInterval: pollInterval}
+	return &MarkerWatcher{newExecutor: newExecutor, dir: dir, pollInterval: pollInterval, hub: newPollHub(pollInterval)}
 }
 
 // MarkerPath returns the deterministic marker file path for a task ID.
@@ -125,15 +127,16 @@ func (w *MarkerWatcher) Wait(ctx context.Context, task *registry.Task, target *r
 	}
 	path := MarkerPath(dir, task.ID)
 
-	ticker := time.NewTicker(w.pollInterval)
-	defer ticker.Stop()
-
+	check := w.hub.checker(target, exec, path, "", w.pollInterval)
+	defer check.close()
 	down := outage{grace: w.grace}
 	for {
-		exists, err := exec.FileExists(ctx, path)
+		exists, _, err := check.next(ctx)
 		switch {
 		case err == nil:
 			down.clear()
+		case ctx.Err() != nil:
+			return ctx.Err()
 		case down.tolerate(err):
 		default:
 			return err
@@ -141,12 +144,6 @@ func (w *MarkerWatcher) Wait(ctx context.Context, task *registry.Task, target *r
 		if exists {
 			_ = exec.RemoveFile(ctx, path)
 			return nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
 		}
 	}
 }
