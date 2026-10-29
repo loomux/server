@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -587,10 +588,10 @@ func TestManagerAdoptsSocketBuiltForAnOlderMinor(t *testing.T) {
 	}
 }
 
-// A sidecar that wasn't listening when the server started is in
-// error; when it comes up on a new version, Enable (the retry) adopts
-// it like a start does, so neither Upgrade nor a server restart is
-// needed (review of #352).
+// A sidecar that wasn't listening when the server started, with the
+// socket wait off, is in error; when it comes up on a new version,
+// Enable (the retry) adopts it like a start does, so neither Upgrade
+// nor a server restart is needed (review of #352).
 func TestManagerEnableAdoptsALateSidecar(t *testing.T) {
 	dir := shortTempDir(t)
 	sock := filepath.Join(dir, "fake.sock")
@@ -608,6 +609,7 @@ func TestManagerEnableAdoptsALateSidecar(t *testing.T) {
 	stop()
 	// The server comes up before the sidecar does.
 	m2 := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, host, nil, nil)
+	m2.SocketWait = 0
 	t.Cleanup(func() { _ = m2.Close(context.Background()) })
 	if err := m2.StartAll(context.Background()); err == nil {
 		t.Fatal("a start without the sidecar should fail")
@@ -623,6 +625,233 @@ func TestManagerEnableAdoptsALateSidecar(t *testing.T) {
 	got, err := m2.Enable(context.Background(), v.ID)
 	if err != nil || got.Version != "0.2.0" || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning {
 		t.Errorf("Enable = version %s %s %q instance %q, %v; want 0.2.0 running", got.Version, got.Status, got.StatusReason, got.Instance.State, err)
+	}
+}
+
+// installSidecar installs the fake from a sidecar socket in dir, then
+// stops the sidecar and the Manager: the next Manager on store starts
+// it again from the row.
+func installSidecar(t *testing.T, store registry.Store, dir string) *plugins.View {
+	t.Helper()
+	stop := serveFakeSocket(t, filepath.Join(dir, "fake.sock"))
+	m := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, protocol.HostInfo{Version: "test", InstanceID: "inst"}, nil, nil)
+	v, err := m.Install(context.Background(), plugins.InstallRequest{Name: "fake", Source: registry.PluginSourceSocket, Label: "side", Config: map[string]any{"token": "t"}})
+	if err != nil {
+		t.Fatalf("Install from the socket: %v", err)
+	}
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	return v
+}
+
+// waitingManager is a Manager on store whose socket waits retry fast.
+func waitingManager(t *testing.T, store registry.Store, dir string, wait time.Duration) *plugins.Manager {
+	t.Helper()
+	m := plugins.NewManager(store, &plugins.Catalog{SocketDir: dir}, protocol.HostInfo{Version: "test", InstanceID: "inst"}, nil, nil)
+	m.SocketWait, m.SocketWaitBackoff, m.SocketWaitMaxBackoff = wait, 10*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { _ = m.Close(context.Background()) })
+	return m
+}
+
+// eventuallyView polls plugin id's view until ok, or fails the test.
+func eventuallyView(t *testing.T, m *plugins.Manager, id string, ok func(*plugins.View) bool) *plugins.View {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v, err := m.Get(context.Background(), id)
+		if err == nil && ok(v) {
+			return v
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("view never got there: %+v, %v", v, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A sidecar that isn't listening yet when the server starts is waited
+// for (#465): the instance says restarting, waiting for the socket, not
+// error; once the sidecar comes up, on a new version here, it is
+// adopted, started and checked with nobody calling Enable.
+func TestManagerWaitsForALateSidecar(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	v := installSidecar(t, store, dir)
+
+	m := waitingManager(t, store, dir, time.Minute)
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll without the sidecar yet: %v", err)
+	}
+	got, err := m.Get(context.Background(), v.ID)
+	if err != nil || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRestarting ||
+		got.Instance.Reason != plugins.ReasonWaitingForSocket || m.Running(v.ID) {
+		t.Fatalf("while waiting = %s %q instance %+v, %v", got.Status, got.StatusReason, got.Instance, err)
+	}
+	if h := m.Health(context.Background()); h.Status != "degraded" || h.Plugins["side"].Reason != plugins.ReasonWaitingForSocket {
+		t.Errorf("health while waiting = %+v", h)
+	}
+	if err := m.Call(context.Background(), v.ID, protocol.MethodCheck, nil, nil); !errors.Is(err, plugins.ErrUnavailable) {
+		t.Errorf("call while waiting = %v", err)
+	}
+	// Retries without the socket keep waiting.
+	time.Sleep(100 * time.Millisecond)
+	if got, _ := m.Get(context.Background(), v.ID); got.Instance.Reason != plugins.ReasonWaitingForSocket {
+		t.Fatalf("after a few retries = %s instance %+v", got.Status, got.Instance)
+	}
+
+	fake.Version = "0.2.0"
+	t.Cleanup(func() { fake.Version = "" })
+	t.Cleanup(serveFakeSocket(t, filepath.Join(dir, "fake.sock")))
+	// Running comes a moment before the check's result is recorded.
+	got = eventuallyView(t, m, v.ID, func(v *plugins.View) bool {
+		return v.Instance.State == plugins.StateRunning && v.Check != nil && v.Status != registry.PluginStatusInstalling
+	})
+	if got.Version != "0.2.0" || got.Status != registry.PluginStatusInstalled || got.Check == nil || !got.Check.OK {
+		t.Errorf("once the sidecar is up = version %s %s %q check %+v", got.Version, got.Status, got.StatusReason, got.Check)
+	}
+	var serving plugins.Manifest
+	if err := m.Call(context.Background(), v.ID, protocol.MethodDescribe, nil, &serving); err != nil || serving.Version != "0.2.0" {
+		t.Errorf("serving = %q, %v", serving.Version, err)
+	}
+}
+
+// A sidecar that doesn't come up within SocketWait fails as before the
+// wait existed; Enable then waits again, the row moving from error to
+// installing, and the sidecar coming up finishes the install.
+func TestManagerSocketWaitRunsOut(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	v := installSidecar(t, store, dir)
+
+	m := waitingManager(t, store, dir, 200*time.Millisecond)
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	got := eventuallyView(t, m, v.ID, func(v *plugins.View) bool { return v.Status == registry.PluginStatusError })
+	if !strings.Contains(got.StatusReason, "the sidecar's socket wasn't there after 200ms") ||
+		!strings.Contains(got.StatusReason, "no such file or directory") || got.Instance.State != "" {
+		t.Errorf("after the wait = %q instance %+v", got.StatusReason, got.Instance)
+	}
+
+	m.SocketWait = time.Minute
+	got, err := m.Enable(context.Background(), v.ID)
+	if err != nil || got.Status != registry.PluginStatusInstalling || got.Instance.Reason != plugins.ReasonWaitingForSocket {
+		t.Fatalf("Enable without the sidecar = %s %q instance %+v, %v", got.Status, got.StatusReason, got.Instance, err)
+	}
+	t.Cleanup(serveFakeSocket(t, filepath.Join(dir, "fake.sock")))
+	// Running comes a moment before the check's result is recorded.
+	got = eventuallyView(t, m, v.ID, func(v *plugins.View) bool {
+		return v.Instance.State == plugins.StateRunning && v.Check != nil && v.Status != registry.PluginStatusInstalling
+	})
+	if got.Status != registry.PluginStatusInstalled {
+		t.Errorf("once the sidecar is up = %s %q", got.Status, got.StatusReason)
+	}
+}
+
+// Only a socket that isn't there yet is waited for: one that answers
+// but fails the handshake fails the start at once.
+func TestManagerSocketHandshakeFailureDoesNotWait(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	v := installSidecar(t, store, dir)
+	// Something listens on the socket and hangs up on every connection.
+	sock := filepath.Join(dir, "fake.sock")
+	_ = os.Remove(sock)
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	m := waitingManager(t, store, dir, time.Minute)
+	if err := m.StartAll(context.Background()); err == nil {
+		t.Fatal("a handshake that fails should fail the start")
+	}
+	got, err := m.Get(context.Background(), v.ID)
+	if err != nil || got.Status != registry.PluginStatusError || got.Instance.State != "" {
+		t.Errorf("after a failed handshake = %s %q instance %+v, %v", got.Status, got.StatusReason, got.Instance, err)
+	}
+}
+
+// Disabling a plugin that waits for its socket ends the wait: the
+// sidecar coming up later doesn't start it.
+func TestManagerDisableEndsSocketWait(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	v := installSidecar(t, store, dir)
+
+	m := waitingManager(t, store, dir, time.Minute)
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	got, err := m.Disable(context.Background(), v.ID)
+	if err != nil || got.Status != registry.PluginStatusDisabled || got.Instance.State != "" {
+		t.Fatalf("Disable while waiting = %s instance %+v, %v", got.Status, got.Instance, err)
+	}
+	t.Cleanup(serveFakeSocket(t, filepath.Join(dir, "fake.sock")))
+	time.Sleep(200 * time.Millisecond)
+	if got, _ := m.Get(context.Background(), v.ID); got.Status != registry.PluginStatusDisabled || got.Instance.State != "" || m.Running(v.ID) {
+		t.Errorf("after the sidecar came up = %s instance %+v", got.Status, got.Instance)
+	}
+}
+
+// An Upgrade that starts the plugin while it waits for its socket ends
+// the wait: the wait's deadline passing later must not fail the plugin
+// the Upgrade started (review of #485).
+func TestManagerUpgradeEndsSocketWait(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	v := installSidecar(t, store, dir)
+
+	// Retries far enough apart that the Upgrade comes between two.
+	const wait = time.Second
+	m := waitingManager(t, store, dir, wait)
+	m.SocketWaitBackoff, m.SocketWaitMaxBackoff = 500*time.Millisecond, 500*time.Millisecond
+	if err := m.StartAll(context.Background()); err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+	fake.Version = "0.2.0"
+	t.Cleanup(func() { fake.Version = "" })
+	t.Cleanup(serveFakeSocket(t, filepath.Join(dir, "fake.sock")))
+	up, err := m.Upgrade(context.Background(), v.ID)
+	if err != nil || up.Version != "0.2.0" || up.Instance.State != plugins.StateRunning {
+		t.Fatalf("Upgrade while waiting = version %s instance %+v, %v", up.Version, up.Instance, err)
+	}
+	time.Sleep(2 * wait)
+	got, err := m.Get(context.Background(), v.ID)
+	if err != nil || got.Status != registry.PluginStatusInstalled || got.Instance.State != plugins.StateRunning || !m.Running(v.ID) {
+		t.Errorf("after the wait's deadline = %s %q instance %+v, %v", got.Status, got.StatusReason, got.Instance, err)
+	}
+}
+
+// A start after Close doesn't begin a socket wait: nothing would end it
+// (review of #485).
+func TestManagerClosedDoesNotWaitForSocket(t *testing.T) {
+	dir := shortTempDir(t)
+	store := newStore(t, filepath.Join(t.TempDir(), "m.db"))
+	v := installSidecar(t, store, dir)
+
+	m := waitingManager(t, store, dir, time.Minute)
+	if err := m.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StartAll(context.Background()); err == nil {
+		t.Error("a start after Close should fail")
+	}
+	got, err := m.Get(context.Background(), v.ID)
+	if err != nil || got.Instance.Reason == plugins.ReasonWaitingForSocket {
+		t.Errorf("after Close = %s instance %+v, %v; want no wait", got.Status, got.Instance, err)
 	}
 }
 
