@@ -57,6 +57,10 @@ func TestDispatch_TurnTimeout(t *testing.T) {
 			t.Errorf("error missing %q: %v", want, err)
 		}
 	}
+	// Its reason is said once (LOOM-257).
+	if n := strings.Count(err.Error(), timeout.Error()); n != 1 {
+		t.Errorf("error says %q %d times, want once: %v", timeout.Error(), n, err)
+	}
 	assertFailed(t, task, registry.ErrorClassTimeout, "timed out")
 	gotWS, _ := store.GetWorkspace(context.Background(), ws.ID)
 	if gotWS.Status != registry.WorkspaceStatusIdle {

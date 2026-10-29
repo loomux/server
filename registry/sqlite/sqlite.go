@@ -137,15 +137,16 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	now := time.Now().UTC()
 	t.CreatedAt = now
 	t.UpdatedAt = now
+	t.ConnectionChangedAt = now
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
 			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, keep_idle_sessions, ssh_port, host_keys,
-			ssh_proxy, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ssh_proxy, created_at, updated_at, connection_changed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
 		t.Policy.KeepIdleSessions, t.SSHPort, t.HostKeys,
-		t.SSHProxy, t.CreatedAt, t.UpdatedAt,
+		t.SSHProxy, t.CreatedAt, t.UpdatedAt, t.ConnectionChangedAt,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -202,11 +203,17 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 		return err
 	}
 	t.UpdatedAt = time.Now().UTC()
+	// connection_changed_at moves only with what reaches the target
+	// (LOOM-256); SET reads the row as it was.
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE targets SET name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
+		UPDATE targets SET connection_changed_at = CASE WHEN kind IS NOT ? OR host IS NOT ? OR user IS NOT ?
+				OR ssh_key_ref IS NOT ? OR workspace_root IS NOT ? OR ssh_port IS NOT ? OR ssh_proxy IS NOT ?
+				THEN ? ELSE connection_changed_at END,
+			name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
 			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, relay = ?,
 			keep_idle_sessions = ?, ssh_port = ?, ssh_proxy = ?, updated_at = ?
 		WHERE id = ?`,
+		string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.SSHPort, t.SSHProxy, t.UpdatedAt,
 		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
 		t.Policy.KeepIdleSessions, t.SSHPort,
@@ -225,8 +232,9 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 }
 
 func (s *Store) SetTargetHostKeys(ctx context.Context, id, hostKeys string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE targets SET host_keys = ?, updated_at = ? WHERE id = ?`,
-		hostKeys, time.Now().UTC(), id)
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `UPDATE targets SET host_keys = ?, updated_at = ?, connection_changed_at = ? WHERE id = ?`,
+		hostKeys, now, now, id)
 	if err != nil {
 		return fmt.Errorf("sqlite: set target host keys: %w", err)
 	}
@@ -1350,15 +1358,23 @@ type rowScanner interface {
 // targetColumns is what scanTarget reads, in order.
 const targetColumns = `id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
 	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, keep_idle_sessions, ssh_port, host_keys,
-	ssh_proxy, created_at, updated_at`
+	ssh_proxy, created_at, updated_at, connection_changed_at`
 
 func scanTarget(row rowScanner) (*registry.Target, error) {
 	var t registry.Target
 	var kind, allowed string
+	var connectionChanged sql.NullTime
 	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode,
 		&t.Policy.Purpose, &allowed, &t.Policy.NoProvision, &t.Policy.NoShell, &t.Policy.RequireConfirmation,
-		&t.Policy.Relay, &t.Policy.KeepIdleSessions, &t.SSHPort, &t.HostKeys, &t.SSHProxy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.Policy.Relay, &t.Policy.KeepIdleSessions, &t.SSHPort, &t.HostKeys, &t.SSHProxy, &t.CreatedAt, &t.UpdatedAt,
+		&connectionChanged); err != nil {
 		return nil, err
+	}
+	// NULL only on a row an older binary wrote after migration 35 ran (a
+	// rollback): its last update is the best guess.
+	t.ConnectionChangedAt = t.UpdatedAt
+	if connectionChanged.Valid {
+		t.ConnectionChangedAt = connectionChanged.Time
 	}
 	t.Kind = registry.TargetKind(kind)
 	if err := json.Unmarshal([]byte(allowed), &t.Policy.AllowedAgentTypes); err != nil {

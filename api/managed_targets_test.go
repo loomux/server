@@ -379,6 +379,53 @@ func TestManagedTarget_NextStepFromHealth(t *testing.T) {
 	}
 }
 
+// LOOM-256: a PUT naming only some fields keeps the rest, name included,
+// and a change to the name, permission mode or policy leaves the last
+// probe, and so readiness, standing. A new address doesn't.
+func TestManagedTarget_PartialPUTKeepsReadiness(t *testing.T) {
+	base, token, store, _ := managedServer(t, testMasterKey)
+	ctx := context.Background()
+	_, body := doJSON(t, "POST", base+"/api/v1/targets", token, map[string]any{
+		"name": "a", "kind": "remote", "host": "box.example", "user": "u", "generate_ssh_key": true,
+	})
+	id := decodeTarget(t, body).ID
+	if err := store.SetTargetHostKeys(ctx, id, testHostKeyLine); err != nil {
+		t.Fatal(err)
+	}
+	h := registry.TargetHealth{TargetID: id, Reachable: true, TmuxVersion: "tmux 3.5", DiskFreeBytes: -1, ProbedAt: time.Now()}
+	if err := store.SetTargetHealth(ctx, &h); err != nil {
+		t.Fatal(err)
+	}
+	put := func(req map[string]any) managedTargetJSON {
+		t.Helper()
+		status, body := doJSON(t, "PUT", base+"/api/v1/targets/"+id, token, req)
+		if status != http.StatusOK {
+			t.Fatalf("PUT %v: %d %s", req, status, body)
+		}
+		return decodeTarget(t, body)
+	}
+	for _, req := range []map[string]any{
+		{"permission_mode": "accept_edits"},
+		{"require_confirmation": true, "allowed_agent_types": []string{}},
+		{"name": "b"},
+	} {
+		if got := put(req); !got.Ready || nextStep(got) != "<null>" {
+			t.Errorf("after PUT %v: ready %v next_step %s, want still ready", req, got.Ready, nextStep(got))
+		}
+	}
+	stored, err := store.GetTarget(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Name != "b" || stored.Host != "box.example" || stored.User != "u" || stored.Kind != registry.TargetKindRemote ||
+		stored.PermissionMode != registry.PermissionModeAcceptEdits || !stored.Policy.RequireConfirmation || stored.SSHKeyRef == "" {
+		t.Errorf("stored after partial PUTs = %+v, want each PUT's field changed and the rest kept", stored)
+	}
+	if got := put(map[string]any{"host": "box2.example"}); got.Ready {
+		t.Errorf("after a new host: ready %v next_step %s, want not ready", got.Ready, nextStep(got))
+	}
+}
+
 // Replacing a target's generated key (rotating it, or leaving managed
 // mode) deletes the old one: nothing else can be using it. A key made on
 // purpose through /ssh-keys stays.

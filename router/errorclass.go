@@ -77,3 +77,13 @@ type classedError struct {
 }
 
 func (e *classedError) Error() string { return e.msg }
+
+// wrappedError is msg, which already says what err does: errors.As and
+// errors.Is still find err, but its text isn't repeated.
+type wrappedError struct {
+	msg string
+	err error
+}
+
+func (e *wrappedError) Error() string { return e.msg }
+func (e *wrappedError) Unwrap() error { return e.err }

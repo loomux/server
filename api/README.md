@@ -618,7 +618,12 @@ plain ssh form.
     there is no bootstrap chicken-and-egg to justify one.
 
     Bodies are `{name, kind, host, user}` plus the optional fields below;
-    responses add
+    on a `PUT` every field is optional, an omitted one (or `""` for
+    those four) keeping what's stored, and `"kind": "local"` clearing
+    host and user (LOOM-256). `ready` follows the last probe unless
+    how the target is reached changed since (kind, host, user, port,
+    key, proxy, workspace root, host key pin): a new name, permission
+    mode or policy keeps it. Responses add
     the server-minted `id` plus `created_at`/`updated_at`. **The id is
     never accepted from the client** — workspaces reference targets by
     id, and letting a caller choose one invites exactly the collisions

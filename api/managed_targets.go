@@ -90,11 +90,12 @@ func (s *Server) targetResponseFor(ctx context.Context, t *registry.Target) (tar
 }
 
 // onboardingState says whether t is ready to work on and, if not, what to
-// do next, from its latest probe — one older than the target's last
-// change (a new pin, a new address) says nothing about it.
+// do next, from its latest probe — one older than the last change to how
+// the target is reached (a new pin, a new address) says nothing about it;
+// a new name, permission mode or policy doesn't count (LOOM-256).
 func onboardingState(t *registry.Target, h *registry.TargetHealth) (bool, *string) {
 	step := func(s string) *string { return &s }
-	fresh := h != nil && !h.ProbedAt.Before(t.UpdatedAt)
+	fresh := h != nil && !h.ProbedAt.Before(t.ConnectionChangedAt)
 	switch {
 	case t.Kind != registry.TargetKindRemote:
 		if fresh && h.Error == "" {

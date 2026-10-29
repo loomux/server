@@ -188,9 +188,9 @@ field an effective companion in responses (`purpose_effective`,
 
 ### 13. `PUT /targets/{id}` is a partial update
 
-**Today.** Optional fields left out keep their stored value (LOOM-119),
-but `name`, `kind`, `host` and `user` are required: neither PUT
-(replace) nor PATCH (merge) semantics.
+**Today.** Fields left out keep their stored value (LOOM-119; since
+LOOM-256 `name`, `kind`, `host` and `user` too, `""` counting as left
+out for those four): PATCH (merge) semantics under the PUT method.
 **Proposal.** Add `PATCH /targets/{id}` with true merge semantics;
 document `PUT` as it behaves.
 **Breaking:** no.

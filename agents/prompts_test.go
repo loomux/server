@@ -177,3 +177,39 @@ func TestDetectPrompt_UsageLimit(t *testing.T) {
 		t.Errorf("epoch form: %+v", got)
 	}
 }
+
+// LOOM-253: Claude Code stopped on an API error, idle at its input box.
+// The fixtures are reconstructed from the error's layout (no pane of it
+// was captured): a refusal, and a wrapped server error.
+func TestDetectPrompt_APIError(t *testing.T) {
+	cases := []struct{ fixture, detail string }{
+		{"claude-api-error.txt", "API Error: Claude Opus 5.5's safeguards flagged this session as potentially violating our Usage Policy. Try rephrasing the request or starting a new session."},
+		{"claude-api-error-500.txt", `API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fixture, func(t *testing.T) {
+			screen, err := os.ReadFile("testdata/" + tc.fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := DetectPrompt(string(screen))
+			if got == nil || got.Kind != registry.AttentionAPIError {
+				t.Fatalf("DetectPrompt = %+v, want an API error", got)
+			}
+			if got.Detail != tc.detail {
+				t.Errorf("detail = %q, want %q", got.Detail, tc.detail)
+			}
+		})
+	}
+	// Retrying isn't the end of the turn; a reply quoting the words, or an
+	// error the agent has moved on from, isn't one either.
+	for _, fixture := range []string{"claude-api-error-retrying.txt", "claude-api-error-quoted.txt", "claude-api-error-earlier.txt"} {
+		screen, err := os.ReadFile("testdata/" + fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := DetectPrompt(string(screen)); got != nil {
+			t.Errorf("%s: DetectPrompt = %+v, want nil", fixture, got)
+		}
+	}
+}

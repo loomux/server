@@ -1,0 +1,9 @@
+❯ why does the deploy script fail?
+
+● The script's log ends with "API Error: 500" from the registry, so the
+  push is what fails, not the build.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

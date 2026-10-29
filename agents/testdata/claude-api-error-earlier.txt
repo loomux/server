@@ -1,0 +1,14 @@
+❯ fix the failing test in api/body_test.go
+
+  ⎿  API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+
+❯ try again
+
+● Running the test again.
+
+✻ Pondering… (esc to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

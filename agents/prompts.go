@@ -62,6 +62,9 @@ func DetectPrompt(screen string) *registry.Attention {
 	if limit := detectUsageLimit(lines); limit != nil {
 		return limit
 	}
+	if apiErr := detectAPIError(lines); apiErr != nil {
+		return apiErr
+	}
 	footer := -1
 	for i := len(lines) - 1; i >= 0 && i >= len(lines)-3; i-- {
 		if isFooter(lines[i]) {
@@ -141,18 +144,58 @@ var compactingStatus = regexp.MustCompile(`^\s*[✻✽✶✳✢·*]\s*Compacting
 // statusLine is the last non-blank line above Claude Code's input box (a
 // rule, then the "❯" prompt line); false when there's no input box.
 func statusLine(lines []string) (string, bool) {
-	for i := len(lines) - 2; i >= 0; i-- {
-		if !isRule(lines[i]) || !strings.HasPrefix(strings.TrimSpace(lines[i+1]), "❯") {
-			continue
+	box := inputBox(lines)
+	for j := box - 1; j >= 0; j-- {
+		if strings.TrimSpace(lines[j]) != "" {
+			return lines[j], true
 		}
-		for j := i - 1; j >= 0; j-- {
-			if strings.TrimSpace(lines[j]) != "" {
-				return lines[j], true
-			}
-		}
-		return "", false
 	}
 	return "", false
+}
+
+// inputBox is the index of the rule on top of Claude Code's input box
+// (the rule, then the "❯" prompt line), or -1 when there's none.
+func inputBox(lines []string) int {
+	for i := len(lines) - 2; i >= 0; i-- {
+		if isRule(lines[i]) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "❯") {
+			return i
+		}
+	}
+	return -1
+}
+
+// apiErrorLine is the error Claude Code ends a turn on when its request
+// to the model failed for good (LOOM-253): "⎿  API Error: 500 {…}", or
+// "⎿  API Error: Claude Opus 5.5's safeguards flagged this session …". It
+// must carry the CLI's ⎿ mark: a reply that quotes the words doesn't
+// count. While it retries the line reads "API Error (…) · Retrying in …",
+// with no colon after "Error", which isn't the end of the turn.
+var apiErrorLine = regexp.MustCompile(`^\s*⎿\s*API Error:\s*(.*\S)`)
+
+// detectAPIError finds an API error Claude Code stopped on: the last
+// thing above its input box, with the agent idle there (a working agent's
+// status line sits between them). A long error wraps; its continuation
+// lines are part of the detail.
+func detectAPIError(lines []string) *registry.Attention {
+	end := inputBox(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	var rest []string
+	for i := end - 1; i >= 0 && strings.TrimSpace(lines[i]) != ""; i-- {
+		t := strings.TrimSpace(lines[i])
+		if m := apiErrorLine.FindStringSubmatch(lines[i]); m != nil {
+			detail := strings.Join(append([]string{"API Error: " + m[1]}, rest...), " ")
+			return &registry.Attention{Kind: registry.AttentionAPIError, Title: "Agent API error", Detail: detail}
+		}
+		// Anything the CLI marks as its own (a reply, a tool result, the
+		// user's message, a status line) ends the error's wrapped lines.
+		if r, _ := utf8.DecodeRuneInString(t); strings.ContainsRune("⎿●⏺❯>✻✽✶✳✢·*■•", r) {
+			return nil
+		}
+		rest = append([]string{t}, rest...)
+	}
+	return nil
 }
 
 // compactionRegionLines is how much of the pane's bottom holds the status

@@ -25,7 +25,9 @@ const answerSettle = 3 * time.Second
 // sign-in screen fails the task fast with login_required — Loomux never
 // signs an agent in — keeping the pane so a human can attach and finish
 // the login. A usage-limit error (LOOM-109) fails it with
-// agent_rate_limited, saying when the limit resets. Anything else leaves the task needs-attention with the
+// agent_rate_limited, saying when the limit resets, and an API error the
+// agent stopped on (LOOM-253) with agent_api_error, quoting it. Anything
+// else leaves the task needs-attention with the
 // prompt recorded, and the reply shows the prompt and how to answer it;
 // the conversation's next message is the answer (answerAttention).
 func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *registry.Task, message string,
@@ -58,6 +60,18 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 		log.Warn("agent hit its usage limit", "task_id", task.ID, "resets", a.Resets)
 		return "", &classedError{class: registry.ErrorClassAgentRateLimited, msg: fmt.Sprintf(
 			"router: dispatch: %s (it shows %q). Send your message again after the reset, or "+
+				"ask for a different agent", reason, a.Detail)}
+	}
+	if a.Kind == registry.AttentionAPIError {
+		reason := fmt.Sprintf("agent %q on %s stopped on an API error", task.AgentType, targetName)
+		if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
+			Class: registry.ErrorClassAgentAPIError, Reason: reason, OutputTail: a.Detail,
+		}); err != nil {
+			log.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
+		}
+		log.Warn("agent stopped on an API error", "task_id", task.ID)
+		return "", &classedError{class: registry.ErrorClassAgentAPIError, msg: fmt.Sprintf(
+			"router: dispatch: %s (it shows %q). Send your message again, rephrase it, or "+
 				"ask for a different agent", reason, a.Detail)}
 	}
 	if err := r.orch.NeedAttention(ctx, task.ID, a); err != nil {
