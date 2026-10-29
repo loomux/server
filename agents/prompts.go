@@ -20,8 +20,9 @@ const promptRegionLines = 40
 // promptFooters end every selection prompt Claude Code and Codex draw;
 // one of them in the last few lines is what tells a prompt from the
 // agent merely working ("esc to interrupt") or idle. Matched
-// case-insensitively.
-var promptFooters = []string{"esc to cancel", "enter to select", "enter to confirm", "press enter to continue"}
+// case-insensitively. Codex 0.163's update prompt ends "enter continue ·
+// esc skip" (#482).
+var promptFooters = []string{"esc to cancel", "enter to select", "enter to confirm", "press enter to continue", "enter continue", "esc skip"}
 
 // loginMarkers are what each CLI shows when it isn't signed in: Claude
 // Code's onboarding and login-method screens, its expired- or
