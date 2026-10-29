@@ -32,6 +32,12 @@ redesign.
   signal); all SSH invocations (tmux subcommands and these two, plus
   `RunOnce`) share one `sshExec` helper so the connection-reuse/quoting/
   error-handling conventions can't drift between them.
+- `poll.go` — `Poller` (LOOM-254), an optional interface `RemoteExecutor`
+  implements: `Poll` answers which of some files exist and which of some
+  panes still run in one ssh operation (`test -e` per file, one
+  `tmux list-panes -a`), so the completion package's per-second checks
+  of every turn on a target cost one round trip. The metrics wrapper
+  keeps a `Poller` one, recording `op="poll"`.
 - `RunOnce` (both executors, design spec §10 axis 3, LOOM-17) runs a
   command once, non-interactively, and returns its combined stdout+stderr
   — distinct from the session methods above (`NewSession`/`SendKeys`/

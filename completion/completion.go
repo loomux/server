@@ -100,6 +100,10 @@ const (
 	// captures the pane — far less often than marker polling, since over
 	// SSH each capture is a round trip.
 	defaultProgressPollInterval = 5 * time.Second
+	// maxProgressPollFactor bounds how far the no-progress check backs off
+	// while a pane stays unchanged (LOOM-254): up to this many times its
+	// interval, 15 s by default.
+	maxProgressPollFactor = 3
 )
 
 // Detector is the real tiered orchestrator.CompletionDetector
@@ -129,6 +133,7 @@ func WithPollInterval(d time.Duration) DetectorOption {
 		det.pollInterval = d
 		det.idle.pollInterval = d
 		det.markers.pollInterval = d
+		det.markers.hub.interval = d
 	}
 }
 
@@ -187,7 +192,7 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 	}
 
 	if tier == TierExit {
-		return d.waitExit(ctx, exec, task)
+		return d.waitExit(ctx, exec, task, target)
 	}
 
 	// The turn's bounds (LOOM-76) cancel waitCtx with a TurnTimeoutError
@@ -214,7 +219,7 @@ func (d *Detector) Wait(ctx context.Context, task *registry.Task) error {
 	}
 	exited := make(chan *targets.PaneExit, 1)
 	go func() {
-		if exit := d.watchExit(waitCtx, exec, task); exit != nil {
+		if exit := d.watchExit(waitCtx, exec, task, target); exit != nil {
 			exited <- exit
 			cancel(nil)
 		}
@@ -278,21 +283,33 @@ func orDefault(d, def time.Duration) time.Duration {
 // counted as checks where compacting shows after one where it didn't.
 // Capture errors are ignored: this is only an extra bound, and the tier's
 // own watcher reports a pane it can't reach.
+//
+// Each capture is an ssh round trip on a remote target, so the checks
+// back off while the pane stays unchanged (LOOM-254): every unchanged
+// one doubles the wait for the next, up to maxProgressPollFactor times
+// progressPollInterval, and a change, or a prompt to confirm, goes back
+// to progressPollInterval. A working agent's pane changes all the time
+// (its status line counts the seconds), so it is checked as often as
+// before; a prompt is still confirmed one interval after it shows.
 func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, limit time.Duration,
 	detect func(string) *registry.Attention, compacting func(string) bool, cancel context.CancelCauseFunc) {
-	ticker := time.NewTicker(d.progressPollInterval)
-	defer ticker.Stop()
+	base := d.progressPollInterval
+	next := base
+	timer := time.NewTimer(next)
+	defer timer.Stop()
 	var last string
 	var lastChange time.Time
 	var lastPrompt *registry.Attention
 	var wasCompacting bool
 	var compactions []time.Time
-	for {
+	// The post statement runs after every check, continue included.
+	for ; ; timer.Reset(next) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
+		next = min(2*next, maxProgressPollFactor*base)
 		out, err := exec.CapturePane(ctx, task.TmuxSession)
 		if err != nil {
 			continue
@@ -304,6 +321,9 @@ func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecuto
 				return
 			}
 			lastPrompt = prompt
+			if prompt != nil {
+				next = base
+			}
 		}
 		now := time.Now()
 		if compacting != nil {
@@ -322,6 +342,7 @@ func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecuto
 		}
 		if lastChange.IsZero() || out != last {
 			last, lastChange = out, now
+			next = base
 			continue
 		}
 		if limit > 0 && now.Sub(lastChange) >= limit {
@@ -333,25 +354,22 @@ func (d *Detector) watchProgress(ctx context.Context, exec targets.TargetExecuto
 
 // waitExit is TierExit: poll until the pane's process has exited. Any
 // error checking is returned — this is the task's only completion signal.
-func (d *Detector) waitExit(ctx context.Context, exec targets.TargetExecutor, task *registry.Task) error {
-	ticker := time.NewTicker(d.pollInterval)
-	defer ticker.Stop()
+func (d *Detector) waitExit(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, target *registry.Target) error {
+	check := d.markers.hub.checker(target, exec, "", task.TmuxSession, d.pollInterval)
+	defer check.close()
 	down := outage{grace: d.unreachableGrace}
 	for {
-		exit, err := exec.PaneExited(ctx, task.TmuxSession)
+		_, exit, err := check.next(ctx)
 		switch {
 		case err == nil:
 			down.clear()
+		case ctx.Err() != nil:
+			return ctx.Err()
 		case !down.tolerate(err):
 			return fmt.Errorf("completion: wait: %w", err)
 		}
 		if exit != nil {
 			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
 		}
 	}
 }
@@ -360,17 +378,16 @@ func (d *Detector) waitExit(ctx context.Context, exec targets.TargetExecutor, ta
 // process exits (returning how) or ctx is done (nil). Errors checking are
 // ignored: here the exit is only an extra signal, and the tier's own
 // watcher already reports a pane it can't reach in its own way.
-func (d *Detector) watchExit(ctx context.Context, exec targets.TargetExecutor, task *registry.Task) *targets.PaneExit {
-	ticker := time.NewTicker(d.pollInterval)
-	defer ticker.Stop()
+func (d *Detector) watchExit(ctx context.Context, exec targets.TargetExecutor, task *registry.Task, target *registry.Target) *targets.PaneExit {
+	check := d.markers.hub.checker(target, exec, "", task.TmuxSession, d.pollInterval)
+	defer check.close()
 	for {
-		if exit, err := exec.PaneExited(ctx, task.TmuxSession); err == nil && exit != nil {
+		_, exit, err := check.next(ctx)
+		if err == nil && exit != nil {
 			return exit
 		}
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return nil
-		case <-ticker.C:
 		}
 	}
 }

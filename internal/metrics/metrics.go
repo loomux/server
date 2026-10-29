@@ -49,6 +49,11 @@ const (
 // Task status label for the terminal "failed" state.
 const TaskStatusFailed = "failed"
 
+// targetOpBuckets are Prometheus' default buckets plus 2 s, the
+// target-op p95 bar (LOOM-254): with only 1 s and 2.5 s, a p95 near 2 s
+// can't be told from one under it.
+var targetOpBuckets = []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2, 2.5, 5, 10}
+
 // Metrics holds all Prometheus collectors used across loomuxd. A nil
 // *Metrics is safe to use; every method no-ops so callers never need a
 // nil check.
@@ -144,7 +149,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		TargetOpDuration: factory.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "loomux_target_op_seconds",
 			Help:    "Target operation latency distribution in seconds by target kind and operation.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: targetOpBuckets,
 		}, []string{"kind", "op"}),
 		TargetOpErrors: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "loomux_target_op_errors_total",
