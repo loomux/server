@@ -437,6 +437,15 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 			Model: decision.Model, Tier: decision.Tier}
 	}
 	decision, affinityFrom := ApplyAffinity(decision, openTask)
+	// A bare "yes" starts nothing this conversation didn't ask for.
+	decided := decision.Action
+	decision, askedFirst, err := r.guardBareAffirmative(ctx, conversationID, message, decision, openTask)
+	if err != nil {
+		log.Error("dispatch failed", "stage", "bare affirmative", "error", err)
+		m.outcome = metrics.OutcomeFailure
+		m.errClass = classifyDispatchError(err)
+		return "", fmt.Errorf("router: dispatch: %w", err)
+	}
 	var substitutedFrom, targetName string
 	// The open task's pane is already running its agent: nothing to check.
 	if openTask == nil || decision.WorkspaceID != openTask.WorkspaceID {
@@ -456,6 +465,10 @@ func (r *Router) Dispatch(ctx context.Context, conversationID, message string, o
 	}
 	if substitutedFrom != "" {
 		overrides = append(overrides, "agent substituted for "+substitutedFrom)
+	}
+	if askedFirst {
+		log.Info("bare affirmative with nothing to confirm", "decided_action", string(decided))
+		overrides = append(overrides, "asked instead of "+string(decided)+": bare affirmative with nothing to confirm")
 	}
 	r.recordDecision(ctx, conversationID, decision, routeTook, strings.Join(overrides, "; "))
 

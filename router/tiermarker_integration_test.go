@@ -200,7 +200,7 @@ func TestIntegration_RealDispatch_RelaysSavedLastMessage(t *testing.T) {
 	r := router.New(store, orch, newExec, credentials.NewResolver(store), agentTypes, model, markerDir)
 	dispatchCtx, cancel := context.WithTimeout(ctx, integrationDispatchTimeout)
 	defer cancel()
-	if _, err := r.Dispatch(dispatchCtx, "conv-real", "go"); err != nil {
+	if _, err := r.Dispatch(dispatchCtx, "conv-real", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	tasks, _ := store.ListTasksByWorkspace(ctx, ws.ID)

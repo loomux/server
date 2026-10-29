@@ -150,6 +150,13 @@ isn't routed. Typed answers work as before. What a yes runs still lives
 only in memory, so a restart expires every pending offer (fails
 closed). A turn ending on an offer is a "needs you" notification.
 
+**A "yes" with no offer.** A message that only agrees ("yes", "ok",
+"go", "do it") and answers no recorded offer starts nothing on the
+routing model's reading of it. It may continue the conversation's open
+task, or go to another workspace the conversation has used while a task
+is open; anything else gets a question back instead
+(`router/affirmative.go`).
+
 A shared work machine such as sc1 is meant to be `purpose: work`,
 `allow_provision: false`, `require_confirmation: true`.
 

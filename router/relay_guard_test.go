@@ -23,7 +23,7 @@ func TestDispatch_ReplyAskingUser_KeepsTaskOpen(t *testing.T) {
 			h.model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
 				return router.RelayResult{Reply: reply, Done: true}, nil
 			}
-			if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+			if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 				t.Fatalf("Dispatch: %v", err)
 			}
 			if task := onlyTask(t, h.store, h.ws.ID); task.Status != registry.TaskStatusAwaitingInput {
@@ -38,7 +38,7 @@ func TestDispatch_FinishedReply_Completes(t *testing.T) {
 	h.model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
 		return router.RelayResult{Reply: "Created hello.txt with the greeting. Done.", Done: true}, nil
 	}
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if task := onlyTask(t, h.store, h.ws.ID); task.Status != registry.TaskStatusCompleted {

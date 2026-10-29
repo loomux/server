@@ -574,7 +574,7 @@ func TestDispatch_ProbeUnreachable_IsAnErrorNotAnOffer(t *testing.T) {
 	h.exec.runOnce = func(string) (string, error) { return "", targets.ErrUnreachable }
 	h.decide(h.provisionDecision("codex"))
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); !errors.Is(err, targets.ErrUnreachable) {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); !errors.Is(err, targets.ErrUnreachable) {
 		t.Fatalf("Dispatch err = %v, want ErrUnreachable", err)
 	}
 	if rec := h.agentRecord(t, "codex"); rec != nil {
@@ -595,7 +595,7 @@ func TestDispatch_LaunchesProbedAbsolutePath(t *testing.T) {
 	}
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	cmds := h.exec.launchedCommands()
@@ -632,7 +632,7 @@ func TestDispatch_VersionCheckRunsProbedPath(t *testing.T) {
 	}
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if len(versionCommands) != 1 || versionCommands[0] != "'"+fakeBinDir+"codex' --version" {
@@ -656,7 +656,7 @@ func TestDispatch_ProbedPathKeepsCompletionHookArgs(t *testing.T) {
 	}
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	cmds := h.exec.launchedCommands()
@@ -682,11 +682,11 @@ func TestDispatch_ProbedPathWithLaunchProfile(t *testing.T) {
 	}
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 
-	if _, err := h.r.Dispatch(context.Background(), "conv-1", "go"); err != nil {
+	if _, err := h.r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	cmds := h.exec.launchedCommands()
-	want := "'" + fakeBinDir + "codex' '--sandbox' 'workspace-write' '--' 'go'"
+	want := "'" + fakeBinDir + "codex' '--sandbox' 'workspace-write' '--' 'do the work'"
 	if len(cmds) != 1 || !strings.HasSuffix(cmds[0], want) {
 		t.Errorf("launched %v, want suffix %q", cmds, want)
 	}

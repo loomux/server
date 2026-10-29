@@ -72,7 +72,7 @@ func TestMachines_StartedBeforeDispatchAndRefusedWhenItCant(t *testing.T) {
 	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
 	}
-	_, err := r.Dispatch(ctx, "conv-m2", "do it")
+	_, err := r.Dispatch(ctx, "conv-m2", "do the task")
 	if err == nil || !strings.Contains(err.Error(), "the machine is lost") {
 		t.Fatalf("dispatch to a machine that can't start: want its reason, got %v", err)
 	}

@@ -186,7 +186,7 @@ func TestPolicy_RequireConfirmation_NotAskedForFollowUps(t *testing.T) {
 	h.setPolicy(t, registry.TargetPolicy{RequireConfirmation: true})
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 	ctx := context.Background()
-	if _, err := h.r.Dispatch(ctx, "conv-1", "start"); err != nil {
+	if _, err := h.r.Dispatch(ctx, "conv-1", "start the task"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if _, err := h.r.Dispatch(ctx, "conv-1", "yes"); err != nil {
@@ -289,7 +289,7 @@ func TestPolicy_RequireConfirmation_AskedAgainWhenThePaneIsGone(t *testing.T) {
 	h.setPolicy(t, registry.TargetPolicy{RequireConfirmation: true})
 	h.decide(router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "codex"})
 	ctx := context.Background()
-	if _, err := h.r.Dispatch(ctx, "conv-1", "start"); err != nil {
+	if _, err := h.r.Dispatch(ctx, "conv-1", "start the task"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if _, err := h.r.Dispatch(ctx, "conv-1", "yes"); err != nil {
