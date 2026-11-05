@@ -1,6 +1,6 @@
 # Loomux — Terminal Client Design (LOOM-261)
 
-**Status:** draft for review, 2026-11-05 · **Ticket:** LOOM-261 (Vikunja Loomux id 2359, GitHub #488)
+**Status:** draft for review, 2026-11-05; every open question decided by the user the same day (see "Decided") · **Ticket:** LOOM-261 (Vikunja Loomux id 2359, GitHub #488)
 **Blocks:** LOOM-235, the cutover of command-center into a Loomux-managed pod (LOOM-225)
 
 ## Overview
@@ -61,8 +61,9 @@ listed under "Changes outside the client" and "Build plan".
 - Windows. It may build, but attach and the keyring aren't tested there.
 - Desktop notifications. The existing "needs you" notifications already link
   to the web.
-- Read-only "watch" attach (a later phase, see the build plan).
-- Server-proxied attach over a WebSocket (open question 5).
+- Server-proxied attach over a WebSocket (decided 5: later tickets L4a–c).
+- A two-pane layout for wide terminals (decided 2: a later ticket, L5, only
+  if it's missed).
 
 **Anti-goals: things this client must never do**
 - Prompt for, store or send the Loomux password, or work around the forward
@@ -132,7 +133,7 @@ Findings that shape the server work below:
  ◐ running          loomux-web   "fix the flaky ConversationPage …" 30s
  DONE ──────────────────────────────────────────────────────────────────
  ✓ completed        notes        "summarise yesterday's PRs"        3h
- [n]ew  [enter] open  [a]ttach  [/] filter  [tab] needs-you/running/done/all
+ [n]ew  [enter] open  [a]ttach  [w]atch  [/] filter  [tab] needs-you/running/done/all
 ```
 
 - Ranked like the web: `needs_attention`, `awaiting_input` and
@@ -144,6 +145,7 @@ Findings that shape the server work below:
 - Live: v1 polls `GET /api/v1/conversations?limit=100` every 5 s and right after any
   action. The cross-conversation stream (L1) replaces polling later.
 - `a` on a row attaches to that conversation's open agent task (workflow 4).
+  `w` watches it read-only (a watch hold, see "Watching").
 
 ### 2. Chat with a live stream
 
@@ -160,8 +162,7 @@ dispatches, confirmations) and opens `GET /api/v1/conversations/{id}/stream`.
 - `ctrl-c` (or `x`) on an in-flight turn → `POST /api/v1/dispatches/{id}/cancel`,
   after a confirm.
 - Replies are markdown and are rendered as markdown (glamour). The composer
-  is multi-line. `enter` sends and `alt-enter` adds a newline (open question
-  1).
+  is multi-line. `enter` sends and `alt-enter` adds a newline (decided 1).
 - `n` from the list starts a conversation (empty `conversation_id`, the
   server mints one). Starting from a workspace sends that `workspace_hint`.
 - `p` on a task shows its transcript (`GET /api/v1/tasks/{id}/transcript`, paged):
@@ -250,7 +251,7 @@ A **hold** is a lease on one task by one session:
 | `task_id` | the held task |
 | `session_id` | the API session that took it (from `requireAuth`) |
 | `client_kind`, `client_label` | `tui` + `laptop`, copied from the session (S7) or sent with the takeover |
-| `mode` | `drive` (v1). `watch` is reserved for L2 |
+| `mode` | `drive` or `watch` (both in v1, see "Watching" below) |
 | `prev_status` | the task's status when taken, for display and audit |
 | `acquired_at`, `renewed_at`, `expires_at` | |
 | `ended_at`, `ended_reason` | `released`, `expired`, `taken_back`, `taken_over`, `session_revoked`, `task_ended` |
@@ -264,12 +265,40 @@ The hold is the source of truth for *who*. The task's status
 `human_takeover` remains the source of truth for *whether automation may
 type*, so every existing gate keeps working unchanged.
 
+### Watching (decided 12: in v1)
+
+A **watch** hold is a read-only attach that still tells the server who is
+looking. It's needed for the cutover: the user can look at the hub's agent
+without pausing it.
+
+- `POST /api/v1/tasks/{id}/takeover` with `mode: "watch"` (S10). The task's
+  status doesn't change and automation keeps typing. Any number of watch
+  holds may exist per task, alongside at most one drive hold. A held or
+  failed task with a kept pane can be watched too, whatever the drive rules
+  say. Heartbeat, release, expiry and revocation work as for drive holds.
+- Expiry of a watch hold detaches nobody. A read-only client can't collide
+  with automation, and `detach-client -s` would detach everyone in the
+  session.
+- The response's attach commands are read-only (`tmux … attach -r -t
+  <session>`, S11). The ssh and local forms are built by the server. A
+  plugin is asked with `read_only: true` in `AttachParams`, under a new
+  capability flag. A plugin without the flag gets no watch command:
+  the server answers `409 watch_unsupported` rather than hand out a
+  writable command for a watch.
+- Upgrading a watch to a drive is a new `mode: "drive"` takeover. The
+  client detaches its read-only client first, then attaches writable.
+- Other clients show watchers next to the holder ("👁 watched from
+  `laptop`"). The `task_hold` event covers both modes, and list rows carry
+  `watchers` (a count) beside `held_by`.
+
 ### API (additions within v1)
 
-- `POST /api/v1/tasks/{id}/takeover` `{client_label?, ttl_seconds?, force?}`
-  → `200 {task_id, hold, attach}`. `attach` is the attach-info body, so one
-  round trip gets both. `ttl_seconds` is 15–300, default 45.
-  - The active hold is checked **before** the task's status:
+- `POST /api/v1/tasks/{id}/takeover` `{mode?, client_label?, ttl_seconds?,
+  force?}` → `200 {task_id, hold, attach}`. `attach` is the attach-info
+  body, so one round trip gets both. `ttl_seconds` is 15–300, default 45.
+  `mode` is `drive` (the default) or `watch`. The rules below are for
+  `drive`. `watch` is under "Watching".
+  - The active drive hold is checked **before** the task's status:
     1. Held by this same session: the existing hold is renewed and returned.
        This is idempotent, and it's how a restarted TUI gets its own hold
        back on a task that is already `human_takeover`.
@@ -323,8 +352,8 @@ regenerated (lines only added).
   means the hold is gone and the server has detached (or is detaching) the
   client.
 - **Expiry sweeper** (app goroutine, every 5 s): ends expired holds as
-  `expired`, releases their tasks, then **detaches the session's tmux
-  clients** (`tmux -L <socket> detach-client -s <session>` through the
+  `expired`. For a drive hold (decided 7) it then releases the task and
+  **detaches the session's tmux clients** (`tmux -L <socket> detach-client -s <session>` through the
   target's executor, a new `DetachClients` on `TargetExecutor`). This fails
   closed: once the lease is gone, nobody keeps typing unannounced into a pane
   the router is about to drive. It also detaches any watcher attached by hand
@@ -360,8 +389,8 @@ be taken over:
   (`WaitForCompletion`, the attention path, `failTask`, `Complete`), so the
   takeover can't be overwritten.
 
-Open question 6 asks whether the user prefers "refuse until the turn ends"
-instead.
+Decided (6): taking over a running turn is allowed, with the behaviour
+above.
 
 ### What other clients show
 
@@ -442,7 +471,10 @@ ignores it.
 - **No keyring available** (a headless box, a container): `loomux login`
   refuses and says why. A `0600` file under `$XDG_STATE_HOME/loomux/` is used
   only if the config says `token_store = "file"`, with a warning at every
-  start (open question 11).
+  start (decided 11: the opt-in file is allowed).
+- **Lifetime** (decided 13): a linked terminal session has the same 30-day
+  sliding TTL and 90-day maximum age as a web session. There's no separate
+  setting.
 - The config file never holds a token, and the token is never printed or
   logged. Requests go over HTTPS only (an `http://` server URL is refused
   except for loopback).
@@ -494,19 +526,21 @@ heartbeat runs in its own goroutine owned by the attach routine, not in the
 Bubble Tea update loop, so it keeps running while the TUI is suspended. When
 the child exits, the client releases, resumes and refetches.
 
-The attach routine is also a subcommand, `loomux attach <task|conversation>`
-(takeover → exec → heartbeat → release, no TUI). That gives two modes:
+The attach routine is also a subcommand, `loomux attach [--watch]
+<task|conversation>` (takeover → exec → heartbeat → release, no TUI).
+`--watch` takes a watch hold and runs the read-only command. That gives two
+modes:
 
 - **inline** (default outside tmux): the TUI suspends and the attach takes
   the terminal.
-- **window** (default inside tmux, `$TMUX` set): the TUI runs
-  `tmux new-window -n <workspace> 'loomux attach --task <id>'` in the
-  user's own tmux. The list stays visible in its window, and the attach
-  window holds and releases on its own. Open question 3.
+- **window** (decided 3: the default inside tmux, `$TMUX` set): the TUI runs
+  `tmux new-window -n <workspace> 'loomux attach [--watch] --task <id>'` in
+  the user's own tmux. The list stays visible in its window, and the attach
+  window holds and releases on its own.
 
-**Nested tmux.** Inside the user's tmux, the remote tmux's prefix is pressed
-twice (`C-b C-b d`). Open question 4 asks whether Loomux's tmux server should
-bind a dedicated detach key instead.
+**Detaching** (decided 4) uses tmux's own `prefix d`. Inside the user's
+tmux, the remote tmux's prefix is pressed twice (`C-b C-b d`). Loomux binds
+no root key on its tmux server, so every key still reaches the agent.
 
 ## Architecture
 
@@ -621,20 +655,43 @@ server = "https://loomux.example.net"
 
 [profiles.prod]
 server = "https://loomux.example.org"
-warn = true            # header shown in a warning colour (open question 10)
+warn = true            # coloured header; send, attach and take back ask first
+
+# token_store = "file" # opt-in 0600 token file where there's no keyring
 
 [attach]
-mode = "auto"          # auto | inline | window
+mode = "auto"          # auto (window inside tmux, else inline) | inline | window
 prefer = ["kubectl", "ssh", "docker"]
 
 [attach.kubectl]
 context = ""           # adds --context when set
 
-[keys]                 # overrides, see open question 1
+[keys]                 # any binding, e.g. attach = "A", send = "ctrl+s"
 ```
 
 `LOOMUX_PROFILE` and `--profile` select the profile, and `LOOMUX_SERVER`
-overrides the URL. There's no token setting: tokens live only in the keyring.
+overrides the URL. The config never holds a token: `token_store` only
+chooses where it's kept.
+
+**Production profile** (decided 10): a profile with `warn = true` gets a
+header in a warning colour naming the profile. Sending a message,
+attaching (drive or watch) and taking back each ask "on `prod`: continue?
+[y/N]" first. Reading needs no confirmation.
+
+**Keybindings** (decided 1): vim-style navigation (`j/k`, `g/G`, `/`
+filter, `enter` open, `esc` back) plus single-letter actions (`n` new, `a`
+attach, `w` watch, `y/n` answer, `x` cancel, `o` browser, `p` transcript,
+`?` help). In the composer, `enter` sends and `alt-enter` adds a newline.
+Every binding is an action name in one keymap, so `[keys]` can override
+any of them from the start, and `?` shows the effective map. A `[keys]`
+entry that names an unknown action, or gives two actions the same key on
+one screen, is an error at start rather than silently ignored.
+
+**Layout** (decided 2): full-screen stacked screens (list → conversation →
+transcript) in v1, usable in a narrow tmux pane. A two-pane layout for
+140+ columns is a later ticket (L5), only if it's missed.
+
+**Binary name** (decided 9): `loomux`.
 
 ### Versions and compatibility
 
@@ -719,14 +776,22 @@ line next to the server's and the web's:
   attach command (a script that attaches to a local tmux session). Cases:
   takeover → exec → detach → release. `kill -9` of the client → the hold
   expires → clients detached → status `awaiting_input`. A forced takeover
-  from a second session detaches the first.
+  from a second session detaches the first. A watch runs `attach -r` and
+  leaves the status alone. Its expiry detaches nobody. A watch coexists
+  with a drive hold, and upgrading a watch to a drive detaches the read-only
+  client first.
+- **Keymap and profiles:** `[keys]` overrides apply, an unknown action or a
+  clashing key is an error at start, and a `warn` profile asks before send,
+  attach, watch and take back.
 - **Server:** TDD with `-race` on the new store methods (storetest
   conformance), the routes, the sweeper (expiry, restart grace, revocation)
   and S1's compare-and-set writes (a takeover during a wait survives the
-  wait's end).
+  wait's end). Watch holds: many per task, no status change, read-only
+  commands from every source, and `409 watch_unsupported` for a plugin
+  without the capability.
 - **End to end on TEST (T12, needs the user for MFA):** link through the
-  proxy, attach to a Kubernetes machine, take back from the phone, crash the
-  terminal, deploy while attached.
+  proxy, watch then attach to a Kubernetes machine, take back from the
+  phone, crash the terminal, deploy while attached.
 
 ## Changes outside the client
 
@@ -741,8 +806,11 @@ line next to the server's and the web's:
 | S7 | server | session `label`/`client_kind`/`origin`, `POST /api/v1/sessions` (login-origin only) |
 | S8 | server | `argv` on `attach_commands` (plugin protocol + ssh form) |
 | S9 | server | exported test helper `api/apitest` for the client's contract tests |
+| S10 | server | watch holds (`mode: watch`, many per task, no status change, no detach on expiry), `watchers` on list rows |
+| S11 | server | read-only attach commands: `read_only` in the plugin protocol's `AttachParams` under a new capability, kubernetes + docker `attach -r`, server-built ssh/local forms, `409 watch_unsupported` |
 | W1 | web | `/link` page |
 | W2 | web | holder banner + Take back, sessions labels, "open in terminal" command |
+| W3 | web | watchers shown next to the holder |
 
 `core-design.md` §4 (takeover/release) and §9 (client API) and
 `api/README.md` are updated with the server tickets that change them.
@@ -765,6 +833,8 @@ review fixes.
 | S7 | session labels/origin + `POST /api/v1/sessions` | 1 d | — |
 | S8 | `argv` on attach commands (plugin protocol field, kubernetes, docker, ssh) | 0.5 d | — |
 | S9 | `api/apitest`: exported real-`api.Server` test helper (temporary SQLite, stub dispatcher, fake executor, seed helpers), for `loomux/tui`'s contract tests | 1 d | — (extended by S3/S6/S7 as their routes land) |
+| S10 | watch holds: `mode: watch` on takeover, many per task beside one drive hold, status untouched, expiry detaches nobody, `watchers` on list rows, `task_hold` for both modes | 1 d | S3, S6 |
+| S11 | read-only attach commands: `read_only` in `AttachParams` + capability flag, kubernetes and docker plugins, ssh and local forms, `409 watch_unsupported` | 1 d | S8, S10 |
 
 **Phase 2: web (in loomux/web)**
 
@@ -772,6 +842,7 @@ review fixes.
 |---|---|---|---|
 | W1 | `/link` page: fragment, code, approve | 1 d | S7 |
 | W2 | holder banner, Take back, session labels, open-in-terminal | 1 d | S6, S7 |
+| W3 | watchers next to the holder (list rows and conversation) | 0.5 d | S10, W2 |
 
 **Phase 3: the client (in loomux/tui)**
 
@@ -780,10 +851,11 @@ review fixes.
 | R1 | repo bootstrap: the user creates `loomux/tui` in the org; settings as in "Repository" (public, MIT, `main` ruleset, immutable `v*` tags, allowed-actions policy); `go.mod` (`github.com/Loomux/tui`) pinning a server tag; `cmd/loomux` skeleton with `version`; README, `CLAUDE.md`/`AGENTS.md` | 1 d | — |
 | R2 | CI: build, `vet`, `gofmt -l`, `go test -race`, `govulncheck` (pinned toolchain), changelog check, "pin is a tag, no `replace`" check, the `uses.txt` contract check, nightly non-blocking run against server `main` | 1 d | R1 |
 | R3 | release: `deploy/release.sh reserve` + `deploy/changelog.sh` adapted from the server, release workflow (binaries, `SHA256SUMS`, attestation, GitHub pre-release), first 0.1.0 | 1 d | R2 |
-| T1 | config file + profiles, keyring store, the HTTPS-only rule | 1 d | R1 |
+| T1 | config file + profiles, keyring store and the opt-in `0600` file store, the HTTPS-only rule | 1 d | R1 |
+| T14 | keymap: action names, vim-style defaults, `[keys]` overrides, start-up validation, `?` help from the effective map | 0.5 d | T1 |
 | T2 | `login` / `logout` link flow, 401 handling | 1 d | T1, S7, W1 |
 | T3 | `client/`: typed calls, errors, SSE reader, idempotency; contract tests through `api/apitest`; `uses.txt` | 1 d | R1, S9 |
-| T4 | home list: ranking, filters, polling, row rendering | 1 d | T3 |
+| T4 | home list: ranking, filters, polling, row rendering | 1 d | T3, T14 |
 | T5 | conversation view: transcript, markdown, live stream, task status | 1 d | T3 |
 | T6 | composer, send (async + idempotency), busy handling, cancel | 1 d | T5 |
 | T7 | attention, offer and failed-task (`login_required`, `agent_rate_limited`, `agent_api_error`) cards, answering keys | 0.5 d | T5 |
@@ -791,77 +863,68 @@ review fixes.
 | T9 | attach from the TUI: inline suspend/resume, tmux window mode, failure fallback | 1 d | T8 |
 | T10 | handoff: `loomux open`, open-in-browser, holder in rows, take back from the TUI | 0.5 d | T4, S6 |
 | T11 | `docs/install.md` (download, checksum and attestation check, `go install`), the README's minimum-server-version table, link from `loomux/server` `docs/deploy/` | 0.5 d | R3 |
-| T12 | end-to-end on TEST with the user (link via MFA, k8s attach, crash, deploy, phone take-back) | 1 d | all above |
+| T13 | watch: `w` and `loomux attach --watch`, read-only command, upgrade a watch to a drive, watchers in rows | 1 d | T9, S10, S11 |
+| T15 | `warn` profiles: coloured header, confirmation before send, attach, watch and take back | 0.5 d | T6, T9, T10 |
+| T12 | end-to-end on TEST with the user (link via MFA, k8s watch and attach, crash, deploy, phone take-back) | 1 d | all above |
 
 **Later (not needed for LOOM-235)**
 
 | Ticket | Scope | Est. |
 |---|---|---|
 | L1 | cross-conversation stream `GET /api/v1/stream` (`conversation_update`, `task_hold`), replacing list polling in TUI and web | 1 d |
-| L2 | watch mode: `mode: watch` holds (many per task), `tmux attach -r`, "watched by" | 1 d |
 | L3 | transcript and event (audit trail) views in the TUI | 1 d |
-| L4a | server-proxied attach, server side: `GET /api/v1/tasks/{id}/terminal` WebSocket upgrade, held by the caller's hold, running `tmux attach` over the target's executor in a PTY (only if open question 5 says yes) | 1 d |
+| L4a | server-proxied attach, server side: `GET /api/v1/tasks/{id}/terminal` WebSocket upgrade, held by the caller's hold, running `tmux attach` over the target's executor in a PTY (decided 5: not in v1, only if wanted later) | 1 d |
 | L4b | the same route's resize and close frames, the hold's end closing the socket, and tests through `internal/tmuxtest` | 1 d |
 | L4c | the client's `proxy` attach mode: raw terminal ↔ WebSocket, used when no local attach command works | 1 d |
+| L5 | two-pane layout (list left, conversation right) at 140+ columns, only if it's missed (decided 2) | 1 d |
 
-Totals: server 8.5 d, web 2 d, client 13.5 d (repository 3 d, features
-10.5 d), about **24 days** for v1. The later tickets (L1–L3 and L4a–c, 6 d)
-aren't counted. The LOOM-235 cutover needs phases 1–3. Of those, only T10
-(handoff conveniences) and W2's "open in terminal" text could slip past it
-without losing a workflow. Server phase 1 and R1–R3/T1 can run in parallel.
+(L2, watch mode, moved into v1 as S10, S11, W3 and T13.)
+
+Totals: server 10.5 d, web 2.5 d, client 15.5 d (repository 3 d, features
+12.5 d), about **28.5 days** for v1. The later tickets (L1, L3, L4a–c, L5,
+6 d) aren't counted. The LOOM-235 cutover needs phases 1–3, watch mode
+included (decided 12). Of those, only T10 (handoff conveniences) and W2's
+"open in terminal" text could slip past it without losing a workflow.
+Server phase 1 and R1–R3/T1/T14 can run in parallel.
 T3 starts once S9 is released, and each client ticket that uses a new route
 bumps the server pin to the release that has it.
 
 ## Decided
 
-- **Repository location: its own repository, `loomux/tui`** (the user,
-  2026-11-05; was open question 8). This design doc stays in
-  `loomux/server`'s `docs/design/`, alongside the API changes it specifies.
+All open questions were answered by the user on 2026-11-05 ("all as
+proposed + your suggestions"; the repository one earlier the same day). The numbers are the
+original question numbers, which the text above cites as "decided N".
+
+1. **Keybindings:** vim-style navigation plus single-letter actions as
+   proposed. In the composer, `enter` sends and `alt-enter` adds a newline.
+   Everything is overridable in `[keys]` from the start (T14).
+2. **Layout:** full-screen stacked screens in v1. The two-pane layout at
+   140+ columns is a later ticket (L5), only if it's missed.
+3. **Attach inside tmux:** a new tmux window (`window` mode). Outside tmux
+   the TUI suspends inline.
+4. **Detach key:** tmux's own `prefix d`. Loomux binds no root key.
+5. **Server-proxied attach:** not in v1. L4a–c stay later and outside the
+   v1 total.
+6. **Taking over a running turn:** allowed. The turn ends as `taken_over`
+   and what the agent finishes is relayed later (S5).
+7. **Lease:** 45 s TTL, 15 s heartbeat. On expiry the session's tmux
+   clients are detached (drive holds. A watch hold's expiry detaches
+   nobody).
+8. **Repository:** its own repository, `loomux/tui`. This design doc stays
+   in `loomux/server`'s `docs/design/` with the API changes it specifies.
+9. **Binary name:** `loomux`.
+10. **Production profile:** a `warn` profile gets a coloured header, and
+    send, attach (and watch) and take back ask for confirmation there (T15).
+11. **No keyring:** the opt-in `0600` token file (`token_store = "file"`) is
+    allowed (T1).
+12. **Watch mode:** in v1, needed for the cutover (S10, S11, W3, T13).
+13. **Linked terminal sessions:** the same lifetime as the web, 30-day
+    sliding and 90-day maximum.
 
 ## Open questions for the user
 
-These are preferences or trade-offs that are the user's to choose. The
-recommendation is first. Numbers are kept stable: a decided question
-moves to "Decided" above and leaves its number behind.
-
-1. **Keybindings.** Proposed: vim-style navigation (`j/k`, `g/G`, `/` filter,
-   `enter` open, `esc` back) plus single letters for actions (`n` new, `a`
-   attach, `y/n` answer, `x` cancel, `o` browser, `p` transcript, `?` help).
-   Composer: `enter` sends, `alt-enter` adds a newline. Alternatives:
-   arrow-first, or `ctrl-enter` to send. Should it be all overridable in
-   `[keys]` from the start?
-2. **Layout.** Proposed: full-screen stacked screens (list → conversation),
-   which works in a narrow tmux pane. Alternative: two panes (list left,
-   conversation right) when the terminal is 140+ columns wide.
-3. **Attach inside tmux.** Proposed: open a new tmux window (`window` mode)
-   so the list stays visible. Alternatives: suspend inline as outside tmux,
-   or a split pane.
-4. **Detach key.** Proposed: keep tmux's own (`prefix d`, doubled when
-   nested), changing nothing. Alternative: Loomux binds a root key such as
-   `C-]` on its own tmux socket to `detach-client`, which works from anywhere
-   but takes that key from the agent.
-5. **Server-proxied attach** (L4a–c). Recommendation: not for v1. Executing the
-   target's own attach command needs no new remote-shell surface. Proxying
-   through `loomuxd` over a WebSocket would work without kubectl/ssh access
-   on the user's machine and would later give the web and apps a real
-   terminal. Wanted, and when?
-6. **Taking over a running turn.** Proposed: allowed. The turn's wait ends as
-   `taken_over` and what the agent finishes is relayed later. Alternatives:
-   refuse until the turn ends, or cancel the turn (sending Escape) first.
-7. **Lease timing and expiry.** Proposed: 45 s TTL, 15 s heartbeat, and on
-   expiry the session's tmux clients are detached. Shorter TTLs release
-   faster after a crash but are less forgiving on a flaky link.
-8. *Decided: repository location (see "Decided").*
-9. **Binary name.** `loomux` (matching `core-design.md`'s `loomux takeover`).
-   Alternatives: `lx`, `loomux-tui`.
-10. **Production profile.** Should a profile marked `warn` get a coloured
-    header, and should actions there (send, attach, take back) ask for
-    confirmation?
-11. **No keyring.** Allow the opt-in `0600` token file on machines without a
-    Secret Service, or refuse there outright?
-12. **Watch mode in v1** (L2): needed for the cutover, or later?
-13. **Linked terminal sessions' lifetime.** The same 30-day sliding / 90-day
-    maximum as the web, or shorter?
+None open. New ones raised during the build go to command-center for the
+user.
 
 ## Checks before building (facts, not preferences)
 
