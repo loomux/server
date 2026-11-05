@@ -52,7 +52,9 @@ listed under "Changes outside the client" and "Build plan".
   takeover/release with a lease.
 - Hand work between the terminal, web and app in both directions at any time.
 - Log in through the browser (forward auth and MFA included). The token goes
-  to the OS keyring and can be revoked from the web or the terminal.
+  to the configured token store (the OS keyring by default, an opt-in
+  `0600` file where there's none) and can be revoked from the web or the
+  terminal.
 - One static binary for Linux and macOS.
 
 **Non-goals (v1)**
@@ -276,6 +278,9 @@ without pausing it.
   holds may exist per task, alongside at most one drive hold. A held or
   failed task with a kept pane can be watched too, whatever the drive rules
   say. Heartbeat, release, expiry and revocation work as for drive holds.
+- A server that can't watch never hands out a drive hold for a watch
+  request, and the client never runs a command for an unconfirmed watch
+  (see "Versions and compatibility").
 - Expiry of a watch hold detaches nobody. A read-only client can't collide
   with automation, and `detach-client -s` would detach everyone in the
   session.
@@ -433,8 +438,9 @@ The terminal makes its own token, and the browser approves only its hash:
 4. Meanwhile the terminal polls `GET /api/v1/sessions` with `Authorization:
    Bearer T` every 2 s for up to 10 minutes. The bearer header gets it past
    the proxy, and it gets `401` until the session exists, then `200`.
-5. It stores `T` in the OS keyring and is done. `T` itself never left the
-   machine.
+5. It stores `T` in the configured token store (the OS keyring, or the
+   opt-in `0600` file, see "Storage and revocation") and is done. `T`
+   itself never left the machine.
 
 Why not a classic device-code flow (RFC 8628): its first call is
 unauthenticated, which the proxy blocks. Exempting a path would put a new
@@ -465,13 +471,22 @@ ignores it.
 
 ### Storage and revocation
 
-- **Keyring.** Service `loomux`, account `<profile>@<server URL>`, through
-  `github.com/zalando/go-keyring`: Secret Service over D-Bus on Linux
-  (GNOME Keyring, KWallet, KeePassXC), the Keychain on macOS. Pure Go, no cgo.
-- **No keyring available** (a headless box, a container): `loomux login`
-  refuses and says why. A `0600` file under `$XDG_STATE_HOME/loomux/` is used
-  only if the config says `token_store = "file"`, with a warning at every
-  start (decided 11: the opt-in file is allowed).
+The **token store** is chosen by `token_store` in the config: `keyring`
+(the default) or `file` (decided 11).
+
+- **Keyring** (`token_store = "keyring"`, the default). Service `loomux`,
+  account `<profile>@<server URL>`, through `github.com/zalando/go-keyring`:
+  Secret Service over D-Bus on Linux (GNOME Keyring, KWallet, KeePassXC),
+  the Keychain on macOS. Pure Go, no cgo. If no keyring is available (a
+  headless box, a container), `loomux login` refuses and says how to opt in
+  to the file store. It never falls back on its own.
+- **File** (`token_store = "file"`, opt-in). A `0600` file per profile under
+  `$XDG_STATE_HOME/loomux/`, in a `0700` directory. `loomux login` stores
+  there without asking for a keyring, and every start prints a one-line
+  warning that the token is in a plain file. A file with wider permissions
+  is refused, not silently used.
+- Whatever the store, "dropping the token" (logout, a `401` with the stored
+  token) deletes it from that store.
 - **Lifetime** (decided 13): a linked terminal session has the same 30-day
   sliding TTL and 90-day maximum age as a web session. There's no separate
   setting.
@@ -479,12 +494,12 @@ ignores it.
   logged. Requests go over HTTPS only (an `http://` server URL is refused
   except for loopback).
 - **Revocation.** `loomux logout` calls `POST /api/v1/logout` (which also ends its
-  streams and holds) and deletes the keyring entry. From the web, the
+  streams and holds) and deletes the stored token. From the web, the
   sessions page revokes the labelled row (`DELETE /api/v1/sessions/{id}`).
   A `401` to a request made with the **stored** token makes the terminal
-  drop the keyring entry and say "signed out: run `loomux login`". The link
+  drop the stored token and say "signed out: run `loomux login`". The link
   flow's poll is exempt. It runs only inside `loomux login`, with the
-  pending `T` that isn't in the keyring yet, and there a `401` just means
+  pending `T` that isn't in the token store yet, and there a `401` just means
   "not approved yet". The poll never touches the stored entry until it gets
   a `200`.
 
@@ -632,7 +647,7 @@ Layout:
 loomux/tui
   cmd/loomux/        main: subcommands login, logout, attach, open, version; no args = TUI
   client/            typed API client: requests, errors {error, code}, SSE, idempotency
-  auth/              link flow, keyring store, profile resolution
+  auth/              link flow, token stores (keyring, opt-in file), profile resolution
   attach/            takeover → choose command → exec → heartbeat → release
   ui/                Bubble Tea models: list, conversation, cards, composer, help
   config/            config file, profiles, defaults
@@ -649,6 +664,7 @@ Support/loomux/` if `XDG_CONFIG_HOME` is unset):
 
 ```toml
 default_profile = "test"
+token_store = "keyring"  # or "file": opt-in 0600 token file where there's no keyring
 
 [profiles.test]
 server = "https://loomux.example.net"
@@ -656,8 +672,6 @@ server = "https://loomux.example.net"
 [profiles.prod]
 server = "https://loomux.example.org"
 warn = true            # coloured header; send, attach and take back ask first
-
-# token_store = "file" # opt-in 0600 token file where there's no keyring
 
 [attach]
 mode = "auto"          # auto (window inside tmux, else inline) | inline | window
@@ -701,6 +715,22 @@ version-checked: a `404` from `POST /api/v1/tasks/{id}/takeover` means "this ser
 yet; upgrade it", and the client falls back to showing the attach command as
 text, like the web today.
 
+**Watch needs a positive answer, never a silent default.** The server's
+JSON decoding ignores unknown fields, so a takeover route that didn't know
+`mode` would grant a *drive* hold with writable commands to a client asking
+to watch. Two guards close that:
+
+- **Server (S3):** the takeover route defines `mode` from its first release.
+  It accepts only `drive` and answers `400 unsupported_mode` for `watch`
+  until S10 enables it. So no released server ignores the field.
+- **Client (T13):** after a `mode: "watch"` takeover, the client checks
+  that the returned `hold.mode` is `watch` before running any command.
+  Anything else, or `400 unsupported_mode`, makes it release the hold it got
+  (if any) at once and say "this server can't watch yet: upgrade it, or
+  attach to drive". It never falls back to running the command it was
+  given. `409 watch_unsupported` (S11: the target's plugin has no read-only
+  command) gets the same message, naming the plugin.
+
 ### Releases and versioning
 
 These follow `docs/release/versioning.md`, as a third independent version
@@ -719,8 +749,21 @@ line next to the server's and the web's:
   `deploy/changelog.sh check`, as in the server.
 - Every 0.y.z is a GitHub **pre-release**, never marked "latest".
 - `loomux version` prints the client's version, the server version it was
-  pinned to (from the build's module info), and, when signed in, the
-  server's `GET /api/v1/version`.
+  pinned to, and, when signed in, the server's `GET /api/v1/version`. The
+  pin can't come from the build's module info: only `_test.go` files import
+  the server, so it isn't in the binary's `debug.ReadBuildInfo`. Instead,
+  `go generate` writes it into a checked-in constant
+  (`internal/version/serverpin.go`, from `go list -m -f '{{.Version}}'
+  github.com/Loomux/server`). CI fails if that constant doesn't match
+  `go.mod`, so it's right in release builds and in `go install` builds
+  alike (R1 adds it, R2 checks it). The client's own version is stamped by
+  the release workflow with `-ldflags -X` (R3). A `go install` build reports
+  the module version from its build info instead.
+- **This third line is new to `docs/release/versioning.md`**, which today
+  says "Two independent version lines". R3 updates that doc in
+  `loomux/server` (one PR there): three lines, the client's not reported by
+  `GET /api/v1/version` and not pinned by the server. Until then, this
+  design is the authority for the client's line.
 - The server doesn't pin or report the client. Unlike the web, the client
   isn't served by `loomuxd`. Compatibility is by API version plus feature
   detection.
@@ -745,7 +788,7 @@ line next to the server's and the web's:
   (`conversation_busy`, `task_held`, `hold_ended`, `task_inactive`,
   `unauthorized`). Nothing is swallowed. An unknown code is treated as its
   status's default.
-- `401` to a request made with the stored token → keyring entry dropped, "signed out" screen with the login command. (The link poll's `401` is "not approved yet", see "Storage and revocation".)
+- `401` to a request made with the stored token → stored token deleted, "signed out" screen with the login command. (The link poll's `401` is "not approved yet", see "Storage and revocation".)
 - Stream drop → reconnect with backoff (1 s doubling to 15 s), with a
   `reconnecting…` header after 5 s. On reconnect the conversation is
   refetched, since `message_added` isn't replayed.
@@ -799,7 +842,7 @@ line next to the server's and the web's:
 |---|---|---|
 | S1 | server | compare-and-set status writes after waits (takeover can't be overwritten) |
 | S2 | server | `task_holds` table, store methods, storetest conformance |
-| S3 | server | `takeover` / `heartbeat` / `release` routes, contract, README |
+| S3 | server | `takeover` / `heartbeat` / `release` routes (with `mode`, only `drive` accepted until S10), contract, README |
 | S4 | server | expiry sweeper, restart grace, revocation ends holds, `DetachClients` |
 | S5 | server | takeover of a running turn ends its wait (`taken_over`) |
 | S6 | server | `hold` on tasks and attach-info, `held_by` + `pending_confirmation_id` on list rows, `task_hold` event, error class `held` |
@@ -811,6 +854,7 @@ line next to the server's and the web's:
 | W1 | web | `/link` page |
 | W2 | web | holder banner + Take back, sessions labels, "open in terminal" command |
 | W3 | web | watchers shown next to the holder |
+| R3 | server docs | `docs/release/versioning.md`: a third, independent version line for `loomux/tui` |
 
 `core-design.md` §4 (takeover/release) and §9 (client API) and
 `api/README.md` are updated with the server tickets that change them.
@@ -826,14 +870,14 @@ review fixes.
 |---|---|---|---|
 | S1 | CAS status writes in the orchestrator and router paths that write after a wait | 1 d | — |
 | S2 | `task_holds` migration + store + conformance | 1 d | — |
-| S3 | takeover/heartbeat/release routes (hold checked before status; failed-task holds), orchestrator wiring, error codes, contract | 1 d | S1, S2 |
+| S3 | takeover/heartbeat/release routes (hold checked before status; failed-task holds; `mode` defined, `watch` → `400 unsupported_mode` until S10), orchestrator wiring, error codes, contract | 1 d | S1, S2 |
 | S4 | sweeper, restart grace, revocation, `TargetExecutor.DetachClients` | 1 d | S3 |
 | S5 | running-turn takeover ends the dispatch wait (`taken_over`) | 1 d | S3 |
 | S6 | expose holds (task, attach-info, list row, `task_hold` event), pending offer on list rows, error class `held` | 1 d | S3 |
 | S7 | session labels/origin + `POST /api/v1/sessions` | 1 d | — |
 | S8 | `argv` on attach commands (plugin protocol field, kubernetes, docker, ssh) | 0.5 d | — |
 | S9 | `api/apitest`: exported real-`api.Server` test helper (temporary SQLite, stub dispatcher, fake executor, seed helpers), for `loomux/tui`'s contract tests | 1 d | — (extended by S3/S6/S7 as their routes land) |
-| S10 | watch holds: `mode: watch` on takeover, many per task beside one drive hold, status untouched, expiry detaches nobody, `watchers` on list rows, `task_hold` for both modes | 1 d | S3, S6 |
+| S10 | watch holds: `mode: watch` accepted on takeover, many per task beside one drive hold, status untouched, expiry detaches nobody, `watchers` on list rows, `task_hold` for both modes | 1 d | S3, S6 |
 | S11 | read-only attach commands: `read_only` in `AttachParams` + capability flag, kubernetes and docker plugins, ssh and local forms, `409 watch_unsupported` | 1 d | S8, S10 |
 
 **Phase 2: web (in loomux/web)**
@@ -848,9 +892,9 @@ review fixes.
 
 | Ticket | Scope | Est. | Depends on |
 |---|---|---|---|
-| R1 | repo bootstrap: the user creates `loomux/tui` in the org; settings as in "Repository" (public, MIT, `main` ruleset, immutable `v*` tags, allowed-actions policy); `go.mod` (`github.com/Loomux/tui`) pinning a server tag; `cmd/loomux` skeleton with `version`; README, `CLAUDE.md`/`AGENTS.md` | 1 d | — |
-| R2 | CI: build, `vet`, `gofmt -l`, `go test -race`, `govulncheck` (pinned toolchain), changelog check, "pin is a tag, no `replace`" check, the `uses.txt` contract check, nightly non-blocking run against server `main` | 1 d | R1 |
-| R3 | release: `deploy/release.sh reserve` + `deploy/changelog.sh` adapted from the server, release workflow (binaries, `SHA256SUMS`, attestation, GitHub pre-release), first 0.1.0 | 1 d | R2 |
+| R1 | repo bootstrap: the user creates `loomux/tui` in the org; settings as in "Repository" (public, MIT, `main` ruleset, immutable `v*` tags, allowed-actions policy); `go.mod` (`github.com/Loomux/tui`) pinning a server tag; `cmd/loomux` skeleton with `version`, the generated server-pin constant (`go generate`); README, `CLAUDE.md`/`AGENTS.md` | 1 d | — |
+| R2 | CI: build, `vet`, `gofmt -l`, `go test -race`, `govulncheck` (pinned toolchain), changelog check, "pin is a tag, no `replace`" check, server-pin constant matches `go.mod`, the `uses.txt` contract check, nightly non-blocking run against server `main` | 1 d | R1 |
+| R3 | release: `deploy/release.sh reserve` + `deploy/changelog.sh` adapted from the server, release workflow (binaries with the version stamped by `-ldflags -X`, `SHA256SUMS`, attestation, GitHub pre-release), first 0.1.0; a PR in `loomux/server` updating `docs/release/versioning.md` for the third version line | 1 d | R2 |
 | T1 | config file + profiles, keyring store and the opt-in `0600` file store, the HTTPS-only rule | 1 d | R1 |
 | T14 | keymap: action names, vim-style defaults, `[keys]` overrides, start-up validation, `?` help from the effective map | 0.5 d | T1 |
 | T2 | `login` / `logout` link flow, 401 handling | 1 d | T1, S7, W1 |
@@ -863,7 +907,7 @@ review fixes.
 | T9 | attach from the TUI: inline suspend/resume, tmux window mode, failure fallback | 1 d | T8 |
 | T10 | handoff: `loomux open`, open-in-browser, holder in rows, take back from the TUI | 0.5 d | T4, S6 |
 | T11 | `docs/install.md` (download, checksum and attestation check, `go install`), the README's minimum-server-version table, link from `loomux/server` `docs/deploy/` | 0.5 d | R3 |
-| T13 | watch: `w` and `loomux attach --watch`, read-only command, upgrade a watch to a drive, watchers in rows | 1 d | T9, S10, S11 |
+| T13 | watch: `w` and `loomux attach --watch`, read-only command, the `hold.mode` check and release-on-mismatch fallback (`unsupported_mode`, `watch_unsupported`), upgrade a watch to a drive, watchers in rows | 1 d | T9, S10, S11 |
 | T15 | `warn` profiles: coloured header, confirmation before send, attach, watch and take back | 0.5 d | T6, T9, T10 |
 | T12 | end-to-end on TEST with the user (link via MFA, k8s watch and attach, crash, deploy, phone take-back) | 1 d | all above |
 
