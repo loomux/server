@@ -32,6 +32,13 @@ it can't treat the API as a fixed contract. Takeover/release has never been
 exposed, and token issuing assumes a password form. Both need server work,
 specified here.
 
+Every API path in this document is under `/api/v1` and is written in full.
+The routes that don't exist on `main` yet are proposals:
+`POST /api/v1/tasks/{id}/takeover`, `…/takeover/heartbeat` and
+`…/release` (S3), `POST /api/v1/sessions` (S7), `GET /api/v1/stream`
+(L1) and `GET /api/v1/tasks/{id}/terminal` (L4a, only if wanted). They're
+listed under "Changes outside the client" and "Build plan".
+
 ## Goals, non-goals, anti-goals
 
 **Goals**
@@ -94,21 +101,21 @@ Findings that shape the server work below:
   description}]`, `selected`, `resets`). The conversation's next message is
   read deterministically: yes/approve, no/deny, an option number, or text
   (`core-design.md`, "Agent stopped at a prompt"). An offer is answered by
-  `POST /dispatch` with `confirmation_id` and "yes" or "no" (LOOM-123). There
+  `POST /api/v1/dispatch` with `confirmation_id` and "yes" or "no" (LOOM-123). There
   are no dedicated approve/deny routes and none are needed.
-- **Attach info gives shell strings.** `GET /tasks/{id}/attach-info` returns
+- **Attach info gives shell strings.** `GET /api/v1/tasks/{id}/attach-info` returns
   `attach_commands: [{via, command}]`: the plugin's (`kubectl … exec -it …`,
   `docker [-H …] exec -it …`) and the plain `ssh` form for every remote
   target. These are strings meant for a person to copy. A program has to
   split them, so an `argv` form is proposed (S8).
 - **There's no feed across conversations.** The SSE stream is per
-  conversation. The web's list ranks `GET /conversations` by the latest task's
+  conversation. The web's list ranks `GET /api/v1/conversations` by the latest task's
   status. A conversation that ended on an offer awaiting a yes doesn't show
   as needing the user there (S6).
-- **Sessions carry no label.** `GET /sessions` shows `{id, created_at,
+- **Sessions carry no label.** `GET /api/v1/sessions` shows `{id, created_at,
   last_used_at, current}`, so a "your devices" view can't say which row is the
   terminal (S7).
-- `/login` takes a password, and the deployment only exposes it through the
+- `POST /api/v1/login` takes a password, and the deployment only exposes it through the
   browser flow behind the forward-auth proxy (next section).
 
 ## Main workflows
@@ -134,30 +141,30 @@ Findings that shape the server work below:
   a pending offer also rank first once S6 exposes it.
 - Each row shows the status glyph, workspace, preview (the first message),
   the holder if held, and age.
-- Live: v1 polls `GET /conversations?limit=100` every 5 s and right after any
+- Live: v1 polls `GET /api/v1/conversations?limit=100` every 5 s and right after any
   action. The cross-conversation stream (L1) replaces polling later.
 - `a` on a row attaches to that conversation's open agent task (workflow 4).
 
 ### 2. Chat with a live stream
 
-Opening a conversation loads `GET /conversations/{id}` (messages, tasks,
-dispatches, confirmations) and opens `GET /conversations/{id}/stream`.
+Opening a conversation loads `GET /api/v1/conversations/{id}` (messages, tasks,
+dispatches, confirmations) and opens `GET /api/v1/conversations/{id}/stream`.
 
 - `message_added` → refetch the conversation. `dispatch_update` → update the
   in-flight turn card and, on `succeeded`, show the reply. `task_update` →
   update the task's status line.
-- Sending is async `POST /dispatch` with a fresh `Idempotency-Key` per
+- Sending is async `POST /api/v1/dispatch` with a fresh `Idempotency-Key` per
   submit, reused on retry (as the web does since LOOM-81). `409
   conversation_busy` puts the turn named by its `dispatch_id` in view rather
   than showing an error.
-- `ctrl-c` (or `x`) on an in-flight turn → `POST /dispatches/{id}/cancel`,
+- `ctrl-c` (or `x`) on an in-flight turn → `POST /api/v1/dispatches/{id}/cancel`,
   after a confirm.
 - Replies are markdown and are rendered as markdown (glamour). The composer
   is multi-line. `enter` sends and `alt-enter` adds a newline (open question
   1).
 - `n` from the list starts a conversation (empty `conversation_id`, the
   server mints one). Starting from a workspace sends that `workspace_hint`.
-- `p` on a task shows its transcript (`GET /tasks/{id}/transcript`, paged):
+- `p` on a task shows its transcript (`GET /api/v1/tasks/{id}/transcript`, paged):
   each turn's pane at its end, without attaching.
 
 ### 3. Answering a blocked prompt or an offer
@@ -175,8 +182,19 @@ A `needs_attention` task renders as a card:
 
 Each key sends the message the server already reads deterministically: the
 option's number, "yes", "no", or the typed text. The terminal never chooses
-keys for the agent itself. `kind: login` or `usage_limit` shows the card with
-attach as the only action, since a login is the user's to do in the pane.
+keys for the agent itself. Only `permission`, `question` and `trust`
+prompts become such a card.
+
+A sign-in screen, a usage limit or an API error never reaches
+`needs_attention`. `router/attention.go` fails the task with
+`error_class` `login_required`, `agent_rate_limited` or `agent_api_error`,
+keeps the pane, and `failTask` clears `attention`. The terminal renders a
+**failed-task card** keyed on that `error_class`. It shows
+`failure_reason` (which carries the reset time for a usage limit) and offers
+attach as its action, since signing in or waiting out the limit is the
+user's to do in the pane. Takeover of such a failed task is described under
+"API".
+
 An offer card (pending confirmation) has `y`/`n`, which send "yes"/"no" with
 its `confirmation_id`. A stale offer is refused by the server and shown as
 such.
@@ -184,7 +202,7 @@ such.
 ### 4. Attach to a live agent and detach
 
 ```
- list/chat ──a──► POST /tasks/{id}/takeover ──► hold + attach info
+ list/chat ──a──► POST /api/v1/tasks/{id}/takeover ──► hold + attach info
                          │
                          ▼
         suspend the TUI, run the attach command on this terminal
@@ -194,7 +212,7 @@ such.
         attach command exits (detach, ssh drop, pane gone)
                          │
                          ▼
-        POST /tasks/{id}/release {hold_id} ──► resume the TUI, refresh
+        POST /api/v1/tasks/{id}/release {hold_id} ──► resume the TUI, refresh
 ```
 
 Details are under "Server awareness" and "Attach mechanics".
@@ -251,13 +269,26 @@ type*, so every existing gate keeps working unchanged.
 - `POST /api/v1/tasks/{id}/takeover` `{client_label?, ttl_seconds?, force?}`
   → `200 {task_id, hold, attach}`. `attach` is the attach-info body, so one
   round trip gets both. `ttl_seconds` is 15–300, default 45.
-  - The task must be `running`, `awaiting_input` or `needs_attention`. Status
-    moves to `human_takeover` by compare-and-set. An ended task is `409`
-    (`task_inactive`).
-  - Held by another session: `409 task_held` with the `hold`, unless `force`.
-    `force` ends the other hold as `taken_over` and detaches its clients.
-  - Held by this same session: the existing hold is renewed and returned
-    (idempotent, and how a restarted TUI gets its own hold back).
+  - The active hold is checked **before** the task's status:
+    1. Held by this same session: the existing hold is renewed and returned.
+       This is idempotent, and it's how a restarted TUI gets its own hold
+       back on a task that is already `human_takeover`.
+    2. Held by another session: `409 task_held` with the `hold`, unless
+       `force`. `force` ends the other hold as `taken_over`, detaches its
+       clients, and gives this session a new hold. The task stays
+       `human_takeover` throughout.
+    3. Not held: the status rules below apply.
+  - An unheld task that is `running`, `awaiting_input` or `needs_attention`
+    moves to `human_takeover` by compare-and-set. An unheld task already in
+    `human_takeover` (only possible from before holds existed) is taken as
+    if it were `awaiting_input`.
+  - A `failed` task whose pane was kept for a person, with `error_class`
+    `login_required`, `agent_rate_limited` or `agent_api_error`, can be held
+    too. Its status stays `failed`, since nothing automated drives a failed
+    task, and releasing it only ends the hold. This is so attaching to finish
+    a sign-in still shows who is in the pane.
+  - Any other ended task (`completed`, or failed for another reason) is
+    `409` (`task_inactive`).
 - `POST /api/v1/tasks/{id}/takeover/heartbeat` `{hold_id}` → `200 {hold}` with
   `expires_at` pushed out by the TTL. An ended hold is `410 hold_ended` with
   `ended_reason`.
@@ -266,13 +297,13 @@ type*, so every existing gate keeps working unchanged.
     already-ended hold answers `200` with its reason.
   - Without it, it's **Take back**: ends whatever drive hold is active as
     `taken_back` and detaches its clients. Single user, so any session may.
-  - Either way the task goes `human_takeover` → `awaiting_input` (as
+  - Either way a `human_takeover` task goes to `awaiting_input` (as
     `Orchestrator.Release` does today) and its stale `attention` is cleared.
     Anything the agent finished while driven is relayed by the existing
     late-output pass, whose own comment already covers "a task handed back
     from a human takeover" (`router/lateoutput.go`).
 - Exposure (S6): `hold` (active or null) on each task of
-  `GET /conversations/{id}` and on attach-info. On `GET /conversations` rows:
+  `GET /api/v1/conversations/{id}` and on attach-info. On `GET /api/v1/conversations` rows:
   `held_by {client_kind, client_label, since}` and `pending_confirmation_id`.
   A new stream event `event: task_hold`,
   `data: {task_id, hold, ended_reason?}`, fires on every acquire, end and
@@ -308,7 +339,7 @@ regenerated (lines only added).
   the sweeper first moves every active hold's `expires_at` to at least
   `start + TTL`, so a deploy longer than the TTL doesn't kick everyone out.
   A terminal still attached resumes heartbeats once the API answers.
-- **Session revoked** (`/logout`, `DELETE /sessions/{id}`, expiry): its holds
+- **Session revoked** (`POST /api/v1/logout`, `DELETE /api/v1/sessions/{id}`, expiry): its holds
   end as `session_revoked` and are released and detached, alongside the
   streams and waits LOOM-144/182 already end.
 - **Task ends while held** (cancelled from elsewhere is already refused, but
@@ -349,7 +380,7 @@ The deployments put a forward-auth proxy with MFA in front of Loomux. The
 web, and with it `POST /api/v1/login`, are only reachable through that
 proxy's browser flow. Requests to `/api/v1/` that carry a Loomux bearer token
 skip the proxy, and `loomuxd` validates the token itself. So a terminal can't
-reach `/login`. It can't reach an unauthenticated "start device flow"
+reach `POST /api/v1/login`. It can't reach an unauthenticated "start device flow"
 endpoint either, because a request without a bearer token is sent to the
 proxy's login page. And it must never hold the password.
 
@@ -365,7 +396,7 @@ The terminal makes its own token, and the browser approves only its hash:
 2. It opens the browser at `<server>/link#h=<H>&label=<hostname>` (printed
    too, for a terminal on a remote machine). The fragment never reaches a
    proxy or server log, and `H` isn't a secret anyway.
-3. The web's `/link` page (W1) goes through the proxy's MFA and the web's own
+3. The web's `/link` page (W1, a web route, not an API path) goes through the proxy's MFA and the web's own
    login as usual. It shows the label and `V`, says "approve only if your
    terminal is showing this code right now", and on **Approve** calls
    `POST /api/v1/sessions {token_hash: H, label, client_kind: "tui"}` with the
@@ -384,13 +415,13 @@ authenticated route.
 
 Server side (S7):
 - `sessions` gains `label`, `client_kind` (`web`, `tui`, `app`, `""`) and
-  `origin` (`login` or `link`). `GET /sessions` returns the first two.
+  `origin` (`login` or `link`). `GET /api/v1/sessions` returns the first two.
 - `POST /api/v1/sessions` accepts a 64-hex `token_hash`, a `label` (≤ 64
   printable characters) and a `client_kind`. `409` if the hash exists. It is
   **allowed only from a session whose origin is `login`**: a stolen terminal
   token can't mint itself successors that survive its revocation. A linked
   session has the same sliding TTL and 90-day max age as any other.
-- `/login` sets `origin: login` and `client_kind: web` (the web is its only
+- `POST /api/v1/login` sets `origin: login` and `client_kind: web` (the web is its only
   caller).
 
 Phishing note: as with any device flow, someone could send the user a link
@@ -400,7 +431,7 @@ For a single-user tool that's proportionate.
 
 `GET /api/v1/version` is unauthenticated, but the proxy would still intercept
 it without a bearer header. The terminal sends its stored token (or, during
-login, the pending `T`) on every call, `/version` included, and the handler
+login, the pending `T`) on every call, `GET /api/v1/version` included, and the handler
 ignores it.
 
 ### Storage and revocation
@@ -415,11 +446,15 @@ ignores it.
 - The config file never holds a token, and the token is never printed or
   logged. Requests go over HTTPS only (an `http://` server URL is refused
   except for loopback).
-- **Revocation.** `loomux logout` calls `POST /logout` (which also ends its
+- **Revocation.** `loomux logout` calls `POST /api/v1/logout` (which also ends its
   streams and holds) and deletes the keyring entry. From the web, the
-  sessions page revokes the labelled row (`DELETE /sessions/{id}`). Any `401`
-  makes the terminal drop the keyring entry and say "signed out: run
-  `loomux login`".
+  sessions page revokes the labelled row (`DELETE /api/v1/sessions/{id}`).
+  A `401` to a request made with the **stored** token makes the terminal
+  drop the keyring entry and say "signed out: run `loomux login`". The link
+  flow's poll is exempt. It runs only inside `loomux login`, with the
+  pending `T` that isn't in the keyring yet, and there a `401` just means
+  "not approved yet". The poll never touches the stored entry until it gets
+  a `200`.
 
 ## Attach mechanics
 
@@ -431,12 +466,19 @@ on `PATH` and that the config doesn't disable. With S8 each entry also has
 `argv`, which is executed directly with no shell. Before S8, the string is
 split with a POSIX word splitter, never `sh -c`.
 
+A `kind: local` target's `attach_commands` is empty: `api/machines.go` adds
+the ssh form only for remote targets, and plugin commands only for plugin
+machines. For a local target the client uses attach-info's single
+`attach_command` (`tmux -L <socket> attach -t <session>`, from
+`targets.AttachCommand`), and only after checking it runs on the server's
+own host (below).
+
 | Target | Command | Needs on the user's machine |
 |---|---|---|
 | Remote (ssh) | `ssh [-p N] user@host -t 'tmux -L <socket> attach -t <session>'` | the user's own key accepted on the host; the host in their `known_hosts` (managed targets use Loomux's key, which never leaves the server) |
 | Kubernetes plugin machine | `kubectl -n <ns> exec -it <pod> -- tmux -L <socket> attach -t <session>` | a kubeconfig with exec rights in that namespace; `[attach.kubectl] context = "…"` in the config adds `--context` |
 | Docker plugin machine | `docker [-H ssh://…] exec -it <container> tmux -L <socket> attach -t <session>` | access to that Docker engine (locally, or ssh to its host) |
-| Local (`kind: local`) | `tmux -L <socket> attach -t <session>` | only works on the server's own host. Elsewhere the client says so and shows the command. Off in the container image anyway |
+| Local (`kind: local`) | `attach.attach_command`: `tmux -L <socket> attach -t <session>` | only works on the server's own host: the client checks that the `tmux -L <socket>` server is reachable and has the session (`tmux -L <socket> has-session -t <session>`). Elsewhere it says so, shows the command and releases. Off in the container image anyway |
 
 If the chosen command fails fast (exit status 255 from ssh, or non-zero
 within 2 s), the client offers the next one and then releases. Each run
@@ -553,9 +595,9 @@ overrides the URL. There's no token setting: tokens live only in the keyring.
 
 ### Versions and compatibility
 
-On start the client calls `GET /version`. A different `api_version` gives a
+On start the client calls `GET /api/v1/version`. A different `api_version` gives a
 persistent warning, as the web does. Features are detected rather than
-version-checked: a `404` from `/takeover` means "this server can't attach
+version-checked: a `404` from `POST /api/v1/tasks/{id}/takeover` means "this server can't attach
 yet; upgrade it", and the client falls back to showing the attach command as
 text, like the web today.
 
@@ -577,7 +619,7 @@ text, like the web today.
   (`conversation_busy`, `task_held`, `hold_ended`, `task_inactive`,
   `unauthorized`). Nothing is swallowed. An unknown code is treated as its
   status's default.
-- `401` → keyring entry dropped, "signed out" screen with the login command.
+- `401` to a request made with the stored token → keyring entry dropped, "signed out" screen with the login command. (The link poll's `401` is "not approved yet", see "Storage and revocation".)
 - Stream drop → reconnect with backoff (1 s doubling to 15 s), with a
   `reconnecting…` header after 5 s. On reconnect the conversation is
   refetched, since `message_added` isn't replayed.
@@ -600,7 +642,7 @@ text, like the web today.
   in the server module, `api/apitest`, added in T3). That catches field
   drift the way the web's mocked `fetch` can't.
 - **Link flow:** against the same test server: 401 while pending, 200 after
-  `POST /sessions`, the code computed identically by both sides (a shared
+  `POST /api/v1/sessions`, the code computed identically by both sides (a shared
   test vector), and refusal of a link from a linked session.
 - **Attach:** `internal/tmuxtest` with a short `TMUX_TMPDIR` and a fake
   attach command (a script that attaches to a local tmux session). Cases:
@@ -625,7 +667,7 @@ text, like the web today.
 | S4 | server | expiry sweeper, restart grace, revocation ends holds, `DetachClients` |
 | S5 | server | takeover of a running turn ends its wait (`taken_over`) |
 | S6 | server | `hold` on tasks and attach-info, `held_by` + `pending_confirmation_id` on list rows, `task_hold` event, error class `held` |
-| S7 | server | session `label`/`client_kind`/`origin`, `POST /sessions` (login-origin only) |
+| S7 | server | session `label`/`client_kind`/`origin`, `POST /api/v1/sessions` (login-origin only) |
 | S8 | server | `argv` on `attach_commands` (plugin protocol + ssh form) |
 | W1 | web | `/link` page |
 | W2 | web | holder banner + Take back, sessions labels, "open in terminal" command |
@@ -644,11 +686,11 @@ review fixes.
 |---|---|---|---|
 | S1 | CAS status writes in the orchestrator and router paths that write after a wait | 1 d | — |
 | S2 | `task_holds` migration + store + conformance | 1 d | — |
-| S3 | takeover/heartbeat/release routes, orchestrator wiring, error codes, contract | 1 d | S1, S2 |
+| S3 | takeover/heartbeat/release routes (hold checked before status; failed-task holds), orchestrator wiring, error codes, contract | 1 d | S1, S2 |
 | S4 | sweeper, restart grace, revocation, `TargetExecutor.DetachClients` | 1 d | S3 |
 | S5 | running-turn takeover ends the dispatch wait (`taken_over`) | 1 d | S3 |
 | S6 | expose holds (task, attach-info, list row, `task_hold` event), pending offer on list rows, error class `held` | 1 d | S3 |
-| S7 | session labels/origin + `POST /sessions` | 1 d | — |
+| S7 | session labels/origin + `POST /api/v1/sessions` | 1 d | — |
 | S8 | `argv` on attach commands (plugin protocol field, kubernetes, docker, ssh) | 0.5 d | — |
 
 **Phase 2: web (in loomux/web)**
@@ -668,7 +710,7 @@ review fixes.
 | T4 | home list: ranking, filters, polling, row rendering | 1 d | T3 |
 | T5 | conversation view: transcript, markdown, live stream, task status | 1 d | T3 |
 | T6 | composer, send (async + idempotency), busy handling, cancel | 1 d | T5 |
-| T7 | attention and offer cards, answering keys | 0.5 d | T5 |
+| T7 | attention, offer and failed-task (`login_required`, `agent_rate_limited`, `agent_api_error`) cards, answering keys | 0.5 d | T5 |
 | T8 | `loomux attach`: takeover, command choice, exec, heartbeat, release, `Pdeathsig` | 1 d | T3, S3, S4 |
 | T9 | attach from the TUI: inline suspend/resume, tmux window mode, failure fallback | 1 d | T8 |
 | T10 | handoff: `loomux open`, open-in-browser, holder in rows, take back from the TUI | 0.5 d | T4, S6 |
@@ -682,9 +724,12 @@ review fixes.
 | L1 | cross-conversation stream `GET /api/v1/stream` (`conversation_update`, `task_hold`), replacing list polling in TUI and web | 1 d |
 | L2 | watch mode: `mode: watch` holds (many per task), `tmux attach -r`, "watched by" | 1 d |
 | L3 | transcript and event (audit trail) views in the TUI | 1 d |
-| L4 | server-proxied attach over a WebSocket (only if open question 5 says yes; about 3 tickets) | 3 d |
+| L4a | server-proxied attach, server side: `GET /api/v1/tasks/{id}/terminal` WebSocket upgrade, held by the caller's hold, running `tmux attach` over the target's executor in a PTY (only if open question 5 says yes) | 1 d |
+| L4b | the same route's resize and close frames, the hold's end closing the socket, and tests through `internal/tmuxtest` | 1 d |
+| L4c | the client's `proxy` attach mode: raw terminal ↔ WebSocket, used when no local attach command works | 1 d |
 
 Totals: server 7.5 d, web 2 d, client 11 d, about **20.5 days** for v1. The
+later tickets (L1–L3 and L4a–c, 6 d) aren't counted. The
 LOOM-235 cutover needs phases 1–3. Of those, only T10 (handoff
 conveniences) and W2's "open in terminal" text could slip past it without
 losing a workflow. Server phase 1, T1 and T3 can run in parallel.
@@ -710,7 +755,7 @@ recommendation is first.
    nested), changing nothing. Alternative: Loomux binds a root key such as
    `C-]` on its own tmux socket to `detach-client`, which works from anywhere
    but takes that key from the agent.
-5. **Server-proxied attach** (L4). Recommendation: not for v1. Executing the
+5. **Server-proxied attach** (L4a–c). Recommendation: not for v1. Executing the
    target's own attach command needs no new remote-shell surface. Proxying
    through `loomuxd` over a WebSocket would work without kubectl/ssh access
    on the user's machine and would later give the web and apps a real
