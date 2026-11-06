@@ -302,6 +302,9 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "the task has already ended")
 	case errors.Is(err, orchestrator.ErrHumanTakeover):
 		writeError(w, http.StatusConflict, "someone has taken over this task; release it first")
+	case errors.Is(err, orchestrator.ErrStatusChanged):
+		// It ended or was taken over between the read and the write (LOOM-262).
+		writeError(w, http.StatusConflict, "the task changed while it was being cancelled; look at it again")
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "could not cancel task")
 	default:

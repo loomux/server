@@ -636,6 +636,35 @@ func (s *Store) UpdateTask(ctx context.Context, t *registry.Task) error {
 	return requireRowAffected(res, "task", t.ID)
 }
 
+// TransitionTask is one UPDATE guarded by the status, so the check and
+// the write can't be split by another writer.
+func (s *Store) TransitionTask(ctx context.Context, t *registry.Task, from registry.TaskStatus) (bool, error) {
+	updatedAt := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE tasks SET
+			status = ?, updated_at = ?, completed_at = ?, exit_code = ?,
+			failure_reason = ?, error_class = ?, output_tail = ?, attention = ?
+		WHERE id = ? AND status = ?`,
+		string(t.Status), updatedAt, t.CompletedAt, t.ExitCode,
+		t.FailureReason, string(t.ErrorClass), t.OutputTail, attentionJSON(t.Attention), t.ID, string(from),
+	)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: transition task: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: transition task: %w", err)
+	}
+	if n == 0 {
+		if _, err := s.GetTask(ctx, t.ID); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	t.UpdatedAt = updatedAt
+	return true, nil
+}
+
 func (s *Store) DeleteTask(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, id)
 	if err != nil {

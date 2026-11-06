@@ -803,8 +803,12 @@ Four independent axes:
 - **Secrets decryption failure**: task fails fast at launch — never starts
   an agent with missing/broken credentials.
 - **Concurrent takeover race** (human takeover request arrives just as the
-  orchestrator sends input): last-writer-wins is acceptable for v1, given
-  single-user scope — not worth over-engineering.
+  orchestrator sends input): originally last-writer-wins for v1. Since
+  LOOM-262 every task status write that follows a wait or an external
+  call is a compare-and-set against the status read before it, so a
+  change made meanwhile (a cancel, a takeover) is kept: the turn leaves
+  the task as it is, neither failing it nor typing into its pane
+  (`tui-client-design.md`, "Taking over a running turn").
 - **Storage unavailable**: server fails closed on new task dispatch rather
   than operating on stale/uncertain workspace state.
 

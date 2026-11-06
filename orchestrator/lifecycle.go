@@ -89,7 +89,7 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 	}
 	if err := exec.NewSession(ctx, task.TmuxSession, ws.Path, paneCommand); err != nil {
 		// best-effort; original err is what matters to the caller
-		_ = o.failTask(ctx, task, failureFor(registry.ErrorClassLaunchFailed, "start session", err))
+		_ = o.failTask(ctx, task, task.Status, failureFor(registry.ErrorClassLaunchFailed, "start session", err))
 		return task, fmt.Errorf("orchestrator: launch: %w", err)
 	}
 
@@ -109,7 +109,9 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 
 // SendMessage sends message as the next turn's input into a running
 // task. Refuses if the task is under human takeover or is no longer
-// active.
+// active. The paste is an external call: the status write after it is a
+// compare-and-set against the status read before it (LOOM-262), and a
+// change made meanwhile is ErrStatusChanged.
 func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
@@ -141,16 +143,13 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 		if exit, perr := exec.PaneExited(ctx, task.TmuxSession); perr == nil && exit != nil {
 			return fmt.Errorf("orchestrator: send message: %w", &ProcessExitedError{Status: exit.Status, Output: exit.Output})
 		}
-		_ = o.failTask(ctx, task, failureFor(registry.ErrorClassSendFailed, "send message", err))
+		_ = o.failTask(ctx, task, task.Status, failureFor(registry.ErrorClassSendFailed, "send message", err))
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
 
-	prevStatus := task.Status
+	from := task.Status
 	task.Status = registry.TaskStatusRunning
-	if prevStatus != task.Status {
-		o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
-	}
-	if err := o.store.UpdateTask(ctx, task); err != nil {
+	if err := o.transition(ctx, "send message", task, from); err != nil {
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
 	return nil
@@ -162,20 +161,30 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 // message"). A context/detector error is returned as-is without any
 // status transition — the wait giving up doesn't mean the task itself
 // failed.
+//
+// The transition is a compare-and-set against the status read before the
+// wait (LOOM-262): if something changed it while the turn ran (a cancel;
+// later, a human takeover), that change is kept, the task is left as it
+// is, and the result is ErrStatusChanged — the turn is no longer the
+// caller's to finish. A turn is only ever waited on from running (its
+// caller sent it, resumed it or launched it): a task read in any other
+// status was changed after that, so it isn't waited on at all.
 func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: wait for completion: %w", err)
+	}
+	if task.Status != registry.TaskStatusRunning {
+		return fmt.Errorf("orchestrator: wait for completion: %w",
+			o.statusChanged(ctx, "wait for completion", task.ID, registry.TaskStatusRunning, registry.TaskStatusAwaitingInput))
 	}
 
 	if err := o.detector.Wait(ctx, task); err != nil {
 		return err
 	}
 
-	prevStatus := task.Status
 	task.Status = registry.TaskStatusAwaitingInput
-	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
-	if err := o.store.UpdateTask(ctx, task); err != nil {
+	if err := o.transition(ctx, "wait for completion", task, registry.TaskStatusRunning); err != nil {
 		return fmt.Errorf("orchestrator: wait for completion: %w", err)
 	}
 	return nil
@@ -186,18 +195,22 @@ func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) err
 // agent did; a FinishedPaneSweeper tears it down after. summary is applied
 // to the workspace's rolling summary verbatim — Complete never generates
 // or condenses it itself (that's the router's job).
-func (o *Orchestrator) Complete(ctx context.Context, taskID, summary string) error {
+//
+// from is the status the caller read before deciding the task is done —
+// after the turn's wait and its relay, an external call — and the write
+// is a compare-and-set against it (LOOM-262): a task whose status changed
+// meanwhile is left as it is, its workspace and summary untouched, and
+// the result is ErrStatusChanged.
+func (o *Orchestrator) Complete(ctx context.Context, taskID string, from registry.TaskStatus, summary string) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: complete: %w", err)
 	}
 
-	prevStatus := task.Status
 	now := time.Now().UTC()
 	task.Status = registry.TaskStatusCompleted
 	task.CompletedAt = &now
-	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
-	if err := o.store.UpdateTask(ctx, task); err != nil {
+	if err := o.transition(ctx, "complete", task, from); err != nil {
 		return fmt.Errorf("orchestrator: complete: %w", err)
 	}
 
@@ -222,13 +235,21 @@ func (o *Orchestrator) Complete(ctx context.Context, taskID, summary string) err
 // so the code, not the status, says how it went. Unlike Complete it
 // leaves the workspace's rolling summary alone: a command's output goes
 // back to chat, it isn't a summary of the workspace's work.
-func (o *Orchestrator) FinishCommand(ctx context.Context, taskID string, exitCode int) error {
+//
+// from is the status the caller read before the command's wait and its
+// exit-status read; a task no longer in it is left as it is, its pane not
+// killed (someone else may have it), and the result is ErrStatusChanged
+// (LOOM-262). The completion itself is a compare-and-set against from.
+func (o *Orchestrator) FinishCommand(ctx context.Context, taskID string, from registry.TaskStatus, exitCode int) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: finish command: %w", err)
 	}
 	if task.Kind != registry.TaskKindCommand {
 		return fmt.Errorf("orchestrator: finish command: task %q is a %s task, not a command", taskID, task.Kind)
+	}
+	if task.Status != from {
+		return fmt.Errorf("orchestrator: finish command: %w", o.statusChanged(ctx, "finish command", task.ID, from, registry.TaskStatusCompleted))
 	}
 	exec, err := o.executorFor(ctx, task)
 	if err != nil {
@@ -242,7 +263,7 @@ func (o *Orchestrator) FinishCommand(ctx context.Context, taskID string, exitCod
 	task.Status = registry.TaskStatusCompleted
 	task.CompletedAt = &now
 	task.ExitCode = &exitCode
-	if err := o.store.UpdateTask(ctx, task); err != nil {
+	if err := o.transition(ctx, "finish command", task, from); err != nil {
 		return fmt.Errorf("orchestrator: finish command: %w", err)
 	}
 
@@ -267,12 +288,21 @@ func (o *Orchestrator) FinishCommand(ctx context.Context, taskID string, exitCod
 // down its session — the spec leaves a failed pane alive for inspection
 // via attach, since teardown is for successful/explicit completion, not
 // silent cleanup of something that went wrong.
-func (o *Orchestrator) Fail(ctx context.Context, taskID string, failure registry.TaskFailure) error {
+//
+// from is the status the caller read before deciding the task failed —
+// often before a wait or an external call — and the write is a
+// compare-and-set against it (LOOM-262): a task whose status changed
+// meanwhile is left as it is, not failed, and the result is
+// ErrStatusChanged.
+func (o *Orchestrator) Fail(ctx context.Context, taskID string, from registry.TaskStatus, failure registry.TaskFailure) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: fail: %w", err)
 	}
-	return o.failTask(ctx, task, failure)
+	if err := o.failTask(ctx, task, from, failure); err != nil {
+		return fmt.Errorf("orchestrator: fail: %w", err)
+	}
+	return nil
 }
 
 // failureFor builds the TaskFailure for an operation that failed with
@@ -346,9 +376,10 @@ func (o *Orchestrator) executorFor(ctx context.Context, task *registry.Task) (ta
 // workspace back to Idle — a workspace in any other status (provisioning,
 // failed, archived) keeps it: its status is about the workspace, not this
 // one task. Shared by the public Fail and by Launch/SendMessage's internal
-// auto-fail-on-executor-error path.
-func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task, failure registry.TaskFailure) error {
-	prevStatus := task.Status
+// auto-fail-on-executor-error path. The write is a compare-and-set
+// against from (LOOM-262); losing it leaves the task and its workspace as
+// they are and returns ErrStatusChanged.
+func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task, from registry.TaskStatus, failure registry.TaskFailure) error {
 	now := time.Now().UTC()
 	task.Status = registry.TaskStatusFailed
 	task.CompletedAt = &now
@@ -356,8 +387,7 @@ func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task, failur
 	task.ErrorClass = failure.Class
 	task.OutputTail = failure.OutputTail
 	task.Attention = nil
-	o.recordTaskTransition(string(prevStatus), string(task.Status), task.Kind)
-	if err := o.store.UpdateTask(ctx, task); err != nil {
+	if err := o.transition(ctx, "fail", task, from); err != nil {
 		return err
 	}
 
@@ -375,39 +405,70 @@ func (o *Orchestrator) failTask(ctx context.Context, task *registry.Task, failur
 // NeedAttention records that task's agent is stopped at a prompt only a
 // human can answer (LOOM-97): status needs-attention, with the prompt.
 // Its pane is left as it is, showing the prompt.
-func (o *Orchestrator) NeedAttention(ctx context.Context, taskID string, attention *registry.Attention) error {
+//
+// from is the status the caller read before the wait that found the
+// prompt — running, or needs-attention for a prompt replaced by another —
+// and the write is a compare-and-set against it (LOOM-262): a task whose
+// status changed meanwhile is left as it is and the result is
+// ErrStatusChanged.
+func (o *Orchestrator) NeedAttention(ctx context.Context, taskID string, from registry.TaskStatus, attention *registry.Attention) error {
+	if from != registry.TaskStatusRunning && from != registry.TaskStatusNeedsAttention {
+		return fmt.Errorf("orchestrator: need attention: task %q is %s: %w", taskID, from, ErrTaskInactive)
+	}
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: need attention: %w", err)
 	}
-	if task.Status != registry.TaskStatusRunning && task.Status != registry.TaskStatusNeedsAttention {
-		return fmt.Errorf("orchestrator: need attention: task %q is %s: %w", taskID, task.Status, ErrTaskInactive)
-	}
-	prev := task.Status
 	task.Status, task.Attention = registry.TaskStatusNeedsAttention, attention
-	if prev != task.Status {
-		o.recordTaskTransition(string(prev), string(task.Status), task.Kind)
-	}
-	if err := o.store.UpdateTask(ctx, task); err != nil {
+	if err := o.transition(ctx, "need attention", task, from); err != nil {
 		return fmt.Errorf("orchestrator: need attention: %w", err)
 	}
 	return nil
 }
 
 // Resume returns a needs-attention task to running once its prompt has
-// been answered (LOOM-97), clearing the prompt.
+// been answered (LOOM-97), clearing the prompt. The answer's keys were
+// typed after the caller read the task needs-attention, so the write is a
+// compare-and-set from needs-attention (LOOM-262): a task no longer
+// waiting at its prompt is left as it is and the result is
+// ErrStatusChanged.
 func (o *Orchestrator) Resume(ctx context.Context, taskID string) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: resume: %w", err)
 	}
-	if task.Status != registry.TaskStatusNeedsAttention {
-		return fmt.Errorf("orchestrator: resume: task %q is %s, not needs-attention", taskID, task.Status)
-	}
 	task.Status, task.Attention = registry.TaskStatusRunning, nil
-	o.recordTaskTransition(string(registry.TaskStatusNeedsAttention), string(task.Status), task.Kind)
-	if err := o.store.UpdateTask(ctx, task); err != nil {
+	if err := o.transition(ctx, "resume", task, registry.TaskStatusNeedsAttention); err != nil {
 		return fmt.Errorf("orchestrator: resume: %w", err)
 	}
 	return nil
+}
+
+// transition writes task's status change as a compare-and-set from
+// from (LOOM-262), recording the transition once it is written. Losing it
+// writes nothing: it is logged and returned as ErrStatusChanged.
+func (o *Orchestrator) transition(ctx context.Context, op string, task *registry.Task, from registry.TaskStatus) error {
+	applied, err := o.store.TransitionTask(ctx, task, from)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return o.statusChanged(ctx, op, task.ID, from, task.Status)
+	}
+	if from != task.Status {
+		o.recordTaskTransition(string(from), string(task.Status), task.Kind)
+	}
+	return nil
+}
+
+// statusChanged logs and returns a lost compare-and-set: op wanted to
+// move taskID from from to to, but its status had changed meanwhile.
+func (o *Orchestrator) statusChanged(ctx context.Context, op, taskID string, from, to registry.TaskStatus) error {
+	now := "unknown"
+	if cur, err := o.store.GetTask(context.WithoutCancel(ctx), taskID); err == nil {
+		now = string(cur.Status)
+	}
+	o.logger.Warn("task status changed meanwhile; left as it is", "op", op, "task_id", taskID,
+		"read_status", string(from), "status", now, "not_written", string(to))
+	return fmt.Errorf("%w: task %q is %s, no longer %s", ErrStatusChanged, taskID, now, from)
 }

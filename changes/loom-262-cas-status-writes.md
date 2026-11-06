@@ -1,0 +1,4 @@
+### Fixed
+
+- A task's status changed while one of its turns was running (cancelled, or later taken over by a person) is no longer overwritten when the turn ends. Every status write that follows a wait or an external call is now a compare-and-set against the status read before it. A turn that loses one leaves the task as it is: it isn't failed, completed or marked as waiting, and no interrupt keys are sent to its pane. The turn ends with an error saying the task changed meanwhile, unless only the final `completed` write lost, in which case the agent's reply is still returned. Before, the end of the wait wrote `awaiting_input`, and a timeout, sign-in prompt or relay wrote `failed` or `completed`, over whatever the status had become (LOOM-262).
+- `POST /api/v1/tasks/{id}/cancel` answers `409` when the task ends or is taken over between the cancel's read and its write, instead of `500` (LOOM-262).

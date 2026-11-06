@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Loomux/server/internal/metrics"
@@ -22,6 +23,14 @@ var ErrHumanTakeover = errors.New("orchestrator: task is under human takeover")
 // ErrTaskInactive is returned when an operation is attempted against a
 // task that has already completed or failed.
 var ErrTaskInactive = errors.New("orchestrator: task is not active")
+
+// ErrStatusChanged is returned when a status write lost its
+// compare-and-set (LOOM-262): the task is no longer in the status the
+// caller read before its wait or external call, because something else
+// changed it meanwhile (a cancel; later, a human takeover). Nothing was
+// written and the task is left as it is: the caller must not fail it,
+// nor act on its pane as if the turn were still its own.
+var ErrStatusChanged = errors.New("orchestrator: task status changed meanwhile")
 
 // ErrInterrupted is the cancellation cause of a turn's context when the
 // server is shutting down underneath it (LOOM-80). It is not the task's
@@ -148,6 +157,7 @@ type Orchestrator struct {
 	newExecutor ExecutorFactory
 	detector    CompletionDetector
 	metrics     *metrics.Metrics
+	logger      *slog.Logger
 }
 
 // Option configures an Orchestrator constructed via New.
@@ -159,9 +169,19 @@ func WithMetrics(m *metrics.Metrics) Option {
 	return func(o *Orchestrator) { o.metrics = m }
 }
 
+// WithLogger sets where the orchestrator logs (LOOM-262: a status write
+// that lost its compare-and-set). Default slog.Default(); nil is ignored.
+func WithLogger(l *slog.Logger) Option {
+	return func(o *Orchestrator) {
+		if l != nil {
+			o.logger = l
+		}
+	}
+}
+
 // New constructs an Orchestrator.
 func New(store registry.Store, newExecutor ExecutorFactory, detector CompletionDetector, opts ...Option) *Orchestrator {
-	o := &Orchestrator{store: store, newExecutor: newExecutor, detector: detector}
+	o := &Orchestrator{store: store, newExecutor: newExecutor, detector: detector, logger: slog.Default()}
 	for _, opt := range opts {
 		opt(o)
 	}
