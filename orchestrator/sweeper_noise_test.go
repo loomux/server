@@ -22,7 +22,7 @@ func TestOrphanSweeper_LeavesKeptPanesAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.Complete(ctx, task.ID, "done"); err != nil {
+	if err := o.Complete(ctx, task.ID, registry.TaskStatusRunning, "done"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	exec.runOnceOut = fmt.Sprintf("%s %d\n", task.TmuxSession, time.Now().Add(-48*time.Hour).Unix())
@@ -50,7 +50,7 @@ func TestFinishedPaneSweeper_WarnsOncePerPane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.Complete(ctx, task.ID, "done"); err != nil {
+	if err := o.Complete(ctx, task.ID, registry.TaskStatusRunning, "done"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	stored, _ := store.GetTask(ctx, task.ID)

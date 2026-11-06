@@ -26,7 +26,7 @@ func TestFinishedPaneSweeper(t *testing.T) {
 	}
 	completeAt := func(task *registry.Task, at time.Time) {
 		t.Helper()
-		if err := o.Complete(ctx, task.ID, "done"); err != nil {
+		if err := o.Complete(ctx, task.ID, registry.TaskStatusRunning, "done"); err != nil {
 			t.Fatalf("Complete: %v", err)
 		}
 		stored, err := store.GetTask(ctx, task.ID)

@@ -57,7 +57,7 @@ func (r *Router) ResumeDispatch(ctx context.Context, d *registry.Dispatch) (task
 			return "", fmt.Errorf("router: resume: %w", err)
 		}
 		if !live {
-			if err := r.orch.Fail(ctx, task.ID, registry.TaskFailure{
+			if err := r.orch.Fail(ctx, task.ID, task.Status, registry.TaskFailure{
 				Class: registry.ErrorClassSessionLost, Reason: restartLostReason,
 			}); err != nil {
 				return "", fmt.Errorf("router: resume: %w", err)
@@ -143,7 +143,7 @@ func (r *Router) reconcileTask(ctx context.Context, t *registry.Task) error {
 		return err
 	}
 	if !live {
-		if err := r.orch.Fail(ctx, t.ID, registry.TaskFailure{Class: registry.ErrorClassSessionLost, Reason: restartLostReason}); err != nil {
+		if err := r.orch.Fail(ctx, t.ID, t.Status, registry.TaskFailure{Class: registry.ErrorClassSessionLost, Reason: restartLostReason}); err != nil {
 			log.Error("task not reconciled", "error", err)
 			return nil
 		}
@@ -158,7 +158,7 @@ func (r *Router) reconcileTask(ctx context.Context, t *registry.Task) error {
 	if err != nil || exit == nil {
 		return nil
 	}
-	if err := r.orch.FinishCommand(ctx, t.ID, exit.Status); err != nil {
+	if err := r.orch.FinishCommand(ctx, t.ID, t.Status, exit.Status); err != nil {
 		log.Error("task not reconciled", "error", err)
 		return nil
 	}

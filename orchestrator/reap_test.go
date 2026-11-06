@@ -122,7 +122,7 @@ func TestReaper_Sweep_ReapsOnlyIdleNonTerminalTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch (idleCompleted): %v", err)
 	}
-	if err := o.Complete(ctx, idleCompleted.ID, "done"); err != nil {
+	if err := o.Complete(ctx, idleCompleted.ID, registry.TaskStatusRunning, "done"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -389,7 +389,7 @@ func TestReap_ConcurrentFailIsNotReverted(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 	exec.onKill = func() {
-		if err := o.Fail(ctx, task.ID, registry.TaskFailure{Class: registry.ErrorClassSessionLost, Reason: "session no longer exists"}); err != nil {
+		if err := o.Fail(ctx, task.ID, registry.TaskStatusRunning, registry.TaskFailure{Class: registry.ErrorClassSessionLost, Reason: "session no longer exists"}); err != nil {
 			t.Errorf("Fail: %v", err)
 		}
 	}

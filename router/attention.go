@@ -21,7 +21,10 @@ import (
 // (LOOM-97).
 const answerSettle = 3 * time.Second
 
-// needsAttention handles an agent stopped at a prompt (LOOM-97). A
+// needsAttention handles an agent stopped at a prompt (LOOM-97); from is
+// the task's status before the wait that found it (LOOM-262: a task whose
+// status changed meanwhile is left as it is, the turn ending with
+// orchestrator.ErrStatusChanged). A
 // sign-in screen fails the task fast with login_required — Loomux never
 // signs an agent in — keeping the pane so a human can attach and finish
 // the login. A usage-limit error (LOOM-109) fails it with
@@ -30,15 +33,17 @@ const answerSettle = 3 * time.Second
 // else leaves the task needs-attention with the
 // prompt recorded, and the reply shows the prompt and how to answer it;
 // the conversation's next message is the answer (answerAttention).
-func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *registry.Task, message string,
+func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *registry.Task, from registry.TaskStatus, message string,
 	a *registry.Attention) (string, error) {
 	cleanupCtx := context.WithoutCancel(ctx)
 	targetName := r.targetNameFor(cleanupCtx, task)
 	if a.Kind == registry.AttentionLogin {
 		reason := fmt.Sprintf("agent %q on %s isn't signed in", task.AgentType, targetName)
-		if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
+		if err := r.orch.Fail(cleanupCtx, task.ID, from, registry.TaskFailure{
 			Class: registry.ErrorClassLoginRequired, Reason: reason, OutputTail: a.Detail,
-		}); err != nil {
+		}); errors.Is(err, orchestrator.ErrStatusChanged) {
+			return "", fmt.Errorf("router: dispatch: %w", err)
+		} else if err != nil {
 			log.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 		}
 		log.Warn("agent needs a login", "task_id", task.ID)
@@ -52,9 +57,11 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 		if a.Resets != "" {
 			reason += ", resets " + a.Resets
 		}
-		if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
+		if err := r.orch.Fail(cleanupCtx, task.ID, from, registry.TaskFailure{
 			Class: registry.ErrorClassAgentRateLimited, Reason: reason, OutputTail: a.Detail,
-		}); err != nil {
+		}); errors.Is(err, orchestrator.ErrStatusChanged) {
+			return "", fmt.Errorf("router: dispatch: %w", err)
+		} else if err != nil {
 			log.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 		}
 		log.Warn("agent hit its usage limit", "task_id", task.ID, "resets", a.Resets)
@@ -64,9 +71,11 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 	}
 	if a.Kind == registry.AttentionAPIError {
 		reason := fmt.Sprintf("agent %q on %s stopped on an API error", task.AgentType, targetName)
-		if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
+		if err := r.orch.Fail(cleanupCtx, task.ID, from, registry.TaskFailure{
 			Class: registry.ErrorClassAgentAPIError, Reason: reason, OutputTail: a.Detail,
-		}); err != nil {
+		}); errors.Is(err, orchestrator.ErrStatusChanged) {
+			return "", fmt.Errorf("router: dispatch: %w", err)
+		} else if err != nil {
 			log.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 		}
 		log.Warn("agent stopped on an API error", "task_id", task.ID)
@@ -74,7 +83,7 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 			"router: dispatch: %s (it shows %q). Send your message again, rephrase it, or "+
 				"ask for a different agent", reason, a.Detail)}
 	}
-	if err := r.orch.NeedAttention(ctx, task.ID, a); err != nil {
+	if err := r.orch.NeedAttention(ctx, task.ID, from, a); err != nil {
 		return "", fmt.Errorf("router: dispatch: %w", err)
 	}
 	reply := describeAttention(task.AgentType, targetName, a)
@@ -163,7 +172,7 @@ func (r *Router) answerAttention(ctx context.Context, log *slog.Logger, task *re
 		return "", true, fmt.Errorf("router: answer prompt: %w", err)
 	}
 	if !live {
-		if err := r.orch.Fail(ctx, task.ID, registry.TaskFailure{
+		if err := r.orch.Fail(ctx, task.ID, task.Status, registry.TaskFailure{
 			Class: registry.ErrorClassSessionLost, Reason: "session no longer exists",
 		}); err != nil {
 			return "", true, fmt.Errorf("router: answer prompt: %w", err)
@@ -224,8 +233,9 @@ func (r *Router) answerAttention(ctx context.Context, log *slog.Logger, task *re
 
 // failTurnOnError fails taskID when a turn on it ended in err and left it
 // non-terminal (LOOM-77), so no error path leaves a task running with
-// nothing recorded — unless a human has taken the task over, or the
-// server is shutting down underneath the turn (LOOM-80: the agent may
+// nothing recorded — unless a human has taken the task over, its status
+// changed while the turn ran (LOOM-262: it is no longer the turn's), or
+// the server is shutting down underneath the turn (LOOM-80: the agent may
 // still finish, and startup reconciliation can pick the task back up).
 func (r *Router) failTurnOnError(ctx context.Context, log *slog.Logger, taskID string, class registry.ErrorClass, err error) {
 	var unavailable *AgentUnavailableError
@@ -233,7 +243,7 @@ func (r *Router) failTurnOnError(ctx context.Context, log *slog.Logger, taskID s
 		return
 	}
 	log.Error("agent dispatch failed", "task_id", taskID, "error", err)
-	if taskID == "" || errors.Is(err, orchestrator.ErrHumanTakeover) {
+	if taskID == "" || errors.Is(err, orchestrator.ErrHumanTakeover) || errors.Is(err, orchestrator.ErrStatusChanged) {
 		return
 	}
 	if ClassifyError(err) == registry.ErrorClassMessageTooLarge {
@@ -255,7 +265,13 @@ func (r *Router) failTurnOnError(ctx context.Context, log *slog.Logger, taskID s
 	if cancelled {
 		failure = registry.TaskFailure{Class: registry.ErrorClassCancelled, Reason: "cancelled by the user"}
 	}
-	if ferr := r.orch.Fail(cleanupCtx, taskID, failure); ferr != nil {
+	ferr := r.orch.Fail(cleanupCtx, taskID, cur.Status, failure)
+	if errors.Is(ferr, orchestrator.ErrStatusChanged) {
+		// Changed since cur was read: left as it is, and its pane isn't
+		// ours to interrupt.
+		return
+	}
+	if ferr != nil {
 		log.Error("agent dispatch cleanup failed", "task_id", taskID, "error", ferr)
 	}
 	if cancelled {
@@ -421,7 +437,7 @@ func (r *Router) CancelTask(ctx context.Context, taskID string) error {
 	if task.Status == registry.TaskStatusHumanTakeover {
 		return orchestrator.ErrHumanTakeover
 	}
-	if err := r.orch.Fail(ctx, task.ID, registry.TaskFailure{Class: registry.ErrorClassCancelled, Reason: "cancelled by the user"}); err != nil {
+	if err := r.orch.Fail(ctx, task.ID, task.Status, registry.TaskFailure{Class: registry.ErrorClassCancelled, Reason: "cancelled by the user"}); err != nil {
 		return err
 	}
 	r.interruptAgent(ctx, task)

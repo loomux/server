@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Loomux/server/completion"
+	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -139,7 +140,9 @@ func (r *Router) relayLateOutput(ctx context.Context, task *registry.Task) (bool
 		result.Done = false
 	}
 	if result.Done {
-		if err := r.orch.Complete(ctx, task.ID, result.Reply); err != nil {
+		// One whose status changed during the relay (LOOM-262) is left
+		// as it is; the orchestrator logs that.
+		if err := r.orch.Complete(ctx, task.ID, task.Status, result.Reply); err != nil && !errors.Is(err, orchestrator.ErrStatusChanged) {
 			log.Error("late reply relayed, but its task not completed", "error", err)
 		}
 	} else if err := r.store.SetWorkspaceRollingSummary(ctx, task.WorkspaceID, result.Reply); err != nil {

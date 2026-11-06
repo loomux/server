@@ -40,7 +40,7 @@ func TestDeleteWorkspaceKillsItsSessionsAndRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.Complete(ctx, done.ID, "listed"); err != nil {
+	if err := o.Complete(ctx, done.ID, registry.TaskStatusRunning, "listed"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -182,7 +182,7 @@ func TestArchiveWorkspace(t *testing.T) {
 	if err := o.ArchiveWorkspace(ctx, ws.ID); !errors.Is(err, registry.ErrConflict) {
 		t.Fatalf("ArchiveWorkspace while a task runs: err = %v, want ErrConflict", err)
 	}
-	if err := o.Complete(ctx, task.ID, "done"); err != nil {
+	if err := o.Complete(ctx, task.ID, registry.TaskStatusRunning, "done"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	if err := o.ArchiveWorkspace(ctx, ws.ID); err != nil {

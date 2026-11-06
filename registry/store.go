@@ -64,6 +64,15 @@ type Store interface {
 	// polls this, not every task).
 	ListTasksByConversation(ctx context.Context, conversationID string) ([]*Task, error)
 	UpdateTask(ctx context.Context, t *Task) error
+	// TransitionTask is a compare-and-set status write (LOOM-262): it
+	// writes t's status and the fields that go with a status change
+	// (completed_at, exit_code, failure_reason, error_class, output_tail,
+	// attention) only while the stored status is still from, and reports
+	// whether it did. A status changed meanwhile — a cancel, later a
+	// human takeover — is never overwritten by a writer that read the
+	// task before the change. reaped_at is left alone: SetTaskReapedAt
+	// owns it. ErrNotFound for an unknown id.
+	TransitionTask(ctx context.Context, t *Task, from TaskStatus) (applied bool, err error)
 	// SetTaskReapedAt records that the idle reaper tore the task's
 	// session down, touching nothing else (LOOM-120): a whole-row
 	// UpdateTask from the reaper could revert a concurrent status change.

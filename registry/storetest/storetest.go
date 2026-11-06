@@ -67,6 +67,9 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TaskListByWorkspace", func(t *testing.T) { testTaskListByWorkspace(t, newStore(t)) })
 	t.Run("TaskListAll", func(t *testing.T) { testTaskListAll(t, newStore(t)) })
 	t.Run("TaskSetReapedAtTouchesNothingElse", func(t *testing.T) { testTaskSetReapedAt(t, newStore(t)) })
+	t.Run("TaskTransitionCompareAndSet", func(t *testing.T) { testTaskTransitionCompareAndSet(t, newStore(t)) })
+	t.Run("TaskTransitionKeepsReapedAt", func(t *testing.T) { testTaskTransitionKeepsReapedAt(t, newStore(t)) })
+	t.Run("TaskTransitionConcurrent", func(t *testing.T) { testTaskTransitionConcurrent(t, newStore(t)) })
 	t.Run("DeleteWorkspaceWithTasksRejected", func(t *testing.T) { testDeleteWorkspaceWithTasksRejected(t, newStore(t)) })
 	t.Run("DeleteTargetWithWorkspacesRejected", func(t *testing.T) { testDeleteTargetWithWorkspacesRejected(t, newStore(t)) })
 
@@ -1665,6 +1668,155 @@ func testTaskSetReapedAt(t *testing.T, s registry.Store) {
 	}
 	if err := s.SetTaskReapedAt(ctx, "missing", at); !errors.Is(err, registry.ErrNotFound) {
 		t.Errorf("SetTaskReapedAt(missing) = %v, want ErrNotFound", err)
+	}
+}
+
+// createRunningTask creates a running agent task for the TransitionTask
+// cases.
+func createRunningTask(t *testing.T, s registry.Store, id string) *registry.Task {
+	t.Helper()
+	ws := createTestWorkspace(t, s)
+	task := &registry.Task{ID: id, WorkspaceID: ws.ID, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "loomux-" + id, Status: registry.TaskStatusRunning, ConversationID: "conv-" + id}
+	if err := s.CreateTask(context.Background(), task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	return task
+}
+
+// testTaskTransitionCompareAndSet: TransitionTask writes only while the
+// stored status is still the one expected (LOOM-262), and says whether
+// it wrote.
+func testTaskTransitionCompareAndSet(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	task := createRunningTask(t, s, "task-cas")
+	before := task.UpdatedAt
+
+	task.Status = registry.TaskStatusAwaitingInput
+	applied, err := s.TransitionTask(ctx, task, registry.TaskStatusRunning)
+	if err != nil || !applied {
+		t.Fatalf("TransitionTask(running → awaiting_input) = %v, %v; want true, nil", applied, err)
+	}
+	got, err := s.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Status != registry.TaskStatusAwaitingInput {
+		t.Fatalf("status = %s after an applied transition, want awaiting_input", got.Status)
+	}
+	if got.UpdatedAt.Before(before) || task.UpdatedAt.Before(before) {
+		t.Errorf("UpdatedAt = %v (stored), %v (caller's), want both stamped by the transition (created %v)",
+			got.UpdatedAt, task.UpdatedAt, before)
+	}
+
+	// A writer that still thinks the task is running loses, and the row
+	// keeps what the winner wrote.
+	now := time.Now().UTC().Truncate(time.Second)
+	stale := *got
+	stale.Status = registry.TaskStatusFailed
+	stale.CompletedAt = &now
+	stale.FailureReason, stale.ErrorClass, stale.OutputTail = "too late", registry.ErrorClassTimeout, "tail"
+	applied, err = s.TransitionTask(ctx, &stale, registry.TaskStatusRunning)
+	if err != nil || applied {
+		t.Fatalf("stale TransitionTask = %v, %v; want false, nil", applied, err)
+	}
+	got, _ = s.GetTask(ctx, task.ID)
+	if got.Status != registry.TaskStatusAwaitingInput || got.FailureReason != "" || got.ErrorClass != "" ||
+		got.OutputTail != "" || got.CompletedAt != nil {
+		t.Fatalf("a lost transition wrote the row: %+v", got)
+	}
+
+	// A transition's own fields are written with its status.
+	exit := 3
+	won := *got
+	won.Status = registry.TaskStatusFailed
+	won.CompletedAt, won.ExitCode = &now, &exit
+	won.FailureReason, won.ErrorClass, won.OutputTail = "it broke", registry.ErrorClassAgentExited, "last words"
+	won.Attention = &registry.Attention{Kind: registry.AttentionPermission, Title: "t"}
+	if applied, err := s.TransitionTask(ctx, &won, registry.TaskStatusAwaitingInput); err != nil || !applied {
+		t.Fatalf("TransitionTask(awaiting_input → failed) = %v, %v; want true, nil", applied, err)
+	}
+	got, _ = s.GetTask(ctx, task.ID)
+	if got.Status != registry.TaskStatusFailed || got.FailureReason != "it broke" || got.ErrorClass != registry.ErrorClassAgentExited ||
+		got.OutputTail != "last words" || got.CompletedAt == nil || !got.CompletedAt.Equal(now) ||
+		got.ExitCode == nil || *got.ExitCode != 3 || got.Attention == nil || got.Attention.Title != "t" {
+		t.Fatalf("applied transition's fields not all written: %+v", got)
+	}
+
+	// The same status on both sides is a write guarded by that status.
+	got.Attention = nil
+	if applied, err := s.TransitionTask(ctx, got, registry.TaskStatusFailed); err != nil || !applied {
+		t.Fatalf("TransitionTask(failed → failed) = %v, %v; want true, nil", applied, err)
+	}
+
+	ghost := &registry.Task{ID: "no-such-task", Status: registry.TaskStatusFailed}
+	if applied, err := s.TransitionTask(ctx, ghost, registry.TaskStatusRunning); !errors.Is(err, registry.ErrNotFound) || applied {
+		t.Fatalf("TransitionTask(unknown) = %v, %v; want false, ErrNotFound", applied, err)
+	}
+}
+
+// testTaskTransitionKeepsReapedAt: reaped_at has its own writer
+// (SetTaskReapedAt, LOOM-120), so a transition from a row read before
+// the reap doesn't undo it.
+func testTaskTransitionKeepsReapedAt(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	task := createRunningTask(t, s, "task-cas-reaped")
+	at := time.Now().UTC().Truncate(time.Second)
+	if err := s.SetTaskReapedAt(ctx, task.ID, at); err != nil {
+		t.Fatalf("SetTaskReapedAt: %v", err)
+	}
+	task.Status = registry.TaskStatusAwaitingInput // task.ReapedAt is still nil: read before the reap
+	if applied, err := s.TransitionTask(ctx, task, registry.TaskStatusRunning); err != nil || !applied {
+		t.Fatalf("TransitionTask = %v, %v; want true, nil", applied, err)
+	}
+	got, _ := s.GetTask(ctx, task.ID)
+	if got.ReapedAt == nil || !got.ReapedAt.Equal(at) {
+		t.Fatalf("ReapedAt = %v after a transition, want %v kept", got.ReapedAt, at)
+	}
+}
+
+// testTaskTransitionConcurrent: of many writers racing from the same
+// status, exactly one applies, and the row is the winner's.
+func testTaskTransitionConcurrent(t *testing.T, s registry.Store) {
+	ctx := context.Background()
+	task := createRunningTask(t, s, "task-cas-race")
+	const writers = 8
+	results := make(chan string, writers)
+	errs := make(chan error, writers)
+	for i := range writers {
+		go func() {
+			mine := *task
+			mine.Status = registry.TaskStatusFailed
+			mine.FailureReason = fmt.Sprintf("writer %d", i)
+			applied, err := s.TransitionTask(ctx, &mine, registry.TaskStatusRunning)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if applied {
+				results <- mine.FailureReason
+			} else {
+				results <- ""
+			}
+		}()
+	}
+	var winners []string
+	for range writers {
+		select {
+		case err := <-errs:
+			t.Fatalf("TransitionTask: %v", err)
+		case r := <-results:
+			if r != "" {
+				winners = append(winners, r)
+			}
+		}
+	}
+	if len(winners) != 1 {
+		t.Fatalf("%d transitions applied from the same status, want exactly 1: %v", len(winners), winners)
+	}
+	got, _ := s.GetTask(ctx, task.ID)
+	if got.FailureReason != winners[0] {
+		t.Fatalf("row's reason = %q, want the winner's %q", got.FailureReason, winners[0])
 	}
 }
 

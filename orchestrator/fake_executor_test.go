@@ -43,6 +43,10 @@ type fakeExecutor struct {
 	// paneExit, if set, is every pane's exit: a paste is refused, as tmux
 	// refuses one into a dead pane.
 	paneExit *targets.PaneExit
+	// onPaste, if set, runs as PasteText starts — a test's hook for
+	// something happening during the paste (LOOM-262); a non-nil error
+	// is the paste's.
+	onPaste func() error
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -97,6 +101,11 @@ func (e *fakeExecutor) PasteText(ctx context.Context, target, text string, enter
 	}
 	if e.paneExit != nil {
 		return fmt.Errorf("fakeExecutor: target pane has exited")
+	}
+	if e.onPaste != nil {
+		if err := e.onPaste(); err != nil {
+			return err
+		}
 	}
 	return e.SendKeys(ctx, target, text, enter)
 }

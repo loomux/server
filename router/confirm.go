@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
 )
 
@@ -407,8 +408,13 @@ func (r *Router) runCommandTask(ctx context.Context, kind, workspaceID, conversa
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return res, &stillRunningError{timeout: timeout, session: task.TmuxSession}
 		}
-		if ferr := r.orch.Fail(context.WithoutCancel(ctx), task.ID, taskFailure(registry.ErrorClassWaitFailed, err, "")); ferr != nil {
-			r.logger.Error("command task cleanup failed", "task_id", task.ID, "error", ferr)
+		// A task whose status changed while the command ran (LOOM-262)
+		// is left as it is.
+		if !errors.Is(err, orchestrator.ErrStatusChanged) {
+			if ferr := r.orch.Fail(context.WithoutCancel(ctx), task.ID, registry.TaskStatusRunning,
+				taskFailure(registry.ErrorClassWaitFailed, err, "")); ferr != nil && !errors.Is(ferr, orchestrator.ErrStatusChanged) {
+				r.logger.Error("command task cleanup failed", "task_id", task.ID, "error", ferr)
+			}
 		}
 		return res, fmt.Errorf("wait: %w", err)
 	}
@@ -425,7 +431,7 @@ func (r *Router) runCommandTask(ctx context.Context, kind, workspaceID, conversa
 		return res, fmt.Errorf("read exit status: process in tmux session %s has not exited", task.TmuxSession)
 	}
 	res.exitCode, res.ended, res.output = exit.Status, exit.Describe(), exit.Output
-	if err := r.orch.FinishCommand(ctx, task.ID, exit.Status); err != nil {
+	if err := r.orch.FinishCommand(ctx, task.ID, registry.TaskStatusAwaitingInput, exit.Status); err != nil {
 		return res, err
 	}
 	return res, nil

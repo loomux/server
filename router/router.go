@@ -863,9 +863,11 @@ func (r *Router) runProvisioning(ctx context.Context, log *slog.Logger, conversa
 	// ended — a recipe that ran to a non-zero exit — is failed regardless.
 	fail := func(stage string, taskID string, failure registry.TaskFailure, err error) {
 		cleanupCtx := context.WithoutCancel(ctx)
-		if taskID != "" {
+		// A task whose status changed while the recipe ran (LOOM-262) is
+		// left as it is; the workspace still failed to provision.
+		if taskID != "" && !errors.Is(err, orchestrator.ErrStatusChanged) {
 			if cur, gerr := r.store.GetTask(cleanupCtx, taskID); gerr == nil && cur.Status != registry.TaskStatusFailed {
-				if ferr := r.orch.Fail(cleanupCtx, taskID, failure); ferr != nil {
+				if ferr := r.orch.Fail(cleanupCtx, taskID, cur.Status, failure); ferr != nil {
 					log.Error("provisioning cleanup failed", "stage", "fail task", "task_id", taskID, "error", ferr)
 				}
 			}
@@ -998,7 +1000,7 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 			// more-than-one-active-task guard once the fresh one below
 			// exists), then fall through to a fresh launch exactly as if
 			// no active task had been found at all.
-			if err := r.orch.Fail(ctx, task.ID, registry.TaskFailure{
+			if err := r.orch.Fail(ctx, task.ID, task.Status, registry.TaskFailure{
 				Class: registry.ErrorClassSessionLost, Reason: "session no longer exists",
 			}); err != nil {
 				return "", fmt.Errorf("router: dispatch: %w", err)
@@ -1053,7 +1055,7 @@ func (r *Router) dispatchToAgent(ctx context.Context, workspaceID, conversationI
 		if err := r.orch.SendMessage(ctx, task.ID, agentMessage); err != nil {
 			var exited *orchestrator.ProcessExitedError
 			if errors.As(err, &exited) {
-				return "", r.agentExited(ctx, task, exited)
+				return "", r.agentExited(ctx, task, task.Status, exited)
 			}
 			return "", fmt.Errorf("router: dispatch: send message: %w", err)
 		}
@@ -1075,7 +1077,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 	if err := r.orch.WaitForCompletion(ctx, task.ID); err != nil {
 		var exited *orchestrator.ProcessExitedError
 		if errors.As(err, &exited) {
-			return "", r.agentExited(ctx, task, exited)
+			return "", r.agentExited(ctx, task, registry.TaskStatusRunning, exited)
 		}
 		var timeout *orchestrator.TurnTimeoutError
 		if errors.As(err, &timeout) {
@@ -1084,7 +1086,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 		var attention *orchestrator.NeedsAttentionError
 		if errors.As(err, &attention) {
 			*failClass = registry.ErrorClassInternal
-			return r.needsAttention(ctx, log, task, message, attention.Attention)
+			return r.needsAttention(ctx, log, task, registry.TaskStatusRunning, message, attention.Attention)
 		}
 		var compaction *orchestrator.CompactionLoopError
 		if errors.As(err, &compaction) {
@@ -1111,7 +1113,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 	if entry, err := r.agentTypes.Get(task.AgentType); err == nil && entry.DetectPrompt != nil {
 		if a := usageLimitAtEnd(entry.DetectPrompt, captured, agentMessage); a != nil {
 			*failClass = registry.ErrorClassInternal
-			return r.needsAttention(ctx, log, task, message, a)
+			return r.needsAttention(ctx, log, task, registry.TaskStatusAwaitingInput, message, a)
 		}
 	}
 
@@ -1139,7 +1141,10 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 		result.Done = false
 	}
 	if result.Done {
-		if err := r.orch.Complete(ctx, task.ID, result.Reply); err != nil {
+		// A task whose status changed during the relay (LOOM-262) is left
+		// as it is; the reply is still the agent's answer to this turn.
+		if err := r.orch.Complete(ctx, task.ID, registry.TaskStatusAwaitingInput, result.Reply); err != nil &&
+			!errors.Is(err, orchestrator.ErrStatusChanged) {
 			return "", fmt.Errorf("router: dispatch: complete: %w", err)
 		}
 	} else if err := r.store.SetWorkspaceRollingSummary(ctx, task.WorkspaceID, result.Reply); err != nil {
@@ -1161,18 +1166,21 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 // found" rather than "can't find pane" — with credential values scrubbed.
 // Exit status 127 is the shell's "command not found", so it also records
 // the agent as unavailable on the target: the probe found something on
-// PATH that the launch shell didn't.
-func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *orchestrator.ProcessExitedError) error {
+// PATH that the launch shell didn't. from is the task's status before
+// the send or wait that saw the exit; a task whose status changed
+// meanwhile is left as it is (LOOM-262).
+func (r *Router) agentExited(ctx context.Context, task *registry.Task, from registry.TaskStatus, exited *orchestrator.ProcessExitedError) error {
 	cleanupCtx := context.WithoutCancel(ctx)
 	// Redact before bounding: cut first, a secret straddling the cut
 	// would survive as an unrecognisable tail.
 	output := quoteOutput(r.redactSecrets(cleanupCtx, task.WorkspaceID, task.AgentType, exited.Output))
-	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{
+	ferr := r.orch.Fail(cleanupCtx, task.ID, from, registry.TaskFailure{
 		Class:      registry.ErrorClassAgentExited,
 		Reason:     fmt.Sprintf("agent %q exited with status %d before finishing the turn", task.AgentType, exited.Status),
 		OutputTail: output,
-	}); err != nil {
-		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
+	})
+	if ferr != nil && !errors.Is(ferr, orchestrator.ErrStatusChanged) {
+		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", ferr)
 	}
 	if exited.Status == 127 {
 		if ws, err := r.store.GetWorkspace(cleanupCtx, task.WorkspaceID); err == nil {
@@ -1180,6 +1188,9 @@ func (r *Router) agentExited(ctx context.Context, task *registry.Task, exited *o
 				TargetID: ws.TargetID, AgentType: task.AgentType, Available: false, CheckedAt: time.Now().UTC(),
 			})
 		}
+	}
+	if errors.Is(ferr, orchestrator.ErrStatusChanged) {
+		return fmt.Errorf("router: dispatch: %w", ferr)
 	}
 	return fmt.Errorf("router: dispatch: agent %q exited (status %d) before finishing the turn; its last output:\n%s",
 		task.AgentType, exited.Status, output)
@@ -1193,7 +1204,11 @@ func (r *Router) compactionLoop(ctx context.Context, task *registry.Task, loop *
 	cleanupCtx := context.WithoutCancel(ctx)
 	targetName := r.targetNameFor(cleanupCtx, task)
 	reason := fmt.Sprintf("agent %q on %s %s", task.AgentType, targetName, strings.TrimPrefix(loop.Error(), "the agent "))
-	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{Class: registry.ErrorClassCompactionLoop, Reason: reason}); err != nil {
+	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskStatusRunning, registry.TaskFailure{Class: registry.ErrorClassCompactionLoop, Reason: reason}); errors.Is(err, orchestrator.ErrStatusChanged) {
+		// Changed while the turn ran (LOOM-262): left as it is, and its
+		// pane isn't ours to interrupt.
+		return fmt.Errorf("router: dispatch: %w", err)
+	} else if err != nil {
 		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 	}
 	r.interruptAgent(cleanupCtx, task)
@@ -1212,7 +1227,11 @@ func (r *Router) turnTimedOut(ctx context.Context, task *registry.Task, timeout 
 	targetName := r.targetNameFor(cleanupCtx, task)
 	reason := fmt.Sprintf("agent %q on %s timed out after %s: %s", task.AgentType, targetName,
 		elapsed.Round(time.Second), timeout)
-	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskFailure{Class: registry.ErrorClassTimeout, Reason: reason}); err != nil {
+	if err := r.orch.Fail(cleanupCtx, task.ID, registry.TaskStatusRunning, registry.TaskFailure{Class: registry.ErrorClassTimeout, Reason: reason}); errors.Is(err, orchestrator.ErrStatusChanged) {
+		// Changed while the turn ran (LOOM-262): left as it is, and its
+		// pane isn't ours to interrupt.
+		return fmt.Errorf("router: dispatch: %w", err)
+	} else if err != nil {
 		r.logger.Error("agent dispatch cleanup failed", "task_id", task.ID, "error", err)
 	}
 	// The turn is failed, so its agent mustn't carry on unsupervised
@@ -1645,9 +1664,11 @@ func (r *Router) healDuplicateTasks(ctx context.Context, tasks []*registry.Task)
 		}
 		r.logger.Warn("more than one active task; retiring the extra one", "task_id", t.ID, "kept_task_id", keep.ID,
 			"workspace_id", t.WorkspaceID, "conversation_id", t.ConversationID)
-		if err := r.orch.Fail(ctx, t.ID, registry.TaskFailure{
+		if err := r.orch.Fail(ctx, t.ID, t.Status, registry.TaskFailure{
 			Class: registry.ErrorClassInternal, Reason: "a second active task in the same conversation and workspace; retired",
-		}); err != nil {
+		}); errors.Is(err, orchestrator.ErrStatusChanged) {
+			continue // changed since listed (LOOM-262): left as it is, its pane too
+		} else if err != nil {
 			return nil, err
 		}
 		if exec, err := r.executorFor(ctx, t); err == nil {

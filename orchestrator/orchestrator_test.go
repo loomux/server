@@ -324,7 +324,7 @@ func TestSendMessage_RefusesWhenInactive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.Complete(ctx, task.ID, "done"); err != nil {
+	if err := o.Complete(ctx, task.ID, registry.TaskStatusRunning, "done"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -389,7 +389,7 @@ func TestComplete(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 
-	if err := o.Complete(ctx, task.ID, "task summary text"); err != nil {
+	if err := o.Complete(ctx, task.ID, registry.TaskStatusRunning, "task summary text"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -435,7 +435,7 @@ func TestComplete_ReplacesRollingSummaryNotAppends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch(task1): %v", err)
 	}
-	if err := o.Complete(ctx, task1.ID, "first summary"); err != nil {
+	if err := o.Complete(ctx, task1.ID, registry.TaskStatusRunning, "first summary"); err != nil {
 		t.Fatalf("Complete(task1): %v", err)
 	}
 
@@ -443,7 +443,7 @@ func TestComplete_ReplacesRollingSummaryNotAppends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch(task2): %v", err)
 	}
-	if err := o.Complete(ctx, task2.ID, "second summary"); err != nil {
+	if err := o.Complete(ctx, task2.ID, registry.TaskStatusRunning, "second summary"); err != nil {
 		t.Fatalf("Complete(task2): %v", err)
 	}
 
@@ -465,7 +465,7 @@ func TestFail(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 
-	if err := o.Fail(ctx, task.ID, registry.TaskFailure{
+	if err := o.Fail(ctx, task.ID, registry.TaskStatusRunning, registry.TaskFailure{
 		Class: registry.ErrorClassAgentExited, Reason: "agent crashed", OutputTail: "segfault",
 	}); err != nil {
 		t.Fatalf("Fail: %v", err)
@@ -552,7 +552,7 @@ func TestTakeover_RefusesWhenInactive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.Complete(ctx, task.ID, "done"); err != nil {
+	if err := o.Complete(ctx, task.ID, registry.TaskStatusRunning, "done"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -607,7 +607,7 @@ func TestFinishCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.FinishCommand(ctx, task.ID, 1); err != nil {
+	if err := o.FinishCommand(ctx, task.ID, registry.TaskStatusRunning, 1); err != nil {
 		t.Fatalf("FinishCommand: %v", err)
 	}
 
@@ -644,7 +644,7 @@ func TestFinishCommand_LeavesProvisioningToTheRouter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.FinishCommand(ctx, task.ID, 0); err != nil {
+	if err := o.FinishCommand(ctx, task.ID, registry.TaskStatusRunning, 0); err != nil {
 		t.Fatalf("FinishCommand: %v", err)
 	}
 	if got, _ := store.GetWorkspace(ctx, ws.ID); got.Status != registry.WorkspaceStatusProvisioning {
@@ -659,7 +659,7 @@ func TestFinishCommand_RefusesNonCommandTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.FinishCommand(ctx, task.ID, 0); err == nil {
+	if err := o.FinishCommand(ctx, task.ID, registry.TaskStatusRunning, 0); err == nil {
 		t.Error("FinishCommand on an agent task: want error, got nil")
 	}
 }
@@ -707,7 +707,7 @@ func TestFail_DoesNotRevertFailedWorkspace(t *testing.T) {
 	if err := store.UpdateWorkspace(ctx, cur); err != nil {
 		t.Fatalf("UpdateWorkspace: %v", err)
 	}
-	if err := o.Fail(ctx, task.ID, registry.TaskFailure{Class: registry.ErrorClassInternal, Reason: "x"}); err != nil {
+	if err := o.Fail(ctx, task.ID, registry.TaskStatusRunning, registry.TaskFailure{Class: registry.ErrorClassInternal, Reason: "x"}); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 	got, _ := store.GetWorkspace(ctx, ws.ID)

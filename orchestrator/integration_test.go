@@ -90,7 +90,7 @@ func TestIntegration_RealLocalTmux(t *testing.T) {
 		t.Fatalf("WaitForCompletion: %v", err)
 	}
 
-	if err := o.Complete(ctx, task.ID, "integration test summary"); err != nil {
+	if err := o.Complete(ctx, task.ID, registry.TaskStatusAwaitingInput, "integration test summary"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 

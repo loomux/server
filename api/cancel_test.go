@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -69,6 +70,8 @@ func TestCancelTask(t *testing.T) {
 		{"unknown", registry.ErrNotFound, http.StatusNotFound},
 		{"ended", orchestrator.ErrTaskInactive, http.StatusConflict},
 		{"taken over", orchestrator.ErrHumanTakeover, http.StatusConflict},
+		// LOOM-262: it ended or was taken over between the read and the write.
+		{"changed meanwhile", fmt.Errorf("orchestrator: fail: %w", orchestrator.ErrStatusChanged), http.StatusConflict},
 		{"broken", errors.New("boom"), http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
