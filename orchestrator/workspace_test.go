@@ -26,9 +26,7 @@ func TestDeleteWorkspaceKillsItsSessionsAndRows(t *testing.T) {
 	if _, err := o.DeleteWorkspace(ctx, ws.ID); !errors.Is(err, registry.ErrConflict) {
 		t.Fatalf("DeleteWorkspace mid-turn: err = %v, want ErrConflict", err)
 	}
-	if err := o.Takeover(ctx, open.ID); err != nil {
-		t.Fatalf("Takeover: %v", err)
-	}
+	takeOver(t, o, open.ID)
 	if _, err := o.DeleteWorkspace(ctx, ws.ID); !errors.Is(err, registry.ErrConflict) {
 		t.Fatalf("DeleteWorkspace during a takeover: err = %v, want ErrConflict", err)
 	}

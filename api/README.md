@@ -172,8 +172,12 @@ Specific codes, where a handler tells apart a case a client can act on:
 | Code | Where |
 | --- | --- |
 | `conversation_busy` | `POST /api/v1/dispatch` `409` when the conversation already has a dispatch in flight; the body also carries that dispatch's `dispatch_id` |
+| `hold_ended` | `POST /api/v1/tasks/{id}/takeover/heartbeat` `410` when the hold has ended; the body also carries `ended_reason` and the `hold` (LOOM-264) |
 | `idempotency_conflict` | `POST /api/v1/dispatch` `422` when the `Idempotency-Key` was already used for a different request |
+| `task_held` | `POST /api/v1/tasks/{id}/takeover` `409` when another session holds the task; the body also carries its `hold`. `force` takes it (LOOM-264) |
+| `task_inactive` | `POST /api/v1/tasks/{id}/takeover` `409` for a task that has ended and whose pane wasn't kept for a person (LOOM-264) |
 | `unsupported_api_version` | `404` for any `/api` path outside `/api/v1`; the body also carries `supported_versions` |
+| `unsupported_mode` | `POST /api/v1/tasks/{id}/takeover` `400` for `mode: "watch"` on a server without watch holds: no hold is taken (LOOM-264) |
 | `workspace_name_taken` | `POST /api/v1/workspaces` `409` when another workspace has the name (LOOM-215) |
 
 New codes may be added within v1 (a client should treat an unknown code
@@ -517,6 +521,60 @@ plain ssh form.
     dead session is discovered the same way a human always would, by
     trying to attach. Wraps `AttachInfoStore` (`GetTask` → `GetWorkspace`
     → `GetTarget`), a narrow seam mirroring the others here.
+  - `POST /api/v1/tasks/{id}/takeover`,
+    `POST /api/v1/tasks/{id}/takeover/heartbeat` and
+    `POST /api/v1/tasks/{id}/release`: auth-gated holds (LOOM-264,
+    `WithTaskHolds`; `501` without it; design in
+    `docs/design/tui-client-design.md`, "Server awareness: holds"). A
+    hold is a lease on a task by the caller's session while a person is
+    attached to its pane. Taking one moves the task to `human_takeover`,
+    which pauses automation into the pane; the hold says who has it.
+    - `takeover` takes `{mode?, client_label?, ttl_seconds?, force?}` (the
+      body may be left out) and returns `200 {task_id, hold, attach}`:
+      `attach` is the attach-info body, `hold` is `{id, task_id,
+      session_id, client_kind, client_label, mode, prev_status,
+      ttl_seconds, acquired_at, renewed_at, expires_at, ended_at?,
+      ended_reason?}`. `ttl_seconds` is 15 to 300, default 45.
+      `client_label` is at most 64 characters with no control characters.
+      `mode` is `drive` (the default); `watch` is `400` (code
+      `unsupported_mode`) until watch holds exist, and never answered
+      with a drive hold. `client_kind` is empty until sessions carry one.
+      The task's active drive hold is checked before its status. Held by
+      the caller's own session: that hold is renewed and returned
+      (idempotent; its lease length and label stay as first taken). Held
+      by another session: `409` (code `task_held`) with its `hold`, unless
+      `force`, which ends it as `taken_over` and gives the caller a new
+      one while the task stays `human_takeover`. Not held: a `running`,
+      `awaiting_input` or `needs_attention` task moves to
+      `human_takeover`, and one already there with no hold is taken as it
+      stands. A `failed` task with `error_class` `login_required`,
+      `agent_rate_limited` or `agent_api_error` (its pane was kept for a
+      person) is held too and stays `failed`. Any other ended task is
+      `409` (code `task_inactive`). `prev_status` is the task's status
+      when this hold was taken (`human_takeover` for a forced one).
+      The hold and the status change are one write, a compare-and-set on
+      the status read (LOOM-262); a task that keeps changing is `409`.
+      A turn in flight on a `running` task isn't interrupted: it ends by
+      itself, leaving the task `human_takeover`.
+    - `heartbeat` takes `{hold_id}` and returns `200 {hold}` with
+      `expires_at` moved to `ttl_seconds` from now. An ended hold is `410`
+      (code `hold_ended`) with `ended_reason` and the `hold`. Only the
+      session that holds it may renew it (`403` otherwise); a hold that
+      isn't this task's is `404`.
+    - `release` takes `{hold_id?}` (the body may be left out) and returns
+      `200 {task_id, status, hold?}`, `status` being the task's status
+      afterwards. With `hold_id` it ends that hold as `released`; a hold
+      that had already ended comes back as it ended, so it is idempotent.
+      Without `hold_id` it is Take back, which any session may do: the
+      task's drive hold, if it has one, ends as `taken_back`. Either way a
+      task left in `human_takeover` with no drive hold becomes
+      `awaiting_input` and its stale `attention` is cleared, in the same
+      write as the hold's end; a task in any other status keeps it, and a
+      task another session has taken meanwhile stays theirs.
+    - Not yet (later tickets of the same design): holds expiring by
+      themselves and the holder's tmux clients being detached when a hold
+      ends (S4), a `running` turn's wait ending at once (S5), and holds
+      shown on conversations, attach-info and the stream (S6).
   - Targets carry `relay` (`full`, `last_message`, `none`, or `""` for
     the purpose's default: `none` for `purpose: work`, else `full`) and
     show `relay_effective`: what the router models may see of the

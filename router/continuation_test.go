@@ -271,7 +271,7 @@ func TestDispatch_ActiveTaskUnderTakeover_RefusesRatherThanDoubleLaunch(t *testi
 	task := tasks[0]
 
 	orch := orchestrator.New(store, exec.factory(), noopDetector{})
-	if err := orch.Takeover(context.Background(), task.ID); err != nil {
+	if _, err := orch.Takeover(context.Background(), orchestrator.TakeoverRequest{TaskID: task.ID, SessionID: "sess-1"}); err != nil {
 		t.Fatalf("Takeover: %v", err)
 	}
 

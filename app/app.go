@@ -242,6 +242,13 @@ func (a *App) AgentTypeNames() []string {
 	return names
 }
 
+// TaskHolds takes, renews and releases holds on tasks (LOOM-264): the
+// orchestrator, whose Takeover, Heartbeat and Release satisfy
+// api.TaskHolds.
+func (a *App) TaskHolds() *orchestrator.Orchestrator {
+	return a.orch
+}
+
 // Store returns the underlying registry.Store — e.g. for api.Server's
 // session storage, which must live in the same database as everything
 // else rather than a second, separately managed connection.

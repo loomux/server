@@ -416,6 +416,18 @@ flips that task to `human-takeover` and pauses automated `send-keys` for it;
 `loomux release` hands it back. This avoids keystroke collisions without
 degrading the common case (just watching) at all.
 
+Since LOOM-264 the takeover is a **hold**: a lease on the task by the API
+session that took it (`POST /api/v1/tasks/{id}/takeover`, renewed by
+`/takeover/heartbeat`, ended by `/release`). The hold records who has the
+task and until when; the status `human-takeover` still decides whether
+automation may type, so every existing gate is unchanged. The hold and the
+status are written together, as a compare-and-set on the status read, and
+a release ends the hold and returns the task to `awaiting-input` in one
+write. A second session is refused unless it forces the takeover. A failed
+task whose pane was kept for a person (a sign-in, a usage limit, an API
+error) can be held without changing its status. The full model, expiry
+and watching are in `tui-client-design.md`, "Server awareness: holds".
+
 ### 5. Completion detection
 
 Agents run in their **native interactive mode**, not a headless/print-mode

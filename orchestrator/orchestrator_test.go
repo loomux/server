@@ -302,9 +302,7 @@ func TestSendMessage_RefusesDuringTakeover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if err := o.Takeover(ctx, task.ID); err != nil {
-		t.Fatalf("Takeover: %v", err)
-	}
+	takeOver(t, o, task.ID)
 
 	if err := o.SendMessage(ctx, task.ID, "echo hi"); !errors.Is(err, orchestrator.ErrHumanTakeover) {
 		t.Fatalf("SendMessage during takeover: err = %v, want ErrHumanTakeover", err)
@@ -512,9 +510,7 @@ func TestTakeoverRelease(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 
-	if err := o.Takeover(ctx, task.ID); err != nil {
-		t.Fatalf("Takeover: %v", err)
-	}
+	hold := takeOver(t, o, task.ID)
 	stored, err := store.GetTask(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
@@ -523,7 +519,7 @@ func TestTakeoverRelease(t *testing.T) {
 		t.Fatalf("Status after Takeover = %q, want %q", stored.Status, registry.TaskStatusHumanTakeover)
 	}
 
-	if err := o.Release(ctx, task.ID); err != nil {
+	if _, err := o.Release(ctx, task.ID, hold.ID); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
 	stored, err = store.GetTask(ctx, task.ID)
@@ -556,7 +552,7 @@ func TestTakeover_RefusesWhenInactive(t *testing.T) {
 		t.Fatalf("Complete: %v", err)
 	}
 
-	if err := o.Takeover(ctx, task.ID); !errors.Is(err, orchestrator.ErrTaskInactive) {
+	if _, err := o.Takeover(ctx, orchestrator.TakeoverRequest{TaskID: task.ID, SessionID: "sess-1"}); !errors.Is(err, orchestrator.ErrTaskInactive) {
 		t.Fatalf("Takeover on a completed task: err = %v, want ErrTaskInactive", err)
 	}
 }

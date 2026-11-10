@@ -1742,6 +1742,145 @@ POST /api/v1/tasks/{id}/cancel status 404
 POST /api/v1/tasks/{id}/cancel status 409
 POST /api/v1/tasks/{id}/cancel status 500
 POST /api/v1/tasks/{id}/cancel status 501
+POST /api/v1/tasks/{id}/release
+POST /api/v1/tasks/{id}/release request - object
+POST /api/v1/tasks/{id}/release request .hold_id string omitempty
+POST /api/v1/tasks/{id}/release request-header Authorization
+POST /api/v1/tasks/{id}/release response - object
+POST /api/v1/tasks/{id}/release response .hold object omitempty nullable
+POST /api/v1/tasks/{id}/release response .hold.acquired_at time
+POST /api/v1/tasks/{id}/release response .hold.client_kind string
+POST /api/v1/tasks/{id}/release response .hold.client_label string
+POST /api/v1/tasks/{id}/release response .hold.ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/release response .hold.ended_reason string omitempty
+POST /api/v1/tasks/{id}/release response .hold.expires_at time
+POST /api/v1/tasks/{id}/release response .hold.id string
+POST /api/v1/tasks/{id}/release response .hold.mode string
+POST /api/v1/tasks/{id}/release response .hold.prev_status string
+POST /api/v1/tasks/{id}/release response .hold.renewed_at time
+POST /api/v1/tasks/{id}/release response .hold.session_id string
+POST /api/v1/tasks/{id}/release response .hold.task_id string
+POST /api/v1/tasks/{id}/release response .hold.ttl_seconds number
+POST /api/v1/tasks/{id}/release response .status string
+POST /api/v1/tasks/{id}/release response .task_id string
+POST /api/v1/tasks/{id}/release response-header Content-Type
+POST /api/v1/tasks/{id}/release status 200
+POST /api/v1/tasks/{id}/release status 400
+POST /api/v1/tasks/{id}/release status 401
+POST /api/v1/tasks/{id}/release status 404
+POST /api/v1/tasks/{id}/release status 413
+POST /api/v1/tasks/{id}/release status 500
+POST /api/v1/tasks/{id}/release status 501
+POST /api/v1/tasks/{id}/takeover
+POST /api/v1/tasks/{id}/takeover request - object
+POST /api/v1/tasks/{id}/takeover request .client_label string omitempty
+POST /api/v1/tasks/{id}/takeover request .force boolean omitempty
+POST /api/v1/tasks/{id}/takeover request .mode string omitempty
+POST /api/v1/tasks/{id}/takeover request .ttl_seconds number omitempty nullable
+POST /api/v1/tasks/{id}/takeover request-header Authorization
+POST /api/v1/tasks/{id}/takeover response - object
+POST /api/v1/tasks/{id}/takeover response .attach object
+POST /api/v1/tasks/{id}/takeover response .attach.attach_command string
+POST /api/v1/tasks/{id}/takeover response .attach.attach_commands []object
+POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].command string
+POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].via string
+POST /api/v1/tasks/{id}/takeover response .attach.target object
+POST /api/v1/tasks/{id}/takeover response .attach.target.host string
+POST /api/v1/tasks/{id}/takeover response .attach.target.id string
+POST /api/v1/tasks/{id}/takeover response .attach.target.kind string
+POST /api/v1/tasks/{id}/takeover response .attach.target.name string
+POST /api/v1/tasks/{id}/takeover response .attach.target.user string
+POST /api/v1/tasks/{id}/takeover response .attach.task_id string
+POST /api/v1/tasks/{id}/takeover response .attach.tmux_session string
+POST /api/v1/tasks/{id}/takeover response .attach.tmux_socket string
+POST /api/v1/tasks/{id}/takeover response .hold object nullable
+POST /api/v1/tasks/{id}/takeover response .hold.acquired_at time
+POST /api/v1/tasks/{id}/takeover response .hold.client_kind string
+POST /api/v1/tasks/{id}/takeover response .hold.client_label string
+POST /api/v1/tasks/{id}/takeover response .hold.ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/takeover response .hold.ended_reason string omitempty
+POST /api/v1/tasks/{id}/takeover response .hold.expires_at time
+POST /api/v1/tasks/{id}/takeover response .hold.id string
+POST /api/v1/tasks/{id}/takeover response .hold.mode string
+POST /api/v1/tasks/{id}/takeover response .hold.prev_status string
+POST /api/v1/tasks/{id}/takeover response .hold.renewed_at time
+POST /api/v1/tasks/{id}/takeover response .hold.session_id string
+POST /api/v1/tasks/{id}/takeover response .hold.task_id string
+POST /api/v1/tasks/{id}/takeover response .hold.ttl_seconds number
+POST /api/v1/tasks/{id}/takeover response .task_id string
+POST /api/v1/tasks/{id}/takeover response-header Content-Type
+POST /api/v1/tasks/{id}/takeover response:held - object
+POST /api/v1/tasks/{id}/takeover response:held .code string
+POST /api/v1/tasks/{id}/takeover response:held .error string
+POST /api/v1/tasks/{id}/takeover response:held .hold object nullable
+POST /api/v1/tasks/{id}/takeover response:held .hold.acquired_at time
+POST /api/v1/tasks/{id}/takeover response:held .hold.client_kind string
+POST /api/v1/tasks/{id}/takeover response:held .hold.client_label string
+POST /api/v1/tasks/{id}/takeover response:held .hold.ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/takeover response:held .hold.ended_reason string omitempty
+POST /api/v1/tasks/{id}/takeover response:held .hold.expires_at time
+POST /api/v1/tasks/{id}/takeover response:held .hold.id string
+POST /api/v1/tasks/{id}/takeover response:held .hold.mode string
+POST /api/v1/tasks/{id}/takeover response:held .hold.prev_status string
+POST /api/v1/tasks/{id}/takeover response:held .hold.renewed_at time
+POST /api/v1/tasks/{id}/takeover response:held .hold.session_id string
+POST /api/v1/tasks/{id}/takeover response:held .hold.task_id string
+POST /api/v1/tasks/{id}/takeover response:held .hold.ttl_seconds number
+POST /api/v1/tasks/{id}/takeover status 200
+POST /api/v1/tasks/{id}/takeover status 400
+POST /api/v1/tasks/{id}/takeover status 401
+POST /api/v1/tasks/{id}/takeover status 404
+POST /api/v1/tasks/{id}/takeover status 409
+POST /api/v1/tasks/{id}/takeover status 413
+POST /api/v1/tasks/{id}/takeover status 500
+POST /api/v1/tasks/{id}/takeover status 501
+POST /api/v1/tasks/{id}/takeover/heartbeat
+POST /api/v1/tasks/{id}/takeover/heartbeat request - object
+POST /api/v1/tasks/{id}/takeover/heartbeat request .hold_id string
+POST /api/v1/tasks/{id}/takeover/heartbeat request-header Authorization
+POST /api/v1/tasks/{id}/takeover/heartbeat response - object
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold object nullable
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.acquired_at time
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.client_kind string
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.client_label string
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.ended_reason string omitempty
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.expires_at time
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.id string
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.mode string
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.prev_status string
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.renewed_at time
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.session_id string
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.task_id string
+POST /api/v1/tasks/{id}/takeover/heartbeat response .hold.ttl_seconds number
+POST /api/v1/tasks/{id}/takeover/heartbeat response-header Content-Type
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended - object
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .code string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .ended_reason string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .error string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold object nullable
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.acquired_at time
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.client_kind string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.client_label string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.ended_reason string omitempty
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.expires_at time
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.id string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.mode string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.prev_status string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.renewed_at time
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.session_id string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.task_id string
+POST /api/v1/tasks/{id}/takeover/heartbeat response:ended .hold.ttl_seconds number
+POST /api/v1/tasks/{id}/takeover/heartbeat status 200
+POST /api/v1/tasks/{id}/takeover/heartbeat status 400
+POST /api/v1/tasks/{id}/takeover/heartbeat status 401
+POST /api/v1/tasks/{id}/takeover/heartbeat status 403
+POST /api/v1/tasks/{id}/takeover/heartbeat status 404
+POST /api/v1/tasks/{id}/takeover/heartbeat status 410
+POST /api/v1/tasks/{id}/takeover/heartbeat status 413
+POST /api/v1/tasks/{id}/takeover/heartbeat status 500
+POST /api/v1/tasks/{id}/takeover/heartbeat status 501
 POST /api/v1/web/rollback
 POST /api/v1/web/rollback request-header Authorization
 POST /api/v1/web/rollback response - object

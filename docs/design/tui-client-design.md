@@ -332,14 +332,21 @@ without pausing it.
     `409` (`task_inactive`).
 - `POST /api/v1/tasks/{id}/takeover/heartbeat` `{hold_id}` → `200 {hold}` with
   `expires_at` pushed out by the TTL. An ended hold is `410 hold_ended` with
-  `ended_reason`.
-- `POST /api/v1/tasks/{id}/release` `{hold_id?}`:
+  `ended_reason`. Only the session that holds it may renew it (`403`
+  otherwise, added while building S3): a heartbeat says the holder is
+  alive, which nobody else can say for it.
+- `POST /api/v1/tasks/{id}/release` `{hold_id?}` → `200 {task_id, status,
+  hold?}` (`status` is the task's afterwards):
   - With `hold_id`, ends that hold as `released`. Idempotent: an
     already-ended hold answers `200` with its reason.
   - Without it, it's **Take back**: ends whatever drive hold is active as
     `taken_back` and detaches its clients. Single user, so any session may.
   - Either way a `human_takeover` task goes to `awaiting_input` (as
     `Orchestrator.Release` does today) and its stale `attention` is cleared.
+    The hold's end and that status change are one write (S2/S3), and they
+    happen only when no drive hold is left on the task: a release with a
+    stale `hold_id`, after another session forced a takeover, never hands
+    the task back from under the new holder.
     Anything the agent finished while driven is relayed by the existing
     late-output pass, whose own comment already covers "a task handed back
     from a human takeover" (`router/lateoutput.go`).

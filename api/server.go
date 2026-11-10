@@ -248,6 +248,7 @@ type Server struct {
 	scans                *scanResults
 	workspaceManager     WorkspaceManager
 	taskCanceller        TaskCanceller
+	taskHolds            TaskHolds
 	credentials          CredentialStore
 	sshKeys              SSHKeyStore
 	routerSettings       RouterSettings
@@ -453,6 +454,9 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attach-info", s.requireAuth(s.handleAttachInfo))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/transcript", s.requireAuth(s.handleTaskTranscript))
 	mux.HandleFunc("POST /api/v1/tasks/{id}/cancel", s.requireAuth(s.handleCancelTask))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/takeover", s.requireAuth(s.handleTakeover))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/takeover/heartbeat", s.requireAuth(s.handleHoldHeartbeat))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/release", s.requireAuth(s.handleRelease))
 	mux.HandleFunc("POST /api/v1/targets", s.requireAuth(s.handleCreateTarget))
 	mux.HandleFunc("GET /api/v1/targets", s.requireAuth(s.handleListTargets))
 	mux.HandleFunc("GET /api/v1/targets/{id}", s.requireAuth(s.handleGetTarget))
@@ -1214,31 +1218,39 @@ type attachInfoResponse struct {
 // discovers a dead session the same way a human always would — the
 // attach attempt itself.
 func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	info, ok := s.attachInfoFor(w, r, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
 
+// attachInfoFor resolves task id's attach-info. On failure it writes the
+// response (404 for an unknown task) and reports false.
+func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string) (attachInfoResponse, bool) {
 	task, err := s.attachInfo.GetTask(r.Context(), id)
 	if errors.Is(err, registry.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such task")
-		return
+		return attachInfoResponse{}, false
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not fetch task")
-		return
+		return attachInfoResponse{}, false
 	}
 
 	ws, err := s.attachInfo.GetWorkspace(r.Context(), task.WorkspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not resolve task's workspace")
-		return
+		return attachInfoResponse{}, false
 	}
 
 	target, err := s.attachInfo.GetTarget(r.Context(), ws.TargetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not resolve workspace's target")
-		return
+		return attachInfoResponse{}, false
 	}
 
-	writeJSON(w, http.StatusOK, attachInfoResponse{
+	return attachInfoResponse{
 		TaskID:         task.ID,
 		TmuxSession:    task.TmuxSession,
 		TmuxSocket:     s.tmuxSocketName(),
@@ -1251,7 +1263,7 @@ func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
 			Host: target.Host,
 			User: target.User,
 		},
-	})
+	}, true
 }
 
 type taskUpdateEvent struct {
