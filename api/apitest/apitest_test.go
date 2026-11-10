@@ -634,3 +634,31 @@ func TestConcurrentSeeding(t *testing.T) {
 		}
 	}
 }
+
+// The link flow (LOOM-268) as loomux login drives it, and a seeded
+// terminal session.
+func TestLinkFlow(t *testing.T) {
+	srv := apitest.New(t)
+	web := srv.Login()
+	terminal := "a-token-made-by-the-terminal"
+	if status, _ := call(t, srv, terminal, "GET", "/sessions", nil); status != http.StatusUnauthorized {
+		t.Fatalf("the pending token = %d, want 401", status)
+	}
+	status, out := call(t, srv, web, "POST", "/sessions", map[string]string{"token_hash": apitest.TokenHash(terminal), "label": "laptop", "client_kind": "tui"})
+	if status != http.StatusCreated || out["label"] != "laptop" || out["client_kind"] != "tui" {
+		t.Fatalf("approve = %d %v", status, out)
+	}
+	if status, _ := call(t, srv, terminal, "GET", "/sessions", nil); status != http.StatusOK {
+		t.Fatalf("the approved token = %d, want 200", status)
+	}
+	if status, out := call(t, srv, terminal, "POST", "/sessions", map[string]string{"token_hash": apitest.TokenHash("next")}); status != http.StatusForbidden {
+		t.Errorf("a link from a linked session = %d %v, want 403", status, out)
+	}
+
+	seeded := srv.SeedLinkedSession("desk", registry.SessionKindTUI)
+	task := srv.SeedTask(apitest.Task{})
+	status, out = call(t, srv, seeded, "POST", "/tasks/"+task.ID+"/takeover", nil)
+	if hold := obj(t, out["hold"]); status != http.StatusOK || hold["client_kind"] != "tui" || hold["client_label"] != "desk" {
+		t.Errorf("takeover by a seeded terminal session = %d %v", status, out)
+	}
+}

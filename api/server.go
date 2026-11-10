@@ -438,6 +438,7 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("POST /api/v1/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/logout", s.requireAuth(s.handleLogout))
 	mux.HandleFunc("GET /api/v1/sessions", s.requireAuth(s.handleListSessions))
+	mux.HandleFunc("POST /api/v1/sessions", s.requireAuth(s.handleLinkSession))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.requireAuth(s.handleRevokeSession))
 	mux.HandleFunc("POST /api/v1/dispatch", s.requireAuth(s.handleDispatch))
 	mux.HandleFunc("GET /api/v1/dispatches/{id}", s.requireAuth(s.handleGetDispatch))
@@ -604,7 +605,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	sess := &registry.Session{ID: uuid.NewString(), TokenHash: tokenHash, LastUsedAt: s.now().UTC()}
+	// A login is the web's (its only caller, LOOM-268), and the only
+	// kind of session that may approve a link.
+	sess := &registry.Session{ID: uuid.NewString(), TokenHash: tokenHash, LastUsedAt: s.now().UTC(),
+		ClientKind: registry.SessionKindWeb, Origin: registry.SessionOriginLogin}
 	if err := s.sessions.CreateSession(r.Context(), sess); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
@@ -634,6 +638,11 @@ type sessionSummary struct {
 	ID         string    `json:"id"`
 	CreatedAt  time.Time `json:"created_at"`
 	LastUsedAt time.Time `json:"last_used_at"`
+	// Label names the session's device ("laptop") and ClientKind its
+	// client (web, tui, app, or empty when unknown), so the right row
+	// can be revoked (LOOM-268). Either may be empty.
+	Label      string `json:"label"`
+	ClientKind string `json:"client_kind"`
 	// Current marks the session backing this very request's Bearer
 	// token, so a "your devices" UI can label one row "this device"
 	// without ever seeing a token or token hash — this API never
@@ -675,12 +684,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		if s.sessionExpired(sess, now) {
 			continue
 		}
-		out = append(out, sessionSummary{
-			ID:         sess.ID,
-			CreatedAt:  sess.CreatedAt,
-			LastUsedAt: sess.LastUsedAt,
-			Current:    current != nil && sess.ID == current.ID,
-		})
+		out = append(out, newSessionSummary(sess, current))
 	}
 	writeJSON(w, http.StatusOK, listSessionsResponse{Sessions: out})
 }

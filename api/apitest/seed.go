@@ -3,6 +3,8 @@ package apitest
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -18,7 +20,8 @@ const DefaultAgentType = "claude-code"
 
 // Login logs in over HTTP with the server's password and returns the
 // session token, to send as "Authorization: Bearer <token>". Each call is
-// a new session. A login refused by the backoff a wrong password just
+// a new session, of origin login and client kind web: the kind that may
+// approve a link. A login refused by the backoff a wrong password just
 // started (429; at most 10 ms on a test server) is retried.
 func (s *Server) Login() string {
 	s.tb.Helper()
@@ -43,6 +46,28 @@ func (s *Server) Login() string {
 		}
 		return out.Token
 	}
+}
+
+// SeedLinkedSession stores a session as the link flow leaves it once
+// approved (origin link, with label and clientKind, e.g. "laptop" and
+// registry.SessionKindTUI) and returns its token. It is how a test gets a
+// terminal's session without driving the flow; to test the flow itself,
+// POST /api/v1/sessions with a Login token.
+func (s *Server) SeedLinkedSession(label, clientKind string) string {
+	s.tb.Helper()
+	token := "apitest-" + uuid.NewString()
+	sess := &registry.Session{ID: uuid.NewString(), TokenHash: TokenHash(token), Label: label, ClientKind: clientKind, Origin: registry.SessionOriginLink}
+	if err := s.Store.CreateSession(context.Background(), sess); err != nil {
+		s.tb.Fatalf("apitest: seed linked session: %v", err)
+	}
+	return token
+}
+
+// TokenHash is the hash the server stores for a session token, and the
+// token_hash POST /api/v1/sessions takes: hex(sha256(token)).
+func TokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // SeedTarget stores a remote target named name (host name + ".test",

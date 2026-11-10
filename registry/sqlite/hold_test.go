@@ -151,3 +151,65 @@ func TestRetentionDeletesTaskHoldsInBatches(t *testing.T) {
 		t.Errorf("active hold = %+v, %v; want h-5 kept", h, err)
 	}
 }
+
+// TestMigration37SessionLabels (LOOM-268): sessions from before the
+// migration were all made by a login, so they become origin login (and
+// can approve a link without logging in again); their label and client
+// kind aren't known and stay empty. Down drops the columns and keeps the
+// sessions.
+func TestMigration37SessionLabels(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "migrate.db")
+	db, err := sql.Open("sqlite", dsn(dbPath))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	goose.SetTableName("schema_migrations")
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("SetDialect: %v", err)
+	}
+	if err := goose.UpTo(db, "migrations", 36); err != nil {
+		t.Fatalf("goose.UpTo(36): %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO sessions (id, token_hash, created_at, last_used_at)
+		VALUES ('s-old', 'hash-old', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open (applies 00037): %v", err)
+	}
+	defer store.Close()
+	old, err := store.GetSessionByTokenHash(ctx, "hash-old")
+	if err != nil || old.Origin != registry.SessionOriginLogin || old.Label != "" || old.ClientKind != "" {
+		t.Fatalf("session from before the migration = %+v, %v; want origin login, no label or kind", old, err)
+	}
+	// A new session isn't defaulted to login: its origin is what its
+	// creator says.
+	if err := store.CreateSession(ctx, &registry.Session{ID: "s-new", TokenHash: "hash-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, _ := store.GetSessionByTokenHash(ctx, "hash-new"); fresh == nil || fresh.Origin != "" {
+		t.Fatalf("a session created with no origin = %+v; want it empty", fresh)
+	}
+
+	migrateMu.Lock()
+	err = goose.DownTo(store.db, "migrations", 36)
+	migrateMu.Unlock()
+	if err != nil {
+		t.Fatalf("goose.DownTo(36): %v", err)
+	}
+	var n int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM sessions`).Scan(&n); err != nil || n != 2 {
+		t.Errorf("sessions after down = %d, %v; want 2", n, err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('sessions') WHERE name IN ('label', 'client_kind', 'origin')`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("%d of the new columns left after down, %v", n, err)
+	}
+}

@@ -58,7 +58,9 @@ type holdResponse struct {
 	TaskID string `json:"task_id"`
 	// SessionID is the session holding the task, as GET /sessions names
 	// it. ClientKind and ClientLabel describe that client ("tui",
-	// "laptop"); either may be empty.
+	// "laptop"), copied from the session when the hold was taken
+	// (client_label from the takeover's own, if it sent one); either may
+	// be empty.
 	SessionID   string `json:"session_id"`
 	ClientKind  string `json:"client_kind"`
 	ClientLabel string `json:"client_label"`
@@ -254,9 +256,16 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Who holds it is who the session is (LOOM-268): its client kind,
+	// and its label unless this takeover names another.
+	sess := sessionFromContext(r.Context())
+	if label == "" {
+		label = sess.Label
+	}
 	res, err := s.taskHolds.Takeover(r.Context(), orchestrator.TakeoverRequest{
 		TaskID:      id,
-		SessionID:   sessionFromContext(r.Context()).ID,
+		SessionID:   sess.ID,
+		ClientKind:  sess.ClientKind,
 		ClientLabel: label,
 		Mode:        registry.HoldModeDrive,
 		TTL:         ttl,

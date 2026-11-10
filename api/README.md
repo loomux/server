@@ -298,7 +298,10 @@ or gave one the server refused.
   - `GET /api/v1/sessions` — auth-gated (LOOM-47), every active session
     (every device/client currently holding a valid, unexpired Bearer
     token), most-recently-used first: `{sessions: [{id, created_at,
-    last_used_at, current}, ...]}`. `current` marks the session backing
+    last_used_at, label, client_kind, current}, ...]}`. `label` names
+    the session's device and `client_kind` its client (`web`, `tui`,
+    `app`, or `""` when unknown; LOOM-268), so the right row can be
+    revoked. `current` marks the session backing
     this request's own token, so a "your devices" UI can label one row
     without this API ever exposing a token or its hash. Wraps
     `SessionStore.ListSessions` and then applies the same
@@ -309,6 +312,25 @@ or gave one the server refused.
     without this filter an expired row would still list as active until
     someone happened to present its token and trip `requireAuth`'s own
     opportunistic cleanup.
+  - `POST /api/v1/sessions` `{token_hash, label?, client_kind?}` —
+    auth-gated (LOOM-268; design in `docs/design/tui-client-design.md`,
+    "The link flow"). A logged-in session approves a session for a token
+    another client made, by its hash: `token_hash` is `hex(sha256(token))`,
+    64 lowercase hex digits, which is all the server ever stores of a
+    token. The terminal client, which can't reach the login behind the
+    deployment's auth proxy and never holds the password, makes its own
+    token, shows the hash to the browser and polls `GET /api/v1/sessions`
+    with the token (`401`) until this call makes the session exist
+    (`200`). Returns `201` with the new session's row (`current: false`).
+    `label` is at most 64 characters with no control characters;
+    `client_kind` is `tui`, `app`, `web` or left out (`400` otherwise,
+    and for a malformed hash). `409` if a session already has the hash.
+    `403` unless the caller's own session was made by `POST
+    /api/v1/login`: a linked session can't link another, so a stolen
+    terminal token can't mint itself successors that outlive its
+    revocation. A linked session has the same sliding window and
+    absolute lifetime as any other, and is revoked like any other.
+    `POST /api/v1/login` now marks its sessions `client_kind: web`.
   - `DELETE /api/v1/sessions/{id}` — auth-gated (LOOM-47), revokes any
     session by id — the same underlying operation as `/logout`,
     generalized to any id from `GET /api/v1/sessions` (e.g. signing
@@ -541,7 +563,8 @@ or gave one the server refused.
       `client_label` is at most 64 characters with no control characters.
       `mode` is `drive` (the default); `watch` is `400` (code
       `unsupported_mode`) until watch holds exist, and never answered
-      with a drive hold. `client_kind` is empty until sessions carry one.
+      with a drive hold. `client_kind` is the caller's session's
+      (LOOM-268), and so is `client_label` when the takeover sends none.
       The task's active drive hold is checked before its status. Held by
       the caller's own session: that hold is renewed and returned
       (idempotent; its lease length and label stay as first taken). Held
@@ -818,6 +841,9 @@ task := srv.SeedPrompt("conv-1", registry.Attention{})
   `SeedMessage`, `SeedPrompt` (a `needs_attention` task), `SeedFailedTask`,
   `SeedOffer` (a pending confirmation), `SeedTurn` (a transcript entry) and
   `SetTaskStatus` (a status change an open stream reports).
+  `SeedLinkedSession` returns the token of a session as the link flow
+  leaves it (a terminal's), and `TokenHash` is the hash `POST
+  /api/v1/sessions` takes.
 - **Not configured:** plugins, machines, credentials, SSH keys, router
   settings, web bundles and health checks answer as on a server without
   them. `WithAPIOptions` adds any `api.Option`; `WithClock` sets the clock

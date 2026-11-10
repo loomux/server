@@ -1273,9 +1273,9 @@ func (s *Store) CreateSession(ctx context.Context, sess *registry.Session) error
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, token_hash, created_at, last_used_at)
-		VALUES (?, ?, ?, ?)`,
-		sess.ID, sess.TokenHash, sess.CreatedAt, sess.LastUsedAt,
+		INSERT INTO sessions (id, token_hash, created_at, last_used_at, label, client_kind, origin)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.TokenHash, sess.CreatedAt, sess.LastUsedAt, sess.Label, sess.ClientKind, sess.Origin,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: session with this token already exists", registry.ErrConflict)
@@ -1286,7 +1286,7 @@ func (s *Store) CreateSession(ctx context.Context, sess *registry.Session) error
 	return nil
 }
 
-const sessionColumns = `id, token_hash, created_at, last_used_at`
+const sessionColumns = `id, token_hash, created_at, last_used_at, label, client_kind, origin`
 
 func (s *Store) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*registry.Session, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE token_hash = ?`, tokenHash)
@@ -1389,7 +1389,7 @@ func (s *Store) deleteInBatches(ctx context.Context, table, where string, args .
 
 func scanSession(row rowScanner) (*registry.Session, error) {
 	var sess registry.Session
-	if err := row.Scan(&sess.ID, &sess.TokenHash, &sess.CreatedAt, &sess.LastUsedAt); err != nil {
+	if err := row.Scan(&sess.ID, &sess.TokenHash, &sess.CreatedAt, &sess.LastUsedAt, &sess.Label, &sess.ClientKind, &sess.Origin); err != nil {
 		return nil, err
 	}
 	return &sess, nil

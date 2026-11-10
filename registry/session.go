@@ -19,4 +19,40 @@ type Session struct {
 	// task/workspace status transitions are decided by orchestrator/router,
 	// not by registry.
 	LastUsedAt time.Time
+	// Label names the device the session is on ("laptop"), ClientKind
+	// the client holding it (a SessionKind value, or empty when unknown),
+	// both for a person choosing which session to revoke (LOOM-268).
+	Label      string
+	ClientKind string
+	// Origin is how the session was made: SessionOriginLogin or
+	// SessionOriginLink. Only a login session may approve a link, so a
+	// stolen linked token can't mint itself successors. Empty is treated
+	// as not a login.
+	Origin string
+}
+
+// How a session was made (Session.Origin).
+const (
+	// SessionOriginLogin: with the password, at POST /api/v1/login.
+	SessionOriginLogin = "login"
+	// SessionOriginLink: approved from a login session, which never saw
+	// its token (the terminal's link flow, POST /api/v1/sessions).
+	SessionOriginLink = "link"
+)
+
+// The clients a session can say it is (Session.ClientKind).
+const (
+	SessionKindWeb = "web"
+	SessionKindTUI = "tui"
+	SessionKindApp = "app"
+)
+
+// ValidSessionKind reports whether kind is a known client kind, or empty
+// (unknown).
+func ValidSessionKind(kind string) bool {
+	switch kind {
+	case "", SessionKindWeb, SessionKindTUI, SessionKindApp:
+		return true
+	}
+	return false
 }
