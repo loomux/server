@@ -192,8 +192,9 @@ type Store interface {
 	// change, as one transaction: a human takeover. Like TransitionTask
 	// it is a compare-and-set on the task's status: unless the stored
 	// status is still from, nothing is written and applied is false.
-	// When t.Status differs from from, t is written as TransitionTask
-	// writes it; when they are equal the task is left untouched. A task
+	// When t.Status differs from from, the task's status (and nothing
+	// else of t, which may be older than the row) is written; when they
+	// are equal the task is left untouched. A task
 	// that already has an active drive hold is ErrTaskHeld, unless
 	// replace is set: then that hold is ended with replace as its reason
 	// at h.AcquiredAt, and returned as ended. ErrNotFound for an unknown
@@ -209,7 +210,8 @@ type Store interface {
 	// hold past its ExpiresAt is still listed until it is ended.
 	ListActiveTaskHolds(ctx context.Context) ([]*TaskHold, error)
 	// RenewTaskHold renews an active hold at at (RenewedAt at, ExpiresAt
-	// at + its TTL) and returns it. An ended hold is left as it is and
+	// at + its TTL unless it is already later: a renewal never shortens
+	// a lease) and returns it. An ended hold is left as it is and
 	// returned with ErrHoldEnded; ErrNotFound if unknown.
 	RenewTaskHold(ctx context.Context, id string, at time.Time) (*TaskHold, error)
 	// EndTaskHold ends an active hold with reason at at and returns it

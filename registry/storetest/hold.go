@@ -270,6 +270,14 @@ func testTaskHoldRenew(t *testing.T, s registry.Store) {
 	if got, _ := s.GetTaskHold(ctx, "h1"); !got.RenewedAt.Equal(renewed) || !got.ExpiresAt.Equal(expires) {
 		t.Errorf("stored after renew = %+v", got)
 	}
+	// A renewal that would end the lease earlier (two heartbeats landing
+	// out of order) doesn't move the expiry back.
+	if h, err := s.RenewTaskHold(ctx, "h1", at.Add(5*time.Second)); err != nil || !h.ExpiresAt.Equal(expires) {
+		t.Errorf("an older renewal = %+v, %v; want expires_at left at %v", h, err, expires)
+	}
+	if _, err := s.RenewTaskHold(ctx, "h1", renewed); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.RenewTaskHold(ctx, "no-such", renewed); !errors.Is(err, registry.ErrNotFound) {
 		t.Errorf("RenewTaskHold(unknown) = %v; want ErrNotFound", err)
 	}
@@ -483,15 +491,21 @@ func testTaskHoldAcquireDrive(t *testing.T, s registry.Store) {
 	tasks := holdTasks(t, s, "hold-acq", 2)
 	at := holdTime()
 
+	// The row gains a prompt after the caller read the task: the takeover
+	// writes the status only, never the caller's older copy of the rest.
 	task, from := takeover(t, s, tasks[0].ID)
-	task.Attention = &registry.Attention{Kind: registry.AttentionQuestion, Question: "which?"}
+	newer := *tasks[0]
+	newer.Attention = &registry.Attention{Kind: registry.AttentionQuestion, Question: "which?"}
+	if applied, err := s.TransitionTask(ctx, &newer, from); err != nil || !applied {
+		t.Fatalf("TransitionTask: %v, %v", applied, err)
+	}
 	ended, applied, err := s.AcquireDriveHold(ctx, driveHold("h1", task.ID, "sess-1", at), task, from, "")
 	if err != nil || !applied || ended != nil {
 		t.Fatalf("AcquireDriveHold = %+v, %v, %v; want nil, true, nil", ended, applied, err)
 	}
 	got, _ := s.GetTask(ctx, task.ID)
 	if got.Status != registry.TaskStatusHumanTakeover || got.Attention == nil || got.Attention.Question != "which?" {
-		t.Errorf("task after acquire = %s, attention %+v; want human-takeover with the attention as written", got.Status, got.Attention)
+		t.Errorf("task after acquire = %s, attention %+v; want human-takeover and the stored prompt kept", got.Status, got.Attention)
 	}
 	if h, err := s.GetActiveDriveHold(ctx, task.ID); err != nil || h.ID != "h1" || !h.ExpiresAt.Equal(at.Add(45*time.Second)) {
 		t.Errorf("active hold = %+v, %v", h, err)
@@ -650,10 +664,17 @@ func testTaskHoldRelease(t *testing.T, s registry.Store) {
 	ctx := context.Background()
 	tasks := holdTasks(t, s, "hold-rel", 2)
 	at := holdTime()
+	tasks[0].Status = registry.TaskStatusNeedsAttention
+	tasks[0].Attention = &registry.Attention{Kind: registry.AttentionPermission, Title: "Bash command"}
+	if err := s.UpdateTask(ctx, tasks[0]); err != nil {
+		t.Fatal(err)
+	}
 	task, from := takeover(t, s, tasks[0].ID)
-	task.Attention = &registry.Attention{Kind: registry.AttentionPermission, Title: "Bash command"}
 	if _, applied, err := s.AcquireDriveHold(ctx, driveHold("h1", task.ID, "sess-1", at), task, from, ""); err != nil || !applied {
 		t.Fatalf("acquire = %v, %v", applied, err)
+	}
+	if held, _ := s.GetTask(ctx, task.ID); held.Attention == nil {
+		t.Fatal("the prompt was cleared by the takeover; it is the release that clears it")
 	}
 
 	releasedAt := at.Add(time.Minute)

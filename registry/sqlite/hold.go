@@ -79,14 +79,14 @@ func (s *Store) AcquireDriveHold(ctx context.Context, h *registry.TaskHold, t *r
 		return nil, false, err
 	}
 	if t.Status != from {
-		applied, err := transitionTask(ctx, tx, t, from)
-		if err != nil {
-			return nil, false, err
+		// Only the status: the rest of t was read before this
+		// transaction, and may be older than the row.
+		updatedAt := time.Now().UTC()
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+			string(t.Status), updatedAt, t.ID, string(from)); err != nil {
+			return nil, false, fmt.Errorf("sqlite: acquire drive hold: %w", err)
 		}
-		if !applied {
-			// Read as from above, in this transaction.
-			return nil, false, fmt.Errorf("sqlite: acquire drive hold: task %q changed inside the transaction", t.ID)
-		}
+		t.UpdatedAt = updatedAt
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("sqlite: acquire drive hold: %w", err)
@@ -201,7 +201,11 @@ func (s *Store) RenewTaskHold(ctx context.Context, id string, at time.Time) (*re
 		return h, fmt.Errorf("%w: hold %q (%s)", registry.ErrHoldEnded, id, h.EndedReason)
 	}
 	h.RenewedAt = at.UTC()
-	h.ExpiresAt = h.RenewedAt.Add(h.TTL)
+	// Never backwards: two renewals may commit out of order, and the
+	// restart grace may already have moved the expiry further out.
+	if expires := h.RenewedAt.Add(h.TTL); expires.After(h.ExpiresAt) {
+		h.ExpiresAt = expires
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE task_holds SET renewed_at = ?, expires_at = ?
 		WHERE id = ? AND ended_at IS NULL`, h.RenewedAt, h.ExpiresAt, id); err != nil {
 		return nil, fmt.Errorf("sqlite: renew task hold: %w", err)
