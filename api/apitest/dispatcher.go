@@ -2,6 +2,7 @@ package apitest
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
@@ -51,7 +52,7 @@ const DefaultReply = "ok"
 
 func newDispatcher(store registry.Store) *Dispatcher {
 	d := &Dispatcher{store: store}
-	d.jobs = dispatch.New(store, d.run)
+	d.jobs = dispatch.New(store, d.run, dispatch.WithLogger(slog.New(slog.DiscardHandler)))
 	return d
 }
 

@@ -568,3 +568,69 @@ func TestExecutor(t *testing.T) {
 		t.Error("typing into a killed session succeeded")
 	}
 }
+
+// Tests that each start a server may run in parallel, under -race.
+func TestParallelServers(t *testing.T) {
+	for range 4 {
+		t.Run("server", func(t *testing.T) {
+			t.Parallel()
+			srv := apitest.New(t)
+			task := srv.SeedTask(apitest.Task{})
+			if status, out := call(t, srv, srv.Login(), "POST", "/tasks/"+task.ID+"/takeover", nil); status != http.StatusOK {
+				t.Errorf("takeover = %d %v", status, out)
+			}
+		})
+	}
+}
+
+// A test that ends with a dispatch still blocked (it failed before its
+// release, say) is torn down promptly: neither a job left running nor a
+// request left waiting on it holds the cleanup up.
+func TestCleanupWithBlockedDispatches(t *testing.T) {
+	start := time.Now()
+	t.Run("blocked", func(t *testing.T) {
+		srv := apitest.New(t)
+		token := srv.Login()
+		srv.Dispatcher.Block() // never released
+		if status, out := call(t, srv, token, "POST", "/dispatch", map[string]string{"conversation_id": "c1", "message": "async"}, "Prefer", "respond-async"); status != http.StatusAccepted {
+			t.Fatalf("async dispatch = %d %v", status, out)
+		}
+		go func() {
+			// A blocking request, still waiting when the test ends.
+			req, _ := http.NewRequest("POST", srv.URL+"/api/v1/dispatch?wait=true", strings.NewReader(`{"conversation_id":"c2","message":"wait"}`))
+			req.Header.Set("Authorization", "Bearer "+token)
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				resp.Body.Close()
+			}
+		}()
+		deadline := time.Now().Add(5 * time.Second)
+		for len(srv.Dispatcher.Dispatches()) < 2 {
+			if time.Now().After(deadline) {
+				t.Fatal("the dispatches never started")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("teardown with blocked dispatches took %s", took)
+	}
+}
+
+// Seeding from several goroutines at once is safe.
+func TestConcurrentSeeding(t *testing.T) {
+	srv := apitest.New(t)
+	done := make(chan *registry.Task, 8)
+	for range 8 {
+		go func() { done <- srv.SeedTask(apitest.Task{}) }()
+	}
+	ws := ""
+	for range 8 {
+		task := <-done
+		if ws == "" {
+			ws = task.WorkspaceID
+		}
+		if task.WorkspaceID != ws {
+			t.Errorf("tasks landed in workspaces %s and %s; want the one default", ws, task.WorkspaceID)
+		}
+	}
+}

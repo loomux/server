@@ -75,6 +75,8 @@ func (s *Server) SeedWorkspace(name string, target *registry.Target) *registry.W
 // "apitest", on a target of its own.
 func (s *Server) defaultWorkspace() *registry.Workspace {
 	s.tb.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.workspace == nil {
 		s.workspace = s.SeedWorkspace("apitest", nil)
 	}
@@ -108,9 +110,10 @@ type Task struct {
 	OutputTail    string
 }
 
-// SeedTask stores a task and gives it a session on the Executor (none
-// for a completed task: its pane is gone). The task is as a turn would
-// have left it: nothing is running for it.
+// SeedTask stores a task and gives it a session on the Executor, except
+// a completed task, whose pane is taken to be gone. (A failed task gets
+// one whatever its class, so every failed pane can be attached to.) The
+// task is as a turn would have left it: nothing is running for it.
 func (s *Server) SeedTask(seed Task) *registry.Task {
 	s.tb.Helper()
 	ctx := context.Background()

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -86,16 +87,9 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: open %s: %w", path, err)
 	}
 
-	goose.SetTableName("schema_migrations")
-	goose.SetBaseFS(migrationsFS)
-	goose.SetLogger(goose.NopLogger())
-	if err := goose.SetDialect("sqlite3"); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("sqlite: set migration dialect: %w", err)
-	}
-	if err := goose.Up(db, "migrations"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("sqlite: run migrations: %w", err)
+		return nil, err
 	}
 
 	s := &Store{db: db, retentionBatch: defaultRetentionBatch, logger: slog.Default()}
@@ -113,6 +107,27 @@ func Open(path string, opts ...Option) (*Store, error) {
 		}
 	}
 	return s, nil
+}
+
+// migrateMu serialises migrate: goose keeps its table name, file system,
+// logger and dialect in package variables, so two stores opened at once
+// (parallel tests, each with a database of its own) would race on them.
+var migrateMu sync.Mutex
+
+// migrate applies every pending migration to db.
+func migrate(db *sql.DB) error {
+	migrateMu.Lock()
+	defer migrateMu.Unlock()
+	goose.SetTableName("schema_migrations")
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("sqlite: set migration dialect: %w", err)
+	}
+	if err := goose.Up(db, "migrations"); err != nil {
+		return fmt.Errorf("sqlite: run migrations: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying database connection.

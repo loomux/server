@@ -20,8 +20,10 @@
 // endpoints aren't configured and answer as an unconfigured server does;
 // pass api options through WithAPIOptions to add any.
 //
-// Everything is torn down by the test's cleanup. The package is for
-// tests: it isn't linked into loomuxd.
+// Everything is torn down by the test's cleanup, including streams left
+// open and dispatches left blocked. Servers are independent of one
+// another, so tests that each call New may run in parallel. The package
+// is for tests: it isn't linked into loomuxd.
 package apitest
 
 import (
@@ -31,6 +33,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,14 +75,17 @@ type Server struct {
 	Dispatcher *Dispatcher
 	// Executor is the in-memory target every task's session lives on.
 	Executor *Executor
-	// API is the api.Server itself (for EndStreams, or to serve it
-	// through a handler of the test's own).
+	// API is the api.Server itself, to serve it through a handler of the
+	// test's own. Don't call its EndStreams to test a client's reconnect:
+	// it is the server's shutdown step, and every stream opened after it
+	// ends at once.
 	API *api.Server
 
 	tb   testing.TB
 	orch *orchestrator.Orchestrator
 	seq  atomic.Int64
-	// workspace is the default workspace, made on first use.
+	// workspace is the default workspace, made on first use under mu.
+	mu        sync.Mutex
 	workspace *registry.Workspace
 }
 
@@ -149,12 +155,16 @@ func New(tb testing.TB, opts ...Option) *Server {
 	s.URL = httpSrv.URL
 
 	tb.Cleanup(func() {
-		// Streams never end by themselves, and Close waits for them.
+		// httpSrv.Close waits for every request, so what never ends by
+		// itself is ended first: streams, then dispatches still running
+		// (a test server has nothing to drain: they are cancelled at
+		// once), then requests still waiting on one.
 		s.API.EndStreams()
-		httpSrv.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
 		_ = s.Dispatcher.jobs.Shutdown(ctx)
+		httpSrv.CloseClientConnections()
+		httpSrv.Close()
 		if err := store.Close(); err != nil {
 			tb.Errorf("apitest: close store: %v", err)
 		}
