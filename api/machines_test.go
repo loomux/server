@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -106,7 +107,12 @@ func (s *stubMachines) AttachCommands(ctx context.Context, id, session string) (
 	if _, ok := s.envs[id]; !ok {
 		return nil, providers.ErrNotMachine
 	}
-	return []protocol.AttachCommand{{Via: "kubectl", Command: "kubectl exec -it lx-abc -- tmux -L loomux attach -t " + session}}, nil
+	argv := []string{"kubectl", "exec", "-it", "lx-abc", "--", "tmux", "-L", "loomux", "attach", "-t", session}
+	return []protocol.AttachCommand{
+		{Via: "kubectl", Command: strings.Join(argv, " "), Argv: argv},
+		// As a plugin from before LOOM-269 answers: no argv.
+		{Via: "legacy", Command: "legacy attach " + session},
+	}, nil
 }
 
 func machineServer(t *testing.T) (base, token string, stub *stubMachines, store registry.Store) {
@@ -405,5 +411,79 @@ func TestCredentials_TargetScope(t *testing.T) {
 	}
 	if status, body := doJSON(t, "POST", base+"/api/v1/credentials", token, map[string]string{"name": "X", "value": "v", "target_id": "no-such-target"}); status != http.StatusBadRequest || !strings.Contains(body, "target") {
 		t.Errorf("unknown target: %d %s", status, body)
+	}
+}
+
+// LOOM-269: each attach command also comes as argv, the arguments to
+// execute directly with no shell. A plugin's is passed through, one from
+// a plugin that sends none is absent, and the ssh form's last argument is
+// the whole remote command, which the line to paste quotes.
+func TestAttachInfo_Argv(t *testing.T) {
+	base, token, stub, store := machineServer(t)
+	ctx := context.Background()
+	target := &registry.Target{ID: "m1", Name: "box", Kind: registry.TargetKindRemote, Host: "10.0.0.7", User: "agent", SSHPort: 2222}
+	if err := store.CreateTarget(ctx, target); err != nil {
+		t.Fatal(err)
+	}
+	stub.envs[target.ID] = &registry.Environment{ID: "abc", TargetID: target.ID}
+	plain := &registry.Target{ID: "r1", Name: "jet01", Kind: registry.TargetKindRemote, Host: "jet01.example.com", User: "orski"}
+	if err := store.CreateTarget(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	local := &registry.Target{ID: "l1", Name: "here", Kind: registry.TargetKindLocal}
+	if err := store.CreateTarget(ctx, local); err != nil {
+		t.Fatal(err)
+	}
+	for _, tg := range []*registry.Target{target, plain, local} {
+		ws := &registry.Workspace{ID: "ws-" + tg.ID, Name: "ws-" + tg.ID, Path: "/w", TargetID: tg.ID, Status: registry.WorkspaceStatusIdle}
+		if err := store.CreateWorkspace(ctx, ws); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateTask(ctx, &registry.Task{ID: "t-" + tg.ID, WorkspaceID: ws.ID, Kind: registry.TaskKindAgent,
+			TmuxSession: "loomux-" + tg.ID, Status: registry.TaskStatusAwaitingInput}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type cmd struct {
+		Via     string   `json:"via"`
+		Command string   `json:"command"`
+		Argv    []string `json:"argv"`
+	}
+	get := func(task string) []cmd {
+		t.Helper()
+		status, body := doJSON(t, http.MethodGet, base+"/api/v1/tasks/"+task+"/attach-info", token, nil)
+		var out struct {
+			AttachCommands []cmd `json:"attach_commands"`
+		}
+		if err := json.Unmarshal([]byte(body), &out); err != nil || status != http.StatusOK {
+			t.Fatalf("attach-info %s = %d %s: %v", task, status, body, err)
+		}
+		return out.AttachCommands
+	}
+
+	got := get("t-m1")
+	if len(got) != 3 {
+		t.Fatalf("attach_commands = %+v; want the plugin's two, then ssh", got)
+	}
+	wantKubectl := []string{"kubectl", "exec", "-it", "lx-abc", "--", "tmux", "-L", "loomux", "attach", "-t", "loomux-m1"}
+	if got[0].Via != "kubectl" || !slices.Equal(got[0].Argv, wantKubectl) || got[0].Command != strings.Join(wantKubectl, " ") {
+		t.Errorf("plugin command = %+v", got[0])
+	}
+	if got[1].Via != "legacy" || got[1].Argv != nil || got[1].Command != "legacy attach loomux-m1" {
+		t.Errorf("a command with no argv = %+v; want it passed on without one", got[1])
+	}
+	remote := "tmux -L loomux attach -t loomux-m1"
+	if got[2].Via != "ssh" || !slices.Equal(got[2].Argv, []string{"ssh", "-p", "2222", "agent@10.0.0.7", "-t", remote}) ||
+		got[2].Command != "ssh -p 2222 agent@10.0.0.7 -t '"+remote+"'" {
+		t.Errorf("ssh command = %+v", got[2])
+	}
+
+	got = get("t-r1")
+	if len(got) != 1 || !slices.Equal(got[0].Argv, []string{"ssh", "orski@jet01.example.com", "-t", "tmux -L loomux attach -t loomux-r1"}) ||
+		got[0].Command != "ssh orski@jet01.example.com -t 'tmux -L loomux attach -t loomux-r1'" {
+		t.Errorf("ssh on the default port = %+v", got)
+	}
+	if got := get("t-l1"); len(got) != 0 {
+		t.Errorf("a local target's attach_commands = %+v; want none", got)
 	}
 }

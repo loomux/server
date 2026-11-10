@@ -159,7 +159,7 @@ Methods the host calls (every one has a per-call deadline, 30 s unless noted):
 | `targets.get(id)`, `targets.list()` | `list` returns every environment carrying this instance's label, whether or not the host knows it (reconcile, orphans) |
 | `targets.start(id)`, `targets.stop(id)`, `targets.recreate(id, spec)`, `targets.destroy(id)` | lifecycle; each idempotent and safe to repeat after a crash (2 min) |
 | `targets.health(id)` → `{status, reason, restarts, image_digest}` | the plugin's own view; SSH reachability is the host's probe |
-| `targets.attach_commands(id, session, socket)` → `[{via, command}]` | the `kubectl exec` / `docker exec` form of attach for a person, onto `socket`: the instance's tmux socket the host runs the machine's sessions on (LOOM-210; absent from an older host, `loomux`) |
+| `targets.attach_commands(id, session, socket)` → `[{via, command, argv?}]` (`argv`, LOOM-269: the same command as arguments to execute directly, with no shell; absent from an older plugin) | the `kubectl exec` / `docker exec` form of attach for a person, onto `socket`: the instance's tmux socket the host runs the machine's sessions on (LOOM-210; absent from an older host, `loomux`) |
 
 A plugin may send the notification `targets.changed {id, status}` on the same channel; the host treats it as
 a hint to poll sooner and never as the truth. The SDK sends it for a plugin that implements `sdk.Notifying`
@@ -630,7 +630,7 @@ All additions; nothing existing changes shape or meaning. Each is recorded in th
 **Credentials**: `POST /api/v1/credentials` accepts `target_id`; `GET` lists it; the uniqueness rule becomes one
 name per (workspace, target, agent_type) scope.
 
-**Attach-info**: gains `attach_commands: [{via, command}]` beside the unchanged `attach_command`, from the
+**Attach-info**: gains `attach_commands: [{via, command, argv?}]` beside the unchanged `attach_command`, from the
 plugin's `targets.attach_commands`: for a Kubernetes machine `via: "kubectl"`, `kubectl -n <ns> exec -it
 <pod> -- tmux -L <socket> attach -t <session>` (the pod's DNS name isn't resolvable from a laptop; this is);
 for Docker `via: "docker"`, `ssh <host> docker exec -it <container> tmux -L <socket> attach -t <session>`;
@@ -638,6 +638,11 @@ for Docker `via: "docker"`, `ssh <host> docker exec -it <container> tmux -L <soc
 image starts no tmux itself and the host runs every session over ssh on that socket (LOOM-210);
 `via: "ssh"` with the plain form for every target. The host validates the returned commands against a
 grammar (no newlines or control characters, bounded) and shows them as text; it never runs them.
+Each command also carries `argv` (LOOM-269): the same command as the arguments a client executes directly,
+with no shell, so nothing has to be split or quoted. The plugin returns it beside `command`; the host bounds
+it (at most 64 arguments and 2048 bytes, a program named, no NUL or line break) and drops an `argv` that
+fails, offering the command without one, as it does for a plugin that sends none. The ssh form's `argv` is
+`ssh [-p <port>] <user>@<host> -t "<remote command>"`, the remote command one argument.
 
 **Health and metrics**: `GET /health/deep` gains a `plugins` component (each instance's `check`);
 `loomux_plugins{plugin,status}`, `loomux_environments{plugin,status}` and

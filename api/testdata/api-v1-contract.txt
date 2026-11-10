@@ -700,6 +700,7 @@ GET /api/v1/tasks/{id}/attach-info request-header Authorization
 GET /api/v1/tasks/{id}/attach-info response - object
 GET /api/v1/tasks/{id}/attach-info response .attach_command string
 GET /api/v1/tasks/{id}/attach-info response .attach_commands []object
+GET /api/v1/tasks/{id}/attach-info response .attach_commands[].argv []string omitempty
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].command string
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].via string
 GET /api/v1/tasks/{id}/attach-info response .target object

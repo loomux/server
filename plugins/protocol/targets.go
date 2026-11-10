@@ -180,9 +180,15 @@ type EnvironmentHealth struct {
 }
 
 // AttachCommand is one way a person attaches to a machine's tmux.
+// Command is the line to show and to paste into a shell. Argv (LOOM-269)
+// is the same command as the arguments a program executes directly, with
+// no shell and so nothing to quote or split: Argv[0] is the program,
+// looked up on PATH. A plugin from before LOOM-269 sends none, and the
+// host then offers the command without one.
 type AttachCommand struct {
-	Via     string `json:"via"`
-	Command string `json:"command"`
+	Via     string   `json:"via"`
+	Command string   `json:"command"`
+	Argv    []string `json:"argv,omitempty"`
 }
 
 // Parameters of the id-taking methods.

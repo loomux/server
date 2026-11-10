@@ -1295,9 +1295,35 @@ func (m *Manager) AttachCommands(ctx context.Context, targetID, session string) 
 		if c.Via == "" || c.Command == "" || len(c.Command) > 512 || strings.ContainsAny(c.Command, "\r\n\x00") {
 			continue
 		}
-		out = append(out, protocol.AttachCommand{Via: truncate(c.Via, 32), Command: c.Command})
+		out = append(out, protocol.AttachCommand{Via: truncate(c.Via, 32), Command: c.Command, Argv: validAttachArgv(c.Argv)})
 	}
 	return out, nil
+}
+
+// Bounds on a plugin's attach argv (LOOM-269): what it may hold is a
+// short command line, not a payload.
+const (
+	maxAttachArgs     = 64
+	maxAttachArgvSize = 2048
+)
+
+// validAttachArgv is argv if a client may execute it as given, else nil:
+// the command is then offered without one, as from a plugin that sends
+// none. It must name a program, and no argument may hold a NUL (which
+// can't be passed to a program) or a line break (which has no place in
+// an attach command, and would be shown to a person).
+func validAttachArgv(argv []string) []string {
+	if len(argv) == 0 || len(argv) > maxAttachArgs || argv[0] == "" {
+		return nil
+	}
+	size := 0
+	for _, arg := range argv {
+		size += len(arg) + 1
+		if size > maxAttachArgvSize || strings.ContainsAny(arg, "\r\n\x00") {
+			return nil
+		}
+	}
+	return append([]string(nil), argv...)
 }
 
 // EnsureRunning starts a stopped machine and waits for it to be

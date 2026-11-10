@@ -213,6 +213,10 @@ func TestLifecycle(t *testing.T) {
 	if err != nil || len(cmds) != 1 || cmds[0].Via != "fake" || !strings.Contains(cmds[0].Command, env.ID) {
 		t.Errorf("AttachCommands = %+v, %v", cmds, err)
 	}
+	// LOOM-269: the plugin's argv comes through with the command.
+	if len(cmds) == 1 && (len(cmds[0].Argv) == 0 || cmds[0].Argv[0] != "fake" || strings.Join(cmds[0].Argv, " ") != cmds[0].Command) {
+		t.Errorf("AttachCommands argv = %q, command %q", cmds[0].Argv, cmds[0].Command)
+	}
 	// LOOM-210: the plugin is told the instance's socket, the one the
 	// machine's sessions run on (its executor's), and attaches onto it;
 	// unset, the default. (The executor is made without the target's

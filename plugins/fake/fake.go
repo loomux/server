@@ -535,7 +535,8 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket s
 	if !ok {
 		return nil, notFound(id)
 	}
-	return []protocol.AttachCommand{{Via: "fake", Command: "fake attach " + id + " -- tmux -L " + socket + " attach -t " + session}}, nil
+	argv := []string{"fake", "attach", id, "--", "tmux", "-L", socket, "attach", "-t", session}
+	return []protocol.AttachCommand{{Via: "fake", Command: strings.Join(argv, " "), Argv: argv}}, nil
 }
 
 // Machines is a snapshot of the fake's machines, for tests.

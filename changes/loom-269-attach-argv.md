@@ -1,0 +1,3 @@
+### Added
+
+- Each entry of attach-info's `attach_commands` now also carries `argv`: the same command as the arguments a client executes directly, with no shell, so a client doesn't have to split or quote the `command` line (LOOM-269, the terminal client's S8). The kubernetes and docker plugins return it through a new optional `argv` field of the plugin protocol's `targets.attach_commands`, and the server builds it for the plain ssh form (`ssh [-p <port>] <user>@<host> -t "<remote command>"`). `command` is unchanged. `argv` is left out for a plugin that doesn't send one, and for one whose `argv` the server refuses (more than 64 arguments or 2048 bytes, no program, a NUL or a line break).

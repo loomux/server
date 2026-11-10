@@ -263,7 +263,10 @@ refuses its connection fields (`400`). `POST /credentials` takes
 target is deleted (a registered host's too), and one scoped to a
 workspace may name only the workspace's own target (`400`).
 Attach-info's `attach_commands` lists the plugin's ways in and the
-plain ssh form.
+plain ssh form. Each entry is `{via, command, argv?}`: `command` is the
+line to show or paste, `argv` (LOOM-269) the same command as arguments to
+execute directly with no shell. `argv` is absent when a plugin gave none
+or gave one the server refused.
 
 ## Layout
 
