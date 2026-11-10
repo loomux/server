@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -352,10 +353,12 @@ func TestTakeover_Validation(t *testing.T) {
 		"ttl zero":         {map[string]any{"ttl_seconds": 0}, "invalid_request"},
 		"ttl negative":     {map[string]any{"ttl_seconds": -45}, "invalid_request"},
 		"ttl overflow":     {map[string]any{"ttl_seconds": 9223372036854775807}, "invalid_request"},
-		"label too long":   {map[string]any{"client_label": strings.Repeat("x", 65)}, "invalid_request"},
-		"label control":    {map[string]any{"client_label": "lap\x1b[31mtop"}, "invalid_request"},
-		"label newline":    {map[string]any{"client_label": "lap\ntop"}, "invalid_request"},
-		"wrong type":       {map[string]any{"force": "yes"}, "invalid_request"},
+		// 2^55 + 45: as a Duration in seconds it wraps to exactly 45s.
+		"ttl wraps to 45": {map[string]any{"ttl_seconds": 36028797018964013}, "invalid_request"},
+		"label too long":  {map[string]any{"client_label": strings.Repeat("x", 65)}, "invalid_request"},
+		"label control":   {map[string]any{"client_label": "lap\x1b[31mtop"}, "invalid_request"},
+		"label newline":   {map[string]any{"client_label": "lap\ntop"}, "invalid_request"},
+		"wrong type":      {map[string]any{"force": "yes"}, "invalid_request"},
 	} {
 		status, out := h.post("t1/takeover", h.tokenA, tc.body)
 		if status != http.StatusBadRequest || out.Code != tc.code || out.Error == "" || out.Hold != nil {
@@ -433,5 +436,66 @@ func TestHolds_NotConfigured(t *testing.T) {
 		if status != http.StatusNotImplemented || !strings.Contains(body, `"code":"not_implemented"`) {
 			t.Errorf("%s = %d %s; want 501 not_implemented", path, status, body)
 		}
+	}
+}
+
+// A task that ends while it is held (nothing ends its hold yet): another
+// session is told it has ended, with or without force, rather than sent
+// from "held, use force" to "ended".
+func TestTakeover_HeldTaskEnded(t *testing.T) {
+	h := newHoldServer(t)
+	h.task("t1", registry.TaskStatusAwaitingInput, "")
+	_, taken := h.post("t1/takeover", h.tokenA, nil)
+	task, _ := h.store.GetTask(context.Background(), "t1")
+	task.Status = registry.TaskStatusCompleted
+	if applied, err := h.store.TransitionTask(context.Background(), task, registry.TaskStatusHumanTakeover); err != nil || !applied {
+		t.Fatalf("TransitionTask: %v, %v", applied, err)
+	}
+	for _, body := range []any{nil, map[string]any{"force": true}} {
+		status, out := h.post("t1/takeover", h.tokenB, body)
+		if status != http.StatusConflict || out.Code != "task_inactive" {
+			t.Errorf("another session, body %v = %d %+v; want 409 task_inactive", body, status, out)
+		}
+	}
+	// The holder can still release; the task stays completed.
+	status, rel := h.post("t1/release", h.tokenA, map[string]string{"hold_id": taken.Hold.ID})
+	if status != http.StatusOK || rel.Status != "completed" || rel.Hold.EndedReason != "released" {
+		t.Errorf("release of a hold on an ended task = %d %+v", status, rel)
+	}
+}
+
+// "The body may be left out" also holds for a client that sends a
+// bodiless POST chunked, or only whitespace.
+func TestHolds_EmptyChunkedBody(t *testing.T) {
+	h := newHoldServer(t)
+	h.task("t1", registry.TaskStatusAwaitingInput, "")
+	send := func(path, body string) (int, holdAnswer) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, h.base+"/api/v1/tasks/"+path, struct{ io.Reader }{strings.NewReader(body)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+h.tokenA)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out holdAnswer
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	if status, out := send("t1/takeover", ""); status != http.StatusOK || out.Hold == nil {
+		t.Fatalf("chunked takeover with no body = %d %+v", status, out)
+	}
+	if status, out := send("t1/release", " \n"); status != http.StatusOK || out.Status != "awaiting_input" {
+		t.Errorf("chunked release with a whitespace body = %d %+v", status, out)
+	}
+	// A chunked body with content is still read, and still validated.
+	if status, out := send("t1/takeover", ` {"ttl_seconds": 20}`); status != http.StatusOK || out.Hold.TTLSeconds != 20 {
+		t.Errorf("chunked takeover with a body = %d %+v", status, out)
+	}
+	if status, out := send("t1/takeover", `{"mode":`); status != http.StatusBadRequest {
+		t.Errorf("chunked malformed body = %d %+v; want 400", status, out)
 	}
 }

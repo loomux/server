@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -156,11 +158,34 @@ type releaseResponse struct {
 }
 
 // readOptionalJSON is readJSON for a body that may be left out: an empty
-// one leaves v as it is.
+// one, or one of only whitespace, leaves v as it is. A body sent chunked
+// has no length to tell by, so it is read to its first byte that isn't
+// whitespace, under readJSON's bounds.
 func readOptionalJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	if r.ContentLength == 0 {
 		return true
 	}
+	if r.ContentLength > 0 {
+		return readJSON(w, r, v)
+	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyReadTimeout))
+	br := bufio.NewReader(io.LimitReader(r.Body, maxRequestBody+1))
+	for {
+		c, err := br.ReadByte()
+		if err != nil {
+			// Nothing but whitespace (or nothing at all): no body.
+			_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
+			return true
+		}
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			_ = br.UnreadByte()
+			break
+		}
+	}
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(br, r.Body), r.Body}
 	return readJSON(w, r, v)
 }
 
@@ -207,11 +232,12 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	}
 	var ttl time.Duration
 	if req.TTLSeconds != nil {
-		ttl = time.Duration(*req.TTLSeconds) * time.Second
-		if *req.TTLSeconds <= 0 || ttl < orchestrator.MinHoldTTL || ttl > orchestrator.MaxHoldTTL {
+		// Compared as seconds: a huge value would wrap as a Duration.
+		if *req.TTLSeconds < int(orchestrator.MinHoldTTL/time.Second) || *req.TTLSeconds > int(orchestrator.MaxHoldTTL/time.Second) {
 			writeError(w, http.StatusBadRequest, "ttl_seconds must be 15 to 300")
 			return
 		}
+		ttl = time.Duration(*req.TTLSeconds) * time.Second
 	}
 	label, ok := cleanClientLabel(req.ClientLabel)
 	if !ok {

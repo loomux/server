@@ -95,7 +95,8 @@ type TakeoverResult struct {
 //     idempotent, and how a restarted client gets its own hold back.
 //   - Held by another session: *TaskHeldError with that hold, unless
 //     req.Force, which ends it as taken_over and gives this session a
-//     new one. The task stays as it is.
+//     new one. The task stays as it is. If the task ended while held
+//     (nothing ends its hold yet), it is ErrTaskInactive either way.
 //   - Not held: a running, awaiting-input or needs-attention task moves
 //     to human-takeover; one already in human-takeover with no hold (only
 //     possible from before holds existed) is taken where it stands. A
@@ -150,9 +151,15 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 				return nil, fmt.Errorf("orchestrator: takeover: %w", err)
 			}
 			return &TakeoverResult{Hold: renewed, Task: task, Renewed: true}, nil
-		case err == nil && !req.Force:
-			return nil, &TaskHeldError{Hold: held}
 		case err == nil:
+			// Another session's. If the task ended while it was held,
+			// say so rather than "held": forcing wouldn't get it either.
+			if _, err := heldStatus(task); err != nil {
+				return nil, err
+			}
+			if !req.Force {
+				return nil, &TaskHeldError{Hold: held}
+			}
 			replace = registry.HoldEndTakenOver
 		case !errors.Is(err, registry.ErrNotFound):
 			return nil, fmt.Errorf("orchestrator: takeover: %w", err)
