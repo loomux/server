@@ -57,8 +57,8 @@ func (s *Server) SeedTarget(name string) *registry.Target {
 	return target
 }
 
-// SeedWorkspace stores a workspace named name on target (the default
-// target's, when nil).
+// SeedWorkspace stores a workspace named name on target; with a nil
+// target, on a new one named name + "-target".
 func (s *Server) SeedWorkspace(name string, target *registry.Target) *registry.Workspace {
 	s.tb.Helper()
 	if target == nil {
