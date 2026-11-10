@@ -68,6 +68,28 @@ func TestSweep(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// LOOM-263: an ended hold goes with the confirmations, an active one
+	// never.
+	if err := store.CreateTarget(ctx, &registry.Target{ID: "t", Name: "t", Kind: registry.TargetKindLocal}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateWorkspace(ctx, &registry.Workspace{ID: "w", Name: "w", Path: "/w", TargetID: "t", Status: registry.WorkspaceStatusIdle}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"h-ended", "h-active"} {
+		if err := store.CreateTask(ctx, &registry.Task{ID: "k-" + id, WorkspaceID: "w", Kind: registry.TaskKindAgent,
+			TmuxSession: "loomux-" + id, Status: registry.TaskStatusHumanTakeover}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateTaskHold(ctx, &registry.TaskHold{ID: id, TaskID: "k-" + id, SessionID: "s", Mode: registry.HoldModeDrive,
+			TTL: time.Minute, AcquiredAt: start}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := store.EndTaskHold(ctx, "h-ended", registry.HoldEndReleased, start); err != nil {
+		t.Fatal(err)
+	}
+
 	now := start
 	var logs bytes.Buffer
 	m := metrics.NewDiscard()
@@ -81,14 +103,14 @@ func TestSweep(t *testing.T) {
 		at   time.Duration
 		want retention.Counts
 	}{
-		{0, retention.Counts{Sessions: 1}},             // s-old
-		{3 * day, retention.Counts{Sessions: 1}},       // s-grace, 8 days after it slid out
-		{29 * day, retention.Counts{}},                 // c-done is 29 days old
-		{31 * day, retention.Counts{Confirmations: 1}}, // c-done
-		{89 * day, retention.Counts{}},                 // d-done is 89 days old
-		{91 * day, retention.Counts{Dispatches: 1}},    // d-done; s-max's lifetime ended a day ago
-		{98 * day, retention.Counts{Sessions: 1}},      // s-max, 8 days after its lifetime ended
-		{1000 * day, retention.Counts{}},               // nothing else ever goes
+		{0, retention.Counts{Sessions: 1}},                           // s-old
+		{3 * day, retention.Counts{Sessions: 1}},                     // s-grace, 8 days after it slid out
+		{29 * day, retention.Counts{}},                               // c-done is 29 days old
+		{31 * day, retention.Counts{Confirmations: 1, TaskHolds: 1}}, // c-done, h-ended
+		{89 * day, retention.Counts{}},                               // d-done is 89 days old
+		{91 * day, retention.Counts{Dispatches: 1}},                  // d-done; s-max's lifetime ended a day ago
+		{98 * day, retention.Counts{Sessions: 1}},                    // s-max, 8 days after its lifetime ended
+		{1000 * day, retention.Counts{}},                             // nothing else ever goes
 	} {
 		now = start.Add(step.at)
 		if got := sweeper.Sweep(ctx); got != step.want {
@@ -101,6 +123,9 @@ func TestSweep(t *testing.T) {
 	}
 	if list, err := store.ListConfirmationsByConversation(ctx, "conv"); err != nil || len(list) != 1 || list[0].ID != "c-pending" {
 		t.Errorf("confirmations left = %+v, %v; want c-pending", list, err)
+	}
+	if h, err := store.GetTaskHold(ctx, "h-active"); err != nil || !h.Active() {
+		t.Errorf("active hold = %+v, %v; want it kept", h, err)
 	}
 	for _, conv := range []string{"conv-d-done", "conv-d-running"} {
 		if msgs, err := store.ListMessagesByConversation(ctx, conv); err != nil || len(msgs) != 1 {
@@ -116,6 +141,7 @@ func TestSweep(t *testing.T) {
 		`loomux_retention_deleted_total{table="sessions"} 3`,
 		`loomux_retention_deleted_total{table="dispatches"} 1`,
 		`loomux_retention_deleted_total{table="confirmations"} 1`,
+		`loomux_retention_deleted_total{table="task_holds"} 1`,
 		"loomux_retention_last_sweep_timestamp_seconds",
 	} {
 		if !strings.Contains(body, want) {
@@ -148,7 +174,7 @@ func TestSweep_FailureCounted(t *testing.T) {
 	var logs bytes.Buffer
 	got := retention.New(store, retention.Config{Sessions: day, Dispatches: day, Confirmations: day},
 		retention.WithMetrics(m), retention.WithLogger(slog.New(slog.NewTextHandler(&logs, nil)))).Sweep(ctx)
-	if want := (retention.Counts{Sessions: 2, Dispatches: 2, Confirmations: 2}); got != want {
+	if want := (retention.Counts{Sessions: 2, Dispatches: 2, Confirmations: 2, TaskHolds: 2}); got != want {
 		t.Errorf("Sweep = %+v; want %+v", got, want)
 	}
 	body := scrape(t, m)
@@ -179,6 +205,11 @@ func (f *fakeStore) DeleteDispatchesFinishedBefore(context.Context, time.Time) (
 }
 
 func (f *fakeStore) DeleteConfirmationsResolvedBefore(context.Context, time.Time) (int, error) {
+	f.calls++
+	return f.n, nil
+}
+
+func (f *fakeStore) DeleteTaskHoldsEndedBefore(context.Context, time.Time) (int, error) {
 	f.calls++
 	return f.n, nil
 }

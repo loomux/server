@@ -825,6 +825,9 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	} else if n > 0 && cfg.Logger != nil {
 		cfg.Logger.Info("offers left by a previous run expired", "count", n)
 	}
+	// A task in human takeover with no hold has nobody shown as holding
+	// it (LOOM-263): logged, and left for a person.
+	warnUnheldTakeovers(context.Background(), store, cfg.Logger)
 	// Before anything can submit, startup reconciliation (LOOM-82): every
 	// job a previous process left behind is run, resumed or marked
 	// interrupted, then the tasks no resumed job is waiting on are

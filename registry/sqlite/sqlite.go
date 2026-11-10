@@ -639,8 +639,23 @@ func (s *Store) UpdateTask(ctx context.Context, t *registry.Task) error {
 // TransitionTask is one UPDATE guarded by the status, so the check and
 // the write can't be split by another writer.
 func (s *Store) TransitionTask(ctx context.Context, t *registry.Task, from registry.TaskStatus) (bool, error) {
+	applied, err := transitionTask(ctx, s.db, t, from)
+	if err != nil {
+		return false, err
+	}
+	if !applied {
+		if _, err := s.GetTask(ctx, t.ID); err != nil {
+			return false, err
+		}
+	}
+	return applied, nil
+}
+
+// transitionTask is TransitionTask's guarded UPDATE on q, the pool or a
+// transaction; it doesn't tell an unknown task from a changed status.
+func transitionTask(ctx context.Context, q querier, t *registry.Task, from registry.TaskStatus) (bool, error) {
 	updatedAt := time.Now().UTC()
-	res, err := s.db.ExecContext(ctx, `
+	res, err := q.ExecContext(ctx, `
 		UPDATE tasks SET
 			status = ?, updated_at = ?, completed_at = ?, exit_code = ?,
 			failure_reason = ?, error_class = ?, output_tail = ?, attention = ?
@@ -656,9 +671,6 @@ func (s *Store) TransitionTask(ctx context.Context, t *registry.Task, from regis
 		return false, fmt.Errorf("sqlite: transition task: %w", err)
 	}
 	if n == 0 {
-		if _, err := s.GetTask(ctx, t.ID); err != nil {
-			return false, err
-		}
 		return false, nil
 	}
 	t.UpdatedAt = updatedAt

@@ -1,7 +1,8 @@
 // Package retention deletes rows the server no longer needs once they
 // are old enough (LOOM-193, docs/design/retention-proposal.md): sessions
-// a while after they expired, finished dispatches, and resolved
-// confirmations. Messages are kept: they are the conversation history.
+// a while after they expired, finished dispatches, resolved
+// confirmations, and ended task holds (LOOM-263). Messages are kept: they
+// are the conversation history.
 package retention
 
 import (
@@ -17,6 +18,7 @@ type Store interface {
 	DeleteSessionsExpiredBefore(ctx context.Context, lastUsedBefore, createdBefore time.Time) (int, error)
 	DeleteDispatchesFinishedBefore(ctx context.Context, cutoff time.Time) (int, error)
 	DeleteConfirmationsResolvedBefore(ctx context.Context, cutoff time.Time) (int, error)
+	DeleteTaskHoldsEndedBefore(ctx context.Context, cutoff time.Time) (int, error)
 }
 
 // Config says how long each kind of row is kept. Zero keeps it forever.
@@ -30,13 +32,15 @@ type Config struct {
 	// Dispatches is how long a dispatch is kept after it finished.
 	Dispatches time.Duration
 	// Confirmations is how long a confirmation is kept after it was
-	// answered or expired.
+	// answered or expired. An ended task hold (LOOM-263) is kept as
+	// long: both are the record of something a person did in a
+	// conversation, read while it is recent.
 	Confirmations time.Duration
 }
 
 // Counts is how many rows one sweep deleted.
 type Counts struct {
-	Sessions, Dispatches, Confirmations int
+	Sessions, Dispatches, Confirmations, TaskHolds int
 }
 
 // Sweeper runs the deletes Config asks for.
@@ -114,14 +118,17 @@ func (s *Sweeper) Sweep(ctx context.Context) Counts {
 		c.Confirmations = s.run("confirmations", func() (int, error) {
 			return s.store.DeleteConfirmationsResolvedBefore(ctx, now.Add(-s.cfg.Confirmations))
 		})
+		c.TaskHolds = s.run("task_holds", func() (int, error) {
+			return s.store.DeleteTaskHoldsEndedBefore(ctx, now.Add(-s.cfg.Confirmations))
+		})
 	}
 	s.metrics.SetRetentionSweep(s.now())
 	level := slog.LevelDebug
-	if c.Sessions+c.Dispatches+c.Confirmations > 0 {
+	if c.Sessions+c.Dispatches+c.Confirmations+c.TaskHolds > 0 {
 		level = slog.LevelInfo
 	}
 	s.logger.Log(ctx, level, "retention sweep",
-		"sessions", c.Sessions, "dispatches", c.Dispatches, "confirmations", c.Confirmations)
+		"sessions", c.Sessions, "dispatches", c.Dispatches, "confirmations", c.Confirmations, "task_holds", c.TaskHolds)
 	return c
 }
 

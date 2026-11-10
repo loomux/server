@@ -244,7 +244,8 @@ dispatch audit trail forever), `LOOMUX_SESSION_RETENTION` (168h: how long
 a session's row is kept after it expired; `0` keeps them),
 `LOOMUX_DISPATCH_RETENTION` (2160h after a dispatch finished; never a queued
 or running one; its messages stay), `LOOMUX_CONFIRMATION_RETENTION` (720h
-after an offer was answered or expired; never a pending one); messages are
+after an offer was answered or expired, never a pending one; ended task
+holds are kept as long, never an active one); messages are
 kept, `LOOMUX_DISPATCH_MAX_DURATION` (2h: the
 ceiling on one dispatch job end to end; each agent turn has its own,
 tighter bounds inside it), `LOOMUX_DISPATCH_DRAIN` (20s: how long a
@@ -366,7 +367,7 @@ or message content. Key series:
 | `loomux_target_op_seconds` | `kind`, `op` | Target operation latency |
 | `loomux_target_op_errors_total` | `kind`, `op`, `reason` | Failed target operations; an unreachable target's `reason` is `unreachable_<class>`, e.g. `unreachable_host_key_changed`, `unreachable_auth_failed`, `unreachable_proxy_unreachable` (LOOM-85) |
 | `loomux_reaper_tasks_reaped_total` | — | Idle sessions torn down |
-| `loomux_retention_deleted_total` | `table` | Rows the hourly retention sweep deleted: `sessions`, `dispatches`, `confirmations` (LOOM-193) |
+| `loomux_retention_deleted_total` | `table` | Rows the hourly retention sweep deleted: `sessions`, `dispatches`, `confirmations` (LOOM-193), `task_holds` (LOOM-263) |
 | `loomux_retention_errors_total` | `table` | Retention deletes that failed |
 | `loomux_retention_last_sweep_timestamp_seconds` | — | When the retention sweep last ran |
 | `loomux_notifications_total` | `kind`, `outcome` | Turn notifications: `sent`, `error`, `held` (over the rate limit, in the next digest), `digest_sent`, `digest_error`, `skipped_short`, `opted_out`, `dropped` (arrived during shutdown) (LOOM-249) |

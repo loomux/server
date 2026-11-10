@@ -91,8 +91,8 @@ the tag in a manifest works the same way.
   (LOOM-193) deletes sessions 7 days after they expired
   (`LOOMUX_SESSION_RETENTION`), finished dispatches 90 days after they
   finished (`LOOMUX_DISPATCH_RETENTION`) and answered or expired
-  confirmations after 30 days (`LOOMUX_CONFIRMATION_RETENTION`); `0`
-  keeps them. Messages are kept. It deletes 500 rows per transaction,
+  confirmations after 30 days (`LOOMUX_CONFIRMATION_RETENTION`, which
+  also covers ended task holds, LOOM-263); `0` keeps them. Messages are kept. It deletes 500 rows per transaction,
   so other writes wait for a chunk at most. Each sweep logs `retention sweep` with
   the counts it deleted (at info when it deleted any, else debug).
 - **After the fact:** `GET /api/v1/conversations/{id}/events` is the
