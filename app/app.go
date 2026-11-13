@@ -861,7 +861,12 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	bg.Go(func() {
 		ctx, cancel := context.WithTimeout(reaperCtx, reconcileTimeout)
 		defer cancel()
-		rtr.ReconcileTasks(ctx, resumed)
+		reconcile := func() { rtr.ReconcileTasks(ctx, resumed) }
+		if cfg.startupReconcile != nil {
+			cfg.startupReconcile(reconcile)
+			return
+		}
+		reconcile()
 	})
 	dispatchDrain := cfg.DispatchDrain
 	if dispatchDrain == 0 {

@@ -6,6 +6,7 @@ import (
 	"net"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -113,6 +114,84 @@ func TestBuild_CloseWaitsForStartupReconciliation(t *testing.T) {
 	}
 	if left := goroutinesIn("ReconcileTasks"); left != "" {
 		t.Fatalf("startup reconciliation still running after Close:\n%s", left)
+	}
+}
+
+// LOOM-303: startup reconciliation settles the tasks a previous process
+// left running, and no task launched since. A launch writes its task's
+// row (running) before it starts the session, and reconciliation, which
+// runs in the background after Build returns, used to list the running
+// tasks then: one it read in that gap had no session, so it was failed
+// as lost in the restart, and its turn then failed on the changed
+// status. TestProvisionWorkspace_EndToEnd failed that way about one run
+// in ten.
+func TestBuild_StartupReconciliationLeavesNewTasks(t *testing.T) {
+	srv := fakeRouterServer(t)
+	cfg := testConfig(t, srv.URL)
+	ctx := context.Background()
+	seed, err := sqlite.Open(cfg.DBPath)
+	if err != nil {
+		t.Fatalf("sqlite.Open (seed): %v", err)
+	}
+	if err := seed.CreateTarget(ctx, &registry.Target{ID: "box", Name: "box", Kind: registry.TargetKindLocal,
+		WorkspaceRoot: t.TempDir()}); err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	if err := seed.CreateWorkspace(ctx, &registry.Workspace{ID: "ws", Name: "ws", Path: t.TempDir(), TargetID: "box",
+		Status: registry.WorkspaceStatusIdle}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	// Neither task has a session: the first because its loomuxd is gone,
+	// the second because its launch hasn't started one yet.
+	running := func(id string) *registry.Task {
+		return &registry.Task{ID: id, WorkspaceID: "ws", Kind: registry.TaskKindCommand, TmuxSession: "loomux-" + id,
+			Status: registry.TaskStatusRunning, ConversationID: "c-" + id}
+	}
+	if err := seed.CreateTask(ctx, running("left-running")); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("Close (seed): %v", err)
+	}
+
+	// The background half of reconciliation waits for the launch.
+	launched, reconciled := make(chan struct{}), make(chan struct{})
+	cfg.startupReconcile = func(reconcile func()) {
+		defer close(reconciled)
+		<-launched
+		reconcile()
+	}
+	a, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	launch := sync.OnceFunc(func() { close(launched) })
+	t.Cleanup(launch) // before Close, which waits for reconciliation
+
+	if err := a.store.CreateTask(ctx, running("just-launched")); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	launch()
+	select {
+	case <-reconciled:
+	case <-time.After(30 * time.Second):
+		t.Fatal("startup reconciliation didn't finish")
+	}
+
+	left, err := a.store.GetTask(ctx, "left-running")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if left.Status != registry.TaskStatusFailed || left.ErrorClass != registry.ErrorClassSessionLost {
+		t.Errorf("the task a previous process left = %s (%s), want failed (%s)", left.Status, left.ErrorClass, registry.ErrorClassSessionLost)
+	}
+	fresh, err := a.store.GetTask(ctx, "just-launched")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if fresh.Status != registry.TaskStatusRunning {
+		t.Errorf("the task launched after startup = %s (%s: %s), want left running", fresh.Status, fresh.ErrorClass, fresh.FailureReason)
 	}
 }
 
