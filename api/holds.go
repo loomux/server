@@ -160,7 +160,9 @@ type releaseResponse struct {
 // readOptionalJSON is readJSON for a body that may be left out: an empty
 // one, or one of only whitespace, leaves v as it is. A body sent chunked
 // has no length to tell by, so it is read to its first byte that isn't
-// whitespace, under readJSON's bounds.
+// whitespace, under readJSON's bounds. Only a body that ends there is
+// none: one too big, cut off or stalled is refused as readJSON would,
+// because what it went on to say isn't known.
 func readOptionalJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	if r.ContentLength == 0 {
 		return true
@@ -168,25 +170,25 @@ func readOptionalJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	if r.ContentLength > 0 {
 		return readJSON(w, r, v)
 	}
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyReadTimeout))
-	br := bufio.NewReader(io.LimitReader(r.Body, maxRequestBody+1))
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
+	body := bufio.NewReader(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	for {
-		c, err := br.ReadByte()
-		if err != nil {
+		c, err := body.ReadByte()
+		if err == io.EOF {
 			// Nothing but whitespace (or nothing at all): no body.
-			_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
+			_ = rc.SetReadDeadline(time.Time{})
 			return true
 		}
+		if err != nil {
+			return refuseBody(w, body, err)
+		}
 		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-			_ = br.UnreadByte()
+			_ = body.UnreadByte()
 			break
 		}
 	}
-	r.Body = struct {
-		io.Reader
-		io.Closer
-	}{io.MultiReader(br, r.Body), r.Body}
-	return readJSON(w, r, v)
+	return decodeBody(w, rc, body, v)
 }
 
 // cleanClientLabel trims label and reports whether it may be shown to

@@ -1,10 +1,14 @@
 package api_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -497,5 +501,111 @@ func TestHolds_EmptyChunkedBody(t *testing.T) {
 	}
 	if status, out := send("t1/takeover", `{"mode":`); status != http.StatusBadRequest {
 		t.Errorf("chunked malformed body = %d %+v; want 400", status, out)
+	}
+}
+
+// rawChunked sends a chunked POST by hand: one chunk of whitespace, then
+// finish decides how the body ends. It returns the answer's status.
+func (h *holdServer) rawChunked(path, token string, finish func(net.Conn)) int {
+	h.t.Helper()
+	u, _ := url.Parse(h.base)
+	conn, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.Write([]byte("POST /api/v1/tasks/" + path + " HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + token +
+		"\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n \n\r\n"))
+	finish(conn)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		h.t.Errorf("POST %s: no answer: %v", path, err)
+		return 0
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// held reports whether the task has an active drive hold.
+func (h *holdServer) held(id string) bool {
+	h.t.Helper()
+	_, err := h.store.GetActiveDriveHold(context.Background(), id)
+	if err != nil && !errors.Is(err, registry.ErrNotFound) {
+		h.t.Fatalf("GetActiveDriveHold: %v", err)
+	}
+	return err == nil
+}
+
+// A chunked body that can't be read to its end isn't "left out": one
+// over the size limit or cut off is refused like any other body, and
+// the hold stays as it was. Only a body that ends cleanly with nothing
+// but whitespace counts as none.
+func TestHolds_UnreadableChunkedBody(t *testing.T) {
+	h := newHoldServer(t)
+	h.task("t1", registry.TaskStatusAwaitingInput, "")
+	h.task("t2", registry.TaskStatusAwaitingInput, "")
+	status, taken := h.post("t1/takeover", h.tokenA, nil)
+	if status != http.StatusOK || taken.Hold == nil {
+		t.Fatalf("takeover = %d %+v", status, taken)
+	}
+
+	// Whitespace past the size limit, then a hold to release: the body
+	// is too large, not a Take back.
+	big := io.MultiReader(strings.NewReader(strings.Repeat(" ", 1<<20+1)), strings.NewReader(`{"hold_id":"other"}`))
+	req, err := http.NewRequest(http.MethodPost, h.base+"/api/v1/tasks/t1/release", big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+h.tokenB)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("release with an oversized whitespace body = %d, want 413", resp.StatusCode)
+	}
+	if !h.held("t1") {
+		t.Fatal("an oversized body took the task back")
+	}
+
+	// Cut off before the last chunk: the rest might have named a hold.
+	cut := func(c net.Conn) { c.(*net.TCPConn).CloseWrite() }
+	if got := h.rawChunked("t1/release", h.tokenB, cut); got != http.StatusBadRequest {
+		t.Errorf("release with a body cut off = %d, want 400", got)
+	}
+	if !h.held("t1") {
+		t.Fatal("a body cut off took the task back")
+	}
+	if got := h.rawChunked("t2/takeover", h.tokenB, cut); got != http.StatusBadRequest {
+		t.Errorf("takeover with a body cut off = %d, want 400", got)
+	}
+	if h.held("t2") || h.status("t2") != registry.TaskStatusAwaitingInput {
+		t.Fatalf("a body cut off took the task over (status %s)", h.status("t2"))
+	}
+
+	// The same request with the body ended properly is still no body.
+	end := func(c net.Conn) { c.Write([]byte("0\r\n\r\n")) }
+	if got := h.rawChunked("t2/takeover", h.tokenB, end); got != http.StatusOK || !h.held("t2") {
+		t.Errorf("takeover with a whitespace body = %d, held %v; want 200 and a hold", got, h.held("t2"))
+	}
+}
+
+// A chunked body that stalls in its whitespace is ended by the read
+// deadline as an error, not taken for no body.
+func TestHolds_StalledChunkedBody(t *testing.T) {
+	defer api.SetBodyReadTimeout(300 * time.Millisecond)()
+	h := newHoldServer(t)
+	h.task("t1", registry.TaskStatusAwaitingInput, "")
+	start := time.Now()
+	if got := h.rawChunked("t1/takeover", h.tokenA, func(net.Conn) {}); got != http.StatusBadRequest {
+		t.Errorf("takeover with a stalled body = %d, want 400", got)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Errorf("a stalled body held the request for %v", time.Since(start))
+	}
+	if h.held("t1") || h.status("t1") != registry.TaskStatusAwaitingInput {
+		t.Fatalf("a stalled body took the task over (status %s)", h.status("t1"))
 	}
 }
