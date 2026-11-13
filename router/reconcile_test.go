@@ -126,7 +126,7 @@ func TestReconcileTasks(t *testing.T) {
 		}
 	})
 
-	r.ReconcileTasks(context.Background(), map[string]bool{skipped.ID: true})
+	r.ReconcileTasks(context.Background(), leftRunning(t, r), map[string]bool{skipped.ID: true})
 
 	assertFailed(t, mustTask(t, store, gone.ID), registry.ErrorClassSessionLost, "restarted")
 	if got := mustTask(t, store, skipped.ID); got.Status != registry.TaskStatusRunning {
@@ -138,6 +138,32 @@ func TestReconcileTasks(t *testing.T) {
 	if got := mustTask(t, store, cmd.ID); got.Status != registry.TaskStatusCompleted || got.ExitCode == nil || *got.ExitCode != 3 {
 		t.Errorf("command task = %s (exit %v), want completed with exit 3", got.Status, got.ExitCode)
 	}
+}
+
+// LOOM-303: only the tasks listed at startup are settled. One launched
+// since has a row before it has a session, and isn't lost in a restart.
+func TestReconcileTasks_LeavesTasksLaunchedSince(t *testing.T) {
+	store, exec, r, ws := reconcileHarness(t)
+	gone := plantTask(t, store, exec, ws, registry.TaskKindCommand, false)
+	left := leftRunning(t, r)
+	launching := plantTask(t, store, exec, ws, registry.TaskKindCommand, false)
+
+	r.ReconcileTasks(context.Background(), left, nil)
+
+	assertFailed(t, mustTask(t, store, gone.ID), registry.ErrorClassSessionLost, "restarted")
+	if got := mustTask(t, store, launching.ID); got.Status != registry.TaskStatusRunning {
+		t.Errorf("task launched after the list = %s (%s), want left running", got.Status, got.FailureReason)
+	}
+}
+
+// leftRunning is the startup list ReconcileTasks works from.
+func leftRunning(t *testing.T, r *router.Router) []*registry.Task {
+	t.Helper()
+	left, err := r.TasksLeftRunning(context.Background())
+	if err != nil {
+		t.Fatalf("TasksLeftRunning: %v", err)
+	}
+	return left
 }
 
 func mustTask(t *testing.T, store registry.Store, id string) *registry.Task {
@@ -157,7 +183,7 @@ func TestReconcileTasks_RetriesUnreachableTarget(t *testing.T) {
 	gone := plantTask(t, store, exec, ws, registry.TaskKindAgent, false)
 	exec.set(func() { exec.unreachableFor = 3 })
 
-	r.ReconcileTasks(context.Background(), nil)
+	r.ReconcileTasks(context.Background(), leftRunning(t, r), nil)
 
 	assertFailed(t, mustTask(t, store, gone.ID), registry.ErrorClassSessionLost, "restarted")
 }

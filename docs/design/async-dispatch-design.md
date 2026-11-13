@@ -53,7 +53,9 @@ One unit with one job: own dispatch jobs' lifetime. Depends on a narrow store in
   If that session is gone, the task fails (`session_lost`) and so does the job. Anything else is
   marked `interrupted` with reason `server_restart`. Then `Router.ReconcileTasks` (background, 2 min
   bound) fails every other running task whose session is gone, and finishes a command that exited
-  meanwhile.
+  meanwhile. It works from the list `Router.TasksLeftRunning` reads before `Recover`, so only tasks
+  a previous process left are settled: a task launched since has a row before it has a session, and
+  a list read later would fail it as lost in the restart (LOOM-303).
 
 Runner context: derived from a service-owned root context created at
 `app.Build`, cancelled only by `Shutdown`, plus a backstop `context.WithTimeout` of
