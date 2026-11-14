@@ -16,7 +16,9 @@ without colliding with automated dispatch.
   sentinels (`ErrHumanTakeover`, `ErrTaskInactive`).
 - `lifecycle.go` — `Launch`, `LaunchWithID`, `SendMessage`,
   `WaitForCompletion`, `Complete`, `Fail`, `Reap`.
-- `takeover.go` — `Takeover`, `Release`.
+- `takeover.go` — `Takeover`, `Heartbeat`, `Release`: the human-takeover
+  handshake as a hold (a lease on the task by an API session, LOOM-264),
+  written together with the task's status.
 - `reaper.go` — `Reaper`: periodically sweeps for `AwaitingInput` tasks
   idle past a threshold (design spec's continuation model, LOOM-13/16)
   and tears their sessions down via `Reap`. See its own doc comment for

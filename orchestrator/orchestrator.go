@@ -158,6 +158,8 @@ type Orchestrator struct {
 	detector    CompletionDetector
 	metrics     *metrics.Metrics
 	logger      *slog.Logger
+	// now is the clock holds are stamped by: time.Now, or a test's.
+	now func() time.Time
 }
 
 // Option configures an Orchestrator constructed via New.
@@ -179,9 +181,19 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithClock overrides the clock holds are acquired, renewed and ended by
+// (time.Now), so a test decides when a lease runs out. nil is ignored.
+func WithClock(now func() time.Time) Option {
+	return func(o *Orchestrator) {
+		if now != nil {
+			o.now = now
+		}
+	}
+}
+
 // New constructs an Orchestrator.
 func New(store registry.Store, newExecutor ExecutorFactory, detector CompletionDetector, opts ...Option) *Orchestrator {
-	o := &Orchestrator{store: store, newExecutor: newExecutor, detector: detector, logger: slog.Default()}
+	o := &Orchestrator{store: store, newExecutor: newExecutor, detector: detector, logger: slog.Default(), now: time.Now}
 	for _, opt := range opts {
 		opt(o)
 	}

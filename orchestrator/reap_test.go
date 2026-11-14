@@ -114,9 +114,7 @@ func TestReaper_Sweep_ReapsOnlyIdleNonTerminalTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch (idleTakeover): %v", err)
 	}
-	if err := o.Takeover(ctx, idleTakeover.ID); err != nil {
-		t.Fatalf("Takeover: %v", err)
-	}
+	takeOver(t, o, idleTakeover.ID)
 
 	idleCompleted, err := o.Launch(ctx, ws.ID, "conv-completed", registry.TaskKindAgent, "claude-code", "claude")
 	if err != nil {

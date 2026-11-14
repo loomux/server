@@ -30,7 +30,12 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
-	body := http.MaxBytesReader(w, r.Body, maxRequestBody)
+	return decodeBody(w, rc, http.MaxBytesReader(w, r.Body, maxRequestBody), v)
+}
+
+// decodeBody is readJSON from the body on: body is the request's, under
+// its size bound, with the read deadline set.
+func decodeBody(w http.ResponseWriter, rc *http.ResponseController, body io.Reader, v any) bool {
 	dec := json.NewDecoder(body)
 	err := dec.Decode(v)
 	if err == nil {
@@ -43,6 +48,12 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		_ = rc.SetReadDeadline(time.Time{})
 		return true
 	}
+	return refuseBody(w, body, err)
+}
+
+// refuseBody answers a request whose body failed with err: 413 for one
+// over the size bound, 400 otherwise. It reports false.
+func refuseBody(w http.ResponseWriter, body io.Reader, err error) bool {
 	// The deadline stays: net/http drains what's left of a body before
 	// answering, and a body that stalled would otherwise hold the
 	// connection for ever. It isn't reused.
