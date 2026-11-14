@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -150,6 +151,10 @@ func TestLifecycle(t *testing.T) {
 	if err != nil || len(cmds) != 1 || cmds[0].Via != "docker" || cmds[0].Command != "docker exec -it lx-k7f3q2 tmux -L loomux-b attach -t loomux-x" {
 		t.Errorf("attach = %+v, %v", cmds, err)
 	}
+	// LOOM-269: the same command as arguments to execute with no shell.
+	if want := []string{"docker", "exec", "-it", "lx-k7f3q2", "tmux", "-L", "loomux-b", "attach", "-t", "loomux-x"}; len(cmds) != 1 || !slices.Equal(cmds[0].Argv, want) {
+		t.Errorf("attach argv = %q, want %q", cmds[0].Argv, want)
+	}
 	_, err = p.TargetAttachCommands(ctx, "k7f3q2", "bad session;rm", "loomux")
 	wantCode(t, err, rpc.CodeInvalidParams)
 
@@ -175,8 +180,13 @@ func TestAttachCommandForSSHEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := attachCommand(cfg, "k7f3q2", "loomux-x", "loomux-b"); got != "docker -H ssh://docker@jet01.example:2200 exec -it lx-k7f3q2 tmux -L loomux-b attach -t loomux-x" {
+	got := attachCommand(cfg, "k7f3q2", "loomux-x", "loomux-b")
+	if strings.Join(got, " ") != "docker -H ssh://docker@jet01.example:2200 exec -it lx-k7f3q2 tmux -L loomux-b attach -t loomux-x" {
 		t.Errorf("attach = %q", got)
+	}
+	// The engine address is one argument of its own (LOOM-269).
+	if len(got) < 3 || got[1] != "-H" || got[2] != "ssh://docker@jet01.example:2200" {
+		t.Errorf("attach argv = %q", got)
 	}
 }
 

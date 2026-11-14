@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -1113,12 +1114,15 @@ var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 // exec on the docker host, named by its engine address for an ssh
 // engine, onto socket, the one the host runs the machine's sessions on
 // over ssh (its instance's, LOOM-210; the image starts no tmux itself).
-func attachCommand(cfg Config, id, session, socket string) string {
-	cmd := "docker"
+// It is returned as arguments to execute directly (LOOM-269); the line
+// to paste is those joined, every one of them being from a validated
+// grammar with no spaces or shell characters.
+func attachCommand(cfg Config, id, session, socket string) []string {
+	argv := []string{"docker"}
 	if cfg.Engine.Kind == engineSSH {
-		cmd += " -H " + cfg.Engine.String()
+		argv = append(argv, "-H", cfg.Engine.String())
 	}
-	return cmd + " exec -it " + containerName(id) + " tmux -L " + socket + " attach -t " + session
+	return append(argv, "exec", "-it", containerName(id), "tmux", "-L", socket, "attach", "-t", session)
 }
 
 func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
@@ -1142,5 +1146,6 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket s
 	if rec == nil {
 		return nil, notFound(id)
 	}
-	return []protocol.AttachCommand{{Via: "docker", Command: attachCommand(cfg, id, session, socket)}}, nil
+	argv := attachCommand(cfg, id, session, socket)
+	return []protocol.AttachCommand{{Via: "docker", Command: strings.Join(argv, " "), Argv: argv}}, nil
 }

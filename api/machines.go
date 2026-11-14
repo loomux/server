@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,9 +117,14 @@ type recreateTargetRequest struct {
 
 // attachCommandResponse is one way a person attaches to a machine's
 // tmux (via kubectl, docker, ssh…).
+// Command is the line to show or paste into a shell; Argv (LOOM-269) is
+// the same command as arguments to execute directly, with no shell.
+// Argv is absent when a plugin gave none: a client then has only the
+// line.
 type attachCommandResponse struct {
-	Via     string `json:"via"`
-	Command string `json:"command"`
+	Via     string   `json:"via"`
+	Command string   `json:"command"`
+	Argv    []string `json:"argv,omitempty"`
 }
 
 func newTargetPluginResponse(v *providers.MachineView) *targetPluginResponse {
@@ -361,12 +366,13 @@ func (s *Server) attachCommandsFor(ctx context.Context, target *registry.Target,
 	if s.machines != nil {
 		if cmds, err := s.machines.AttachCommands(ctx, target.ID, session); err == nil {
 			for _, c := range cmds {
-				out = append(out, attachCommandResponse{Via: c.Via, Command: c.Command})
+				out = append(out, attachCommandResponse{Via: c.Via, Command: c.Command, Argv: c.Argv})
 			}
 		}
 	}
 	if target.Kind == registry.TargetKindRemote {
-		out = append(out, attachCommandResponse{Via: "ssh", Command: sshAttachCommand(target, s.tmuxSocketName(), session)})
+		argv := sshAttachArgv(target, s.tmuxSocketName(), session)
+		out = append(out, attachCommandResponse{Via: "ssh", Command: sshAttachCommand(argv), Argv: argv})
 	}
 	return out
 }
@@ -383,14 +389,24 @@ func (s *Server) targetView(ctx context.Context, t *registry.Target) targetRespo
 	return views[0]
 }
 
-// sshAttachCommand is the plain ssh form of attaching to session, on
-// tmux socket, on a remote target.
-func sshAttachCommand(t *registry.Target, socket, session string) string {
-	cmd := "ssh "
+// sshAttachArgv is the plain ssh form of attaching to session, on tmux
+// socket, on a remote target, as arguments to execute directly
+// (LOOM-269). The last one is the whole remote command: ssh hands it to
+// the remote shell as one line.
+func sshAttachArgv(t *registry.Target, socket, session string) []string {
+	argv := []string{"ssh"}
 	if t.SSHPort != 0 && t.SSHPort != 22 {
-		cmd += fmt.Sprintf("-p %d ", t.SSHPort)
+		argv = append(argv, "-p", strconv.Itoa(t.SSHPort))
 	}
-	return cmd + t.User + "@" + t.Host + " -t " + shellQuote(targets.AttachCommand(socket, session))
+	return append(argv, t.User+"@"+t.Host, "-t", targets.AttachCommand(socket, session))
+}
+
+// sshAttachCommand is argv as the line to paste into a shell: the same
+// arguments, the remote command quoted so the local shell passes it as
+// one.
+func sshAttachCommand(argv []string) string {
+	last := len(argv) - 1
+	return strings.Join(argv[:last], " ") + " " + shellQuote(argv[last])
 }
 
 // shellQuote single-quotes s for a POSIX shell.

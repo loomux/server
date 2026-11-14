@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -605,10 +606,10 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket s
 	if _, _, _, err := p.machine(ctx, client, cfg, host, id); err != nil {
 		return nil, err
 	}
-	return []protocol.AttachCommand{{
-		Via:     "kubectl",
-		Command: "kubectl -n " + cfg.Namespace + " exec -it " + podName(id) + " -- tmux -L " + socket + " attach -t " + session,
-	}}, nil
+	// Every argument is from a validated grammar with no spaces or shell
+	// characters, so the line to paste is the arguments joined.
+	argv := []string{"kubectl", "-n", cfg.Namespace, "exec", "-it", podName(id), "--", "tmux", "-L", socket, "attach", "-t", session}
+	return []protocol.AttachCommand{{Via: "kubectl", Command: strings.Join(argv, " "), Argv: argv}}, nil
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

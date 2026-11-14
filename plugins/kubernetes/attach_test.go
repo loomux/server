@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,6 +38,13 @@ func TestAttachCommandUsesTheSessionsSocket(t *testing.T) {
 		cmds := attachVia(t, handle, protocol.AttachParams{ID: env.ID, Session: "loomux-x", Socket: instance})
 		if want := " -- " + targets.AttachCommand(exec.TmuxSocket(), "loomux-x"); len(cmds) != 1 || !strings.HasSuffix(cmds[0].Command, want) {
 			t.Errorf("instance socket %q: attach = %+v, want a command ending %q", instance, cmds, want)
+		}
+		// LOOM-269: the same command as arguments to execute with no
+		// shell, through the SDK's JSON as the host receives it.
+		argv := cmds[0].Argv
+		if n := len(argv); n != 13 || argv[0] != "kubectl" || argv[1] != "-n" || argv[3] != "exec" || argv[4] != "-it" || argv[6] != "--" ||
+			!slices.Equal(argv[7:], []string{"tmux", "-L", exec.TmuxSocket(), "attach", "-t", "loomux-x"}) || strings.Join(argv, " ") != cmds[0].Command {
+			t.Errorf("instance socket %q: argv = %q, command %q", instance, argv, cmds[0].Command)
 		}
 	}
 

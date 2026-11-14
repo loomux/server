@@ -700,6 +700,7 @@ GET /api/v1/tasks/{id}/attach-info request-header Authorization
 GET /api/v1/tasks/{id}/attach-info response - object
 GET /api/v1/tasks/{id}/attach-info response .attach_command string
 GET /api/v1/tasks/{id}/attach-info response .attach_commands []object
+GET /api/v1/tasks/{id}/attach-info response .attach_commands[].argv []string omitempty
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].command string
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].via string
 GET /api/v1/tasks/{id}/attach-info response .target object
@@ -1782,6 +1783,7 @@ POST /api/v1/tasks/{id}/takeover response - object
 POST /api/v1/tasks/{id}/takeover response .attach object
 POST /api/v1/tasks/{id}/takeover response .attach.attach_command string
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands []object
+POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].argv []string omitempty
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].command string
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].via string
 POST /api/v1/tasks/{id}/takeover response .attach.target object
