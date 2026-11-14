@@ -68,6 +68,19 @@ on the command line, for that launch only:
 | Workspace pre-trust | Before each launch, `hasTrustDialogAccepted` for exactly that workspace path in `~/.claude.json` (see below). | `-c 'projects={"<workspace>"={trust_level="trusted"}}'` for this process. Nothing is written to `~/.codex/config.toml`. |
 | First message | Positional argument after `--`. | Positional argument after `--`. |
 
+**Codex's startup update check.** Codex's TUI checks for a newer release
+at startup and, when one exists, draws a blocking "Update available" menu
+that offers to run `curl … | sh` on the target (LOOM-260). Every Codex
+launch therefore passes `-c check_for_update_on_startup=false`, the
+top-level key Codex 0.162.0 documents as "checks for Codex updates on
+startup and surfaces update prompts. Set to `false` only if your Codex
+updates are centrally managed" (`codex-rs/config/src/config_toml.rs`).
+`-c` parses its value as TOML (`codex-rs/utils/cli/src/config_override.rs`),
+so this is a boolean, not the string `"false"`. Like the other launch
+flags it applies to that process only: `~/.codex/config.toml` is never
+edited, and the pinned CLI in the agent image (or whatever provisioning
+put on the target) is the only source of updates.
+
 Agents run in each CLI's own **automatic** mode, never the "skip
 everything" modes (`--dangerously-skip-permissions`, `bypassPermissions`,
 `--dangerously-bypass-approvals-and-sandbox`); user decision 2026-10-04. A

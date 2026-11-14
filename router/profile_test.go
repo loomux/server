@@ -99,11 +99,12 @@ func TestDispatch_NoPromptAsArg_FirstTurnIsKeys(t *testing.T) {
 }
 
 // TestDispatch_ProfileArgOrder pins the command shape: template,
-// permission args, workspace trust args, completion hook args, then
-// "--" and the prompt.
+// permission args, workspace trust args, startup args, completion hook
+// args, then "--" and the prompt.
 func TestDispatch_ProfileArgOrder(t *testing.T) {
 	_, ws, exec, r := profileRouter(t, router.AgentType{
 		LaunchTemplate:     "agent",
+		StartupArgs:        []string{"--startup"},
 		CompletionHookArgs: []string{"--hook"},
 		Profile: router.LaunchProfile{
 			PermissionArgs: []string{"--perm", "x"},
@@ -114,7 +115,7 @@ func TestDispatch_ProfileArgOrder(t *testing.T) {
 	if _, err := r.Dispatch(context.Background(), "conv-1", "do the work"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	want := `agent '--perm' 'x' '--trust' '` + ws.Path + `' '--hook' '--' 'do the work'`
+	want := `agent '--perm' 'x' '--trust' '` + ws.Path + `' '--startup' '--hook' '--' 'do the work'`
 	if sess := onlySession(t, exec); !strings.HasSuffix(sess.command, want) {
 		t.Fatalf("command = %q, want suffix %q", sess.command, want)
 	}

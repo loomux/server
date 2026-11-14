@@ -21,6 +21,12 @@ const (
 // recognise one.
 const ProvisioningMarker = provisioningMarker
 
+// LaunchCommandForTest composes the command launchAgent would run, so an
+// adapter's own tests can assert the whole argv.
+func (at AgentType) LaunchCommandForTest(workspaceDir, prompt, permissionMode string) string {
+	return at.launchCommand(workspaceDir, prompt, permissionMode)
+}
+
 // SetBootRetry shortens startup reconciliation's retry pacing for a test.
 func SetBootRetry(every, upTo time.Duration) (restore func()) {
 	oldEvery, oldUpTo := bootRetry, bootRetryFor
