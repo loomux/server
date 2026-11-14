@@ -86,22 +86,38 @@ func (r *Router) runningAgentTask(ctx context.Context, conversationID string) (*
 	return found, nil
 }
 
-// ReconcileTasks settles, at startup, the tasks a previous loomuxd left
-// mid-turn that no resumed dispatch is waiting on (LOOM-82): one whose
-// session is gone is failed — nothing will ever finish it — and a
-// command whose process exited meanwhile is finished with its exit
-// code. A live agent with nobody waiting is left to the next message.
-// skip holds the tasks resumed dispatches have taken. Errors are logged
-// per task: one unreachable target mustn't stop the rest.
-func (r *Router) ReconcileTasks(ctx context.Context, skip map[string]bool) {
+// TasksLeftRunning lists the tasks a previous loomuxd left mid-turn
+// (LOOM-82), for ReconcileTasks.
+//
+// Call it at startup before anything can launch a task (LOOM-303): a
+// launch writes its task's row, running, before it starts the session,
+// so a list read later can hold a task of this process's own with no
+// session yet, which ReconcileTasks would fail as lost in the restart.
+func (r *Router) TasksLeftRunning(ctx context.Context) ([]*registry.Task, error) {
 	tasks, err := r.store.ListTasks(ctx)
 	if err != nil {
-		r.logger.Error("startup task reconciliation failed", "error", err)
-		return
+		return nil, err
 	}
-	var pending []*registry.Task
+	var left []*registry.Task
 	for _, t := range tasks {
-		if t.Status == registry.TaskStatusRunning && !skip[t.ID] {
+		if t.Status == registry.TaskStatusRunning {
+			left = append(left, t)
+		}
+	}
+	return left, nil
+}
+
+// ReconcileTasks settles the tasks in left, as TasksLeftRunning listed
+// them at startup, that no resumed dispatch is waiting on (LOOM-82):
+// one whose session is gone is failed — nothing will ever finish it —
+// and a command whose process exited meanwhile is finished with its
+// exit code. A live agent with nobody waiting is left to the next
+// message. skip holds the tasks resumed dispatches have taken. Errors
+// are logged per task: one unreachable target mustn't stop the rest.
+func (r *Router) ReconcileTasks(ctx context.Context, left []*registry.Task, skip map[string]bool) {
+	var pending []*registry.Task
+	for _, t := range left {
+		if !skip[t.ID] {
 			pending = append(pending, t)
 		}
 	}

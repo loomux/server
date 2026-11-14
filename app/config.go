@@ -152,6 +152,11 @@ type Config struct {
 	// against instead of time.Now: a test then decides when a task is
 	// idle, however slowly it runs (LOOM-195).
 	reaperClock func() time.Time
+
+	// startupReconcile, if set, is what the background half of startup
+	// task reconciliation runs through; it calls reconcile. A test's
+	// seam: it holds reconciliation back while a task is launched.
+	startupReconcile func(reconcile func())
 }
 
 // NotifyConfig configures turn notifications (LOOM-102).

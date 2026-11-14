@@ -839,6 +839,16 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 	// job a previous process left behind is run, resumed or marked
 	// interrupted, then the tasks no resumed job is waiting on are
 	// settled.
+	//
+	// Those tasks are listed first, before Recover runs a queued job and
+	// before Build returns, so before anything can launch one (LOOM-303):
+	// a launch writes its task's row before it starts the session, and
+	// reconciliation reading that row would fail the new task as lost in
+	// the restart.
+	leftRunning, err := rtr.TasksLeftRunning(context.Background())
+	if err != nil && cfg.Logger != nil {
+		cfg.Logger.Error("startup task reconciliation failed", "error", err)
+	}
 	if _, err := dispatches.Recover(context.Background()); err != nil {
 		stopReaper()
 		<-reaperDone
@@ -856,12 +866,17 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		defer close(sweepDone)
 		runDispatchSweep(reaperCtx, dispatches, dispatchSweepInterval, cfg.Logger)
 	}()
-	// In the background, bounded: an unreachable target mustn't hold up
-	// startup. Close cancels it with the reaper and waits for it.
+	// Settled in the background, bounded: an unreachable target mustn't
+	// hold up startup. Close cancels it with the reaper and waits for it.
 	bg.Go(func() {
 		ctx, cancel := context.WithTimeout(reaperCtx, reconcileTimeout)
 		defer cancel()
-		rtr.ReconcileTasks(ctx, resumed)
+		reconcile := func() { rtr.ReconcileTasks(ctx, leftRunning, resumed) }
+		if cfg.startupReconcile != nil {
+			cfg.startupReconcile(reconcile)
+			return
+		}
+		reconcile()
 	})
 	dispatchDrain := cfg.DispatchDrain
 	if dispatchDrain == 0 {
