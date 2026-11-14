@@ -472,6 +472,12 @@ Server side (S7):
   session has the same sliding TTL and 90-day max age as any other.
 - `POST /api/v1/login` sets `origin: login` and `client_kind: web` (the web is its only
   caller).
+- Sessions that exist when the migration runs were all made by a login,
+  so it sets their `origin` to `login` (added while building S7): they can
+  approve a link without logging in again. Their `client_kind` isn't known
+  and stays empty.
+- A hold copies `client_kind` from its session, and `client_label` too
+  unless the takeover sends one (S3 + S7).
 
 Phishing note: as with any device flow, someone could send the user a link
 carrying their own `H`. The code comparison and the page's wording are the

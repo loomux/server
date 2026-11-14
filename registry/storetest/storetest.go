@@ -964,7 +964,8 @@ func testSessionCRUD(t *testing.T, s registry.Store) {
 	ctx := context.Background()
 	lastUsed := time.Now().UTC().Truncate(time.Second)
 
-	sess := &registry.Session{ID: "sess-1", TokenHash: "hash-1", LastUsedAt: lastUsed}
+	sess := &registry.Session{ID: "sess-1", TokenHash: "hash-1", LastUsedAt: lastUsed,
+		Label: "laptop", ClientKind: registry.SessionKindTUI, Origin: registry.SessionOriginLink}
 	if err := s.CreateSession(ctx, sess); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -972,6 +973,34 @@ func testSessionCRUD(t *testing.T, s registry.Store) {
 	got, err := s.GetSessionByTokenHash(ctx, "hash-1")
 	if err != nil {
 		t.Fatalf("GetSessionByTokenHash: %v", err)
+	}
+	// LOOM-268: who the session is comes back from every read.
+	if got.Label != "laptop" || got.ClientKind != registry.SessionKindTUI || got.Origin != registry.SessionOriginLink {
+		t.Fatalf("GetSessionByTokenHash = %+v, want label laptop, kind tui, origin link", got)
+	}
+	if list, err := s.ListSessions(ctx); err != nil || len(list) != 1 || list[0].Label != "laptop" ||
+		list[0].ClientKind != registry.SessionKindTUI || list[0].Origin != registry.SessionOriginLink {
+		t.Fatalf("ListSessions = %+v, %v", list, err)
+	}
+	// A token hash is one session's: a second is a conflict, and the
+	// first is left as it was.
+	dup := &registry.Session{ID: "sess-dup", TokenHash: "hash-1", Origin: registry.SessionOriginLogin}
+	if err := s.CreateSession(ctx, dup); !errors.Is(err, registry.ErrConflict) {
+		t.Fatalf("CreateSession with a held token hash = %v, want ErrConflict", err)
+	}
+	if again, _ := s.GetSessionByTokenHash(ctx, "hash-1"); again == nil || again.ID != "sess-1" || again.Origin != registry.SessionOriginLink {
+		t.Fatalf("after a refused duplicate = %+v", again)
+	}
+	// Left unset they are empty, not defaulted.
+	plain := &registry.Session{ID: "sess-plain", TokenHash: "hash-plain"}
+	if err := s.CreateSession(ctx, plain); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if p, _ := s.GetSessionByTokenHash(ctx, "hash-plain"); p == nil || p.Label != "" || p.ClientKind != "" || p.Origin != "" {
+		t.Fatalf("a session with nothing set = %+v", p)
+	}
+	if err := s.DeleteSession(ctx, plain.ID); err != nil {
+		t.Fatal(err)
 	}
 	if got.ID != sess.ID || got.TokenHash != "hash-1" {
 		t.Fatalf("GetSessionByTokenHash = %+v, want id=%q tokenHash=%q", got, sess.ID, "hash-1")

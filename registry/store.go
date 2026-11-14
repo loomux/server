@@ -303,6 +303,10 @@ type Store interface {
 	DeleteRouterTier(ctx context.Context, tier string, change *RouterSettingsChange) error
 	ListRouterSettingsChanges(ctx context.Context, limit int) ([]*RouterSettingsChange, error)
 
+	// A session also carries its Label, ClientKind and Origin (LOOM-268),
+	// stored as given and returned by every read; a second session with
+	// a TokenHash already held is ErrConflict.
+	//
 	// CreateSession, GetSessionByTokenHash, ListSessions, TouchSession,
 	// and DeleteSession back client auth (design spec §9). TouchSession
 	// updates LastUsedAt (sliding expiration); a caller with an unknown

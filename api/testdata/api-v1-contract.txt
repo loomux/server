@@ -485,9 +485,11 @@ GET /api/v1/sessions
 GET /api/v1/sessions request-header Authorization
 GET /api/v1/sessions response - object
 GET /api/v1/sessions response .sessions []object
+GET /api/v1/sessions response .sessions[].client_kind string
 GET /api/v1/sessions response .sessions[].created_at time
 GET /api/v1/sessions response .sessions[].current boolean
 GET /api/v1/sessions response .sessions[].id string
+GET /api/v1/sessions response .sessions[].label string
 GET /api/v1/sessions response .sessions[].last_used_at time
 GET /api/v1/sessions response-header Content-Type
 GET /api/v1/sessions status 200
@@ -1123,6 +1125,27 @@ POST /api/v1/plugins/{id}/upgrade status 409
 POST /api/v1/plugins/{id}/upgrade status 422
 POST /api/v1/plugins/{id}/upgrade status 500
 POST /api/v1/plugins/{id}/upgrade status 503
+POST /api/v1/sessions
+POST /api/v1/sessions request - object
+POST /api/v1/sessions request .client_kind string omitempty
+POST /api/v1/sessions request .label string omitempty
+POST /api/v1/sessions request .token_hash string
+POST /api/v1/sessions request-header Authorization
+POST /api/v1/sessions response - object
+POST /api/v1/sessions response .client_kind string
+POST /api/v1/sessions response .created_at time
+POST /api/v1/sessions response .current boolean
+POST /api/v1/sessions response .id string
+POST /api/v1/sessions response .label string
+POST /api/v1/sessions response .last_used_at time
+POST /api/v1/sessions response-header Content-Type
+POST /api/v1/sessions status 201
+POST /api/v1/sessions status 400
+POST /api/v1/sessions status 401
+POST /api/v1/sessions status 403
+POST /api/v1/sessions status 409
+POST /api/v1/sessions status 413
+POST /api/v1/sessions status 500
 POST /api/v1/settings/router/{tier}/models
 POST /api/v1/settings/router/{tier}/models request - object
 POST /api/v1/settings/router/{tier}/models request .api_key string

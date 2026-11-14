@@ -55,6 +55,7 @@ var apiV1Bodies = map[string][]contractBody{
 	"POST /api/v1/login":                         {{"request", loginRequest{}}, {"response", loginResponse{}}},
 	"POST /api/v1/logout":                        {{"response", nil}},
 	"GET /api/v1/sessions":                       {{"response", listSessionsResponse{}}},
+	"POST /api/v1/sessions":                      {{"request", linkSessionRequest{}}, {"response", sessionSummary{}}},
 	"DELETE /api/v1/sessions/{id}":               {{"response", nil}},
 	"POST /api/v1/dispatch":                      {{"request", dispatchRequest{}}, {"response", dispatchResponse{}}, {"response:busy", busyResponse{}}},
 	"GET /api/v1/dispatches/{id}":                {{"response", dispatchResponse{}}},
