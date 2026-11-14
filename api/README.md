@@ -784,6 +784,48 @@ Paging follows the task transcript's convention (LOOM-122):
 
 ## Testing
 
+### `api/apitest`: a real server for another module's tests
+
+`github.com/Loomux/server/api/apitest` (LOOM-270) is an exported test
+helper for clients that live in another module, first `loomux/tui`. Such
+a client requires this module at a release tag, imports `apitest` from its
+`_test.go` files only, and drives the server over HTTP, so its typed
+client is checked against the handlers, auth, JSON and event stream a
+deployed server answers with (`docs/design/tui-client-design.md`, "How it
+pins and tests against the server's API").
+
+```go
+srv := apitest.New(t)            // torn down by t's cleanup
+token := srv.Login()             // a new session each call
+task := srv.SeedPrompt("conv-1", registry.Attention{})
+// the client under test talks to srv.URL with token
+```
+
+- **Real:** `api.Server`, a SQLite store in a temporary directory with
+  every migration applied (`srv.Store`), the dispatch-job service, and the
+  orchestrator behind takeover, heartbeat and release.
+- **Stubbed:** the router. `srv.Dispatcher` answers each dispatch: `Reply`,
+  `Fail`, `Block` (hold a conversation busy until released or cancelled)
+  or a `Handle` function; `Dispatches()` lists what it was sent. A
+  successful reply is also logged as the assistant's message.
+- **Faked:** the targets. `srv.Executor` is an in-memory
+  `targets.TargetExecutor` that records sessions and input and runs
+  nothing.
+- **Seeds:** `SeedTarget`, `SeedWorkspace`, `SeedTask`, `SeedConversation`,
+  `SeedMessage`, `SeedPrompt` (a `needs_attention` task), `SeedFailedTask`,
+  `SeedOffer` (a pending confirmation), `SeedTurn` (a transcript entry) and
+  `SetTaskStatus` (a status change an open stream reports).
+- **Not configured:** plugins, machines, credentials, SSH keys, router
+  settings, web bundles and health checks answer as on a server without
+  them. `WithAPIOptions` adds any `api.Option`; `WithClock` sets the clock
+  holds run on; `WithPassword` the login password.
+
+The helper is extended by each server ticket that adds a route a client
+calls. Its own tests (`api/apitest/apitest_test.go`) use it as a client
+module would, including takeover, heartbeat and release.
+
+### This package's own tests
+
 `server_test.go` covers the auth/session state machine (login success/
 failure, missing/invalid/expired/logged-out tokens, sliding-expiration
 refresh, and the login throttle — repeated failures triggering `429`

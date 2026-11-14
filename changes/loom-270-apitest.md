@@ -1,0 +1,3 @@
+### Added
+
+- `github.com/Loomux/server/api/apitest`: an exported test helper that runs a real `api.Server` for another module's tests (LOOM-270, the terminal client's S9). `apitest.New(t)` starts the server over a SQLite store in a temporary directory, with a stub dispatcher in place of the router (`Reply`, `Fail`, `Block`, `Handle`), an in-memory fake target executor, and seed helpers for conversations, tasks, prompts, failed tasks, offers and transcript turns. `loomux/tui` imports it from its tests to check its client against the handlers, JSON and event stream a deployed server answers with, including takeover, heartbeat and release. It is used by tests only and isn't part of `loomuxd`.
