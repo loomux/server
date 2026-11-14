@@ -171,6 +171,75 @@ type Store interface {
 	// one is never deleted.
 	DeleteConfirmationsResolvedBefore(ctx context.Context, cutoff time.Time) (int, error)
 
+	// CreateTaskHold, AcquireDriveHold, GetTaskHold, GetActiveDriveHold,
+	// ListActiveTaskHolds, RenewTaskHold, EndTaskHold, ReleaseTaskHold,
+	// ExtendActiveTaskHolds and DeleteTaskHoldsEndedBefore keep holds:
+	// leases on a task by an API session (LOOM-263). Times are stored in
+	// UTC.
+	//
+	// CreateTaskHold stores h as an active hold: TTL must be positive,
+	// AcquiredAt is stamped now if zero, RenewedAt is AcquiredAt,
+	// ExpiresAt is AcquiredAt + TTL, and EndedAt and EndedReason are
+	// cleared. A task has at most one active drive hold: a second is
+	// ErrTaskHeld, and of several racing creates exactly one succeeds.
+	// Watch holds aren't limited. A task that doesn't exist, or an id
+	// already used, is ErrConflict. Deleting a task deletes its holds.
+	// It never touches the task; a drive hold that goes with a status
+	// change is AcquireDriveHold's.
+	CreateTaskHold(ctx context.Context, h *TaskHold) error
+	// AcquireDriveHold makes h (a drive hold, stamped as by
+	// CreateTaskHold) the task's active drive hold and writes t's status
+	// change, as one transaction: a human takeover. Like TransitionTask
+	// it is a compare-and-set on the task's status: unless the stored
+	// status is still from, nothing is written and applied is false.
+	// When t.Status differs from from, the task's status (and nothing
+	// else of t, which may be older than the row) is written; when they
+	// are equal the task is left untouched. A task
+	// that already has an active drive hold is ErrTaskHeld, unless
+	// replace is set: then that hold is ended with replace as its reason
+	// at h.AcquiredAt, and returned as ended. ErrNotFound for an unknown
+	// task; h.TaskID must be t.ID.
+	AcquireDriveHold(ctx context.Context, h *TaskHold, t *Task, from TaskStatus, replace HoldEndReason) (ended *TaskHold, applied bool, err error)
+	// GetTaskHold returns a hold, active or ended; ErrNotFound if unknown.
+	GetTaskHold(ctx context.Context, id string) (*TaskHold, error)
+	// GetActiveDriveHold returns taskID's active drive hold; ErrNotFound
+	// if it has none (or there is no such task).
+	GetActiveDriveHold(ctx context.Context, taskID string) (*TaskHold, error)
+	// ListActiveTaskHolds returns every hold that hasn't ended, of every
+	// task and mode, oldest acquired first; none is an empty slice. A
+	// hold past its ExpiresAt is still listed until it is ended.
+	ListActiveTaskHolds(ctx context.Context) ([]*TaskHold, error)
+	// RenewTaskHold renews an active hold at at (RenewedAt at, ExpiresAt
+	// at + its TTL unless it is already later: a renewal never shortens
+	// a lease) and returns it. An ended hold is left as it is and
+	// returned with ErrHoldEnded; ErrNotFound if unknown.
+	RenewTaskHold(ctx context.Context, id string, at time.Time) (*TaskHold, error)
+	// EndTaskHold ends an active hold with reason at at and returns it
+	// with ended true. A hold that has already ended keeps its own time
+	// and reason and is returned with ended false: ending is idempotent,
+	// and of several racing enders exactly one sees true. ErrNotFound if
+	// unknown. It never touches the task; see ReleaseTaskHold.
+	EndTaskHold(ctx context.Context, id string, reason HoldEndReason, at time.Time) (h *TaskHold, ended bool, err error)
+	// ReleaseTaskHold ends a hold and hands its task back to automation,
+	// as one transaction. With holdID it ends that hold, as EndTaskHold
+	// does (ErrNotFound if it is unknown or isn't taskID's); with holdID
+	// empty it ends taskID's active drive hold, if it has one. Then,
+	// unless the hold named is a watch hold: if the task is left with no
+	// active drive hold and is in human-takeover, it becomes
+	// awaiting-input and its attention is cleared. A task in any other
+	// status keeps it, and so does a task some other drive hold still
+	// holds. ErrNotFound for an unknown task.
+	ReleaseTaskHold(ctx context.Context, taskID, holdID string, reason HoldEndReason, at time.Time) (*HoldRelease, error)
+	// ExtendActiveTaskHolds gives every active hold a full lease counted
+	// from from: an ExpiresAt before from + the hold's TTL is moved there
+	// (a later one is left). It returns how many it moved. For startup,
+	// so that the time the server was down doesn't count against a lease.
+	ExtendActiveTaskHolds(ctx context.Context, from time.Time) (int, error)
+	// DeleteTaskHoldsEndedBefore deletes the holds that ended before
+	// cutoff (retention, as for confirmations), returning how many it
+	// deleted. An active hold is never deleted.
+	DeleteTaskHoldsEndedBefore(ctx context.Context, cutoff time.Time) (int, error)
+
 	// SetTargetHostKeys pins (or, with "", unpins) a target's host keys
 	// (LOOM-114); ErrNotFound if there's no such target.
 	SetTargetHostKeys(ctx context.Context, id, hostKeys string) error

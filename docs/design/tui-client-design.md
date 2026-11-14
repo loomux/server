@@ -255,6 +255,7 @@ A **hold** is a lease on one task by one session:
 | `client_kind`, `client_label` | `tui` + `laptop`, copied from the session (S7) or sent with the takeover |
 | `mode` | `drive` or `watch` (both in v1, see "Watching" below) |
 | `prev_status` | the task's status when taken, for display and audit |
+| `ttl_seconds` | the lease's length, 15–300, default 45. Stored (added while building S2), because a renewal pushes `expires_at` out by it and it can't be read back from the other times once the restart grace has moved `expires_at` |
 | `acquired_at`, `renewed_at`, `expires_at` | |
 | `ended_at`, `ended_reason` | `released`, `expired`, `taken_back`, `taken_over`, `session_revoked`, `task_ended` |
 
@@ -262,6 +263,12 @@ New table `task_holds` (migration `00036`), one active `drive` hold per task
 (a partial unique index on `task_id` where `ended_at IS NULL AND mode =
 'drive'`). Ended rows are kept for the audit trail and swept by retention
 like confirmations.
+
+The hold and the task's status are written together (S2's
+`AcquireDriveHold` and `ReleaseTaskHold`, each one transaction). Written
+separately, a release racing a takeover could leave a held task in
+`awaiting_input`, where automation may type into a pane a person is
+driving.
 
 The hold is the source of truth for *who*. The task's status
 `human_takeover` remains the source of truth for *whether automation may

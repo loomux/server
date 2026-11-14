@@ -1,0 +1,4 @@
+### Added
+
+- Storage for task holds, the lease a terminal client takes on a task while a person is attached to its pane (LOOM-263, the terminal client's S2). Migration `00036` adds the `task_holds` table: one active `drive` hold per task (a partial unique index), any number of `watch` holds, and ended holds kept as the audit trail. Nothing takes a hold yet; the routes come with LOOM-264. Ended holds are deleted by the retention sweep after `LOOMUX_CONFIRMATION_RETENTION` (30 days by default, `0` keeps them), counted as `loomux_retention_deleted_total{table="task_holds"}`; an active hold is never deleted.
+- At startup the server logs a warning for each task in `human_takeover` that has no active drive hold, naming the task and its conversation (LOOM-263). No such task is expected: nothing could take a task over before holds existed.

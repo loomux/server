@@ -139,7 +139,8 @@ type Config struct {
 	// SessionRetention is how long a session row is kept after it
 	// expired, DispatchRetention how long a dispatch is kept after it
 	// finished, and ConfirmationRetention how long a confirmation is kept
-	// after it was answered or expired (LOOM-193); zero keeps them.
+	// after it was answered or expired (LOOM-193), which is also how
+	// long an ended task hold is kept (LOOM-263); zero keeps them.
 	// LoadConfig defaults them to defaultSessionRetention,
 	// defaultDispatchRetention and defaultConfirmationRetention. Messages
 	// are kept.

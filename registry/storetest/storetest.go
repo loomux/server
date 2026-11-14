@@ -117,6 +117,8 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("SessionListOrderedByLastUsedDescending", func(t *testing.T) { testSessionListOrderedByLastUsedDescending(t, newStore(t)) })
 	t.Run("SessionListEmpty", func(t *testing.T) { testSessionListEmpty(t, newStore(t)) })
 	t.Run("DeleteSessionsExpiredBefore", func(t *testing.T) { testDeleteSessionsExpiredBefore(t, newStore(t)) })
+
+	runHolds(t, newStore)
 }
 
 // createTestWorkspace is a fixture: task tests need a valid workspace to
