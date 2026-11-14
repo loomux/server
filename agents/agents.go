@@ -151,9 +151,17 @@ func Codex() router.AgentType {
 			LoggedIn:  regexp.MustCompile(`(?im)^\s*logged in\b`),
 			LoggedOut: regexp.MustCompile(`(?i)\bnot logged in\b`),
 		},
-		LastMessageKey:     "last-assistant-message",
-		InterruptKeys:      []string{"Escape"},
-		Description:        `OpenAI's Codex CLI ("codex"). A coding agent; choose it when the user asks for Codex or OpenAI.`,
+		LastMessageKey: "last-assistant-message",
+		InterruptKeys:  []string{"Escape"},
+		Description:    `OpenAI's Codex CLI ("codex"). A coding agent; choose it when the user asks for Codex or OpenAI.`,
+		// Codex's TUI offers a self-update at startup when a newer release
+		// exists; the menu offers `curl … | sh` and blocks the session
+		// until answered (LOOM-260). The pinned CLI's top-level
+		// `check_for_update_on_startup` key turns it off (Codex 0.162.0,
+		// codex-rs/config/src/config_toml.rs; -c values are TOML, see
+		// codex-rs/utils/cli/src/config_override.rs). Passed per launch,
+		// so nothing is written to ~/.codex/config.toml.
+		StartupArgs:        []string{"-c", "check_for_update_on_startup=false"},
 		CompletionHookArgs: []string{"-c", "notify=" + tomlStringArray(codexNotifyArgv())},
 		Profile: router.LaunchProfile{
 			// workspace-write: commands run in Codex's sandbox and can

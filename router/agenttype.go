@@ -34,6 +34,15 @@ type AgentType struct {
 	// agent-type (design spec §10 axis 3). nil means no check is
 	// enforced.
 	VersionCheck *VersionCheck
+	// StartupArgs are extra CLI arguments, appended after LaunchTemplate
+	// on every launch, that configure how the CLI starts but are neither
+	// permission posture nor a completion hook — e.g. codex's
+	// -c check_for_update_on_startup=false, which keeps a pinned CLI from
+	// stopping at its self-update menu (LOOM-260). Like
+	// CompletionHookArgs they are scoped to the launched process: nothing
+	// is written to the target's own agent config, which on a shared host
+	// belongs to someone else. Each element is shell-quoted as one word.
+	StartupArgs []string
 	// CompletionHookArgs are extra CLI arguments, appended after
 	// LaunchTemplate on every launch, that make the agent CLI itself
 	// touch $LOOMUX_MARKER_PATH when a turn finishes (LOOM-75) — e.g.
@@ -160,15 +169,16 @@ func (at AgentType) permissionArgs(mode string) []string {
 
 // launchCommand is the agent CLI invocation launchAgent runs (before any
 // env prefix), each argument shell-quoted: LaunchTemplate, the profile's
-// permission args, its trust args for workspaceDir, CompletionHookArgs,
-// then — when the profile passes the first prompt as an argument and
-// there is one — "--" and the prompt. "--" keeps a message that starts
-// with "-" from being read as a flag.
+// permission args, its trust args for workspaceDir, StartupArgs,
+// CompletionHookArgs, then — when the profile passes the first prompt as
+// an argument and there is one — "--" and the prompt. "--" keeps a
+// message that starts with "-" from being read as a flag.
 func (at AgentType) launchCommand(workspaceDir, prompt, permissionMode string) string {
 	args := append([]string{}, at.permissionArgs(permissionMode)...)
 	if at.Profile.TrustArgs != nil {
 		args = append(args, at.Profile.TrustArgs(workspaceDir)...)
 	}
+	args = append(args, at.StartupArgs...)
 	args = append(args, at.CompletionHookArgs...)
 	if at.Profile.PromptAsArg && prompt != "" {
 		args = append(args, "--", prompt)
