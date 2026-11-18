@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -792,5 +793,114 @@ func TestHoldSweeper_GraceRetryCountsFromTheStart(t *testing.T) {
 	}
 	if h := mustHold(t, store, fresh.Hold.ID); !h.ExpiresAt.Equal(fresh.Hold.ExpiresAt) {
 		t.Errorf("the hold taken since moved: %v, was %v", h.ExpiresAt, fresh.Hold.ExpiresAt)
+	}
+}
+
+// stallingExecutor is a target whose DetachClients hangs until its
+// caller's deadline, as an SSH call to a host that stopped answering.
+type stallingExecutor struct {
+	*fakeExecutor
+	mu    sync.Mutex
+	calls int
+}
+
+func (e *stallingExecutor) DetachClients(ctx context.Context, session string) error {
+	e.mu.Lock()
+	e.calls++
+	e.mu.Unlock()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// LOOM-265 review 3: one target that stopped answering doesn't hold up
+// the holds on the others. Targets are swept concurrently, each hold
+// under a deadline of its own, and a target that timed out is skipped
+// for the rest of the pass rather than waited out once per hold: its
+// holds stay (fail closed) and are tried again next sweep.
+func TestHoldSweeper_StalledTargetDoesNotBlockOthers(t *testing.T) {
+	store, wsA, healthy, _, clock := sweepSetup(t)
+	ctx := context.Background()
+	stalled := &stallingExecutor{fakeExecutor: newFakeExecutor()}
+	targetB := &registry.Target{ID: "target-b", Name: "target-b", Kind: registry.TargetKindLocal}
+	if err := store.CreateTarget(ctx, targetB); err != nil {
+		t.Fatal(err)
+	}
+	wsB := &registry.Workspace{ID: "ws-b", Name: "ws-b", Path: t.TempDir(), TargetID: targetB.ID, Status: registry.WorkspaceStatusActive}
+	if err := store.CreateWorkspace(ctx, wsB); err != nil {
+		t.Fatal(err)
+	}
+	// Target A (the fixture's) stalls; B answers.
+	o := orchestrator.New(store, func(tg *registry.Target) (targets.TargetExecutor, error) {
+		if tg.ID == targetB.ID {
+			return healthy, nil
+		}
+		return stalled, nil
+	}, &hookDetector{}, orchestrator.WithClock(clock.Now))
+	var stuck []*registry.TaskHold
+	for i := range 5 {
+		task := taskIn(t, store, o, wsA, fmt.Sprintf("conv-a%d", i), registry.TaskStatusAwaitingInput, "")
+		stuck = append(stuck, takeOver(t, o, task.ID))
+	}
+	expiring := taskIn(t, store, o, wsB, "conv-b1", registry.TaskStatusAwaitingInput, "")
+	expHold := takeOver(t, o, expiring.ID)
+	revoked := taskIn(t, store, o, wsB, "conv-b2", registry.TaskStatusAwaitingInput, "")
+	revHold, err := o.Takeover(ctx, orchestrator.TakeoverRequest{TaskID: revoked.ID, SessionID: "sess-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Minute)
+	if err := store.TouchSession(ctx, "sess-1", clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteSession(ctx, "sess-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	const deadline = 300 * time.Millisecond
+	sweeper := orchestrator.NewHoldSweeper(o, orchestrator.WithHoldEndTimeout(deadline))
+	var bMu sync.Mutex
+	var bDetached []time.Time
+	healthy.mu.Lock()
+	healthy.onDetach = func() {
+		bMu.Lock()
+		bDetached = append(bDetached, time.Now())
+		bMu.Unlock()
+	}
+	healthy.mu.Unlock()
+	start := time.Now()
+	n := sweeper.Sweep(ctx)
+	took := time.Since(start)
+	if n != 2 {
+		t.Fatalf("ended %d holds, want target B's two", n)
+	}
+	if took > 2*deadline {
+		t.Errorf("the sweep took %v: target A's stalled holds were waited out one by one (deadline %v each)", took, deadline)
+	}
+	bMu.Lock()
+	for _, at := range bDetached {
+		if wait := at.Sub(start); wait >= deadline {
+			t.Errorf("a detach on B waited %v, behind A's stalled one (deadline %v)", wait, deadline)
+		}
+	}
+	bMu.Unlock()
+	if h := mustHold(t, store, expHold.ID); h.EndedReason != registry.HoldEndExpired {
+		t.Errorf("B's expired hold = %+v", h)
+	}
+	if h := mustHold(t, store, revHold.Hold.ID); h.EndedReason != registry.HoldEndSessionRevoked {
+		t.Errorf("B's revoked hold = %+v", h)
+	}
+	for _, h := range stuck {
+		if !mustHold(t, store, h.ID).Active() {
+			t.Errorf("hold %s on the stalled target ended without a detach", h.ID)
+		}
+	}
+	stalled.mu.Lock()
+	calls := stalled.calls
+	stalled.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("%d detaches tried on the stalled target in one pass, want 1", calls)
+	}
+	if d := healthy.detachedSessions(); len(d) != 2 {
+		t.Errorf("detached on B: %v", d)
 	}
 }

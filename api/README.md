@@ -617,7 +617,10 @@ or gave one the server refused.
       hold's tmux clients are detached (`tmux detach-client -s` on the
       task's session, through its target) and then the task is handed
       back as by a release; if they can't be detached the hold stays and
-      the next sweep tries again. A `task_ended` hold detaches nobody and
+      the next sweep tries again. Targets are swept concurrently, each
+      hold within 10 s, and a target that doesn't answer is skipped for
+      the rest of a pass, so it never delays holds on other targets. A
+      `task_ended` hold detaches nobody and
       leaves the status. On start the sweeper first gives every active
       hold a full lease from then, so a restart or deploy longer than a
       lease doesn't end the holds of clients that resume heartbeating.

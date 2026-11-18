@@ -395,6 +395,10 @@ regenerated (lines only added).
   one lock per task in loomuxd, the detach included, so a heartbeat can't
   renew a hold being ended and a detach never reaches a holder who took
   the task meanwhile; a caller's deadline bounds its wait for the lock.
+  A pass works on targets concurrently, each hold under its own 10 s
+  deadline, and skips the rest of a target that timed out or can't be
+  reached (its holds stay for the next pass), so a target that stopped
+  answering costs one deadline and never holds up holds elsewhere.
   The restart grace runs before the API serves, nothing is swept until it
   has succeeded, and a retry counts the lease from the first try, so it
   never extends a hold taken since. A takeover whose session was revoked

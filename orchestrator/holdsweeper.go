@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 )
 
 // HoldSweepInterval is how often the hold sweeper looks for holds to end
@@ -16,6 +18,15 @@ import (
 // well inside the shortest lease, so a hold ends within seconds of its
 // lease running out.
 const HoldSweepInterval = 5 * time.Second
+
+// DefaultHoldEndTimeout bounds how long the sweeper spends ending one
+// hold: the wait for its task's lock, the detach on its target and the
+// write. A target that doesn't answer within it is skipped for the rest
+// of the pass, its holds kept for the next.
+const DefaultHoldEndTimeout = 10 * time.Second
+
+// maxSweepTargets bounds how many targets a pass works on at once.
+const maxSweepTargets = 8
 
 // ErrDetachFailed is returned when the tmux clients attached to a held
 // task's session couldn't be detached (LOOM-265). The hold it was for is
@@ -42,7 +53,9 @@ type HoldSweeper struct {
 	// (sliding and absolute, 0 for none): a hold's session past either
 	// has expired, as the API would refuse its token.
 	sessionTTL, sessionMaxAge time.Duration
-	logger                    *slog.Logger
+	// endTimeout bounds the end of one hold (DefaultHoldEndTimeout).
+	endTimeout time.Duration
+	logger     *slog.Logger
 
 	// warned are the holds whose end has failed and been warned about:
 	// a target down for an hour is said once, not every sweep.
@@ -68,6 +81,16 @@ func WithHoldSessionLifetime(ttl, maxAge time.Duration) HoldSweeperOption {
 	return func(s *HoldSweeper) { s.sessionTTL, s.sessionMaxAge = ttl, maxAge }
 }
 
+// WithHoldEndTimeout sets how long the sweeper spends ending one hold
+// (DefaultHoldEndTimeout). Non-positive values are ignored.
+func WithHoldEndTimeout(d time.Duration) HoldSweeperOption {
+	return func(s *HoldSweeper) {
+		if d > 0 {
+			s.endTimeout = d
+		}
+	}
+}
+
 // WithHoldSweeperLogger sets where the sweeper logs; the orchestrator's
 // logger by default. nil is ignored.
 func WithHoldSweeperLogger(l *slog.Logger) HoldSweeperOption {
@@ -81,7 +104,7 @@ func WithHoldSweeperLogger(l *slog.Logger) HoldSweeperOption {
 // NewHoldSweeper constructs a HoldSweeper over orch's holds, on orch's
 // clock.
 func NewHoldSweeper(orch *Orchestrator, opts ...HoldSweeperOption) *HoldSweeper {
-	s := &HoldSweeper{orch: orch, logger: orch.logger, warned: map[string]bool{}}
+	s := &HoldSweeper{orch: orch, logger: orch.logger, warned: map[string]bool{}, endTimeout: DefaultHoldEndTimeout}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -155,6 +178,14 @@ func (s *HoldSweeper) Grace(ctx context.Context) (int, error) {
 // again once the lock is held: a heartbeat, takeover or release that
 // landed since the list was read is seen, and none can land between the
 // judgement, the detach and the end.
+//
+// Targets are worked on concurrently (up to maxSweepTargets at once), a
+// target's holds one after another, each under its own deadline
+// (endTimeout). A target that times out or can't be reached is skipped
+// for the rest of the pass: its holds stay, as any hold whose clients
+// couldn't be detached does, and the next pass tries again. So a target
+// that stopped answering costs a pass one deadline, not one per hold,
+// and never holds up the holds on the others.
 func (s *HoldSweeper) Sweep(ctx context.Context) int {
 	holds, err := s.orch.store.ListActiveTaskHolds(ctx)
 	if err != nil {
@@ -169,13 +200,38 @@ func (s *HoldSweeper) Sweep(ctx context.Context) int {
 			s.logger.Error("hold sweep: listing sessions failed", "error", err)
 		}
 	}
-	ended := 0
+	groups := map[string][]*registry.TaskHold{}
+	var order []string
 	for _, h := range holds {
 		listed[h.ID] = true
-		if s.sweepHold(ctx, h, sessions) {
-			ended++
+		key := s.targetOf(ctx, h)
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
 		}
+		groups[key] = append(groups[key], h)
 	}
+	var ended atomic.Int64
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, maxSweepTargets)
+	for _, key := range order {
+		group := groups[key]
+		slots <- struct{}{} // in list order: the oldest holds' targets first
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			for _, h := range group {
+				ok, targetDown := s.sweepHold(ctx, h, sessions)
+				if ok {
+					ended.Add(1)
+				}
+				if targetDown {
+					return // the rest of this target's holds wait for the next pass
+				}
+			}
+		}()
+	}
+	wg.Wait()
 	s.mu.Lock()
 	for id := range s.warned {
 		if !listed[id] {
@@ -183,36 +239,57 @@ func (s *HoldSweeper) Sweep(ctx context.Context) int {
 		}
 	}
 	s.mu.Unlock()
-	return ended
+	return int(ended.Load())
+}
+
+// targetOf is the key a hold is swept under: its task's target, or the
+// task itself when that can't be read (it is then judged on its own).
+func (s *HoldSweeper) targetOf(ctx context.Context, h *registry.TaskHold) string {
+	task, err := s.orch.store.GetTask(ctx, h.TaskID)
+	if err != nil {
+		return "task:" + h.TaskID
+	}
+	ws, err := s.orch.store.GetWorkspace(ctx, task.WorkspaceID)
+	if err != nil {
+		return "task:" + h.TaskID
+	}
+	return "target:" + ws.TargetID
 }
 
 // sweepHold judges one listed hold and ends it if it should, under its
-// task's hold lock, and reports whether it ended it.
-func (s *HoldSweeper) sweepHold(ctx context.Context, listed *registry.TaskHold, sessions map[string]*registry.Session) bool {
+// task's hold lock and within endTimeout. It reports whether it ended
+// it, and whether its target timed out or couldn't be reached (so the
+// target's other holds can wait for the next pass).
+func (s *HoldSweeper) sweepHold(ctx context.Context, listed *registry.TaskHold, sessions map[string]*registry.Session) (ended, targetDown bool) {
+	ctx, cancel := context.WithTimeout(ctx, s.endTimeout)
+	defer cancel()
 	unlock, err := s.orch.holds.lock(ctx, listed.TaskID)
 	if err != nil {
-		return false // shutting down
+		// Something else has had the task's holds for the whole
+		// deadline (another end, stuck on the same target): next pass.
+		s.warn(listed, "", err)
+		return false, false
 	}
 	defer unlock()
 	h, err := s.orch.store.GetTaskHold(ctx, listed.ID)
 	if err != nil || !h.Active() {
-		return false // ended, or gone with its task, since the list
+		return false, false // ended, or gone with its task, since the list
 	}
 	reason, err := s.endReason(ctx, h, sessions)
 	if err != nil {
 		s.warn(h, "", err)
-		return false
+		return false, false
 	}
 	if reason == "" {
-		return false
+		return false, false
 	}
 	ok, err := s.orch.endHoldLocked(ctx, h, reason)
 	if err != nil {
 		s.warn(h, reason, err)
-		return false
+		return false, errors.Is(err, context.DeadlineExceeded) || errors.Is(err, targets.ErrUnreachable)
 	}
 	s.forget(h.ID)
-	return ok
+	return ok, false
 }
 
 // sessions returns every session by id.
@@ -372,7 +449,10 @@ func (o *Orchestrator) endHoldLocked(ctx context.Context, h *registry.TaskHold, 
 			return false, err
 		}
 	}
-	res, err := o.store.ReleaseTaskHold(ctx, h.TaskID, h.ID, reason, o.now().UTC())
+	// Once the clients are detached the end is written whatever the
+	// caller's deadline: a detach without its end would only be done
+	// again.
+	res, err := o.store.ReleaseTaskHold(context.WithoutCancel(ctx), h.TaskID, h.ID, reason, o.now().UTC())
 	if errors.Is(err, registry.ErrNotFound) {
 		return false, nil // gone with its task
 	}
