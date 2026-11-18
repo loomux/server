@@ -206,6 +206,13 @@ func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, 
 	return e.capture, nil
 }
 
+func (e *fakeExecutor) DetachClients(ctx context.Context, session string) error {
+	if e.unreachable {
+		return targets.ErrUnreachable
+	}
+	return nil
+}
+
 func (e *fakeExecutor) KillSession(ctx context.Context, session string) error {
 	if e.unreachable {
 		return targets.ErrUnreachable

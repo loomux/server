@@ -417,6 +417,19 @@ func (e *RemoteExecutor) KillSession(ctx context.Context, session string) error 
 	return err
 }
 
+// DetachClients runs detachClientsScript in one SSH round trip. An
+// unreachable target is ErrUnreachable, as for every other operation.
+func (e *RemoteExecutor) DetachClients(ctx context.Context, session string) error {
+	_, stderr, exitCode, err := e.sshExec(ctx, detachClientsScript(e.socket, session))
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("targets: remote detach clients of %s: %s", session, firstNonEmpty(strings.TrimSpace(stderr), fmt.Sprintf("exit status %d", exitCode)))
+	}
+	return nil
+}
+
 // RunOnce runs command once, non-interactively, over SSH (via sshExec —
 // the same connection-multiplexed primitive run() and the file-existence
 // methods share) and returns its combined stdout+stderr — e.g. many CLIs

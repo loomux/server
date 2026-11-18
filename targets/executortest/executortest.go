@@ -41,6 +41,86 @@ func Run(t *testing.T, newExecutor func(t *testing.T) targets.TargetExecutor) {
 	t.Run("CaptureJoinsWrappedLines", func(t *testing.T) { testCaptureJoinsWrappedLines(t, newExecutor(t)) })
 	t.Run("PasteText", func(t *testing.T) { testPasteText(t, newExecutor(t)) })
 	t.Run("PasteStaysBracketed", func(t *testing.T) { testPasteStaysBracketed(t, newExecutor(t)) })
+	t.Run("DetachClients", func(t *testing.T) { testDetachClients(t, newExecutor(t)) })
+}
+
+// testDetachClients covers DetachClients (LOOM-265): every client
+// attached to the session is detached, on the executor's own socket,
+// and only that session's, matched by its exact name (tmux would
+// otherwise take a session that only starts with it). No session, or no
+// clients, is nothing to do. The clients are tmux control-mode clients,
+// which need no terminal, started on the target through RunOnce.
+func testDetachClients(t *testing.T, exec targets.TargetExecutor) {
+	ctx := context.Background()
+	socket := exec.TmuxSocket()
+	session := uniqueSessionName(t)
+	other := session + "-other"
+
+	if err := exec.DetachClients(ctx, session); err != nil {
+		t.Fatalf("DetachClients with no such session: %v", err)
+	}
+	for _, s := range []string{session, other} {
+		if err := exec.NewSession(ctx, s, "", ""); err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { _ = exec.KillSession(context.Background(), s) })
+	}
+	if err := exec.DetachClients(ctx, session); err != nil {
+		t.Fatalf("DetachClients with no client attached: %v", err)
+	}
+
+	attach := func(s string) {
+		t.Helper()
+		// Its stdin stays open (sleep) so it stays attached; nothing it
+		// has holds RunOnce's output open.
+		cmd := "(exec </dev/null >/dev/null 2>&1; sleep 30 | tmux -L " + posixQuote(socket) +
+			" -C attach -t " + posixQuote("="+s) + ") &"
+		if _, err := exec.RunOnce(ctx, cmd); err != nil {
+			t.Fatalf("attaching a client: %v", err)
+		}
+	}
+	clients := func(s string) int {
+		t.Helper()
+		out, err := exec.RunOnce(ctx, "tmux -L "+posixQuote(socket)+" list-clients -t "+posixQuote("="+s)+" -F '#{client_name}'")
+		if err != nil {
+			t.Fatalf("list-clients: %v: %s", err, out)
+		}
+		return len(strings.Fields(out))
+	}
+	waitClients := func(s string, want int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for clients(s) != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s has %d clients, want %d", s, clients(s), want)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	attach(session)
+	attach(session)
+	attach(other)
+	waitClients(session, 2)
+	waitClients(other, 1)
+
+	if err := exec.DetachClients(ctx, session); err != nil {
+		t.Fatalf("DetachClients: %v", err)
+	}
+	waitClients(session, 0)
+	if n := clients(other); n != 1 {
+		t.Fatalf("another session's clients were detached: %d left, want 1", n)
+	}
+
+	// Gone, the session's name still mustn't reach the one it prefixes.
+	if err := exec.KillSession(ctx, session); err != nil {
+		t.Fatalf("KillSession: %v", err)
+	}
+	if err := exec.DetachClients(ctx, session); err != nil {
+		t.Fatalf("DetachClients after the session ended: %v", err)
+	}
+	if n := clients(other); n != 1 {
+		t.Errorf("detaching an ended session detached the one its name prefixes: %d left, want 1", n)
+	}
 }
 
 // testPasteStaysBracketed checks a paste into a pane that asked for

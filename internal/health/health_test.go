@@ -41,6 +41,7 @@ func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, 
 	return "", nil
 }
 func (e *fakeExecutor) KillSession(ctx context.Context, session string) error     { return nil }
+func (e *fakeExecutor) DetachClients(ctx context.Context, session string) error   { return nil }
 func (e *fakeExecutor) Close() error                                              { return nil }
 func (e *fakeExecutor) FileExists(ctx context.Context, path string) (bool, error) { return false, nil }
 func (e *fakeExecutor) RemoveFile(ctx context.Context, path string) error         { return nil }

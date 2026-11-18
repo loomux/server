@@ -172,6 +172,7 @@ Specific codes, where a handler tells apart a case a client can act on:
 | Code | Where |
 | --- | --- |
 | `conversation_busy` | `POST /api/v1/dispatch` `409` when the conversation already has a dispatch in flight; the body also carries that dispatch's `dispatch_id` |
+| `detach_failed` | `POST /api/v1/tasks/{id}/release` `502` for a Take back whose holder's tmux clients couldn't be detached (the target didn't answer): the hold and the task's `human_takeover` stay; try again (LOOM-265) |
 | `hold_ended` | `POST /api/v1/tasks/{id}/takeover/heartbeat` `410` when the hold has ended; the body also carries `ended_reason` and the `hold` (LOOM-264) |
 | `idempotency_conflict` | `POST /api/v1/dispatch` `422` when the `Idempotency-Key` was already used for a different request |
 | `task_held` | `POST /api/v1/tasks/{id}/takeover` `409` when another session holds the task; the body also carries its `hold`. `force` takes it (LOOM-264) |
@@ -294,7 +295,9 @@ or gave one the server refused.
   and the handlers:
   - `POST /api/v1/login` — `{password, device?}` → `{token, device}`
     (`device`: see Known devices above; send it back on the next login)
-  - `POST /api/v1/logout` — auth-gated, revokes the presented token
+  - `POST /api/v1/logout` — auth-gated, revokes the presented token,
+    ending its streams, waits and holds (holds as `session_revoked`,
+    LOOM-265)
   - `GET /api/v1/sessions` — auth-gated (LOOM-47), every active session
     (every device/client currently holding a valid, unexpired Bearer
     token), most-recently-used first: `{sessions: [{id, created_at,
@@ -337,7 +340,8 @@ or gave one the server refused.
     another device out remotely); revoking the current request's own
     session is allowed and behaves exactly like `/logout`. `204` on
     success, `404` if `id` doesn't name an existing session. Wraps
-    `SessionStore.DeleteSession`.
+    `SessionStore.DeleteSession`. The session's streams, waits and holds
+    end with it, as on `/logout`.
   - `POST /api/v1/dispatch` — auth-gated, `{conversation_id?, message,
     workspace_hint?}`, optional `Idempotency-Key` header (≤ 255 chars).
     Since LOOM-80 every request becomes a **dispatch job** (wraps
@@ -569,8 +573,11 @@ or gave one the server refused.
       the caller's own session: that hold is renewed and returned
       (idempotent; its lease length and label stay as first taken). Held
       by another session: `409` (code `task_held`) with its `hold`, unless
-      `force`, which ends it as `taken_over` and gives the caller a new
-      one while the task stays `human_takeover`. Not held: a `running`,
+      `force`, which ends it as `taken_over`, detaches the tmux clients
+      attached to the task's session (before answering, so before the
+      caller attaches) and gives the caller a new one while the task
+      stays `human_takeover`. A detach that fails there is logged and
+      the takeover stands: no automation is let in. Not held: a `running`,
       `awaiting_input` or `needs_attention` task moves to
       `human_takeover`, and one already there with no hold is taken as it
       stands. A `failed` task with `error_class` `login_required`,
@@ -592,15 +599,31 @@ or gave one the server refused.
       afterwards. With `hold_id` it ends that hold as `released`; a hold
       that had already ended comes back as it ended, so it is idempotent.
       Without `hold_id` it is Take back, which any session may do: the
-      task's drive hold, if it has one, ends as `taken_back`. Either way a
+      task's drive hold, if it has one, ends as `taken_back` once the tmux
+      clients attached to the task's session are detached. If they can't
+      be (the target doesn't answer) it is `502` (code `detach_failed`)
+      and nothing changes, so automation never types into a pane its
+      holder may still be in. A release by `hold_id` detaches nobody: the
+      holder's own client has let go. Either way a
       task left in `human_takeover` with no drive hold becomes
       `awaiting_input` and its stale `attention` is cleared, in the same
       write as the hold's end; a task in any other status keeps it, and a
       task another session has taken meanwhile stays theirs.
-    - Not yet (later tickets of the same design): holds expiring by
-      themselves and the holder's tmux clients being detached when a hold
-      ends (S4), a `running` turn's wait ending at once (S5), and holds
-      shown on conversations, attach-info and the stream (S6).
+    - Holds end by themselves too (LOOM-265): the server's hold sweeper,
+      every 5 s, ends a hold whose lease ran out as `expired`, one whose
+      session was logged out, revoked or has expired as
+      `session_revoked` (a logout or revoke also ends them at once), and
+      one whose task ended as `task_ended`. For the first two, a drive
+      hold's tmux clients are detached (`tmux detach-client -s` on the
+      task's session, through its target) and then the task is handed
+      back as by a release; if they can't be detached the hold stays and
+      the next sweep tries again. A `task_ended` hold detaches nobody and
+      leaves the status. On start the sweeper first gives every active
+      hold a full lease from then, so a restart or deploy longer than a
+      lease doesn't end the holds of clients that resume heartbeating.
+    - Not yet (later tickets of the same design): a `running` turn's
+      wait ending at once (S5), and holds shown on conversations,
+      attach-info and the stream (S6).
   - Targets carry `relay` (`full`, `last_message`, `none`, or `""` for
     the purpose's default: `none` for `purpose: work`, else `full`) and
     show `relay_effective`: what the router models may see of the
@@ -829,14 +852,18 @@ task := srv.SeedPrompt("conv-1", registry.Attention{})
 
 - **Real:** `api.Server`, a SQLite store in a temporary directory with
   every migration applied (`srv.Store`), the dispatch-job service, and the
-  orchestrator behind takeover, heartbeat and release.
+  orchestrator behind takeover, heartbeat and release. Its hold sweeper
+  runs when a test calls `srv.SweepHolds()` (LOOM-265), not on a timer:
+  a lease past its expiry on the `WithClock` clock ends as `expired`, a
+  hold whose session no longer exists (logged out) as `session_revoked`.
 - **Stubbed:** the router. `srv.Dispatcher` answers each dispatch: `Reply`,
   `Fail`, `Block` (hold a conversation busy until released or cancelled)
   or a `Handle` function; `Dispatches()` lists what it was sent. A
   successful reply is also logged as the assistant's message.
 - **Faked:** the targets. `srv.Executor` is an in-memory
   `targets.TargetExecutor` that records sessions and input and runs
-  nothing.
+  nothing; a session's `Detaches` counts the times its clients were
+  detached.
 - **Seeds:** `SeedTarget`, `SeedWorkspace`, `SeedTask`, `SeedConversation`,
   `SeedMessage`, `SeedPrompt` (a `needs_attention` task), `SeedFailedTask`,
   `SeedOffer` (a pending confirmation), `SeedTurn` (a transcript entry) and

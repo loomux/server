@@ -97,6 +97,26 @@ func AttachCommand(socket, session string) string {
 	return "tmux -L " + socket + " attach -t " + session
 }
 
+// detachClientsScript is DetachClients as one POSIX sh script on the
+// target, run locally or over a single SSH round trip. Sessions are
+// named exactly ("=name"): tmux otherwise takes a session that merely
+// starts with the name once the named one is gone. tmux 3.x answers
+// detach-client -s with an error when no client is attached at all, so
+// the clients are looked for first; a detach that fails because they
+// left meanwhile is nothing to do either.
+func detachClientsScript(socket, session string) string {
+	tmux := func(args ...string) string {
+		return shellQuoteJoin(append([]string{"tmux", "-L", socket}, args...))
+	}
+	exact := "=" + session
+	list := tmux("list-clients", "-t", exact, "-F", "#{client_name}")
+	return tmux("has-session", "-t", exact) + " 2>/dev/null || exit 0\n" +
+		"c=$(" + list + ") || exit\n" +
+		"[ -n \"$c\" ] || exit 0\n" +
+		tmux("detach-client", "-s", exact) + " && exit 0\n" +
+		"[ -z \"$(" + list + " 2>/dev/null)\" ]\n"
+}
+
 // TargetExecutor runs tmux operations against a single target. session and
 // target parameters are plain tmux target-spec strings (a session name, or
 // "session:window.pane") — this package doesn't model window/pane
@@ -147,6 +167,14 @@ type TargetExecutor interface {
 
 	// KillSession terminates the named session.
 	KillSession(ctx context.Context, session string) error
+
+	// DetachClients detaches every tmux client attached to the named
+	// session (tmux detach-client -s), matched by its exact name, on the
+	// executor's socket (LOOM-265): what ends a person's attach once
+	// their hold on the task has ended. The session keeps running. No
+	// such session, no tmux server, or no client attached is nothing to
+	// do, not an error.
+	DetachClients(ctx context.Context, session string) error
 
 	// Close releases any resources held by the executor (e.g. an SSH
 	// connection multiplexing master).

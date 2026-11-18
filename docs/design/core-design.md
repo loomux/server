@@ -425,8 +425,13 @@ status are written together, as a compare-and-set on the status read, and
 a release ends the hold and returns the task to `awaiting-input` in one
 write. A second session is refused unless it forces the takeover. A failed
 task whose pane was kept for a person (a sign-in, a usage limit, an API
-error) can be held without changing its status. The full model, expiry
-and watching are in `tui-client-design.md`, "Server awareness: holds".
+error) can be held without changing its status. Since LOOM-265 a hold
+also ends by itself: a sweeper ends one whose lease ran out, whose session
+was logged out, revoked or expired, or whose task ended, and a drive
+hold's tmux clients are detached (`detach-client -s`) before its task is
+handed back, as they are on a forced takeover or a Take back. A restart
+gives every hold a fresh lease first. The full model, expiry and watching
+are in `tui-client-design.md`, "Server awareness: holds".
 
 ### 5. Completion detection
 

@@ -47,6 +47,8 @@ type fakeExecutor struct {
 	// something happening during the paste (LOOM-262); a non-nil error
 	// is the paste's.
 	onPaste func() error
+	// detached are the sessions DetachClients was called for (LOOM-265).
+	detached []string
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -135,6 +137,16 @@ func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, 
 		return "", fmt.Errorf("fakeExecutor: no such session %q", target)
 	}
 	return fmt.Sprintf("%v", s.keys), nil
+}
+
+func (e *fakeExecutor) DetachClients(ctx context.Context, session string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.unreachable {
+		return targets.ErrUnreachable
+	}
+	e.detached = append(e.detached, session)
+	return nil
 }
 
 func (e *fakeExecutor) KillSession(ctx context.Context, session string) error {
