@@ -29,6 +29,10 @@ type Session struct {
 	Input []string
 	// Pane is what CapturePane returns.
 	Pane string
+	// Detaches counts DetachClients calls for the session: the server
+	// detaching whoever was attached, when a hold ends that way
+	// (LOOM-265).
+	Detaches int
 }
 
 func newExecutor() *Executor {
@@ -141,6 +145,17 @@ func (e *Executor) KillSession(_ context.Context, session string) error {
 		return fmt.Errorf("apitest: can't find session: %s", session)
 	}
 	delete(e.sessions, session)
+	return nil
+}
+
+// DetachClients implements targets.TargetExecutor: it counts in the
+// session's Detaches. No such session is nothing to do, as on tmux.
+func (e *Executor) DetachClients(_ context.Context, session string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if s, ok := e.sessions[session]; ok {
+		s.Detaches++
+	}
 	return nil
 }
 

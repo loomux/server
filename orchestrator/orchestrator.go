@@ -160,6 +160,8 @@ type Orchestrator struct {
 	logger      *slog.Logger
 	// now is the clock holds are stamped by: time.Now, or a test's.
 	now func() time.Time
+	// holds serializes the changes to each task's holds (LOOM-265).
+	holds holdLocks
 }
 
 // Option configures an Orchestrator constructed via New.

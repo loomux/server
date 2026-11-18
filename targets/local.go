@@ -122,6 +122,20 @@ func (e *LocalExecutor) KillSession(ctx context.Context, session string) error {
 	return err
 }
 
+// DetachClients runs detachClientsScript with sh, as RunOnce does.
+func (e *LocalExecutor) DetachClients(ctx context.Context, session string) error {
+	cmd := exec.CommandContext(ctx, "sh")
+	cmd.Env = localEnv()
+	cmd.Stdin = strings.NewReader(detachClientsScript(e.TmuxSocket(), session))
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("targets: detach clients of %s: %s", session, firstNonEmpty(strings.TrimSpace(out.String()), err.Error()))
+	}
+	return nil
+}
+
 func (e *LocalExecutor) Close() error {
 	return nil
 }

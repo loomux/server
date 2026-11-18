@@ -122,6 +122,13 @@ func (e *metricsExecutor) KillSession(ctx context.Context, session string) error
 	return err
 }
 
+func (e *metricsExecutor) DetachClients(ctx context.Context, session string) error {
+	start := time.Now()
+	err := e.inner.DetachClients(ctx, session)
+	e.metrics.RecordTargetOp(e.kind, "detach_clients", time.Since(start), opErrorReason(err), err)
+	return err
+}
+
 func (e *metricsExecutor) Close() error {
 	return e.inner.Close()
 }

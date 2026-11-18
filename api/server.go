@@ -631,6 +631,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.streams.end(sess.ID)
 	s.waits.end(sess.ID)
+	s.endSessionHolds(r.Context(), sess.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -711,6 +712,7 @@ func (s *Server) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.streams.end(id)
 	s.waits.end(id)
+	s.endSessionHolds(r.Context(), id)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -13,7 +13,9 @@
 //
 // What is real: api.Server, a SQLite store in a temporary directory
 // (every migration applied), the dispatch-job service, and the
-// orchestrator behind takeover, heartbeat and release. What is not: the
+// orchestrator behind takeover, heartbeat and release, and its hold
+// sweeper, run when a test calls SweepHolds rather than on a timer. What
+// is not: the
 // router and its model (Dispatcher answers each dispatch itself), and the
 // targets (Executor is an in-memory tmux; nothing is run anywhere). The
 // plugin, credential, SSH-key, router-settings, web-bundle and health
@@ -170,6 +172,19 @@ func New(tb testing.TB, opts ...Option) *Server {
 		}
 	})
 	return s
+}
+
+// SweepHolds runs one pass of the server's hold sweeper (LOOM-265) and
+// returns how many holds it ended: a lease past its expiry on the
+// server's clock (WithClock) ends as expired, a hold whose session no
+// longer exists as session_revoked, one whose task ended as task_ended.
+// A drive hold's session is detached (the task's Session.Detaches) and
+// its task handed back. A real server sweeps every
+// orchestrator.HoldSweepInterval; a test calls this when it wants one.
+// Sessions are judged only by whether they exist here: their lifetime
+// runs on real time, not the server's clock.
+func (s *Server) SweepHolds() int {
+	return orchestrator.NewHoldSweeper(s.orch).Sweep(context.Background())
 }
 
 // noWait is the orchestrator's completion detector: nothing in a test

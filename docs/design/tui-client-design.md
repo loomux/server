@@ -317,7 +317,8 @@ without pausing it.
     2. Held by another session: `409 task_held` with the `hold`, unless
        `force`. `force` ends the other hold as `taken_over`, detaches its
        clients, and gives this session a new hold. The task stays
-       `human_takeover` throughout.
+       `human_takeover` throughout. As built (S4), the detach comes
+       first: if it fails, `502 detach_failed` and nothing is taken.
     3. Not held: the status rules below apply.
   - An unheld task that is `running`, `awaiting_input` or `needs_attention`
     moves to `human_takeover` by compare-and-set. An unheld task already in
@@ -341,6 +342,10 @@ without pausing it.
     already-ended hold answers `200` with its reason.
   - Without it, it's **Take back**: ends whatever drive hold is active as
     `taken_back` and detaches its clients. Single user, so any session may.
+    The clients are detached first, and if they can't be (the target
+    doesn't answer) it's `502 detach_failed` and nothing changes (added
+    while building S4): handing the task to automation with its holder
+    possibly still typing is what holds exist to prevent.
   - Either way a `human_takeover` task goes to `awaiting_input` (as
     `Orchestrator.Release` does today) and its stale `attention` is cleared.
     The hold's end and that status change are one write (S2/S3), and they
@@ -375,7 +380,30 @@ regenerated (lines only added).
   **detaches the session's tmux clients** (`tmux -L <socket> detach-client -s <session>` through the
   target's executor, a new `DetachClients` on `TargetExecutor`). This fails
   closed: once the lease is gone, nobody keeps typing unannounced into a pane
-  the router is about to drive. It also detaches any watcher attached by hand
+  the router is about to drive. As built (S4), the detach comes first and
+  the hold's end and the release (one write) only after it: if the target
+  doesn't answer, the hold and `human_takeover` stay and the next sweep
+  tries again. A task whose workspace or target no longer exists has
+  nobody attached through Loomux and ends without a detach; a local
+  target on a server with local targets off fails closed (its session
+  may outlive the setting change). The session is named exactly
+  (`-s =<session>`), and tmux 3.x refuses `detach-client -s` when no
+  client is attached at all, so `DetachClients` looks for clients first.
+  It fails closed: only tmux saying nothing is there (no session, no
+  server, no socket) is "nothing to detach"; any other failure is an
+  error. Everything that takes, renews or ends a task's holds runs under
+  one lock per task in loomuxd, the detach included, so a heartbeat can't
+  renew a hold being ended and a detach never reaches a holder who took
+  the task meanwhile; a caller's deadline bounds its wait for the lock.
+  A pass works on targets concurrently, each hold under its own 10 s
+  deadline, and skips the rest of a target that timed out or can't be
+  reached (its holds stay for the next pass), so a target that stopped
+  answering costs one deadline and never holds up holds elsewhere.
+  The restart grace runs before the API serves, nothing is swept until it
+  has succeeded, and a retry counts the lease from the first try, so it
+  never extends a hold taken since. A takeover whose session was revoked
+  while it ran is ended again and answered `401`, as a dispatch's wait
+  checks its session again (LOOM-182). It also detaches any watcher attached by hand
   outside Loomux. That's acceptable for a path only a crash or long
   partition reaches. They can re-attach.
 - **Crashed TUI.** Server side, the hold expires within 45 s and the client
@@ -389,9 +417,17 @@ regenerated (lines only added).
   A terminal still attached resumes heartbeats once the API answers.
 - **Session revoked** (`POST /api/v1/logout`, `DELETE /api/v1/sessions/{id}`, expiry): its holds
   end as `session_revoked` and are released and detached, alongside the
-  streams and waits LOOM-144/182 already end.
+  streams and waits LOOM-144/182 already end. As built (S4): logout and
+  revoke end them at once (bounded at 15 s, never failing the logout);
+  the sweeper ends the rest, judging a session by the API's own lifetime
+  (sliding TTL and maximum age) or its absence, so an expired session and
+  a hold whose detach failed at logout both end on a later sweep.
 - **Task ends while held** (cancelled from elsewhere is already refused, but
-  a pane can exit): the hold ends as `task_ended`.
+  a pane can exit): the hold ends as `task_ended`. As built (S4), the
+  sweeper does this for a task that could no longer be held (completed,
+  or failed for a reason that doesn't keep its pane for a person). It
+  detaches nobody and leaves the status: nothing automated drives an
+  ended task.
 
 ### Taking over a running turn
 
@@ -805,7 +841,7 @@ line next to the server's and the web's:
 ## Error handling
 
 - Every API error shows the server's `error` text and branches on `code`
-  (`conversation_busy`, `task_held`, `hold_ended`, `task_inactive`,
+  (`conversation_busy`, `task_held`, `hold_ended`, `task_inactive`, `detach_failed`,
   `unauthorized`). Nothing is swallowed. An unknown code is treated as its
   status's default.
 - `401` to a request made with the stored token → stored token deleted, "signed out" screen with the login command. (The link poll's `401` is "not approved yet", see "Storage and revocation".)
@@ -1000,7 +1036,11 @@ user.
   Confirm it also does for a non-browser client (no cookies) during T3.
 - Which tmux clients `detach-client -s` reaches on a plugin machine (the
   machine's own tmux server on the instance socket, LOOM-210). Verify in S4's
-  test.
+  test. Done (S4): `DetachClients` is in the executor contract suite
+  (`targets/executortest`), which runs on the local, remote and managed
+  (plugin machine) executors, each on its own socket. It detaches every
+  client of the session on the executor's socket and none of another
+  session, including one whose name the session's prefixes.
 - Nothing calls `Orchestrator.Takeover` today, so no task should be in
   `human_takeover` without a hold. S2's migration checks and logs any that
   are.

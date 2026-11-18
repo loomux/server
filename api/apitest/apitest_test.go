@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -660,5 +661,48 @@ func TestLinkFlow(t *testing.T) {
 	status, out = call(t, srv, seeded, "POST", "/tasks/"+task.ID+"/takeover", nil)
 	if hold := obj(t, out["hold"]); status != http.StatusOK || hold["client_kind"] != "tui" || hold["client_label"] != "desk" {
 		t.Errorf("takeover by a seeded terminal session = %d %v", status, out)
+	}
+}
+
+// SweepHolds runs the server's hold sweep once (LOOM-265): a lease that
+// ran out on the test's clock ends as expired, the task's clients are
+// detached and it is handed back; a logout ends its session's holds
+// at once.
+func TestSweepHolds(t *testing.T) {
+	now := time.Now().UTC()
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	srv := apitest.New(t, apitest.WithClock(clock))
+	token := srv.Login()
+	task := srv.SeedTask(apitest.Task{})
+	if status, out := call(t, srv, token, "POST", "/tasks/"+task.ID+"/takeover", nil); status != http.StatusOK {
+		t.Fatalf("takeover = %d %v", status, out)
+	}
+	if n := srv.SweepHolds(); n != 0 {
+		t.Fatalf("sweep inside the lease ended %d", n)
+	}
+	mu.Lock()
+	now = now.Add(46 * time.Second)
+	mu.Unlock()
+	if n := srv.SweepHolds(); n != 1 {
+		t.Fatalf("sweep past the lease ended %d, want 1", n)
+	}
+	if h := srv.ActiveHold(task.ID); h != nil {
+		t.Errorf("active hold %+v after expiry", h)
+	}
+	if got := srv.Task(task.ID); got.Status != registry.TaskStatusAwaitingInput {
+		t.Errorf("status = %s", got.Status)
+	}
+	if s := srv.Executor.Session(task.TmuxSession); s == nil || s.Detaches != 1 {
+		t.Errorf("session = %+v; want its clients detached once", s)
+	}
+
+	other := srv.SeedTask(apitest.Task{ConversationID: "conv-other"})
+	call(t, srv, token, "POST", "/tasks/"+other.ID+"/takeover", nil)
+	if status, _ := call(t, srv, token, "POST", "/logout", nil); status != http.StatusNoContent {
+		t.Fatalf("logout = %d", status)
+	}
+	if h := srv.ActiveHold(other.ID); h != nil {
+		t.Errorf("active hold %+v after logout", h)
 	}
 }

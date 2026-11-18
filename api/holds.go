@@ -25,6 +25,30 @@ type TaskHolds interface {
 	Takeover(ctx context.Context, req orchestrator.TakeoverRequest) (*orchestrator.TakeoverResult, error)
 	Heartbeat(ctx context.Context, taskID, holdID, sessionID string) (*registry.TaskHold, error)
 	Release(ctx context.Context, taskID, holdID string) (*registry.HoldRelease, error)
+	// EndSessionHolds ends a logged-out or revoked session's holds as
+	// session_revoked, detaching their clients (LOOM-265). One it can't
+	// end now is left for the hold sweeper.
+	EndSessionHolds(ctx context.Context, sessionID string) (int, error)
+}
+
+// endSessionHoldsTimeout bounds how long a logout or revoke waits for
+// its session's holds to end: detaching runs over SSH, and a target
+// that doesn't answer leaves its hold to the sweeper rather than hold up
+// the logout.
+const endSessionHoldsTimeout = 15 * time.Second
+
+// endSessionHolds ends sessionID's holds, once the session is deleted
+// (logout, revoke), alongside its streams and waits. It doesn't fail
+// the request: the token is already dead, and a hold left (its clients
+// couldn't be detached) is ended by the sweeper, which finds its
+// session gone. The orchestrator logs it.
+func (s *Server) endSessionHolds(ctx context.Context, sessionID string) {
+	if s.taskHolds == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endSessionHoldsTimeout)
+	defer cancel()
+	_, _ = s.taskHolds.EndSessionHolds(ctx, sessionID)
 }
 
 // WithTaskHolds enables POST /api/v1/tasks/{id}/takeover,
@@ -47,6 +71,12 @@ const (
 	// codeHoldEnded: heartbeat's 410 for a hold that has ended (the
 	// body's ended_reason says why).
 	codeHoldEnded = "hold_ended"
+	// codeDetachFailed: 502 from a Take back (release) or a forced
+	// takeover whose holder's tmux clients couldn't be detached
+	// (LOOM-265): nothing changes, the hold and the task's
+	// human_takeover stay, so neither automation nor a second person
+	// types into a pane its holder may still be in. Try again, or later.
+	codeDetachFailed = "detach_failed"
 )
 
 // maxClientLabel bounds a hold's client_label, in characters.
@@ -280,6 +310,9 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 			Code:  codeTaskHeld,
 			Hold:  newHoldResponse(held.Hold),
 		})
+	case errors.Is(err, orchestrator.ErrDetachFailed):
+		writeErrorCode(w, http.StatusBadGateway, codeDetachFailed,
+			"the terminal attached to this task couldn't be detached, so it wasn't taken; try again")
 	case errors.Is(err, orchestrator.ErrTaskInactive):
 		writeErrorCode(w, http.StatusConflict, codeTaskInactive, "the task has ended and its pane wasn't kept for a person")
 	case errors.Is(err, orchestrator.ErrUnsupportedHoldMode):
@@ -292,6 +325,13 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "the task kept changing while it was being taken over; look at it again")
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "could not take over task")
+	case !s.sessionStillValid(r.Context(), sess):
+		// A logout or revoke that ran while this was being taken ended
+		// the session's holds without this one: it is ended here,
+		// rather than the pane handed to a dead session (LOOM-265), as a
+		// dispatch's wait checks its session again (LOOM-182).
+		s.endSessionHolds(r.Context(), sess.ID)
+		writeError(w, http.StatusUnauthorized, "invalid or expired session")
 	default:
 		writeJSON(w, http.StatusOK, takeoverResponse{TaskID: id, Hold: newHoldResponse(res.Hold), Attach: attach})
 	}
@@ -337,8 +377,10 @@ func (s *Server) handleHoldHeartbeat(w http.ResponseWriter, r *http.Request) {
 // handleRelease serves POST /api/v1/tasks/{id}/release (LOOM-264). With
 // hold_id it ends that hold as released, and answers 200 with the hold as
 // it ended if it already had. Without one it is Take back, which any
-// session may do: the task's drive hold, if any, ends as taken_back.
-// Either way a task left in human_takeover goes back to awaiting_input.
+// session may do: the task's drive hold, if any, ends as taken_back once
+// its tmux clients are detached (502 detach_failed if they can't be,
+// LOOM-265). Either way a task left in human_takeover goes back to
+// awaiting_input.
 func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 	if s.taskHolds == nil {
 		writeError(w, http.StatusNotImplemented, "task takeover is not configured on this server")
@@ -351,6 +393,9 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	res, err := s.taskHolds.Release(r.Context(), id, req.HoldID)
 	switch {
+	case errors.Is(err, orchestrator.ErrDetachFailed):
+		writeErrorCode(w, http.StatusBadGateway, codeDetachFailed,
+			"the terminal attached to this task couldn't be detached, so it is still held; try again")
 	case errors.Is(err, registry.ErrNotFound) && req.HoldID != "":
 		writeError(w, http.StatusNotFound, "no such task, or no such hold on it")
 	case errors.Is(err, registry.ErrNotFound):

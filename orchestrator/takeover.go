@@ -94,9 +94,12 @@ type TakeoverResult struct {
 //   - Held by this session: the hold is renewed and returned. This is
 //     idempotent, and how a restarted client gets its own hold back.
 //   - Held by another session: *TaskHeldError with that hold, unless
-//     req.Force, which ends it as taken_over and gives this session a
-//     new one. The task stays as it is. If the task ended while held
-//     (nothing ends its hold yet), it is ErrTaskInactive either way.
+//     req.Force, which detaches the tmux clients attached to the task's
+//     session, ends it as taken_over and gives this session a new one
+//     (if the clients can't be detached, nothing is taken and the error
+//     wraps ErrDetachFailed). The task stays as it is. If the task ended while held (until
+//     the hold sweeper ends the hold as task_ended), it is
+//     ErrTaskInactive either way.
 //   - Not held: a running, awaiting-input or needs-attention task moves
 //     to human-takeover; one already in human-takeover with no hold (only
 //     possible from before holds existed) is taken where it stands. A
@@ -134,6 +137,11 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 		return nil, &InvalidTakeoverError{Reason: "a hold needs a session"}
 	}
 
+	unlock, err := o.holds.lock(ctx, req.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	for range takeoverAttempts {
 		task, err := o.store.GetTask(ctx, req.TaskID)
 		if err != nil {
@@ -159,6 +167,13 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 			}
 			if !req.Force {
 				return nil, &TaskHeldError{Hold: held}
+			}
+			// The holder it is taken from is detached first (LOOM-265),
+			// and this answers only after, so before the new holder can
+			// attach. If that fails nothing is taken: two people typing
+			// into one pane is what a hold is for.
+			if err := o.detachHoldClients(ctx, task.ID); err != nil {
+				return nil, fmt.Errorf("orchestrator: takeover: %w", err)
 			}
 			replace = registry.HoldEndTakenOver
 		case !errors.Is(err, registry.ErrNotFound):
@@ -229,6 +244,11 @@ func heldStatus(task *registry.Task) (registry.TaskStatus, error) {
 // such hold on that task, ErrHoldNotOwned if it is another session's,
 // *HoldEndedError (with the hold, saying why) if it has ended.
 func (o *Orchestrator) Heartbeat(ctx context.Context, taskID, holdID, sessionID string) (*registry.TaskHold, error) {
+	unlock, err := o.holds.lock(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	hold, err := o.store.GetTaskHold(ctx, holdID)
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: heartbeat: %w", err)
@@ -252,7 +272,11 @@ func (o *Orchestrator) Heartbeat(ctx context.Context, taskID, holdID, sessionID 
 // Release ends a hold and hands its task back to automated dispatch.
 // With holdID it ends that hold as released; an already-ended hold comes
 // back as it ended, so releasing twice is harmless. Without it, it is
-// Take back: whatever drive hold the task has is ended as taken_back.
+// Take back: whatever drive hold the task has is ended as taken_back,
+// once the tmux clients attached to the task's session are detached
+// (LOOM-265). If they can't be, nothing is ended and the error wraps
+// ErrDetachFailed: the task isn't handed to automation while its holder
+// may still be typing.
 // Either way a task left in human-takeover with no drive hold becomes
 // awaiting-input (ready for the next message, since nothing is in flight
 // the moment control is handed back) and its stale prompt is cleared; a
@@ -263,9 +287,24 @@ func (o *Orchestrator) Heartbeat(ctx context.Context, taskID, holdID, sessionID 
 // registry.ErrNotFound for an unknown task, or a hold that isn't the
 // task's.
 func (o *Orchestrator) Release(ctx context.Context, taskID, holdID string) (*registry.HoldRelease, error) {
+	unlock, err := o.holds.lock(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	reason := registry.HoldEndReleased
 	if holdID == "" {
 		reason = registry.HoldEndTakenBack
+		held, err := o.store.GetActiveDriveHold(ctx, taskID)
+		switch {
+		case err == nil:
+			if err := o.detachHoldClients(ctx, taskID); err != nil {
+				return nil, fmt.Errorf("orchestrator: take back: %w", err)
+			}
+			holdID = held.ID
+		case !errors.Is(err, registry.ErrNotFound):
+			return nil, fmt.Errorf("orchestrator: take back: %w", err)
+		}
 	}
 	res, err := o.store.ReleaseTaskHold(ctx, taskID, holdID, reason, o.now().UTC())
 	if err != nil {

@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 )
 
 // LOOM-264: POST /api/v1/tasks/{id}/takeover, /takeover/heartbeat and
@@ -72,12 +74,50 @@ type holdServer struct {
 	ws     *registry.Workspace
 	tokenA string
 	tokenB string
+	// exec is every target's executor; it records what was detached.
+	exec *detachRecorder
+}
+
+// detachRecorder is the hold server's targets.TargetExecutor: it records
+// DetachClients (LOOM-265), fails it while down, and has nothing else to
+// do (any other call panics on the nil embedded interface).
+type detachRecorder struct {
+	targets.TargetExecutor
+	mu       sync.Mutex
+	detached []string
+	down     bool
+}
+
+func (e *detachRecorder) TmuxSocket() string { return "loomux-test" }
+
+func (e *detachRecorder) DetachClients(_ context.Context, session string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.down {
+		return targets.ErrUnreachable
+	}
+	e.detached = append(e.detached, session)
+	return nil
+}
+
+func (e *detachRecorder) sessions() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.detached...)
+}
+
+func (e *detachRecorder) setDown(down bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.down = down
 }
 
 func newHoldServer(t *testing.T) *holdServer {
 	t.Helper()
+	exec := &detachRecorder{}
+	factory := func(*registry.Target) (targets.TargetExecutor, error) { return exec, nil }
 	srv, _, store := newTestServerWith(t, func(s registry.Store) []api.Option {
-		return []api.Option{api.WithTaskHolds(orchestrator.New(s, nil, nil)), api.WithTmuxSocket("loomux-test")}
+		return []api.Option{api.WithTaskHolds(orchestrator.New(s, factory, nil)), api.WithTmuxSocket("loomux-test")}
 	})
 	ctx := context.Background()
 	target := &registry.Target{ID: "remote-1", Name: "jet01", Kind: registry.TargetKindRemote, Host: "jet01.example.com", User: "orski"}
@@ -88,7 +128,7 @@ func newHoldServer(t *testing.T) *holdServer {
 	if err := store.CreateWorkspace(ctx, ws); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	h := &holdServer{t: t, base: srv.URL, store: store, ws: ws}
+	h := &holdServer{t: t, base: srv.URL, store: store, ws: ws, exec: exec}
 	h.tokenA, _ = login(t, srv.URL, testPassword)
 	h.tokenB, _ = login(t, srv.URL, testPassword)
 	return h
@@ -607,5 +647,178 @@ func TestHolds_StalledChunkedBody(t *testing.T) {
 	}
 	if h.held("t1") || h.status("t1") != registry.TaskStatusAwaitingInput {
 		t.Fatalf("a stalled body took the task over (status %s)", h.status("t1"))
+	}
+}
+
+// LOOM-265: Take back detaches the holder's clients before handing the
+// task back, and fails closed: if they can't be detached the hold and
+// the task's human_takeover stay, and the answer says so.
+func TestRelease_TakeBackDetaches(t *testing.T) {
+	h := newHoldServer(t)
+	h.task("t1", registry.TaskStatusAwaitingInput, "")
+	_, taken := h.post("t1/takeover", h.tokenA, nil)
+
+	h.exec.setDown(true)
+	status, out := h.post("t1/release", h.tokenB, nil)
+	if status != http.StatusBadGateway || out.Code != "detach_failed" || out.Error == "" {
+		t.Fatalf("take back with the target down = %d %+v; want 502 detach_failed", status, out)
+	}
+	if !h.held("t1") || h.status("t1") != registry.TaskStatusHumanTakeover {
+		t.Fatalf("after a failed take back: held %v, status %s; want both kept", h.held("t1"), h.status("t1"))
+	}
+
+	h.exec.setDown(false)
+	status, out = h.post("t1/release", h.tokenB, nil)
+	if status != http.StatusOK || out.Hold == nil || out.Hold.ID != taken.Hold.ID || out.Hold.EndedReason != "taken_back" || out.Status != "awaiting_input" {
+		t.Fatalf("take back = %d %+v", status, out)
+	}
+	if d := h.exec.sessions(); len(d) != 1 || d[0] != "loomux-t1" {
+		t.Errorf("detached %v, want [loomux-t1]", d)
+	}
+	// The holder's own release detaches nobody.
+	_, again := h.post("t1/takeover", h.tokenA, nil)
+	if status, _ := h.post("t1/release", h.tokenA, map[string]string{"hold_id": again.Hold.ID}); status != http.StatusOK {
+		t.Fatalf("release = %d", status)
+	}
+	if d := h.exec.sessions(); len(d) != 1 {
+		t.Errorf("a holder's own release detached: %v", d)
+	}
+}
+
+// LOOM-265: logging out, or revoking a session by id, ends its holds as
+// session_revoked: their clients are detached and their tasks handed
+// back. Another session's holds stay.
+func TestHolds_EndWithTheirSession(t *testing.T) {
+	for _, how := range []string{"logout", "revoke"} {
+		t.Run(how, func(t *testing.T) {
+			h := newHoldServer(t)
+			h.task("t1", registry.TaskStatusAwaitingInput, "")
+			h.task("t2", registry.TaskStatusNeedsAttention, "")
+			h.task("t3", registry.TaskStatusAwaitingInput, "")
+			_, a1 := h.post("t1/takeover", h.tokenA, nil)
+			_, a2 := h.post("t2/takeover", h.tokenA, nil)
+			_, b3 := h.post("t3/takeover", h.tokenB, nil)
+
+			var status int
+			if how == "logout" {
+				status, _ = doJSON(t, http.MethodPost, h.base+"/api/v1/logout", h.tokenA, nil)
+			} else {
+				status, _ = doJSON(t, http.MethodDelete, h.base+"/api/v1/sessions/"+a1.Hold.SessionID, h.tokenB, nil)
+			}
+			if status != http.StatusNoContent {
+				t.Fatalf("%s = %d", how, status)
+			}
+			ctx := context.Background()
+			for _, id := range []string{a1.Hold.ID, a2.Hold.ID} {
+				hold, err := h.store.GetTaskHold(ctx, id)
+				if err != nil || hold.Active() || hold.EndedReason != registry.HoldEndSessionRevoked {
+					t.Errorf("hold %s = %+v, %v; want ended as session_revoked", id, hold, err)
+				}
+			}
+			for _, id := range []string{"t1", "t2"} {
+				if got := h.status(id); got != registry.TaskStatusAwaitingInput {
+					t.Errorf("%s = %s; want awaiting_input", id, got)
+				}
+			}
+			if hold, _ := h.store.GetTaskHold(ctx, b3.Hold.ID); !hold.Active() {
+				t.Error("another session's hold ended")
+			}
+			if d := h.exec.sessions(); len(d) != 2 {
+				t.Errorf("detached %v; want t1's and t2's sessions", d)
+			}
+		})
+	}
+}
+
+// A revoke whose detach fails still revokes (the token is dead at once);
+// the hold is left for the sweeper, which ends it once it can detach.
+func TestHolds_RevokeWithTheTargetDown(t *testing.T) {
+	h := newHoldServer(t)
+	h.task("t1", registry.TaskStatusAwaitingInput, "")
+	_, a1 := h.post("t1/takeover", h.tokenA, nil)
+	h.exec.setDown(true)
+	if status, _ := doJSON(t, http.MethodPost, h.base+"/api/v1/logout", h.tokenA, nil); status != http.StatusNoContent {
+		t.Fatalf("logout = %d", status)
+	}
+	if status, _ := doJSON(t, http.MethodGet, h.base+"/api/v1/sessions", h.tokenA, nil); status != http.StatusUnauthorized {
+		t.Errorf("the logged-out token = %d; want 401", status)
+	}
+	if hold, _ := h.store.GetTaskHold(context.Background(), a1.Hold.ID); !hold.Active() || h.status("t1") != registry.TaskStatusHumanTakeover {
+		t.Errorf("hold %+v, status %s; want kept until its clients are detached", hold, h.status("t1"))
+	}
+}
+
+// LOOM-265 review: a forced takeover detaches the holder first and fails
+// closed: 502 detach_failed, and the holder keeps the task.
+func TestTakeover_ForceDetachFails(t *testing.T) {
+	h := newHoldServer(t)
+	h.task("t1", registry.TaskStatusAwaitingInput, "")
+	_, taken := h.post("t1/takeover", h.tokenA, nil)
+	h.exec.setDown(true)
+	status, out := h.post("t1/takeover", h.tokenB, map[string]any{"force": true})
+	if status != http.StatusBadGateway || out.Code != "detach_failed" {
+		t.Fatalf("forced takeover with the target down = %d %+v; want 502 detach_failed", status, out)
+	}
+	if hold, _ := h.store.GetTaskHold(context.Background(), taken.Hold.ID); !hold.Active() {
+		t.Error("the holder's hold ended")
+	}
+	h.exec.setDown(false)
+	status, out = h.post("t1/takeover", h.tokenB, map[string]any{"force": true})
+	if status != http.StatusOK || out.Hold == nil || out.Hold.SessionID == taken.Hold.SessionID {
+		t.Fatalf("forced takeover = %d %+v", status, out)
+	}
+	if d := h.exec.sessions(); len(d) != 1 || d[0] != "loomux-t1" {
+		t.Errorf("detached %v", d)
+	}
+}
+
+// revokeDuringTakeover is a hold service whose takeover is overtaken by
+// a logout: the session is deleted once the hold is taken, after the
+// logout's own end of the session's holds would have run.
+type revokeDuringTakeover struct {
+	*orchestrator.Orchestrator
+	store registry.Store
+}
+
+func (r revokeDuringTakeover) Takeover(ctx context.Context, req orchestrator.TakeoverRequest) (*orchestrator.TakeoverResult, error) {
+	res, err := r.Orchestrator.Takeover(ctx, req)
+	if derr := r.store.DeleteSession(ctx, req.SessionID); derr != nil {
+		panic(derr)
+	}
+	return res, err
+}
+
+// LOOM-265 review: a takeover whose session is revoked while it is taken
+// gets no pane: 401, and its hold is ended and its task handed back.
+func TestTakeover_SessionRevokedMeanwhile(t *testing.T) {
+	exec := &detachRecorder{}
+	factory := func(*registry.Target) (targets.TargetExecutor, error) { return exec, nil }
+	srv, _, store := newTestServerWith(t, func(s registry.Store) []api.Option {
+		return []api.Option{api.WithTaskHolds(revokeDuringTakeover{orchestrator.New(s, factory, nil), s}), api.WithTmuxSocket("loomux-test")}
+	})
+	ctx := context.Background()
+	if err := store.CreateTarget(ctx, &registry.Target{ID: "remote-1", Name: "jet01", Kind: registry.TargetKindRemote, Host: "jet01.example.com", User: "orski"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateWorkspace(ctx, &registry.Workspace{ID: "ws-1", Name: "ws-1", Path: "/srv/app", TargetID: "remote-1", Status: registry.WorkspaceStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTask(ctx, &registry.Task{ID: "t1", WorkspaceID: "ws-1", Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "loomux-t1", Status: registry.TaskStatusAwaitingInput, ConversationID: "conv-t1"}); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := login(t, srv.URL, testPassword)
+	status, raw := doJSON(t, http.MethodPost, srv.URL+"/api/v1/tasks/t1/takeover", token, nil)
+	if status != http.StatusUnauthorized || strings.Contains(raw, "attach") {
+		t.Fatalf("takeover by a session revoked meanwhile = %d %s; want 401 and no attach", status, raw)
+	}
+	if _, err := store.GetActiveDriveHold(ctx, "t1"); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("active hold after the refused takeover: %v", err)
+	}
+	if task, _ := store.GetTask(ctx, "t1"); task.Status != registry.TaskStatusAwaitingInput {
+		t.Errorf("status = %s; want handed back", task.Status)
+	}
+	if d := exec.sessions(); len(d) != 1 {
+		t.Errorf("detached %v; want the session's clients detached", d)
 	}
 }

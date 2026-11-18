@@ -71,3 +71,54 @@ func TestWarnUnheldTakeovers(t *testing.T) {
 	// A nil logger is tolerated: app.Config.Logger is optional.
 	warnUnheldTakeovers(ctx, store, nil)
 }
+
+// LOOM-265: StartHoldSweeper gives the holds a previous run left a full
+// lease from the start before it sweeps, so a hold whose lease ran out
+// during the downtime isn't ended at once.
+func TestStartHoldSweeper_RestartGrace(t *testing.T) {
+	srv := fakeRouterServer(t)
+	a, err := Build(testConfig(t, srv.URL))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer a.Close()
+	ctx := context.Background()
+	if err := a.store.CreateTarget(ctx, &registry.Target{ID: "t", Name: "t", Kind: registry.TargetKindLocal}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.CreateWorkspace(ctx, &registry.Workspace{ID: "w", Name: "w", Path: "/w", TargetID: "t", Status: registry.WorkspaceStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.CreateTask(ctx, &registry.Task{ID: "k", WorkspaceID: "w", Kind: registry.TaskKindAgent,
+		TmuxSession: "loomux-k", Status: registry.TaskStatusHumanTakeover, ConversationID: "conv-k"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.CreateSession(ctx, &registry.Session{ID: "s", TokenHash: "s-hash"}); err != nil {
+		t.Fatal(err)
+	}
+	// Taken 10 minutes ago on a 45 s lease: expired while "down".
+	if err := a.store.CreateTaskHold(ctx, &registry.TaskHold{ID: "h", TaskID: "k", SessionID: "s", Mode: registry.HoldModeDrive,
+		TTL: 45 * time.Second, AcquiredAt: time.Now().UTC().Add(-10 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now().UTC()
+	a.StartHoldSweeper(time.Hour, 0)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		h, err := a.store.GetTaskHold(ctx, "h")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !h.Active() {
+			t.Fatalf("hold ended (%s) at start; want it given a lease", h.EndedReason)
+		}
+		if !h.ExpiresAt.Before(start.Add(45 * time.Second)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expires_at = %v; never moved to a lease from the start", h.ExpiresAt)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

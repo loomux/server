@@ -125,6 +125,9 @@ func runServer(ctx context.Context, loomux *app.App) {
 	// Sessions expire by the API's lifetime, so their retention starts
 	// with it (LOOM-193).
 	loomux.StartRetention(apiCfg.SessionTTL, apiCfg.SessionMaxAge)
+	// A hold ends with its session too, so the hold sweeper judges
+	// sessions by the same lifetime (LOOM-265).
+	loomux.StartHoldSweeper(apiCfg.SessionTTL, apiCfg.SessionMaxAge)
 
 	opts := []api.Option{
 		api.WithSessionTTL(apiCfg.SessionTTL),

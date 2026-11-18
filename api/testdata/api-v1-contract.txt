@@ -1795,6 +1795,7 @@ POST /api/v1/tasks/{id}/release status 404
 POST /api/v1/tasks/{id}/release status 413
 POST /api/v1/tasks/{id}/release status 500
 POST /api/v1/tasks/{id}/release status 501
+POST /api/v1/tasks/{id}/release status 502
 POST /api/v1/tasks/{id}/takeover
 POST /api/v1/tasks/{id}/takeover request - object
 POST /api/v1/tasks/{id}/takeover request .client_label string omitempty
@@ -1859,6 +1860,7 @@ POST /api/v1/tasks/{id}/takeover status 409
 POST /api/v1/tasks/{id}/takeover status 413
 POST /api/v1/tasks/{id}/takeover status 500
 POST /api/v1/tasks/{id}/takeover status 501
+POST /api/v1/tasks/{id}/takeover status 502
 POST /api/v1/tasks/{id}/takeover/heartbeat
 POST /api/v1/tasks/{id}/takeover/heartbeat request - object
 POST /api/v1/tasks/{id}/takeover/heartbeat request .hold_id string

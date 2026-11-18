@@ -101,6 +101,8 @@ type App struct {
 	retention     retention.Config
 	logger        *slog.Logger
 	retentionOnce sync.Once
+	// holdSweepOnce guards StartHoldSweeper.
+	holdSweepOnce sync.Once
 }
 
 // RouterSettings serves /api/v1/settings/router (LOOM-185): the router
@@ -294,6 +296,30 @@ func (a *App) StartRetention(sessionTTL, sessionMaxAge time.Duration) {
 		cfg.SessionTTL, cfg.SessionMaxAge = sessionTTL, sessionMaxAge
 		sweeper := retention.New(a.store, cfg, retention.WithMetrics(a.metrics), retention.WithLogger(a.logger))
 		a.bg.Go(func() { sweeper.Run(a.bgCtx, retentionSweepInterval) })
+	})
+}
+
+// StartHoldSweeper starts the hold sweeper (LOOM-265,
+// docs/design/tui-client-design.md "Expiry, crashes and restarts"): it
+// first gives every hold a full lease from now, before it returns (so
+// call it before the API serves), so the restart doesn't
+// end the holds of clients still attached, then every
+// orchestrator.HoldSweepInterval ends the holds whose lease ran out,
+// whose session is gone or expired, or whose task ended, detaching a
+// drive hold's tmux clients before handing its task back. sessionTTL
+// and sessionMaxAge are the client API's session lifetime, as for
+// StartRetention. Close stops it; only the first call starts it.
+func (a *App) StartHoldSweeper(sessionTTL, sessionMaxAge time.Duration) {
+	a.holdSweepOnce.Do(func() {
+		sweeper := orchestrator.NewHoldSweeper(a.orch,
+			orchestrator.WithHoldSessionLifetime(sessionTTL, sessionMaxAge), orchestrator.WithHoldSweeperLogger(a.logger))
+		// The grace before returning, so before the API serves: no
+		// heartbeat or takeover sees a lease the downtime ran out. If it
+		// fails, Run retries it and sweeps nothing until it succeeds.
+		if _, err := sweeper.Grace(a.bgCtx); err != nil && a.logger != nil {
+			a.logger.Error("hold restart grace failed; retried before any hold is swept", "error", err)
+		}
+		a.bg.Go(func() { sweeper.Run(a.bgCtx, orchestrator.HoldSweepInterval) })
 	})
 }
 
