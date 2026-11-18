@@ -747,3 +747,27 @@ func TestHolds_RevokeWithTheTargetDown(t *testing.T) {
 		t.Errorf("hold %+v, status %s; want kept until its clients are detached", hold, h.status("t1"))
 	}
 }
+
+// LOOM-265 review: a forced takeover detaches the holder first and fails
+// closed: 502 detach_failed, and the holder keeps the task.
+func TestTakeover_ForceDetachFails(t *testing.T) {
+	h := newHoldServer(t)
+	h.task("t1", registry.TaskStatusAwaitingInput, "")
+	_, taken := h.post("t1/takeover", h.tokenA, nil)
+	h.exec.setDown(true)
+	status, out := h.post("t1/takeover", h.tokenB, map[string]any{"force": true})
+	if status != http.StatusBadGateway || out.Code != "detach_failed" {
+		t.Fatalf("forced takeover with the target down = %d %+v; want 502 detach_failed", status, out)
+	}
+	if hold, _ := h.store.GetTaskHold(context.Background(), taken.Hold.ID); !hold.Active() {
+		t.Error("the holder's hold ended")
+	}
+	h.exec.setDown(false)
+	status, out = h.post("t1/takeover", h.tokenB, map[string]any{"force": true})
+	if status != http.StatusOK || out.Hold == nil || out.Hold.SessionID == taken.Hold.SessionID {
+		t.Fatalf("forced takeover = %d %+v", status, out)
+	}
+	if d := h.exec.sessions(); len(d) != 1 || d[0] != "loomux-t1" {
+		t.Errorf("detached %v", d)
+	}
+}

@@ -172,7 +172,7 @@ Specific codes, where a handler tells apart a case a client can act on:
 | Code | Where |
 | --- | --- |
 | `conversation_busy` | `POST /api/v1/dispatch` `409` when the conversation already has a dispatch in flight; the body also carries that dispatch's `dispatch_id` |
-| `detach_failed` | `POST /api/v1/tasks/{id}/release` `502` for a Take back whose holder's tmux clients couldn't be detached (the target didn't answer): the hold and the task's `human_takeover` stay; try again (LOOM-265) |
+| `detach_failed` | `POST /api/v1/tasks/{id}/release` (Take back) and a forced `POST /api/v1/tasks/{id}/takeover` `502` when the holder's tmux clients couldn't be detached (the target didn't answer): nothing changes, the hold and the task's `human_takeover` stay; try again (LOOM-265) |
 | `hold_ended` | `POST /api/v1/tasks/{id}/takeover/heartbeat` `410` when the hold has ended; the body also carries `ended_reason` and the `hold` (LOOM-264) |
 | `idempotency_conflict` | `POST /api/v1/dispatch` `422` when the `Idempotency-Key` was already used for a different request |
 | `task_held` | `POST /api/v1/tasks/{id}/takeover` `409` when another session holds the task; the body also carries its `hold`. `force` takes it (LOOM-264) |
@@ -573,11 +573,11 @@ or gave one the server refused.
       the caller's own session: that hold is renewed and returned
       (idempotent; its lease length and label stay as first taken). Held
       by another session: `409` (code `task_held`) with its `hold`, unless
-      `force`, which ends it as `taken_over`, detaches the tmux clients
-      attached to the task's session (before answering, so before the
-      caller attaches) and gives the caller a new one while the task
-      stays `human_takeover`. A detach that fails there is logged and
-      the takeover stands: no automation is let in. Not held: a `running`,
+      `force`, which detaches the tmux clients attached to the task's
+      session (before answering, so before the caller attaches), ends it
+      as `taken_over` and gives the caller a new one while the task stays
+      `human_takeover`. If the clients can't be detached it is `502`
+      (code `detach_failed`) and nothing is taken. Not held: a `running`,
       `awaiting_input` or `needs_attention` task moves to
       `human_takeover`, and one already there with no hold is taken as it
       stands. A `failed` task with `error_class` `login_required`,
@@ -621,6 +621,10 @@ or gave one the server refused.
       leaves the status. On start the sweeper first gives every active
       hold a full lease from then, so a restart or deploy longer than a
       lease doesn't end the holds of clients that resume heartbeating.
+      Taking, renewing, releasing and ending a task's holds are
+      serialized per task, detach included, so a heartbeat can't renew a
+      hold the sweeper is ending, and a hold ended with a detach never
+      detaches a holder who took the task meanwhile.
     - Not yet (later tickets of the same design): a `running` turn's
       wait ending at once (S5), and holds shown on conversations,
       attach-info and the stream (S6).

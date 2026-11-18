@@ -8,5 +8,5 @@
 
 ### Changed
 
-- A forced takeover detaches the previous holder's tmux clients before it answers, so the new holder attaches alone. If that fails it is logged and the takeover stands; the task stays `human_takeover`.
+- A forced takeover detaches the previous holder's tmux clients before it takes the task and answers, so the new holder attaches alone. If they can't be detached it answers `502` with code `detach_failed` and the previous holder keeps the task.
 - Take back (`POST /api/v1/tasks/{id}/release` without `hold_id`) detaches the holder's tmux clients before handing the task back. If they can't be detached it answers `502` with code `detach_failed` and changes nothing. A release by `hold_id` detaches nobody.

@@ -317,7 +317,8 @@ without pausing it.
     2. Held by another session: `409 task_held` with the `hold`, unless
        `force`. `force` ends the other hold as `taken_over`, detaches its
        clients, and gives this session a new hold. The task stays
-       `human_takeover` throughout.
+       `human_takeover` throughout. As built (S4), the detach comes
+       first: if it fails, `502 detach_failed` and nothing is taken.
     3. Not held: the status rules below apply.
   - An unheld task that is `running`, `awaiting_input` or `needs_attention`
     moves to `human_takeover` by compare-and-set. An unheld task already in
@@ -386,7 +387,14 @@ regenerated (lines only added).
   on a server with local targets off, has nobody attached through
   Loomux and ends without a detach. The session is named exactly
   (`-s =<session>`), and tmux 3.x refuses `detach-client -s` when no
-  client is attached at all, so `DetachClients` looks for clients first. It also detaches any watcher attached by hand
+  client is attached at all, so `DetachClients` looks for clients first.
+  It fails closed: only tmux saying nothing is there (no session, no
+  server, no socket) is "nothing to detach"; any other failure is an
+  error. Everything that takes, renews or ends a task's holds runs under
+  one lock per task in loomuxd, the detach included, so a heartbeat can't
+  renew a hold being ended and a detach never reaches a holder who took
+  the task meanwhile. The restart grace runs before the API serves, and
+  nothing is swept until it has succeeded. It also detaches any watcher attached by hand
   outside Loomux. That's acceptable for a path only a crash or long
   partition reaches. They can re-attach.
 - **Crashed TUI.** Server side, the hold expires within 45 s and the client

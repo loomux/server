@@ -71,10 +71,11 @@ const (
 	// codeHoldEnded: heartbeat's 410 for a hold that has ended (the
 	// body's ended_reason says why).
 	codeHoldEnded = "hold_ended"
-	// codeDetachFailed: release's 502 for a Take back whose holder's
-	// tmux clients couldn't be detached (LOOM-265): the hold and the
-	// task's human_takeover stay, so automation never types into a pane
-	// a person may still be in. Try again, or later.
+	// codeDetachFailed: 502 from a Take back (release) or a forced
+	// takeover whose holder's tmux clients couldn't be detached
+	// (LOOM-265): nothing changes, the hold and the task's
+	// human_takeover stay, so neither automation nor a second person
+	// types into a pane its holder may still be in. Try again, or later.
 	codeDetachFailed = "detach_failed"
 )
 
@@ -309,6 +310,9 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 			Code:  codeTaskHeld,
 			Hold:  newHoldResponse(held.Hold),
 		})
+	case errors.Is(err, orchestrator.ErrDetachFailed):
+		writeErrorCode(w, http.StatusBadGateway, codeDetachFailed,
+			"the terminal attached to this task couldn't be detached, so it wasn't taken; try again")
 	case errors.Is(err, orchestrator.ErrTaskInactive):
 		writeErrorCode(w, http.StatusConflict, codeTaskInactive, "the task has ended and its pane wasn't kept for a person")
 	case errors.Is(err, orchestrator.ErrUnsupportedHoldMode):

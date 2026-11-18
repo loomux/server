@@ -94,9 +94,10 @@ type TakeoverResult struct {
 //   - Held by this session: the hold is renewed and returned. This is
 //     idempotent, and how a restarted client gets its own hold back.
 //   - Held by another session: *TaskHeldError with that hold, unless
-//     req.Force, which ends it as taken_over, detaches the tmux clients
-//     attached to the task's session, and gives this session a new
-//     one. The task stays as it is. If the task ended while held (until
+//     req.Force, which detaches the tmux clients attached to the task's
+//     session, ends it as taken_over and gives this session a new one
+//     (if the clients can't be detached, nothing is taken and the error
+//     wraps ErrDetachFailed). The task stays as it is. If the task ended while held (until
 //     the hold sweeper ends the hold as task_ended), it is
 //     ErrTaskInactive either way.
 //   - Not held: a running, awaiting-input or needs-attention task moves
@@ -136,6 +137,8 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 		return nil, &InvalidTakeoverError{Reason: "a hold needs a session"}
 	}
 
+	unlock := o.holds.lock(req.TaskID)
+	defer unlock()
 	for range takeoverAttempts {
 		task, err := o.store.GetTask(ctx, req.TaskID)
 		if err != nil {
@@ -161,6 +164,13 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 			}
 			if !req.Force {
 				return nil, &TaskHeldError{Hold: held}
+			}
+			// The holder it is taken from is detached first (LOOM-265),
+			// and this answers only after, so before the new holder can
+			// attach. If that fails nothing is taken: two people typing
+			// into one pane is what a hold is for.
+			if err := o.detachHoldClients(ctx, task.ID); err != nil {
+				return nil, fmt.Errorf("orchestrator: takeover: %w", err)
 			}
 			replace = registry.HoldEndTakenOver
 		case !errors.Is(err, registry.ErrNotFound):
@@ -203,16 +213,6 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 			attrs = append(attrs, "replaced_hold_id", replaced.ID, "replaced_session_id", replaced.SessionID)
 		}
 		o.logger.Info("task taken over", attrs...)
-		// The session it was taken from is detached (LOOM-265) before
-		// this answers, so before the new holder can attach. If that
-		// fails the takeover stands: the task stays human-takeover, so
-		// no automation types in, only both people may for a while.
-		if replaced != nil && replaced.Mode == registry.HoldModeDrive {
-			if err := o.detachHoldClients(ctx, task.ID); err != nil {
-				o.logger.Warn("forced takeover: the previous holder's clients could not be detached",
-					"task_id", task.ID, "replaced_hold_id", replaced.ID, "error", err)
-			}
-		}
 		return &TakeoverResult{Hold: hold, Task: task, Replaced: replaced}, nil
 	}
 	return nil, fmt.Errorf("orchestrator: takeover: %w: task %q kept changing", ErrStatusChanged, req.TaskID)
@@ -241,6 +241,8 @@ func heldStatus(task *registry.Task) (registry.TaskStatus, error) {
 // such hold on that task, ErrHoldNotOwned if it is another session's,
 // *HoldEndedError (with the hold, saying why) if it has ended.
 func (o *Orchestrator) Heartbeat(ctx context.Context, taskID, holdID, sessionID string) (*registry.TaskHold, error) {
+	unlock := o.holds.lock(taskID)
+	defer unlock()
 	hold, err := o.store.GetTaskHold(ctx, holdID)
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: heartbeat: %w", err)
@@ -279,6 +281,8 @@ func (o *Orchestrator) Heartbeat(ctx context.Context, taskID, holdID, sessionID 
 // registry.ErrNotFound for an unknown task, or a hold that isn't the
 // task's.
 func (o *Orchestrator) Release(ctx context.Context, taskID, holdID string) (*registry.HoldRelease, error) {
+	unlock := o.holds.lock(taskID)
+	defer unlock()
 	reason := registry.HoldEndReleased
 	if holdID == "" {
 		reason = registry.HoldEndTakenBack
@@ -288,8 +292,6 @@ func (o *Orchestrator) Release(ctx context.Context, taskID, holdID string) (*reg
 			if err := o.detachHoldClients(ctx, taskID); err != nil {
 				return nil, fmt.Errorf("orchestrator: take back: %w", err)
 			}
-			// That hold and no other: one a forced takeover made since
-			// wasn't detached, and stays.
 			holdID = held.ID
 		case !errors.Is(err, registry.ErrNotFound):
 			return nil, fmt.Errorf("orchestrator: take back: %w", err)

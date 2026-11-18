@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -405,9 +406,10 @@ func TestEndSessionHolds(t *testing.T) {
 	}
 }
 
-// A forced takeover detaches the old holder's clients before it answers,
-// so the new holder (who attaches after the answer) isn't detached. A
-// renewal by the holder itself detaches nobody.
+// A forced takeover detaches the old holder's clients before it takes
+// the task and answers, so the new holder (who attaches after the
+// answer) isn't detached, and fails closed: if they can't be detached
+// nothing is taken. A renewal by the holder itself detaches nobody.
 func TestTakeover_ForceDetachesTheOldHolder(t *testing.T) {
 	store, ws, exec, o, _ := sweepSetup(t)
 	ctx := context.Background()
@@ -425,14 +427,14 @@ func TestTakeover_ForceDetachesTheOldHolder(t *testing.T) {
 		t.Errorf("detached %v, want [%s]", d, task.TmuxSession)
 	}
 
-	// The new hold stands even if the old clients couldn't be detached:
-	// the task stays human-takeover, so automation isn't let in.
 	exec.mu.Lock()
 	exec.unreachable = true
 	exec.mu.Unlock()
-	res, err = o.Takeover(ctx, orchestrator.TakeoverRequest{TaskID: task.ID, SessionID: "sess-1", Force: true})
-	if err != nil || res.Replaced == nil {
-		t.Fatalf("forced Takeover with the target down = %+v, %v", res, err)
+	if _, err := o.Takeover(ctx, orchestrator.TakeoverRequest{TaskID: task.ID, SessionID: "sess-1", Force: true}); !errors.Is(err, orchestrator.ErrDetachFailed) {
+		t.Fatalf("forced Takeover with the target down = %v; want ErrDetachFailed", err)
+	}
+	if h := mustHold(t, store, res.Hold.ID); !h.Active() {
+		t.Errorf("the holder's hold = %+v; want it kept", h)
 	}
 	if got := mustTask(t, store, task.ID); got.Status != registry.TaskStatusHumanTakeover {
 		t.Errorf("status = %s", got.Status)
@@ -519,5 +521,199 @@ func TestHoldSweeper_Races(t *testing.T) {
 		if _, err := o.Release(ctx, task.ID, ""); err != nil {
 			t.Fatalf("Release: %v", err)
 		}
+	}
+}
+
+// LOOM-265 review: the sweeper's judgement, its detach and the hold's end
+// are one step. A heartbeat or a forced takeover arriving during the
+// detach waits for it: the heartbeat then finds the hold ended (it can't
+// renew a lease already judged run out), and the takeover finds no hold
+// left, takes the task fresh, and its holder isn't detached.
+func TestHoldSweeper_DetachIsSerialized(t *testing.T) {
+	store, ws, exec, o, clock := sweepSetup(t)
+	ctx := context.Background()
+	task := taskIn(t, store, o, ws, "conv-1", registry.TaskStatusAwaitingInput, "")
+	hold := takeOver(t, o, task.ID)
+	clock.Advance(time.Minute)
+
+	heartbeat := make(chan error, 1)
+	taken := make(chan *orchestrator.TakeoverResult, 1)
+	var once sync.Once
+	exec.mu.Lock()
+	exec.onDetach = func() {
+		once.Do(func() {
+			go func() {
+				_, err := o.Heartbeat(ctx, task.ID, hold.ID, "sess-1")
+				heartbeat <- err
+			}()
+			go func() {
+				res, err := o.Takeover(ctx, orchestrator.TakeoverRequest{TaskID: task.ID, SessionID: "sess-2", Force: true})
+				if err != nil {
+					t.Errorf("Takeover: %v", err)
+				}
+				taken <- res
+			}()
+			// Give both time to reach the lock.
+			time.Sleep(50 * time.Millisecond)
+			select {
+			case err := <-heartbeat:
+				t.Errorf("a heartbeat finished during the sweeper's detach: %v", err)
+				heartbeat <- err // for the check below
+			default:
+			}
+		})
+	}
+	exec.mu.Unlock()
+
+	if n := orchestrator.NewHoldSweeper(o).Sweep(ctx); n != 1 {
+		t.Fatalf("ended %d holds, want 1", n)
+	}
+	if err := <-heartbeat; !isHoldEnded(err, registry.HoldEndExpired) {
+		t.Errorf("heartbeat during the sweep = %v; want the hold ended as expired", err)
+	}
+	res := <-taken
+	if res == nil || res.Replaced != nil || res.Hold.SessionID != "sess-2" {
+		t.Fatalf("takeover during the sweep = %+v; want a fresh hold, nothing replaced", res)
+	}
+	if !mustHold(t, store, res.Hold.ID).Active() || mustTask(t, store, task.ID).Status != registry.TaskStatusHumanTakeover {
+		t.Error("the new holder's hold or the task's human-takeover didn't survive the sweep")
+	}
+	if d := exec.detachedSessions(); len(d) != 1 {
+		t.Errorf("detached %v; want only the sweeper's, before the new hold", d)
+	}
+}
+
+// LOOM-265 review: Take back that finds no hold can't end one a takeover
+// makes meanwhile without detaching it: the takeover waits, and its hold
+// stands.
+func TestRelease_TakeBackRacingATakeover(t *testing.T) {
+	store := newTestStore(t)
+	ws := createFixtureWorkspace(t, store)
+	exec := newFakeExecutor()
+	ctx := context.Background()
+	wrapped := &firstHoldLookupStore{Store: store}
+	o := orchestrator.New(wrapped, exec.factory(), &hookDetector{})
+	task, err := o.Launch(ctx, ws.ID, "conv-1", registry.TaskKindAgent, "claude-code", "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken := make(chan *orchestrator.TakeoverResult, 1)
+	wrapped.meanwhile = func() {
+		go func() {
+			res, err := o.Takeover(ctx, orchestrator.TakeoverRequest{TaskID: task.ID, SessionID: "sess-2"})
+			if err != nil {
+				t.Errorf("Takeover: %v", err)
+			}
+			taken <- res
+		}()
+		time.Sleep(50 * time.Millisecond)
+	}
+	rel, err := o.Release(ctx, task.ID, "")
+	if err != nil || rel.Hold != nil || rel.Ended {
+		t.Fatalf("take back with nothing held = %+v, %v", rel, err)
+	}
+	res := <-taken
+	if res == nil {
+		t.Fatal("no takeover")
+	}
+	if h := mustHold(t, store, res.Hold.ID); !h.Active() {
+		t.Errorf("the takeover's hold = %+v; want it standing", h)
+	}
+	if got := mustTask(t, store, task.ID); got.Status != registry.TaskStatusHumanTakeover {
+		t.Errorf("status = %s", got.Status)
+	}
+}
+
+// firstHoldLookupStore runs meanwhile after the first GetActiveDriveHold
+// only. Unlike sync.Once, later lookups (the racing takeover's) don't
+// wait for it.
+type firstHoldLookupStore struct {
+	registry.Store
+	used      atomic.Bool
+	meanwhile func()
+}
+
+func (s *firstHoldLookupStore) GetActiveDriveHold(ctx context.Context, taskID string) (*registry.TaskHold, error) {
+	h, err := s.Store.GetActiveDriveHold(ctx, taskID)
+	if s.used.CompareAndSwap(false, true) {
+		s.meanwhile()
+	}
+	return h, err
+}
+
+// failingGraceStore fails ExtendActiveTaskHolds while fail is set.
+type failingGraceStore struct {
+	registry.Store
+	mu   sync.Mutex
+	fail bool
+}
+
+func (s *failingGraceStore) ExtendActiveTaskHolds(ctx context.Context, from time.Time) (int, error) {
+	s.mu.Lock()
+	fail := s.fail
+	s.mu.Unlock()
+	if fail {
+		return 0, errors.New("disk on fire")
+	}
+	return s.Store.ExtendActiveTaskHolds(ctx, from)
+}
+
+// LOOM-265 review: while the restart grace fails Run sweeps nothing, so
+// the holds the downtime left expired aren't ended; once it succeeds
+// they get their lease and sweeping starts.
+func TestHoldSweeper_NoSweepWithoutGrace(t *testing.T) {
+	store, ws, exec, _, clock := sweepSetup(t)
+	wrapped := &failingGraceStore{Store: store, fail: true}
+	o := orchestrator.New(wrapped, exec.factory(), &hookDetector{}, orchestrator.WithClock(clock.Now))
+	task := taskIn(t, store, o, ws, "conv-1", registry.TaskStatusAwaitingInput, "")
+	hold := takeOver(t, o, task.ID)
+	clock.Advance(10 * time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		orchestrator.NewHoldSweeper(o).Run(ctx, 5*time.Millisecond)
+	}()
+	time.Sleep(60 * time.Millisecond)
+	if !mustHold(t, store, hold.ID).Active() {
+		t.Fatal("a hold was swept while the grace failed")
+	}
+	wrapped.mu.Lock()
+	wrapped.fail = false
+	wrapped.mu.Unlock()
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	<-done
+	if h := mustHold(t, store, hold.ID); !h.Active() || !h.ExpiresAt.Equal(clock.Now().Add(45*time.Second)) {
+		t.Errorf("hold = %+v; want active with a lease from the grace", h)
+	}
+}
+
+// staleSessionsStore lists every session as last used an hour before it
+// was, as a pass's list would show one a request renewed since.
+type staleSessionsStore struct{ registry.Store }
+
+func (s *staleSessionsStore) ListSessions(ctx context.Context) ([]*registry.Session, error) {
+	list, err := s.Store.ListSessions(ctx)
+	for _, sess := range list {
+		sess.LastUsedAt = sess.LastUsedAt.Add(-time.Hour)
+	}
+	return list, err
+}
+
+// LOOM-265 review: a session the pass's list shows expired is read again
+// before its holds are revoked: one renewed since keeps them.
+func TestHoldSweeper_SessionRenewedSinceTheList(t *testing.T) {
+	store, ws, exec, _, clock := sweepSetup(t)
+	o := orchestrator.New(&staleSessionsStore{Store: store}, exec.factory(), &hookDetector{}, orchestrator.WithClock(clock.Now))
+	task := taskIn(t, store, o, ws, "conv-1", registry.TaskStatusAwaitingInput, "")
+	hold := takeOver(t, o, task.ID)
+	sweeper := orchestrator.NewHoldSweeper(o, orchestrator.WithHoldSessionLifetime(30*time.Minute, 0))
+	if n := sweeper.Sweep(context.Background()); n != 0 {
+		t.Fatalf("ended %d holds; the session is live", n)
+	}
+	if !mustHold(t, store, hold.ID).Active() {
+		t.Error("hold ended on a stale session list")
 	}
 }

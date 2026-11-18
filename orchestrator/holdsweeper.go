@@ -49,6 +49,9 @@ type HoldSweeper struct {
 	// a target down for an hour is said once, not every sweep.
 	mu     sync.Mutex
 	warned map[string]bool
+	// graced is set once Grace has succeeded: Run sweeps only after it,
+	// so a failed grace can't end the holds a downtime left expired.
+	graced bool
 }
 
 // HoldSweeperOption configures a HoldSweeper.
@@ -82,14 +85,11 @@ func NewHoldSweeper(orch *Orchestrator, opts ...HoldSweeperOption) *HoldSweeper 
 	return s
 }
 
-// Run applies the restart grace, then sweeps every interval until ctx is
-// done.
+// Run applies the restart grace unless Grace already has, then sweeps
+// every interval until ctx is done. While the grace keeps failing it is
+// tried again each interval, and nothing is swept.
 func (s *HoldSweeper) Run(ctx context.Context, interval time.Duration) {
-	if n, err := s.Grace(ctx); err != nil {
-		s.logger.Error("hold restart grace failed", "error", err)
-	} else if n > 0 {
-		s.logger.Info("holds given a full lease from the start", "count", n)
-	}
+	s.graceOnce(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -97,25 +97,53 @@ func (s *HoldSweeper) Run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.Sweep(ctx)
+			if s.graceOnce(ctx) {
+				s.Sweep(ctx)
+			}
 		}
 	}
 }
 
+// graceOnce runs Grace if it hasn't succeeded yet, logging the outcome,
+// and reports whether it has now.
+func (s *HoldSweeper) graceOnce(ctx context.Context) bool {
+	s.mu.Lock()
+	done := s.graced
+	s.mu.Unlock()
+	if done {
+		return true
+	}
+	n, err := s.Grace(ctx)
+	if err != nil {
+		s.logger.Error("hold restart grace failed; no hold is swept until it succeeds", "error", err)
+		return false
+	}
+	if n > 0 {
+		s.logger.Info("holds given a full lease from the start", "count", n)
+	}
+	return true
+}
+
 // Grace gives every active hold a full lease counted from now (its
 // ExpiresAt is moved to at least now + its TTL) and returns how many it
-// moved.
+// moved. Call it before the API serves (app.StartHoldSweeper does), so
+// that no request or sweep sees a lease the downtime ran out.
 func (s *HoldSweeper) Grace(ctx context.Context) (int, error) {
 	n, err := s.orch.store.ExtendActiveTaskHolds(ctx, s.orch.now().UTC())
 	if err != nil {
 		return 0, fmt.Errorf("orchestrator: hold grace: %w", err)
 	}
+	s.mu.Lock()
+	s.graced = true
+	s.mu.Unlock()
 	return n, nil
 }
 
 // Sweep runs one pass over the active holds and returns how many it
-// ended. Each hold is read again just before it is judged, so a
-// heartbeat that landed since the list was read keeps its hold.
+// ended. Each hold is judged and ended under its task's hold lock, read
+// again once the lock is held: a heartbeat, takeover or release that
+// landed since the list was read is seen, and none can land between the
+// judgement, the detach and the end.
 func (s *HoldSweeper) Sweep(ctx context.Context) int {
 	holds, err := s.orch.store.ListActiveTaskHolds(ctx)
 	if err != nil {
@@ -131,27 +159,9 @@ func (s *HoldSweeper) Sweep(ctx context.Context) int {
 		}
 	}
 	ended := 0
-	for _, listedHold := range holds {
-		listed[listedHold.ID] = true
-		h, err := s.orch.store.GetTaskHold(ctx, listedHold.ID)
-		if err != nil || !h.Active() {
-			continue // ended, or gone with its task, since the list
-		}
-		reason, err := s.endReason(ctx, h, sessions)
-		if err != nil {
-			s.warn(h, "", err)
-			continue
-		}
-		if reason == "" {
-			continue
-		}
-		ok, err := s.orch.endHold(ctx, h, reason)
-		if err != nil {
-			s.warn(h, reason, err)
-			continue
-		}
-		s.forget(h.ID)
-		if ok {
+	for _, h := range holds {
+		listed[h.ID] = true
+		if s.sweepHold(ctx, h, sessions) {
 			ended++
 		}
 	}
@@ -163,6 +173,32 @@ func (s *HoldSweeper) Sweep(ctx context.Context) int {
 	}
 	s.mu.Unlock()
 	return ended
+}
+
+// sweepHold judges one listed hold and ends it if it should, under its
+// task's hold lock, and reports whether it ended it.
+func (s *HoldSweeper) sweepHold(ctx context.Context, listed *registry.TaskHold, sessions map[string]*registry.Session) bool {
+	unlock := s.orch.holds.lock(listed.TaskID)
+	defer unlock()
+	h, err := s.orch.store.GetTaskHold(ctx, listed.ID)
+	if err != nil || !h.Active() {
+		return false // ended, or gone with its task, since the list
+	}
+	reason, err := s.endReason(ctx, h, sessions)
+	if err != nil {
+		s.warn(h, "", err)
+		return false
+	}
+	if reason == "" {
+		return false
+	}
+	ok, err := s.orch.endHoldLocked(ctx, h, reason)
+	if err != nil {
+		s.warn(h, reason, err)
+		return false
+	}
+	s.forget(h.ID)
+	return ok
 }
 
 // sessions returns every session by id.
@@ -193,7 +229,11 @@ func (s *HoldSweeper) endReason(ctx context.Context, h *registry.TaskHold, sessi
 	}
 	now := s.orch.now().UTC()
 	if sessions != nil {
-		if sess, ok := sessions[h.SessionID]; !ok || s.sessionExpired(sess, now) {
+		revoked, err := s.sessionRevoked(ctx, h.SessionID, sessions, now)
+		if err != nil {
+			return "", err
+		}
+		if revoked {
 			return registry.HoldEndSessionRevoked, nil
 		}
 	}
@@ -201,6 +241,28 @@ func (s *HoldSweeper) endReason(ctx context.Context, h *registry.TaskHold, sessi
 		return registry.HoldEndExpired, nil
 	}
 	return "", nil
+}
+
+// sessionRevoked reports whether sessionID is gone or has expired. A
+// session missing from the pass's list is gone for good (sessions are
+// never recreated); one the list shows expired is read again, since a
+// request may have renewed it since the list was read.
+func (s *HoldSweeper) sessionRevoked(ctx context.Context, sessionID string, sessions map[string]*registry.Session, now time.Time) (bool, error) {
+	sess, ok := sessions[sessionID]
+	if !ok {
+		return true, nil
+	}
+	if !s.sessionExpired(sess, now) {
+		return false, nil
+	}
+	cur, err := s.orch.store.GetSessionByTokenHash(ctx, sess.TokenHash)
+	if errors.Is(err, registry.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return s.sessionExpired(cur, now), nil
 }
 
 // sessionExpired is the client API's own test (api.Server.sessionExpired)
@@ -233,7 +295,7 @@ func (s *HoldSweeper) forget(holdID string) {
 }
 
 // EndSessionHolds ends every active hold of sessionID as
-// session_revoked, as endHold does, and returns how many it ended
+// session_revoked, as endHoldLocked does, and returns how many it ended
 // (LOOM-265): for a session logged out or revoked. A hold whose clients
 // couldn't be detached is left, its error joined into the one returned;
 // the sweeper ends it once it can, since its session is gone.
@@ -248,7 +310,7 @@ func (o *Orchestrator) EndSessionHolds(ctx context.Context, sessionID string) (i
 		if h.SessionID != sessionID {
 			continue
 		}
-		ok, err := o.endHold(ctx, h, registry.HoldEndSessionRevoked)
+		ok, err := o.endSessionHold(ctx, h)
 		if err != nil {
 			o.logger.Warn("session revoked: could not end its hold; the hold sweeper will",
 				"task_id", h.TaskID, "hold_id", h.ID, "session_id", sessionID, "error", err)
@@ -262,12 +324,32 @@ func (o *Orchestrator) EndSessionHolds(ctx context.Context, sessionID string) (i
 	return ended, errors.Join(errs...)
 }
 
-// endHold ends h with reason and hands its task back (ReleaseTaskHold's
-// one write: only a human-takeover task left with no drive hold goes to
-// awaiting-input). A drive hold's clients are detached first, unless its
-// task has ended: if they can't be, h is left as it is and the error is
-// returned. ended is false if h had already ended.
-func (o *Orchestrator) endHold(ctx context.Context, h *registry.TaskHold, reason registry.HoldEndReason) (ended bool, err error) {
+// endSessionHold ends h as session_revoked under its task's hold lock,
+// unless it has ended meanwhile.
+func (o *Orchestrator) endSessionHold(ctx context.Context, listed *registry.TaskHold) (bool, error) {
+	unlock := o.holds.lock(listed.TaskID)
+	defer unlock()
+	h, err := o.store.GetTaskHold(ctx, listed.ID)
+	if errors.Is(err, registry.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("orchestrator: end session holds: %w", err)
+	}
+	if !h.Active() {
+		return false, nil
+	}
+	return o.endHoldLocked(ctx, h, registry.HoldEndSessionRevoked)
+}
+
+// endHoldLocked ends h with reason and hands its task back
+// (ReleaseTaskHold's one write: only a human-takeover task left with no
+// drive hold goes to awaiting-input). A drive hold's clients are
+// detached first, unless its task has ended: if they can't be, h is left
+// as it is and the error is returned. ended is false if h had already
+// ended. The caller holds h's task's hold lock, so nothing changes the
+// task's holds between the detach and the end.
+func (o *Orchestrator) endHoldLocked(ctx context.Context, h *registry.TaskHold, reason registry.HoldEndReason) (ended bool, err error) {
 	if h.Mode == registry.HoldModeDrive && reason != registry.HoldEndTaskEnded {
 		if err := o.detachHoldClients(ctx, h.TaskID); err != nil {
 			return false, err

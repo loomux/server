@@ -49,6 +49,9 @@ type fakeExecutor struct {
 	onPaste func() error
 	// detached are the sessions DetachClients was called for (LOOM-265).
 	detached []string
+	// onDetach, if set, runs as DetachClients starts (outside e.mu): a
+	// test's hook for something happening during a detach.
+	onDetach func()
 }
 
 func newFakeExecutor() *fakeExecutor {
@@ -140,6 +143,12 @@ func (e *fakeExecutor) CapturePane(ctx context.Context, target string) (string, 
 }
 
 func (e *fakeExecutor) DetachClients(ctx context.Context, session string) error {
+	e.mu.Lock()
+	hook := e.onDetach
+	e.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.unreachable {

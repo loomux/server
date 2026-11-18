@@ -102,19 +102,35 @@ func AttachCommand(socket, session string) string {
 // named exactly ("=name"): tmux otherwise takes a session that merely
 // starts with the name once the named one is gone. tmux 3.x answers
 // detach-client -s with an error when no client is attached at all, so
-// the clients are looked for first; a detach that fails because they
-// left meanwhile is nothing to do either.
+// the clients are looked for first.
+//
+// It fails closed: only tmux saying there is nothing there (no such
+// session, no server, no socket file) counts as nothing to detach. Any
+// other failure (tmux missing, a socket directory it refuses, a command
+// that fails) is an error, and so is a detach that failed with clients
+// still attached, so a hold never ends without its clients being gone.
 func detachClientsScript(socket, session string) string {
 	tmux := func(args ...string) string {
 		return shellQuoteJoin(append([]string{"tmux", "-L", socket}, args...))
 	}
 	exact := "=" + session
-	list := tmux("list-clients", "-t", exact, "-F", "#{client_name}")
-	return tmux("has-session", "-t", exact) + " 2>/dev/null || exit 0\n" +
-		"c=$(" + list + ") || exit\n" +
+	list := "c=$(" + tmux("list-clients", "-t", exact, "-F", "#{client_name}") + ") || exit\n"
+	// The script reaches sh on its stdin, which nothing in it may read
+	// (as RunOnce's).
+	return "{\n" +
+		"if ! out=$(" + tmux("has-session", "-t", exact) + " 2>&1); then\n" +
+		"  case $out in\n" +
+		"  *\"can't find session\"*|*\"no server running\"*|*\"error connecting to\"*\"(No such file or directory)\"*) exit 0 ;;\n" +
+		"  esac\n" +
+		"  printf '%s\\n' \"$out\" >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		list +
 		"[ -n \"$c\" ] || exit 0\n" +
 		tmux("detach-client", "-s", exact) + " && exit 0\n" +
-		"[ -z \"$(" + list + " 2>/dev/null)\" ]\n"
+		list +
+		"[ -z \"$c\" ]\n" +
+		"} </dev/null\n"
 }
 
 // TargetExecutor runs tmux operations against a single target. session and
