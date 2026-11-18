@@ -325,6 +325,13 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "the task kept changing while it was being taken over; look at it again")
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "could not take over task")
+	case !s.sessionStillValid(r.Context(), sess):
+		// A logout or revoke that ran while this was being taken ended
+		// the session's holds without this one: it is ended here,
+		// rather than the pane handed to a dead session (LOOM-265), as a
+		// dispatch's wait checks its session again (LOOM-182).
+		s.endSessionHolds(r.Context(), sess.ID)
+		writeError(w, http.StatusUnauthorized, "invalid or expired session")
 	default:
 		writeJSON(w, http.StatusOK, takeoverResponse{TaskID: id, Hold: newHoldResponse(res.Hold), Attach: attach})
 	}

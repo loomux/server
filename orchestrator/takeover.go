@@ -137,7 +137,10 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 		return nil, &InvalidTakeoverError{Reason: "a hold needs a session"}
 	}
 
-	unlock := o.holds.lock(req.TaskID)
+	unlock, err := o.holds.lock(ctx, req.TaskID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	for range takeoverAttempts {
 		task, err := o.store.GetTask(ctx, req.TaskID)
@@ -241,7 +244,10 @@ func heldStatus(task *registry.Task) (registry.TaskStatus, error) {
 // such hold on that task, ErrHoldNotOwned if it is another session's,
 // *HoldEndedError (with the hold, saying why) if it has ended.
 func (o *Orchestrator) Heartbeat(ctx context.Context, taskID, holdID, sessionID string) (*registry.TaskHold, error) {
-	unlock := o.holds.lock(taskID)
+	unlock, err := o.holds.lock(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	hold, err := o.store.GetTaskHold(ctx, holdID)
 	if err != nil {
@@ -281,7 +287,10 @@ func (o *Orchestrator) Heartbeat(ctx context.Context, taskID, holdID, sessionID 
 // registry.ErrNotFound for an unknown task, or a hold that isn't the
 // task's.
 func (o *Orchestrator) Release(ctx context.Context, taskID, holdID string) (*registry.HoldRelease, error) {
-	unlock := o.holds.lock(taskID)
+	unlock, err := o.holds.lock(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	reason := registry.HoldEndReleased
 	if holdID == "" {

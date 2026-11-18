@@ -624,7 +624,9 @@ or gave one the server refused.
       Taking, renewing, releasing and ending a task's holds are
       serialized per task, detach included, so a heartbeat can't renew a
       hold the sweeper is ending, and a hold ended with a detach never
-      detaches a holder who took the task meanwhile.
+      detaches a holder who took the task meanwhile. A takeover whose
+      session is logged out or revoked while it is being taken ends that
+      hold again and answers `401`, with no attach-info.
     - Not yet (later tickets of the same design): a `running` turn's
       wait ending at once (S5), and holds shown on conversations,
       attach-info and the stream (S6).

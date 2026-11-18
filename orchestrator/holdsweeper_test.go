@@ -141,10 +141,11 @@ func TestHoldSweeper_DetachFailureKeepsTheHold(t *testing.T) {
 	}
 }
 
-// A hold on a task this server can't reach a pane for (a local target
-// with local targets off, LOOM-141) has nobody attached through Loomux:
-// it ends without detaching rather than stay forever.
-func TestHoldSweeper_NoPaneToDetach(t *testing.T) {
+// A hold on a task whose target is local, on a server with local
+// targets off (LOOM-141), fails closed: its session may still run, with
+// someone in it, from before the setting changed. The hold and the
+// task's human-takeover stay.
+func TestHoldSweeper_LocalTargetsOffFailsClosed(t *testing.T) {
 	store, ws, exec, o, clock := sweepSetup(t)
 	ctx := context.Background()
 	task := taskIn(t, store, o, ws, "conv-1", registry.TaskStatusAwaitingInput, "")
@@ -153,14 +154,17 @@ func TestHoldSweeper_NoPaneToDetach(t *testing.T) {
 		return nil, targets.ErrLocalTargetsOff
 	}, &hookDetector{}, orchestrator.WithClock(clock.Now))
 	clock.Advance(time.Minute)
-	if n := orchestrator.NewHoldSweeper(off).Sweep(ctx); n != 1 {
-		t.Fatalf("ended %d holds, want 1", n)
+	if n := orchestrator.NewHoldSweeper(off).Sweep(ctx); n != 0 {
+		t.Fatalf("ended %d holds, want none", n)
 	}
-	if h := mustHold(t, store, hold.ID); h.EndedReason != registry.HoldEndExpired {
-		t.Errorf("hold = %+v", h)
+	if !mustHold(t, store, hold.ID).Active() {
+		t.Error("hold ended without its clients detached")
 	}
-	if got := mustTask(t, store, task.ID); got.Status != registry.TaskStatusAwaitingInput {
+	if got := mustTask(t, store, task.ID); got.Status != registry.TaskStatusHumanTakeover {
 		t.Errorf("status = %s", got.Status)
+	}
+	if _, err := off.Release(ctx, task.ID, ""); !errors.Is(err, orchestrator.ErrDetachFailed) {
+		t.Errorf("take back = %v; want ErrDetachFailed", err)
 	}
 	if d := exec.detachedSessions(); len(d) != 0 {
 		t.Errorf("detached %v", d)
@@ -715,5 +719,78 @@ func TestHoldSweeper_SessionRenewedSinceTheList(t *testing.T) {
 	}
 	if !mustHold(t, store, hold.ID).Active() {
 		t.Error("hold ended on a stale session list")
+	}
+}
+
+// LOOM-265 review: a revocation's deadline bounds its wait for a task's
+// hold lock: a sweep stuck detaching on a target that doesn't answer
+// doesn't hold up a logout past it.
+func TestEndSessionHolds_DeadlineBoundsTheLockWait(t *testing.T) {
+	store, ws, exec, o, clock := sweepSetup(t)
+	ctx := context.Background()
+	task := taskIn(t, store, o, ws, "conv-1", registry.TaskStatusAwaitingInput, "")
+	takeOver(t, o, task.ID)
+	clock.Advance(time.Minute)
+
+	stuck, unstick := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	exec.mu.Lock()
+	exec.onDetach = func() { once.Do(func() { close(stuck); <-unstick }) }
+	exec.mu.Unlock()
+	swept := make(chan int)
+	go func() { swept <- orchestrator.NewHoldSweeper(o).Sweep(ctx) }()
+	<-stuck
+
+	deadline, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := o.EndSessionHolds(deadline, "sess-1")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("EndSessionHolds behind a stuck detach = %v; want the deadline", err)
+	}
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Errorf("EndSessionHolds waited %v", waited)
+	}
+	close(unstick)
+	if n := <-swept; n != 1 {
+		t.Errorf("sweep ended %d holds, want 1", n)
+	}
+}
+
+// LOOM-265 review: a grace retried after a failure counts the lease from
+// the first try, the start: it moves the holds the downtime left, never
+// one taken since, whose lease already runs past it.
+func TestHoldSweeper_GraceRetryCountsFromTheStart(t *testing.T) {
+	store, ws, exec, _, clock := sweepSetup(t)
+	ctx := context.Background()
+	wrapped := &failingGraceStore{Store: store, fail: true}
+	o := orchestrator.New(wrapped, exec.factory(), &hookDetector{}, orchestrator.WithClock(clock.Now))
+	before := taskIn(t, store, o, ws, "conv-1", registry.TaskStatusAwaitingInput, "")
+	old := takeOver(t, o, before.ID)
+	clock.Advance(10 * time.Minute) // the downtime
+	start := clock.Now()
+	sweeper := orchestrator.NewHoldSweeper(o)
+	if _, err := sweeper.Grace(ctx); err == nil {
+		t.Fatal("Grace succeeded on a failing store")
+	}
+
+	clock.Advance(30 * time.Second)
+	after := taskIn(t, store, o, ws, "conv-2", registry.TaskStatusAwaitingInput, "")
+	fresh, err := o.Takeover(ctx, orchestrator.TakeoverRequest{TaskID: after.ID, SessionID: "sess-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped.mu.Lock()
+	wrapped.fail = false
+	wrapped.mu.Unlock()
+	n, err := sweeper.Grace(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("retried Grace = %d, %v; want only the hold the downtime left moved", n, err)
+	}
+	if h := mustHold(t, store, old.ID); !h.ExpiresAt.Equal(start.Add(45 * time.Second)) {
+		t.Errorf("old hold expires %v, want the start + 45 s (%v)", h.ExpiresAt, start.Add(45*time.Second))
+	}
+	if h := mustHold(t, store, fresh.Hold.ID); !h.ExpiresAt.Equal(fresh.Hold.ExpiresAt) {
+		t.Errorf("the hold taken since moved: %v, was %v", h.ExpiresAt, fresh.Hold.ExpiresAt)
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Loomux/server/registry"
-	"github.com/Loomux/server/targets"
 )
 
 // HoldSweepInterval is how often the hold sweeper looks for holds to end
@@ -52,6 +51,10 @@ type HoldSweeper struct {
 	// graced is set once Grace has succeeded: Run sweeps only after it,
 	// so a failed grace can't end the holds a downtime left expired.
 	graced bool
+	// graceFrom is when the first Grace was tried: a retry counts the
+	// lease from then too, so it moves only what the downtime left, never
+	// a hold taken or renewed since (whose lease already runs past it).
+	graceFrom time.Time
 }
 
 // HoldSweeperOption configures a HoldSweeper.
@@ -124,12 +127,20 @@ func (s *HoldSweeper) graceOnce(ctx context.Context) bool {
 	return true
 }
 
-// Grace gives every active hold a full lease counted from now (its
-// ExpiresAt is moved to at least now + its TTL) and returns how many it
-// moved. Call it before the API serves (app.StartHoldSweeper does), so
-// that no request or sweep sees a lease the downtime ran out.
+// Grace gives every active hold a full lease counted from the start (its
+// ExpiresAt is moved to at least start + its TTL) and returns how many
+// it moved. The start is when Grace was first called; a retry after a
+// failure counts from then too. Call it before the API serves
+// (app.StartHoldSweeper does), so that no request or sweep sees a lease
+// the downtime ran out.
 func (s *HoldSweeper) Grace(ctx context.Context) (int, error) {
-	n, err := s.orch.store.ExtendActiveTaskHolds(ctx, s.orch.now().UTC())
+	s.mu.Lock()
+	if s.graceFrom.IsZero() {
+		s.graceFrom = s.orch.now().UTC()
+	}
+	from := s.graceFrom
+	s.mu.Unlock()
+	n, err := s.orch.store.ExtendActiveTaskHolds(ctx, from)
 	if err != nil {
 		return 0, fmt.Errorf("orchestrator: hold grace: %w", err)
 	}
@@ -178,7 +189,10 @@ func (s *HoldSweeper) Sweep(ctx context.Context) int {
 // sweepHold judges one listed hold and ends it if it should, under its
 // task's hold lock, and reports whether it ended it.
 func (s *HoldSweeper) sweepHold(ctx context.Context, listed *registry.TaskHold, sessions map[string]*registry.Session) bool {
-	unlock := s.orch.holds.lock(listed.TaskID)
+	unlock, err := s.orch.holds.lock(ctx, listed.TaskID)
+	if err != nil {
+		return false // shutting down
+	}
 	defer unlock()
 	h, err := s.orch.store.GetTaskHold(ctx, listed.ID)
 	if err != nil || !h.Active() {
@@ -327,7 +341,10 @@ func (o *Orchestrator) EndSessionHolds(ctx context.Context, sessionID string) (i
 // endSessionHold ends h as session_revoked under its task's hold lock,
 // unless it has ended meanwhile.
 func (o *Orchestrator) endSessionHold(ctx context.Context, listed *registry.TaskHold) (bool, error) {
-	unlock := o.holds.lock(listed.TaskID)
+	unlock, err := o.holds.lock(ctx, listed.TaskID)
+	if err != nil {
+		return false, err
+	}
 	defer unlock()
 	h, err := o.store.GetTaskHold(ctx, listed.ID)
 	if errors.Is(err, registry.ErrNotFound) {
@@ -374,9 +391,11 @@ func (o *Orchestrator) endHoldLocked(ctx context.Context, h *registry.TaskHold, 
 
 // detachHoldClients detaches every tmux client attached to taskID's
 // session, through its target's executor (ErrDetachFailed if it can't).
-// A task, workspace or target that no longer exists, a task with no
-// session, or a local target this server may not run has no pane anyone
-// can be attached to through Loomux: nothing to do.
+// A task, workspace or target that no longer exists, or a task with no
+// session, has no pane anyone can be attached to through Loomux: nothing
+// to do. A local target on a server with local targets off is a failure
+// like any other: its session may still be running, with someone in it,
+// from before the setting changed.
 func (o *Orchestrator) detachHoldClients(ctx context.Context, taskID string) error {
 	task, err := o.store.GetTask(ctx, taskID)
 	if errors.Is(err, registry.ErrNotFound) {
@@ -389,7 +408,7 @@ func (o *Orchestrator) detachHoldClients(ctx context.Context, taskID string) err
 		return nil
 	}
 	exec, err := o.executorFor(ctx, task)
-	if errors.Is(err, registry.ErrNotFound) || errors.Is(err, targets.ErrLocalTargetsOff) {
+	if errors.Is(err, registry.ErrNotFound) {
 		return nil
 	}
 	if err != nil {

@@ -1,6 +1,10 @@
 package orchestrator
 
-import "sync"
+import (
+	"context"
+	"fmt"
+	"sync"
+)
 
 // holdLocks serializes everything that takes, renews or ends a task's
 // holds (LOOM-265): Takeover, Heartbeat, Release, the hold sweeper and
@@ -18,34 +22,46 @@ type holdLocks struct {
 }
 
 type taskHoldLock struct {
-	mu sync.Mutex
-	// users counts the callers holding or waiting for mu, so the entry
+	// sem is the lock: a send takes it, a receive gives it back. A
+	// channel rather than a sync.Mutex so a caller's deadline bounds its
+	// wait (a logout must not wait out a detach hung on a target).
+	sem chan struct{}
+	// users counts the callers holding or waiting for sem, so the entry
 	// is dropped once nobody needs it.
 	users int
 }
 
-// lock locks taskID's holds and returns the unlock.
-func (l *holdLocks) lock(taskID string) (unlock func()) {
+// lock locks taskID's holds and returns the unlock, or ctx's error if
+// ctx ends first.
+func (l *holdLocks) lock(ctx context.Context, taskID string) (unlock func(), err error) {
 	l.mu.Lock()
 	if l.tasks == nil {
 		l.tasks = map[string]*taskHoldLock{}
 	}
 	e := l.tasks[taskID]
 	if e == nil {
-		e = &taskHoldLock{}
+		e = &taskHoldLock{sem: make(chan struct{}, 1)}
 		l.tasks[taskID] = e
 	}
 	e.users++
 	l.mu.Unlock()
 
-	e.mu.Lock()
-	return func() {
-		e.mu.Unlock()
+	release := func() {
 		l.mu.Lock()
 		e.users--
 		if e.users == 0 {
 			delete(l.tasks, taskID)
 		}
 		l.mu.Unlock()
+	}
+	select {
+	case e.sem <- struct{}{}:
+		return func() {
+			<-e.sem
+			release()
+		}, nil
+	case <-ctx.Done():
+		release()
+		return nil, fmt.Errorf("orchestrator: waiting for task %q's holds: %w", taskID, ctx.Err())
 	}
 }

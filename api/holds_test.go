@@ -771,3 +771,54 @@ func TestTakeover_ForceDetachFails(t *testing.T) {
 		t.Errorf("detached %v", d)
 	}
 }
+
+// revokeDuringTakeover is a hold service whose takeover is overtaken by
+// a logout: the session is deleted once the hold is taken, after the
+// logout's own end of the session's holds would have run.
+type revokeDuringTakeover struct {
+	*orchestrator.Orchestrator
+	store registry.Store
+}
+
+func (r revokeDuringTakeover) Takeover(ctx context.Context, req orchestrator.TakeoverRequest) (*orchestrator.TakeoverResult, error) {
+	res, err := r.Orchestrator.Takeover(ctx, req)
+	if derr := r.store.DeleteSession(ctx, req.SessionID); derr != nil {
+		panic(derr)
+	}
+	return res, err
+}
+
+// LOOM-265 review: a takeover whose session is revoked while it is taken
+// gets no pane: 401, and its hold is ended and its task handed back.
+func TestTakeover_SessionRevokedMeanwhile(t *testing.T) {
+	exec := &detachRecorder{}
+	factory := func(*registry.Target) (targets.TargetExecutor, error) { return exec, nil }
+	srv, _, store := newTestServerWith(t, func(s registry.Store) []api.Option {
+		return []api.Option{api.WithTaskHolds(revokeDuringTakeover{orchestrator.New(s, factory, nil), s}), api.WithTmuxSocket("loomux-test")}
+	})
+	ctx := context.Background()
+	if err := store.CreateTarget(ctx, &registry.Target{ID: "remote-1", Name: "jet01", Kind: registry.TargetKindRemote, Host: "jet01.example.com", User: "orski"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateWorkspace(ctx, &registry.Workspace{ID: "ws-1", Name: "ws-1", Path: "/srv/app", TargetID: "remote-1", Status: registry.WorkspaceStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTask(ctx, &registry.Task{ID: "t1", WorkspaceID: "ws-1", Kind: registry.TaskKindAgent, AgentType: "claude-code",
+		TmuxSession: "loomux-t1", Status: registry.TaskStatusAwaitingInput, ConversationID: "conv-t1"}); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := login(t, srv.URL, testPassword)
+	status, raw := doJSON(t, http.MethodPost, srv.URL+"/api/v1/tasks/t1/takeover", token, nil)
+	if status != http.StatusUnauthorized || strings.Contains(raw, "attach") {
+		t.Fatalf("takeover by a session revoked meanwhile = %d %s; want 401 and no attach", status, raw)
+	}
+	if _, err := store.GetActiveDriveHold(ctx, "t1"); !errors.Is(err, registry.ErrNotFound) {
+		t.Errorf("active hold after the refused takeover: %v", err)
+	}
+	if task, _ := store.GetTask(ctx, "t1"); task.Status != registry.TaskStatusAwaitingInput {
+		t.Errorf("status = %s; want handed back", task.Status)
+	}
+	if d := exec.sessions(); len(d) != 1 {
+		t.Errorf("detached %v; want the session's clients detached", d)
+	}
+}

@@ -383,9 +383,10 @@ regenerated (lines only added).
   the router is about to drive. As built (S4), the detach comes first and
   the hold's end and the release (one write) only after it: if the target
   doesn't answer, the hold and `human_takeover` stay and the next sweep
-  tries again. A task whose target no longer exists, or a local target
-  on a server with local targets off, has nobody attached through
-  Loomux and ends without a detach. The session is named exactly
+  tries again. A task whose workspace or target no longer exists has
+  nobody attached through Loomux and ends without a detach; a local
+  target on a server with local targets off fails closed (its session
+  may outlive the setting change). The session is named exactly
   (`-s =<session>`), and tmux 3.x refuses `detach-client -s` when no
   client is attached at all, so `DetachClients` looks for clients first.
   It fails closed: only tmux saying nothing is there (no session, no
@@ -393,8 +394,12 @@ regenerated (lines only added).
   error. Everything that takes, renews or ends a task's holds runs under
   one lock per task in loomuxd, the detach included, so a heartbeat can't
   renew a hold being ended and a detach never reaches a holder who took
-  the task meanwhile. The restart grace runs before the API serves, and
-  nothing is swept until it has succeeded. It also detaches any watcher attached by hand
+  the task meanwhile; a caller's deadline bounds its wait for the lock.
+  The restart grace runs before the API serves, nothing is swept until it
+  has succeeded, and a retry counts the lease from the first try, so it
+  never extends a hold taken since. A takeover whose session was revoked
+  while it ran is ended again and answered `401`, as a dispatch's wait
+  checks its session again (LOOM-182). It also detaches any watcher attached by hand
   outside Loomux. That's acceptable for a path only a crash or long
   partition reaches. They can re-attach.
 - **Crashed TUI.** Server side, the hold expires within 45 s and the client
