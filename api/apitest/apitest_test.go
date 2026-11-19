@@ -587,10 +587,22 @@ func TestParallelServers(t *testing.T) {
 // A test that ends with a dispatch still blocked (it failed before its
 // release, say) is torn down promptly: neither a job left running nor a
 // request left waiting on it holds the cleanup up.
+//
+// Only the teardown is timed, from the first cleanup to the end of the
+// subtest, not apitest.New: opening the store and migrating it is most of
+// a subtest's time and grows with the runner's load (LOOM-304: over 3 s
+// on a loaded runner, while the teardown stayed under 100 ms). The bound
+// sits well below the 5 s a job that ignores its cancellation would cost
+// (dispatch's cancelGrace, which Shutdown then waits out), and far above
+// a prompt teardown.
 func TestCleanupWithBlockedDispatches(t *testing.T) {
-	start := time.Now()
+	const bound = 2 * time.Second
+	var teardownStart time.Time
 	t.Run("blocked", func(t *testing.T) {
 		srv := apitest.New(t)
+		// Cleanups run last-registered first, so this runs right before
+		// srv's own teardown.
+		t.Cleanup(func() { teardownStart = time.Now() })
 		token := srv.Login()
 		srv.Dispatcher.Block() // never released
 		if status, out := call(t, srv, token, "POST", "/dispatch", map[string]string{"conversation_id": "c1", "message": "async"}, "Prefer", "respond-async"); status != http.StatusAccepted {
@@ -612,8 +624,11 @@ func TestCleanupWithBlockedDispatches(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	})
-	if took := time.Since(start); took > 3*time.Second {
-		t.Errorf("teardown with blocked dispatches took %s", took)
+	if teardownStart.IsZero() {
+		t.Fatal("the teardown never ran")
+	}
+	if took := time.Since(teardownStart); took > bound {
+		t.Errorf("teardown with blocked dispatches took %s, want at most %s", took, bound)
 	}
 }
 
