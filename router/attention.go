@@ -202,7 +202,7 @@ func (r *Router) answerAttention(ctx context.Context, log *slog.Logger, task *re
 			err = exec.SendKey(ctx, task.TmuxSession, s.key)
 		}
 		if err != nil {
-			return "", true, fmt.Errorf("router: answer prompt: send keys: %w", err)
+			return "", true, r.takenOverOr(ctx, task.ID, fmt.Errorf("router: answer prompt: send keys: %w", err))
 		}
 	}
 	if err := r.orch.Resume(ctx, task.ID); err != nil {
@@ -471,4 +471,16 @@ func usageLimitAtEnd(detect func(string) *registry.Attention, screen, agentMessa
 		return a
 	}
 	return nil
+}
+
+// takenOverOr is err, or, when task taskID has been taken over by a
+// person meanwhile (LOOM-266), err as taken over: a step that failed while
+// someone took the pane (a prompt's answer whose keys didn't go in) ends
+// its turn as taken_over, and every caller leaves the task as it is.
+func (r *Router) takenOverOr(ctx context.Context, taskID string, err error) error {
+	cur, gerr := r.store.GetTask(context.WithoutCancel(ctx), taskID)
+	if gerr != nil || cur.Status != registry.TaskStatusHumanTakeover {
+		return err
+	}
+	return fmt.Errorf("%w: %w: %w", orchestrator.ErrTakenOver, orchestrator.ErrStatusChanged, err)
 }

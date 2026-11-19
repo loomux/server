@@ -43,7 +43,9 @@ type casHarness struct {
 	r        *router.Router
 	ws       *registry.Workspace
 	detector *hookedDetector
-	relayed  atomic.Int32
+	// orch is the router's orchestrator, for a real takeover (LOOM-266).
+	orch    *orchestrator.Orchestrator
+	relayed atomic.Int32
 	// relay, if set, is the relay model's answer; else "ok", not done.
 	relay func(ctx context.Context, captured string) (router.RelayResult, error)
 }
@@ -59,6 +61,7 @@ func newCASHarness(t *testing.T, agent router.AgentType) *casHarness {
 	h.detector = &hookedDetector{inner: completion.NewDetector(h.store, h.exec.factory(), agentTypes.CompletionConfig(), markerDir,
 		completion.WithProgressPollInterval(10*time.Millisecond), completion.WithPollInterval(20*time.Millisecond))}
 	orch := orchestrator.New(h.store, h.exec.factory(), h.detector)
+	h.orch = orch
 	h.ws = createFixtureWorkspace(t, h.store)
 	model := &routertest.StubRoutingModel{
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {

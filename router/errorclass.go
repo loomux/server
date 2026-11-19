@@ -14,6 +14,11 @@ import (
 // (timeout, agent exited) where the error carries them, otherwise the
 // same classes the dispatch metrics use.
 func ClassifyError(err error) registry.ErrorClass {
+	// First: a turn whose task was taken over (LOOM-266) ends so,
+	// whatever it was doing when the takeover landed.
+	if errors.Is(err, orchestrator.ErrTakenOver) {
+		return registry.ErrorClassTakenOver
+	}
 	var classed *classedError
 	if errors.As(err, &classed) {
 		return classed.class
@@ -43,6 +48,9 @@ func ClassifyError(err error) registry.ErrorClass {
 func classifyDispatchError(err error) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, orchestrator.ErrTakenOver) {
+		return string(registry.ErrorClassTakenOver)
 	}
 	var classed *classedError
 	if errors.As(err, &classed) {

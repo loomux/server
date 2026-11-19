@@ -447,6 +447,45 @@ be taken over:
 Decided (6): taking over a running turn is allowed, with the behaviour
 above.
 
+As built (S5, LOOM-266):
+
+- The orchestrator keeps the waits on running turns by task. A wait is
+  registered before it reads the task, and `Takeover` ends the task's
+  waits (cause `ErrTakenOver`) after its status write, so a takeover
+  racing a wait's start is always seen: the wait either reads
+  `human_takeover` and doesn't start, or is ended.
+- Every status write a turn makes that loses its compare-and-set to a
+  takeover (the wait's own end, the send, a prompt, a failure, the answer
+  to a prompt) is `ErrTakenOver` as well as `ErrStatusChanged`. So the
+  turn ends `taken_over` whichever step it was at when the takeover
+  landed, and the existing guards leave the task as it is.
+- The dispatch job records `taken_over` with a plain error ("taken over
+  by a person while the agent was working; …"), and no notification is
+  sent for it, as for `cancelled`.
+- Late output is relayed for marker-tier agents (`claude-code`, `codex`),
+  which is every agent type Loomux ships; a turn of an idle-tier agent
+  that is taken over isn't relayed later.
+- A turn that finished and was relayed before the takeover landed is not
+  taken over: its reply stands (only `Complete` loses, as before).
+- The send (`SendMessage`) and the wait register as turn steps, so each
+  knows from its own context's cause that a takeover landed during it,
+  even if the hold was released before the step looked. Such a step
+  writes nothing: a send whose paste was in flight doesn't mark a
+  handed-back task `running`, nor fail it if the paste failed. The other
+  writes (`NeedAttention`, `Fail`, `Resume`, `Complete`) and a failed
+  prompt-answer key judge by re-reading the task. So do the gaps between
+  steps: between the send (or the launch, or a prompt's resume)
+  returning and the wait registering, and between a takeover's write and
+  its signal reaching a registered step. A takeover alone in any of
+  these is still `taken_over` (the step's write loses to
+  `human_takeover`, which the read sees). A takeover *and* its release
+  both landing within those microseconds end the dispatch as a plain
+  status change (`internal`) instead; the task is still left as the
+  release left it. A release needs the hold id from the takeover's own
+  response (or a Take back racing it to the microsecond), so this was
+  accepted rather than closed with a turn-scoped registration through
+  the router or takeover history in the store (review round 2).
+
 ### What other clients show
 
 - Web/app list and conversation: "⌨ driven from the terminal on `laptop` since

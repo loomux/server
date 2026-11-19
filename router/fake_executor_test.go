@@ -71,6 +71,10 @@ type fakeExecutor struct {
 	// after every successful SendKeys (e.g. to cancel a request mid-turn).
 	captureFunc func() string
 	onSendKeys  func()
+	// onSendKey, when set, runs as SendKey starts, outside e.mu; a
+	// non-nil error fails the key (LOOM-266: a takeover while a prompt's
+	// answer is typed).
+	onSendKey func() error
 	// onWaiting, when set, runs once, at the first CapturePane,
 	// FileExists or PaneExited after a SendKeys: the turn's message is
 	// in and its wait has begun (e.g. to cancel a request during the
@@ -161,6 +165,14 @@ func (e *fakeExecutor) SendKeys(ctx context.Context, target, keys string, enter 
 func (e *fakeExecutor) SendKey(ctx context.Context, target, key string) error {
 	if e.unreachable {
 		return targets.ErrUnreachable
+	}
+	e.mu.Lock()
+	hook := e.onSendKey
+	e.mu.Unlock()
+	if hook != nil {
+		if err := hook(); err != nil {
+			return err
+		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

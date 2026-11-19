@@ -31,6 +31,8 @@ type lastMessageHarness struct {
 	commands []string
 	done     bool
 	relayErr error
+	// orch is the router's orchestrator, for a real takeover (LOOM-266).
+	orch *orchestrator.Orchestrator
 }
 
 func newLastMessageHarness(t *testing.T) *lastMessageHarness {
@@ -74,6 +76,7 @@ func newLastMessageHarness(t *testing.T) *lastMessageHarness {
 	}
 	detector := completion.NewDetector(store, h.exec.factory(), agentTypes.CompletionConfig(), markerDir)
 	orch := orchestrator.New(store, h.exec.factory(), detector)
+	h.orch = orch
 	model := &routertest.StubRoutingModel{
 		DecideFunc: func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
 			return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: h.ws.ID, AgentType: "claude-code"}, nil

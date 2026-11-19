@@ -103,6 +103,10 @@ var (
 	// ErrNotRunning: Cancel was asked for a job that has already ended,
 	// or isn't running in this process.
 	ErrNotRunning = errors.New("dispatch: not running")
+	// takenOverError is the error a job records when a person took its
+	// task over while its turn ran (LOOM-266).
+	takenOverError = "taken over by a person while the agent was working; " +
+		"what the agent finishes is relayed to the conversation once the task is handed back"
 	// errMaxDuration is a job context's cause once it has run for the
 	// Service's maximum duration.
 	errMaxDuration = errors.New("dispatch: exceeded the maximum dispatch duration")
@@ -409,6 +413,11 @@ func (s *Service) runJob(ctx context.Context, j *job, d *registry.Dispatch, run 
 		case errors.Is(cause, orchestrator.ErrCancelled):
 			d.ErrorClass = registry.ErrorClassCancelled
 			d.Error = "cancelled by the user"
+		case errors.Is(err, orchestrator.ErrTakenOver):
+			// A person took the task over mid-turn (LOOM-266): the
+			// turn is theirs now, not failed, and the agent carries on.
+			d.ErrorClass = registry.ErrorClassTakenOver
+			d.Error = takenOverError
 		}
 	}
 	err = s.transition(bookCtx, log, d, registry.DispatchStatusRunning)

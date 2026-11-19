@@ -1,0 +1,3 @@
+### Changed
+
+- Taking over a `running` task (`POST /api/v1/tasks/{id}/takeover`) ends the wait on its turn at once instead of when the agent finishes (LOOM-266, the terminal client's S5). The conversation's dispatch ends `failed` with the new `error_class` `taken_over`, no keys are sent to the agent, and the task stays `human_takeover` under the new hold. What the agent finishes reaches the conversation as a late reply once the task is handed back. A turn that loses to a takeover at any step (its send, its wait, a prompt or failure found as the wait ended, the answer to a prompt) also ends `taken_over`, and no notification is sent for it, as for a cancelled turn.

@@ -560,6 +560,12 @@ const (
 	ErrorClassMessageTooLarge ErrorClass = "message_too_large"
 	// ErrorClassCancelled: the user cancelled the turn (LOOM-99).
 	ErrorClassCancelled ErrorClass = "cancelled"
+	// ErrorClassTakenOver: a person took the task over while its turn
+	// ran (LOOM-266), which ends the turn's dispatch at once. It is the
+	// dispatch's class, never the task's: the task stays human_takeover,
+	// its agent isn't interrupted, and what it finishes reaches the
+	// conversation later, as late output.
+	ErrorClassTakenOver ErrorClass = "taken_over"
 	// ErrorClassInternal: anything else.
 	ErrorClassInternal ErrorClass = "internal"
 )

@@ -430,8 +430,12 @@ also ends by itself: a sweeper ends one whose lease ran out, whose session
 was logged out, revoked or expired, or whose task ended, and a drive
 hold's tmux clients are detached (`detach-client -s`) before its task is
 handed back, as they are on a forced takeover or a Take back. A restart
-gives every hold a fresh lease first. The full model, expiry and watching
-are in `tui-client-design.md`, "Server awareness: holds".
+gives every hold a fresh lease first. Since LOOM-266 a takeover of a
+`running` task ends its turn's wait at once: the dispatch fails with error
+class `taken_over`, no keys are sent, the task stays `human-takeover`, and
+what the agent finishes is relayed as late output once it is handed back.
+The full model, expiry and watching are in `tui-client-design.md`, "Server
+awareness: holds" and "Taking over a running turn".
 
 ### 5. Completion detection
 
@@ -825,7 +829,9 @@ Four independent axes:
   call is a compare-and-set against the status read before it, so a
   change made meanwhile (a cancel, a takeover) is kept: the turn leaves
   the task as it is, neither failing it nor typing into its pane
-  (`tui-client-design.md`, "Taking over a running turn").
+  (`tui-client-design.md`, "Taking over a running turn"). Since LOOM-266
+  a takeover also ends the turn's wait at once, and a turn that lost to
+  one ends as `taken_over`.
 - **Storage unavailable**: server fails closed on new task dispatch rather
   than operating on stale/uncertain workspace state.
 
