@@ -112,7 +112,15 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 // active. The paste is an external call: the status write after it is a
 // compare-and-set against the status read before it (LOOM-262), and a
 // change made meanwhile is ErrStatusChanged.
+//
+// A takeover while the paste is in flight (LOOM-266) is ErrTakenOver,
+// with ErrStatusChanged, and nothing is written: not running, and not
+// failed if the paste failed. That holds even if the hold was released
+// before the paste returned, so a task handed back meanwhile isn't
+// marked running by a send its holder had.
 func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) error {
+	stepCtx, done := o.turns.add(ctx, taskID)
+	defer done()
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: send message: %w", err)
@@ -137,19 +145,30 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 			// Nothing reached the pane: the task is as it was.
 			return fmt.Errorf("orchestrator: send message: %w", err)
 		}
+		if takenOver(stepCtx) {
+			return fmt.Errorf("orchestrator: send message: %w", o.takenOverErr("send message", task.ID))
+		}
 		// tmux refuses a paste into a pane whose process has exited (an
 		// agent CLI that isn't installed dies at once): that exit is the
 		// news, as when the wait finds it, not the refused paste.
 		if exit, perr := exec.PaneExited(ctx, task.TmuxSession); perr == nil && exit != nil {
 			return fmt.Errorf("orchestrator: send message: %w", &ProcessExitedError{Status: exit.Status, Output: exit.Output})
 		}
-		_ = o.failTask(ctx, task, task.Status, failureFor(registry.ErrorClassSendFailed, "send message", err))
+		if ferr := o.failTask(ctx, task, task.Status, failureFor(registry.ErrorClassSendFailed, "send message", err)); errors.Is(ferr, ErrTakenOver) {
+			return fmt.Errorf("orchestrator: send message: %w", ferr)
+		}
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
 
+	if takenOver(stepCtx) {
+		return fmt.Errorf("orchestrator: send message: %w", o.takenOverErr("send message", task.ID))
+	}
 	from := task.Status
 	task.Status = registry.TaskStatusRunning
 	if err := o.transition(ctx, "send message", task, from); err != nil {
+		if takenOver(stepCtx) {
+			return fmt.Errorf("orchestrator: send message: %w", o.takenOverErr("send message", task.ID))
+		}
 		return fmt.Errorf("orchestrator: send message: %w", err)
 	}
 	return nil
@@ -172,8 +191,10 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 //
 // A takeover of the task while its turn runs ends the wait at once
 // (LOOM-266): the result is ErrTakenOver, with ErrStatusChanged, and the
-// task is left human-takeover. So is a task read already taken over, or
-// one taken over just as the turn finished.
+// task is left as the takeover (and any release since) left it. So is a
+// task read already taken over, or one taken over just as the turn
+// finished: the wait's own cause says so, even if the hold was released
+// before the wait looked.
 func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) error {
 	// Added before the task is read, so a takeover between the read and
 	// the wait still ends it (see turnWaits).
@@ -188,20 +209,39 @@ func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) err
 			o.statusChanged(ctx, "wait for completion", task.ID, registry.TaskStatusRunning, registry.TaskStatusAwaitingInput))
 	}
 
-	if err := o.detector.Wait(waitCtx, task); err != nil {
-		if ctx.Err() == nil && errors.Is(context.Cause(waitCtx), ErrTakenOver) {
-			o.logger.Info("turn's wait ended: its task was taken over", "task_id", task.ID)
-			return fmt.Errorf("orchestrator: wait for completion: %w: %w: task %q was taken over while its turn ran",
-				ErrTakenOver, ErrStatusChanged, task.ID)
-		}
+	// Whatever the detector found, a takeover meanwhile (the wait's own
+	// cause, which a release doesn't undo) decides the turn's end.
+	err = o.detector.Wait(waitCtx, task)
+	if takenOver(waitCtx) {
+		return fmt.Errorf("orchestrator: wait for completion: %w", o.takenOverErr("wait for completion", task.ID))
+	}
+	if err != nil {
 		return err
 	}
 
 	task.Status = registry.TaskStatusAwaitingInput
 	if err := o.transition(ctx, "wait for completion", task, registry.TaskStatusRunning); err != nil {
+		if takenOver(waitCtx) {
+			return fmt.Errorf("orchestrator: wait for completion: %w", o.takenOverErr("wait for completion", task.ID))
+		}
 		return fmt.Errorf("orchestrator: wait for completion: %w", err)
 	}
 	return nil
+}
+
+// takenOver reports whether a turn step's context, from turns.add, was
+// ended by a takeover of its task (LOOM-266). A context its caller ended
+// first keeps the caller's cause.
+func takenOver(stepCtx context.Context) bool {
+	return errors.Is(context.Cause(stepCtx), ErrTakenOver)
+}
+
+// takenOverErr is the error a turn step ends with when its task was
+// taken over during it: ErrTakenOver and ErrStatusChanged, so it is
+// classed taken_over and every caller leaves the task as it is.
+func (o *Orchestrator) takenOverErr(op, taskID string) error {
+	o.logger.Info("turn step ended: its task was taken over", "op", op, "task_id", taskID)
+	return fmt.Errorf("%w: %w: task %q was taken over during %s", ErrTakenOver, ErrStatusChanged, taskID, op)
 }
 
 // Complete marks the task finished. Its session is left running for a

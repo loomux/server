@@ -278,3 +278,82 @@ func TestLostWritesToATakeoverAreTakenOver(t *testing.T) {
 		})
 	}
 }
+
+// Review (LOOM-266, round 1): the takeover is known from the turn's own
+// step, not from re-reading the task after it, so a hold released at
+// once (before the step ends) still ends the turn as taken over, and the
+// step writes nothing over the handed-back task.
+
+// takeOverAndRelease takes taskID over and hands it straight back.
+func takeOverAndRelease(t *testing.T, o *orchestrator.Orchestrator, taskID string) {
+	t.Helper()
+	hold := takeOver(t, o, taskID)
+	if _, err := o.Release(context.Background(), taskID, hold.ID); err != nil {
+		t.Errorf("Release: %v", err)
+	}
+}
+
+// The wait's detector finds the turn's end (or a prompt, or a timeout)
+// just as the task is taken over and handed back.
+func TestWaitForCompletion_TakeoverAndReleaseAsItEnds(t *testing.T) {
+	for name, detErr := range map[string]error{
+		"finished":  nil,
+		"prompt":    &orchestrator.NeedsAttentionError{Attention: &registry.Attention{Kind: registry.AttentionPermission, Title: "Run ls?"}},
+		"timed out": &orchestrator.TurnTimeoutError{Reason: orchestrator.TimeoutMaxTurnDuration, Limit: time.Minute},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := setupCAS(t)
+			task := f.launch(t, registry.TaskKindAgent, registry.TaskStatusRunning)
+			f.detector.err = detErr
+			f.detector.during = func() { takeOverAndRelease(t, f.o, task.ID) }
+
+			err := f.o.WaitForCompletion(context.Background(), task.ID)
+			requireTakenOver(t, err)
+			if got := f.task(t, task.ID); got.Status != registry.TaskStatusAwaitingInput {
+				t.Fatalf("task = %s, want awaiting-input as the release left it", got.Status)
+			}
+		})
+	}
+}
+
+// The paste is in flight when the task is taken over: the send ends taken
+// over, and writes nothing, even if the hold was released before the
+// paste returned (the status read back would be awaiting-input again)
+// and even if the paste failed (the task isn't failed for it).
+func TestSendMessage_TakeoverDuringThePaste(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		release  bool
+		pasteErr error
+	}{
+		{"held", false, nil},
+		{"released", true, nil},
+		{"held, paste failed", false, errors.New("tmux: paste failed")},
+		{"released, paste failed", true, errors.New("tmux: paste failed")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := setupCAS(t)
+			task := f.launch(t, registry.TaskKindAgent, registry.TaskStatusAwaitingInput)
+			f.exec.onPaste = func() error {
+				if c.release {
+					takeOverAndRelease(t, f.o, task.ID)
+				} else {
+					takeOver(t, f.o, task.ID)
+				}
+				return c.pasteErr
+			}
+
+			err := f.o.SendMessage(context.Background(), task.ID, "hello")
+			requireTakenOver(t, err)
+			want := registry.TaskStatusHumanTakeover
+			if c.release {
+				want = registry.TaskStatusAwaitingInput
+			}
+			got := f.task(t, task.ID)
+			if got.Status != want || got.FailureReason != "" || got.ErrorClass != "" {
+				t.Fatalf("task = %s (reason %q, class %q), want %s with nothing written by the send",
+					got.Status, got.FailureReason, got.ErrorClass, want)
+			}
+		})
+	}
+}

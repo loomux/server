@@ -252,3 +252,31 @@ func TestClassifyError_TakenOver(t *testing.T) {
 		t.Fatalf("ClassifyError(taken over) = %q, want taken_over", got)
 	}
 }
+
+// Review (LOOM-266, round 1): the prompt's answer is being typed when the
+// task is taken over, and the key fails (the person's client is in the
+// pane). The answer's turn ends taken over, not as a send failure, and
+// the task is left to the person.
+func TestDispatch_TakeoverWhileAnsweringAPromptIsTakenOver(t *testing.T) {
+	store, exec, r, ws := attentionHarness(t)
+	task := stopAtPrompt(t, store, r, ws)
+	exec.set(func() {
+		exec.onSendKey = func() error {
+			cur, err := store.GetTask(context.Background(), task.ID)
+			if err != nil {
+				return err
+			}
+			cur.Status = registry.TaskStatusHumanTakeover
+			if err := store.UpdateTask(context.Background(), cur); err != nil {
+				return err
+			}
+			return errors.New("tmux: send-keys failed")
+		}
+	})
+
+	_, err := r.Dispatch(context.Background(), "conv-1", "approve")
+	requireTakenOverErr(t, err)
+	if got, _ := store.GetTask(context.Background(), task.ID); got.Status != registry.TaskStatusHumanTakeover || got.ErrorClass != "" {
+		t.Fatalf("task = %s (class %q), want human_takeover, not failed", got.Status, got.ErrorClass)
+	}
+}

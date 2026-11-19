@@ -467,6 +467,18 @@ As built (S5, LOOM-266):
   that is taken over isn't relayed later.
 - A turn that finished and was relayed before the takeover landed is not
   taken over: its reply stands (only `Complete` loses, as before).
+- The send (`SendMessage`) and the wait register as turn steps, so each
+  knows from its own context's cause that a takeover landed during it,
+  even if the hold was released before the step looked. Such a step
+  writes nothing: a send whose paste was in flight doesn't mark a
+  handed-back task `running`, nor fail it if the paste failed. The other
+  writes (`NeedAttention`, `Fail`, `Resume`, `Complete`) and a failed
+  prompt-answer key judge by re-reading the task, so a takeover *and*
+  its release both landing in the microseconds between a step's end and
+  that read ends the dispatch as a plain status change (`internal`)
+  instead of `taken_over`; the task is still left as the release left
+  it. Closing that would need takeover history per task in the store,
+  which a release within microseconds of its takeover doesn't justify.
 
 ### What other clients show
 
