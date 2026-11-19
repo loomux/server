@@ -473,12 +473,18 @@ As built (S5, LOOM-266):
   writes nothing: a send whose paste was in flight doesn't mark a
   handed-back task `running`, nor fail it if the paste failed. The other
   writes (`NeedAttention`, `Fail`, `Resume`, `Complete`) and a failed
-  prompt-answer key judge by re-reading the task, so a takeover *and*
-  its release both landing in the microseconds between a step's end and
-  that read ends the dispatch as a plain status change (`internal`)
-  instead of `taken_over`; the task is still left as the release left
-  it. Closing that would need takeover history per task in the store,
-  which a release within microseconds of its takeover doesn't justify.
+  prompt-answer key judge by re-reading the task. So do the gaps between
+  steps: between the send (or the launch, or a prompt's resume)
+  returning and the wait registering, and between a takeover's write and
+  its signal reaching a registered step. A takeover alone in any of
+  these is still `taken_over` (the step's write loses to
+  `human_takeover`, which the read sees). A takeover *and* its release
+  both landing within those microseconds end the dispatch as a plain
+  status change (`internal`) instead; the task is still left as the
+  release left it. A release needs the hold id from the takeover's own
+  response (or a Take back racing it to the microsecond), so this was
+  accepted rather than closed with a turn-scoped registration through
+  the router or takeover history in the store (review round 2).
 
 ### What other clients show
 
