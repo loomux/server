@@ -3,6 +3,7 @@ package dispatch_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -555,5 +556,26 @@ func TestOnFinishedSeesEachEndedJobOnce(t *testing.T) {
 	if len(seen) != 2 || seen[0].Status != registry.DispatchStatusSucceeded || seen[0].Reply != "ok" ||
 		seen[1].Status != registry.DispatchStatusFailed || seen[1].Error != "boom" {
 		t.Fatalf("OnFinished saw %+v", seen)
+	}
+}
+
+// LOOM-266: a run that ended because a person took its task over ends
+// failed with class taken_over, whatever the classifier says, and an
+// error a person can read rather than the chain of wrapped errors.
+func TestTakenOverRunEndsTakenOver(t *testing.T) {
+	svc := newService(t, newStore(t), func(ctx context.Context, d *registry.Dispatch) (string, error) {
+		return "", fmt.Errorf("router: dispatch: wait for completion: orchestrator: wait for completion: %w: %w: task %q was taken over while its turn ran",
+			orchestrator.ErrTakenOver, orchestrator.ErrStatusChanged, "t1")
+	})
+	d, err := svc.Submit(context.Background(), dispatch.Request{ConversationID: "c", Message: "m"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	done := waitDone(t, svc, d.ID)
+	if done.Status != registry.DispatchStatusFailed || done.ErrorClass != registry.ErrorClassTakenOver {
+		t.Fatalf("dispatch = %s/%s, want failed/taken_over", done.Status, done.ErrorClass)
+	}
+	if !strings.Contains(done.Error, "taken over") || strings.Contains(done.Error, "orchestrator:") {
+		t.Fatalf("error = %q, want a plain sentence saying it was taken over", done.Error)
 	}
 }

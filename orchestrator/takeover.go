@@ -111,8 +111,9 @@ type TakeoverResult struct {
 // compare-and-set on the status read (LOOM-262): if the task or its hold
 // changed meanwhile, Takeover looks again, and gives up with
 // ErrStatusChanged if that keeps happening. A turn in flight on a
-// running task isn't interrupted here: its own status write then loses
-// its compare-and-set and it ends leaving the task as it is.
+// running task has its wait ended at once, with ErrTakenOver (LOOM-266);
+// its agent isn't interrupted, and any status write the turn still makes
+// loses its compare-and-set, leaving the task human-takeover.
 //
 // registry.ErrNotFound for an unknown task, ErrUnsupportedHoldMode for
 // watch, *InvalidTakeoverError for an unknown mode or a TTL out of
@@ -214,6 +215,17 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 			"client_label", hold.ClientLabel, "prev_status", string(from)}
 		if replaced != nil {
 			attrs = append(attrs, "replaced_hold_id", replaced.ID, "replaced_session_id", replaced.SessionID)
+		}
+		// A turn in flight on the task is no longer automation's to
+		// finish: its wait ends now, as taken_over (LOOM-266), rather
+		// than when the agent finishes. After the status write, so a
+		// wait starting meanwhile either reads human-takeover or is
+		// ended here (see turnWaits). No keys are sent: the agent
+		// carries on, and what it finishes is relayed as late output.
+		if to == registry.TaskStatusHumanTakeover {
+			if n := o.turns.end(task.ID, ErrTakenOver); n > 0 {
+				attrs = append(attrs, "turn_waits_ended", n)
+			}
 		}
 		o.logger.Info("task taken over", attrs...)
 		return &TakeoverResult{Hold: hold, Task: task, Replaced: replaced}, nil

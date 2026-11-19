@@ -587,8 +587,12 @@ or gave one the server refused.
       when this hold was taken (`human_takeover` for a forced one).
       The hold and the status change are one write, a compare-and-set on
       the status read (LOOM-262); a task that keeps changing is `409`.
-      A turn in flight on a `running` task isn't interrupted: it ends by
-      itself, leaving the task `human_takeover`.
+      Taking a `running` task ends the wait on its turn at once
+      (LOOM-266): the conversation's dispatch ends `failed` with
+      `error_class` `taken_over` (also on its `dispatch_update` event),
+      no keys are sent to the agent, and the task stays `human_takeover`.
+      What the agent finishes reaches the conversation as a late reply
+      once the task is handed back.
     - `heartbeat` takes `{hold_id}` and returns `200 {hold}` with
       `expires_at` moved to `ttl_seconds` from now. An ended hold is `410`
       (code `hold_ended`) with `ended_reason` and the `hold`. Only the

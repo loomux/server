@@ -169,7 +169,16 @@ func (o *Orchestrator) SendMessage(ctx context.Context, taskID, message string) 
 // caller's to finish. A turn is only ever waited on from running (its
 // caller sent it, resumed it or launched it): a task read in any other
 // status was changed after that, so it isn't waited on at all.
+//
+// A takeover of the task while its turn runs ends the wait at once
+// (LOOM-266): the result is ErrTakenOver, with ErrStatusChanged, and the
+// task is left human-takeover. So is a task read already taken over, or
+// one taken over just as the turn finished.
 func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) error {
+	// Added before the task is read, so a takeover between the read and
+	// the wait still ends it (see turnWaits).
+	waitCtx, done := o.turns.add(ctx, taskID)
+	defer done()
 	task, err := o.store.GetTask(ctx, taskID)
 	if err != nil {
 		return fmt.Errorf("orchestrator: wait for completion: %w", err)
@@ -179,7 +188,12 @@ func (o *Orchestrator) WaitForCompletion(ctx context.Context, taskID string) err
 			o.statusChanged(ctx, "wait for completion", task.ID, registry.TaskStatusRunning, registry.TaskStatusAwaitingInput))
 	}
 
-	if err := o.detector.Wait(ctx, task); err != nil {
+	if err := o.detector.Wait(waitCtx, task); err != nil {
+		if ctx.Err() == nil && errors.Is(context.Cause(waitCtx), ErrTakenOver) {
+			o.logger.Info("turn's wait ended: its task was taken over", "task_id", task.ID)
+			return fmt.Errorf("orchestrator: wait for completion: %w: %w: task %q was taken over while its turn ran",
+				ErrTakenOver, ErrStatusChanged, task.ID)
+		}
 		return err
 	}
 
@@ -462,13 +476,22 @@ func (o *Orchestrator) transition(ctx context.Context, op string, task *registry
 }
 
 // statusChanged logs and returns a lost compare-and-set: op wanted to
-// move taskID from from to to, but its status had changed meanwhile.
+// move taskID from from to to, but its status had changed meanwhile. A
+// task a person has taken over is ErrTakenOver too (LOOM-266): the
+// write lost to a takeover, and the turn it was part of ends as
+// taken_over.
 func (o *Orchestrator) statusChanged(ctx context.Context, op, taskID string, from, to registry.TaskStatus) error {
 	now := "unknown"
+	takenOver := false
 	if cur, err := o.store.GetTask(context.WithoutCancel(ctx), taskID); err == nil {
 		now = string(cur.Status)
+		takenOver = cur.Status == registry.TaskStatusHumanTakeover
 	}
 	o.logger.Warn("task status changed meanwhile; left as it is", "op", op, "task_id", taskID,
 		"read_status", string(from), "status", now, "not_written", string(to))
-	return fmt.Errorf("%w: task %q is %s, no longer %s", ErrStatusChanged, taskID, now, from)
+	err := fmt.Errorf("%w: task %q is %s, no longer %s", ErrStatusChanged, taskID, now, from)
+	if takenOver {
+		return fmt.Errorf("%w: %w", ErrTakenOver, err)
+	}
+	return err
 }

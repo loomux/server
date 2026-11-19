@@ -32,6 +32,17 @@ var ErrTaskInactive = errors.New("orchestrator: task is not active")
 // nor act on its pane as if the turn were still its own.
 var ErrStatusChanged = errors.New("orchestrator: task status changed meanwhile")
 
+// ErrTakenOver is returned when a turn ends because a person took its
+// task over (LOOM-266, docs/design/tui-client-design.md "Taking over a
+// running turn"): a takeover of a running task ends the wait on its turn
+// at once, and a status write the turn makes after that loses its
+// compare-and-set to the takeover. An error carrying it carries
+// ErrStatusChanged too, so the task is left as the takeover made it:
+// not failed, and nothing is typed into its pane. The turn's dispatch
+// ends with error class taken_over; what the agent finishes reaches the
+// conversation later, as late output.
+var ErrTakenOver = errors.New("orchestrator: the task was taken over by a person")
+
 // ErrInterrupted is the cancellation cause of a turn's context when the
 // server is shutting down underneath it (LOOM-80). It is not the task's
 // failure: the agent may well finish, and startup reconciliation
@@ -162,6 +173,9 @@ type Orchestrator struct {
 	now func() time.Time
 	// holds serializes the changes to each task's holds (LOOM-265).
 	holds holdLocks
+	// turns are the waits on running turns, which a takeover ends
+	// (LOOM-266).
+	turns turnWaits
 }
 
 // Option configures an Orchestrator constructed via New.

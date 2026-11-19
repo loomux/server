@@ -90,6 +90,11 @@ func TestTurnNotifierEvent(t *testing.T) {
 	if _, ok := n.event(ctx, d); ok {
 		t.Fatalf("an event for a cancelled turn")
 	}
+	// Taken over (LOOM-266): the user is in the pane, driving it.
+	d.ErrorClass = registry.ErrorClassTakenOver
+	if _, ok := n.event(ctx, d); ok {
+		t.Fatalf("an event for a turn the user took over")
+	}
 	d.ErrorClass = ""
 
 	// A quick turn: the user was watching.

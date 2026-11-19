@@ -447,6 +447,27 @@ be taken over:
 Decided (6): taking over a running turn is allowed, with the behaviour
 above.
 
+As built (S5, LOOM-266):
+
+- The orchestrator keeps the waits on running turns by task. A wait is
+  registered before it reads the task, and `Takeover` ends the task's
+  waits (cause `ErrTakenOver`) after its status write, so a takeover
+  racing a wait's start is always seen: the wait either reads
+  `human_takeover` and doesn't start, or is ended.
+- Every status write a turn makes that loses its compare-and-set to a
+  takeover (the wait's own end, the send, a prompt, a failure, the answer
+  to a prompt) is `ErrTakenOver` as well as `ErrStatusChanged`. So the
+  turn ends `taken_over` whichever step it was at when the takeover
+  landed, and the existing guards leave the task as it is.
+- The dispatch job records `taken_over` with a plain error ("taken over
+  by a person while the agent was working; …"), and no notification is
+  sent for it, as for `cancelled`.
+- Late output is relayed for marker-tier agents (`claude-code`, `codex`),
+  which is every agent type Loomux ships; a turn of an idle-tier agent
+  that is taken over isn't relayed later.
+- A turn that finished and was relayed before the takeover landed is not
+  taken over: its reply stands (only `Complete` loses, as before).
+
 ### What other clients show
 
 - Web/app list and conversation: "⌨ driven from the terminal on `laptop` since

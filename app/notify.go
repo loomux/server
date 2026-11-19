@@ -113,8 +113,9 @@ func (n *turnNotifier) send(ctx context.Context, e notify.Event, log *slog.Logge
 // event builds d's notification, or reports false when d doesn't warrant
 // one.
 func (n *turnNotifier) event(ctx context.Context, d *registry.Dispatch) (notify.Event, bool) {
-	// A turn the user cancelled is no news to them.
-	if d.FinishedAt == nil || d.ErrorClass == registry.ErrorClassCancelled {
+	// A turn the user cancelled, or took over and is driving (LOOM-266),
+	// is no news to them.
+	if d.FinishedAt == nil || d.ErrorClass == registry.ErrorClassCancelled || d.ErrorClass == registry.ErrorClassTakenOver {
 		return notify.Event{}, false
 	}
 	start := d.CreatedAt
