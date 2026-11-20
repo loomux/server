@@ -68,7 +68,7 @@ var apiV1Bodies = map[string][]contractBody{
 	"GET /api/v1/conversations":                  {{"response", listConversationsResponse{}}},
 	"GET /api/v1/conversations/{id}":             {{"response", getConversationResponse{}}},
 	"GET /api/v1/conversations/{id}/events":      {{"response", listEventsResponse{}}},
-	"GET /api/v1/conversations/{id}/stream":      {{"event:task_update", taskUpdateEvent{}}, {"event:dispatch_update", dispatchUpdateEvent{}}, {"event:message_added", messageAddedEvent{}}},
+	"GET /api/v1/conversations/{id}/stream":      {{"event:task_update", taskUpdateEvent{}}, {"event:dispatch_update", dispatchUpdateEvent{}}, {"event:message_added", messageAddedEvent{}}, {"event:task_hold", taskHoldEvent{}}},
 	"GET /api/v1/tasks/{id}/attach-info":         {{"response", attachInfoResponse{}}},
 	"GET /api/v1/tasks/{id}/transcript":          {{"response", taskTranscriptResponse{}}},
 	"POST /api/v1/tasks/{id}/cancel":             {{"response", cancelResponse{}}},
