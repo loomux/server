@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -72,6 +73,9 @@ type App struct {
 	targetOpts targets.ExecutorOptions
 	router     *router.Router
 	agentTypes []string
+	// agentRegistry is every agent type this server launches, for
+	// checking a target's pinned launch args (LOOM-307).
+	agentRegistry router.AgentTypeRegistry
 	// cancelTaskDirect cancels a task no dispatch is driving; the router's
 	// CancelTask, a seam for tests.
 	cancelTaskDirect func(ctx context.Context, taskID string) error
@@ -242,6 +246,15 @@ func (a *App) AgentTypeNames() []string {
 	names := append([]string(nil), a.agentTypes...)
 	sort.Strings(names)
 	return names
+}
+
+// CheckAgentArgs reports whether agentType is one this server launches
+// and its CLI takes the pin a (LOOM-307): api.WithAgentArgsCheck.
+func (a *App) CheckAgentArgs(agentType string, pin registry.AgentArgs) error {
+	if !slices.Contains(a.agentTypes, agentType) {
+		return fmt.Errorf("unknown agent type %q", agentType)
+	}
+	return a.agentRegistry.CheckAgentArgs(agentType, pin)
 }
 
 // TaskHolds takes, renews and releases holds on tasks (LOOM-264): the
@@ -915,6 +928,7 @@ func build(cfg Config, agentTypes router.AgentTypeRegistry) (*App, error) {
 		newExecutor:      newExecutor,
 		targetOpts:       targetOpts,
 		agentTypes:       dispatchableAgentTypeNames(agentTypes),
+		agentRegistry:    agentTypes,
 		cancelTaskDirect: rtr.CancelTask,
 		orch:             orch,
 		dispatches:       dispatches,
