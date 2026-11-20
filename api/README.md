@@ -722,6 +722,23 @@ or gave one the server refused.
     other answers about the plan or its outcome (`409` with problems,
     `502`, a `500` from a failed rollback), carry the migrate body, with
     the reason in `problems`.
+  - `GET /api/v1/targets/{id}/agents`, `POST /api/v1/targets/{id}/probe`,
+    `POST` / `DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in` —
+    auth-gated agent CLI status and sign-in (LOOM-71, LOOM-86, LOOM-316;
+    `docs/design/agent-sign-in.md`). Each agent entry carries `auth`
+    when its CLI is installed and has an auth check: `state`
+    (`logged_in`, `logged_out`, `expired`, `rate_limited`, `unknown`),
+    `method`, `plan`, `expires_at`, the sign-in `problem` or `rate_limit`
+    a turn last saw, and the open `sign_in` session with
+    `attach_command`/`attach_commands` (attach-info's shape). The `POST`
+    (`{restart?}`) opens the agent CLI's own login (`claude auth login`,
+    `codex login --device-auth`) in a tmux session on the target for a
+    person to attach to, or hands back the one open; a signed-in agent
+    opens nothing unless `restart`. `404` no such target or agent type,
+    `409 agent_unavailable` not installed, `422 no_sign_in`, `502
+    target_unreachable`, `501` without a router. Loomux never types into,
+    captures or completes the sign-in; nothing in these responses comes
+    from the auth check's raw output (no email, no key fragments).
   - `POST /api/v1/targets`, `GET /api/v1/targets`,
     `PUT /api/v1/targets/{id}`, `DELETE /api/v1/targets/{id}` —
     auth-gated target registration (LOOM-59). `registry.Store`'s target
