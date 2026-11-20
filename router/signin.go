@@ -129,7 +129,7 @@ func (r *Router) PrepareSignIn(ctx context.Context, targetID, agentType string, 
 	}
 	unlock := r.lockSignIn(targetID, agentType)
 	defer unlock()
-	rec, err := r.probeAgent(ctx, target, agentType, entry)
+	rec, err := r.probeAgentWith(ctx, target, agentType, entry, true)
 	if err != nil {
 		return nil, fmt.Errorf("router: prepare sign-in: %w", err)
 	}
@@ -226,10 +226,12 @@ func (r *Router) closeSignInSession(ctx context.Context, target *registry.Target
 	return exec.KillSession(ctx, name)
 }
 
-// signInDone closes rec's sign-in session and forgets it and any sign-in
-// problem a turn saw: the agent is signed in now (LOOM-316). Best effort:
-// a session that can't be killed is left to the orphan sweep.
-func (r *Router) signInDone(ctx context.Context, target *registry.Target, rec *registry.TargetAgent) {
+// signInDone closes rec's sign-in session and forgets it — and, with
+// clearProblem, any sign-in problem a turn saw: the agent is signed in now
+// (LOOM-316). A finished turn passes false, having cleared only what was
+// seen before it started. Best effort: a session that can't be killed is
+// left to the orphan sweep.
+func (r *Router) signInDone(ctx context.Context, target *registry.Target, rec *registry.TargetAgent, clearProblem bool) {
 	log := r.logger.With("target_id", target.ID, "agent_type", rec.AgentType, "session", rec.SignInSession)
 	if err := r.closeSignInSession(ctx, target, rec.AgentType); err != nil {
 		log.Warn("agent sign-in session not closed", "error", err)
@@ -237,11 +239,13 @@ func (r *Router) signInDone(ctx context.Context, target *registry.Target, rec *r
 	if err := r.store.SetAgentSignInSession(ctx, target.ID, rec.AgentType, "", time.Time{}); err != nil {
 		log.Warn("agent sign-in session not forgotten", "error", err)
 	}
-	if err := r.store.SetAgentSignInProblem(ctx, target.ID, rec.AgentType, "", time.Time{}); err != nil {
-		log.Warn("agent sign-in problem not cleared", "error", err)
-	}
 	rec.SignInSession, rec.SignInStartedAt = "", nil
-	rec.SignInProblem, rec.SignInProblemAt = "", nil
+	if clearProblem {
+		if err := r.store.SetAgentSignInProblem(ctx, target.ID, rec.AgentType, "", time.Time{}); err != nil {
+			log.Warn("agent sign-in problem not cleared", "error", err)
+		}
+		rec.SignInProblem, rec.SignInProblemAt = "", nil
+	}
 	log.Info("agent signed in; sign-in session closed")
 }
 
@@ -358,8 +362,9 @@ func (r *Router) noteRateLimit(ctx context.Context, task *registry.Task, resets 
 
 // noteTurnFinished is told of a turn of task's agent that finished
 // normally, which started at start (LOOM-316): whatever an earlier turn
-// saw — a sign-in screen, a usage limit — is over, and a sign-in session
-// opened before it is done with.
+// saw before it started — a sign-in screen, a usage limit — is over, and
+// a sign-in session opened before it is done with. What was seen or
+// opened since (a concurrent turn, a restarted sign-in) is kept.
 func (r *Router) noteTurnFinished(ctx context.Context, task *registry.Task, start time.Time) {
 	_, target, ok := r.taskAgent(ctx, task)
 	if !ok {
@@ -370,13 +375,20 @@ func (r *Router) noteTurnFinished(ctx context.Context, task *registry.Task, star
 		return
 	}
 	if rec.SignInProblem != "" || rec.LimitedAt != nil {
-		if err := r.store.ClearAgentTurnIssues(ctx, target.ID, task.AgentType); err != nil {
+		if err := r.store.ClearAgentTurnIssues(ctx, target.ID, task.AgentType, start); err != nil {
 			r.logger.Warn("agent turn issues not cleared", "task_id", task.ID, "error", err)
 		}
 	}
+	if rec.SignInSession == "" {
+		return
+	}
+	unlock := r.lockSignIn(target.ID, task.AgentType)
+	defer unlock()
+	// Read again under the lock: the session may have been restarted.
+	if rec, err = r.store.GetTargetAgent(ctx, target.ID, task.AgentType); err != nil {
+		return
+	}
 	if rec.SignInSession != "" && rec.SignInStartedAt != nil && rec.SignInStartedAt.Before(start) {
-		unlock := r.lockSignIn(target.ID, task.AgentType)
-		defer unlock()
-		r.signInDone(ctx, target, rec)
+		r.signInDone(ctx, target, rec, false)
 	}
 }

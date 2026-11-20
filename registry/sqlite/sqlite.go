@@ -383,14 +383,22 @@ func (s *Store) SetAgentRateLimit(ctx context.Context, targetID, agentType strin
 		targetID, agentType, nullTime(at), resets)
 }
 
-// ClearAgentTurnIssues clears what turns saw (LOOM-316); a row with
-// nothing set, or none at all, is left as it is. One statement, run after
-// every finished turn, that writes only when there is something to clear.
-func (s *Store) ClearAgentTurnIssues(ctx context.Context, targetID, agentType string) error {
+// ClearAgentTurnIssues clears what turns saw before before (LOOM-316):
+// the sign-in problem and the usage limit each only if observed before
+// it, so a turn that finished normally never wipes what a later one saw.
+// A row with nothing to clear, or none at all, is left as it is. One
+// statement, run after every finished turn, that writes only when there
+// is something to clear.
+func (s *Store) ClearAgentTurnIssues(ctx context.Context, targetID, agentType string, before time.Time) error {
+	before = before.UTC()
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE target_agents SET sign_in_problem = '', sign_in_problem_at = NULL, limited_at = NULL, limit_resets = ''
-		WHERE target_id = ? AND agent_type = ? AND (sign_in_problem != '' OR limited_at IS NOT NULL)`,
-		targetID, agentType)
+		UPDATE target_agents SET
+			sign_in_problem = CASE WHEN sign_in_problem_at < ? THEN '' ELSE sign_in_problem END,
+			sign_in_problem_at = CASE WHEN sign_in_problem_at < ? THEN NULL ELSE sign_in_problem_at END,
+			limit_resets = CASE WHEN limited_at < ? THEN '' ELSE limit_resets END,
+			limited_at = CASE WHEN limited_at < ? THEN NULL ELSE limited_at END
+		WHERE target_id = ? AND agent_type = ? AND (sign_in_problem_at < ? OR limited_at < ?)`,
+		before, before, before, before, targetID, agentType, before, before)
 	if err != nil {
 		return fmt.Errorf("sqlite: clear agent turn issues: %w", err)
 	}

@@ -29,14 +29,15 @@ type Store interface {
 	// agentType on targetID stopped at (an AgentSignIn* value) and when;
 	// "" clears it (LOOM-316). SetAgentRateLimit records the usage limit
 	// a turn hit and its reset text; a zero at clears it.
-	// ClearAgentTurnIssues clears both, and is no error when neither is
-	// set. SetAgentSignInSession records the sign-in session opened for
+	// ClearAgentTurnIssues clears each of those observed before before (a
+	// turn that started then finished normally; one seen since is kept),
+	// and is no error when there is none. SetAgentSignInSession records the sign-in session opened for
 	// it and when; "" clears it. Each updates the probed row only: none
 	// there is ErrNotFound (except ClearAgentTurnIssues), and
 	// SetTargetAgent never changes what they wrote.
 	SetAgentSignInProblem(ctx context.Context, targetID, agentType, problem string, at time.Time) error
 	SetAgentRateLimit(ctx context.Context, targetID, agentType string, at time.Time, resets string) error
-	ClearAgentTurnIssues(ctx context.Context, targetID, agentType string) error
+	ClearAgentTurnIssues(ctx context.Context, targetID, agentType string, before time.Time) error
 	SetAgentSignInSession(ctx context.Context, targetID, agentType, session string, startedAt time.Time) error
 	// SetTargetHealth records a target's latest health probe (LOOM-86),
 	// replacing the previous one. A target that doesn't exist is

@@ -167,6 +167,14 @@ func shellQuote(s string) string {
 // no path. A probe that fails to run — the target unreachable, say — is
 // an error and records nothing: "couldn't look" is not "absent".
 func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentType string, entry AgentType) (*registry.TargetAgent, error) {
+	return r.probeAgentWith(ctx, target, agentType, entry, false)
+}
+
+// probeAgentWith is probeAgent; holdingSignIn says the caller already
+// holds target + agentType's sign-in lock (PrepareSignIn), which closing a
+// finished sign-in needs (LOOM-316).
+func (r *Router) probeAgentWith(ctx context.Context, target *registry.Target, agentType string, entry AgentType,
+	holdingSignIn bool) (*registry.TargetAgent, error) {
 	if entry.Binary == "" {
 		return &registry.TargetAgent{TargetID: target.ID, AgentType: agentType, Available: true}, nil
 	}
@@ -223,10 +231,26 @@ func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentT
 		// the person finished signing in there.
 		if prev.SignInSession != "" && prev.AuthStatus != registry.AgentAuthLoggedIn &&
 			rec.AuthStatus == registry.AgentAuthLoggedIn {
-			r.signInDone(context.WithoutCancel(ctx), target, rec)
+			r.finishedSignIn(context.WithoutCancel(ctx), target, rec, prev, holdingSignIn)
 		}
 	}
 	return rec, nil
+}
+
+// finishedSignIn closes rec's sign-in session, which a probe found done,
+// under the sign-in lock and only if it is still the session prev
+// recorded: one restarted meanwhile is the person's new attempt (LOOM-316).
+func (r *Router) finishedSignIn(ctx context.Context, target *registry.Target, rec, prev *registry.TargetAgent, holdingSignIn bool) {
+	if !holdingSignIn {
+		unlock := r.lockSignIn(target.ID, rec.AgentType)
+		defer unlock()
+	}
+	cur, err := r.store.GetTargetAgent(ctx, target.ID, rec.AgentType)
+	if err != nil || cur.SignInSession != prev.SignInSession || cur.SignInStartedAt == nil || prev.SignInStartedAt == nil ||
+		!cur.SignInStartedAt.Equal(*prev.SignInStartedAt) {
+		return
+	}
+	r.signInDone(ctx, target, rec, true)
 }
 
 // requireAgent probes for agentType on target, returning its record, or

@@ -107,15 +107,27 @@ func testAgentTurnIssues(t *testing.T, s registry.Store) {
 	if err := s.SetAgentSignInProblem(ctx, target.ID, "claude-code", registry.AgentSignInSignedOut, seen); err != nil {
 		t.Fatalf("SetAgentSignInProblem: %v", err)
 	}
-	if err := s.ClearAgentTurnIssues(ctx, target.ID, "claude-code"); err != nil {
+	// A turn that started between the two observations clears only the
+	// one seen before it.
+	if err := s.ClearAgentTurnIssues(ctx, target.ID, "claude-code", seen.Add(30*time.Second)); err != nil {
 		t.Fatalf("ClearAgentTurnIssues: %v", err)
 	}
 	got = getAgent(t, s, target.ID, "claude-code")
-	if got.SignInProblem != "" || got.SignInProblemAt != nil || got.LimitedAt != nil || got.LimitResets != "" {
-		t.Errorf("after ClearAgentTurnIssues: %+v, want no problem and no limit", got)
+	if got.SignInProblem != "" || got.SignInProblemAt != nil {
+		t.Errorf("after ClearAgentTurnIssues: problem %q at %v, want the earlier problem cleared", got.SignInProblem, got.SignInProblemAt)
+	}
+	if got.LimitedAt == nil || !got.LimitedAt.Equal(limited) || got.LimitResets == "" {
+		t.Errorf("after ClearAgentTurnIssues: limit %v %q, want the later limit kept", got.LimitedAt, got.LimitResets)
+	}
+	if err := s.ClearAgentTurnIssues(ctx, target.ID, "claude-code", limited.Add(time.Nanosecond)); err != nil {
+		t.Fatalf("ClearAgentTurnIssues: %v", err)
+	}
+	got = getAgent(t, s, target.ID, "claude-code")
+	if got.SignInProblem != "" || got.LimitedAt != nil || got.LimitResets != "" {
+		t.Errorf("after ClearAgentTurnIssues past both: %+v, want no problem and no limit", got)
 	}
 	// Nothing to clear is not an error.
-	if err := s.ClearAgentTurnIssues(ctx, target.ID, "claude-code"); err != nil {
+	if err := s.ClearAgentTurnIssues(ctx, target.ID, "claude-code", time.Now()); err != nil {
 		t.Errorf("ClearAgentTurnIssues (nothing set): %v", err)
 	}
 	if err := s.SetAgentRateLimit(ctx, target.ID, "claude-code", time.Time{}, "ignored"); err != nil {

@@ -464,3 +464,27 @@ func TestDispatch_SignInGateForAnAgentNoKeySignsIn(t *testing.T) {
 		t.Errorf("error offers a credential that wouldn't sign the agent in: %v", err)
 	}
 }
+
+// A sign-in restarted while a turn runs is the person's new attempt: the
+// turn finishing doesn't close it (LOOM-316, codex review).
+func TestDispatch_TurnKeepsASignInRestartedDuringIt(t *testing.T) {
+	store, exec, r, ws, _ := signedInAttentionHarness(t)
+	exec.set(func() {
+		exec.capture = "all done"
+		exec.fileExists = true
+		exec.onWaiting = func() {
+			if _, err := r.PrepareSignIn(context.Background(), ws.TargetID, "claude-code", true); err != nil {
+				t.Errorf("PrepareSignIn: %v", err)
+			}
+		}
+	})
+	if _, err := r.Dispatch(context.Background(), "conv-1", "hello"); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if rec := agentRow(t, store, ws); rec.SignInSession != signInSession {
+		t.Errorf("sign-in session = %q after the turn, want the one restarted during it kept", rec.SignInSession)
+	}
+	if s := exec.sessionFor(signInSession); s == nil || !s.alive {
+		t.Error("the sign-in restarted during the turn was closed")
+	}
+}
