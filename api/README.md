@@ -382,6 +382,10 @@ or gave one the server refused.
       4 KiB margin) is `413` (code `too_large`) before anything runs
       (LOOM-155): the router couldn't send it to an agent anyway (error
       class `message_too_large`), and it never reaches the router model.
+    - A message to a conversation whose task a person holds (taken over
+      from a terminal, see the holds below) isn't typed into it: the job
+      fails with `error_class` `held` (LOOM-267), and its `error` names
+      who holds it.
     - `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
       ID (e.g. a chat UI already focused on that workspace's conversation)
       that's folded into the router model's prompt as advisory context
@@ -466,6 +470,13 @@ or gave one the server refused.
     latest (status/updated_at already cover "what's happening now").
     `has_more` is `false` unless `?limit=` cut the list short (see
     "Lists and paging").
+    Since LOOM-267 a row also carries `held_by {client_kind,
+    client_label, since}` when a person drives one of the conversation's
+    tasks from a terminal (its active drive hold: who took it, and when),
+    and `pending_confirmation_id` when the conversation waits on a yes or
+    no to an offer (its newest one still `pending` and not past
+    `expires_at`; answered by `POST /dispatch` with `confirmation_id`).
+    Both are left out when there is none.
   - **Enums are snake_case** throughout the API (API v1 freeze review,
     item 9). Two were kebab-case before 1.0, and the store still spells
     them that way: task statuses (`running`, `awaiting_input`,
@@ -494,6 +505,8 @@ or gave one the server refused.
     `has_more` and `next_before` page `messages` with `?limit=` and
     `?before=<message id>`; without them every message comes back and
     `has_more` is `false` (see "Lists and paging").
+    Each task carries `hold` (LOOM-267): its active drive hold, as
+    `takeover` returns it, or `null` when nobody drives it.
   - `GET /api/v1/conversations/{id}/events` — auth-gated (LOOM-110), the
     conversation's dispatch audit trail, oldest first: `{conversation_id,
     events: [{id, dispatch_id?, created_at, kind, model?, tier?,
@@ -541,6 +554,17 @@ or gave one the server refused.
     left running in the background — and report later; the server relays
     that report as an assistant message no dispatch carries, so this
     event is how a client learns to refetch the conversation.
+
+    Since LOOM-267 it also carries `event: task_hold`,
+    `data: {task_id, hold, ended_reason?}`, when one of the
+    conversation's tasks is taken (`hold` the new hold), taken from its
+    holder with `force` (`hold` the new hold, `ended_reason`
+    `taken_over`), or given back (`hold` `null`, `ended_reason` why the
+    hold ended: `released`, `taken_back`, `expired`, `session_revoked`,
+    `task_ended`). A heartbeat's renewal isn't an event. Like
+    `task_update` it compares what each poll finds, so a hold taken and
+    given back between two polls isn't reported; holds there on connect
+    aren't replayed.
   - `GET /api/v1/tasks/{id}/attach-info` — auth-gated (LOOM-20), resolves
     a task down to the target+session a human would SSH into to attach
     (design spec §4): `{task_id, tmux_session, target: {id, name, kind,
@@ -549,7 +573,8 @@ or gave one the server refused.
     up (matching this API's other endpoints' thin-passthrough style); a
     dead session is discovered the same way a human always would, by
     trying to attach. Wraps `AttachInfoStore` (`GetTask` → `GetWorkspace`
-    → `GetTarget`), a narrow seam mirroring the others here.
+    → `GetTarget`), a narrow seam mirroring the others here. It carries
+    `hold` too (LOOM-267): the task's active drive hold, or `null`.
   - `POST /api/v1/tasks/{id}/takeover`,
     `POST /api/v1/tasks/{id}/takeover/heartbeat` and
     `POST /api/v1/tasks/{id}/release`: auth-gated holds (LOOM-264,
@@ -634,9 +659,15 @@ or gave one the server refused.
       detaches a holder who took the task meanwhile. A takeover whose
       session is logged out or revoked while it is being taken ends that
       hold again and answers `401`, with no attach-info.
-    - Not yet (later tickets of the same design): a `running` turn's
-      wait ending at once (S5), and holds shown on conversations,
-      attach-info and the stream (S6).
+    - Holds are shown where clients look (LOOM-267): `hold` on each task
+      of `GET /conversations/{id}`, on attach-info and on `takeover`'s
+      `attach` (the hold just taken); `held_by` on `GET /conversations`
+      rows; and the stream's `task_hold` event. A message sent to a
+      conversation whose task is held isn't sent to the agent: its
+      dispatch fails with `error_class` `held` (not `internal`), and its
+      `error` names the holder ("being driven from the terminal on
+      `laptop` since …; take it back, or wait until it is given back,
+      then send the message again").
   - Targets carry `relay` (`full`, `last_message`, `none`, or `""` for
     the purpose's default: `none` for `purpose: work`, else `full`) and
     show `relay_effective`: what the router models may see of the

@@ -365,6 +365,36 @@ without pausing it.
   internal` (`router/errorclass.go` maps `ErrHumanTakeover` there), which a
   client can't tell from a real fault. S6 gives it its own class, `held`, and
   the reply text names the holder.
+- As built (S6, LOOM-267):
+  - `hold` is the task's active **drive** hold (watch holds come with S10),
+    read through `TaskHolds` (`ActiveHolds`, `GetHold`), so a server
+    without holds shows `null` everywhere. Takeover's `attach.hold` is the
+    hold just taken (the attach-info is read before it is taken).
+  - `held_by` is the drive hold on one of the row's conversation's tasks
+    (the newest taken, should there be two), left out when none.
+    `pending_confirmation_id` is the conversation's newest offer still
+    `pending` and not past `expires_at` (the same test the conversation's
+    `confirmations` use for `expired`), left out when none.
+  - `task_hold` compares each poll's drive holds with the last ones seen,
+    as `task_update` compares statuses, so it needs no new query beyond
+    the active holds. Same hold (a renewal): nothing. None → one: acquire.
+    One → none: end, `ended_reason` read from the ended hold. One →
+    another: steal, the new hold with the old one's `ended_reason`
+    (`taken_over`). Consequence, accepted: a hold taken and given back
+    between two polls (default 500 ms) isn't reported, as nothing a
+    client shows changed. A baseline is taken at connect, as for the
+    other events.
+  - The refusal is wrapped once, in `Router.Dispatch`: any
+    `ErrHumanTakeover` that isn't `ErrTakenOver` (a turn a takeover
+    ended stays `taken_over`) becomes a `router.HeldError` carrying the
+    active drive hold on the conversation's `human_takeover` task. Its
+    text: "this conversation's task is being driven from the terminal
+    on `laptop` since 2026-11-20 13:02 UTC; take it back, or wait until
+    it is given back, then send the message again" (`the web`/`the app`
+    for those client kinds, `a client` otherwise; no hold found: "a
+    person has taken over this conversation's task; …"). The metrics
+    label is `held` too. A push notification for the failed turn is
+    unchanged (as before, when it was `internal`).
 
 New error codes go in `api/README.md`'s table and the contract file is
 regenerated (lines only added).

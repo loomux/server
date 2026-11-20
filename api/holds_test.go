@@ -112,12 +112,12 @@ func (e *detachRecorder) setDown(down bool) {
 	e.down = down
 }
 
-func newHoldServer(t *testing.T) *holdServer {
+func newHoldServer(t *testing.T, extra ...api.Option) *holdServer {
 	t.Helper()
 	exec := &detachRecorder{}
 	factory := func(*registry.Target) (targets.TargetExecutor, error) { return exec, nil }
 	srv, _, store := newTestServerWith(t, func(s registry.Store) []api.Option {
-		return []api.Option{api.WithTaskHolds(orchestrator.New(s, factory, nil)), api.WithTmuxSocket("loomux-test")}
+		return append([]api.Option{api.WithTaskHolds(orchestrator.New(s, factory, nil)), api.WithTmuxSocket("loomux-test")}, extra...)
 	})
 	ctx := context.Background()
 	target := &registry.Target{ID: "remote-1", Name: "jet01", Kind: registry.TargetKindRemote, Host: "jet01.example.com", User: "orski"}

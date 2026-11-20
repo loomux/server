@@ -67,7 +67,9 @@ func classifyDispatchError(err error) string {
 		return string(registry.ErrorClassTargetUnhealthy)
 	}
 	if errors.Is(err, orchestrator.ErrHumanTakeover) {
-		return string(registry.ErrorClassInternal)
+		// A person holds the task (LOOM-267): not a fault, and a client
+		// shows who instead (the error names them, see HeldError).
+		return string(registry.ErrorClassHeld)
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return string(registry.ErrorClassWaitFailed)
@@ -95,3 +97,61 @@ type wrappedError struct {
 
 func (e *wrappedError) Error() string { return e.msg }
 func (e *wrappedError) Unwrap() error { return e.err }
+
+// HeldError is a message refused because a person holds the
+// conversation's task (LOOM-267): it is driven from a terminal (or
+// another client), and automation doesn't type into it until it is
+// given or taken back. Its text names the holder, for the dispatch's
+// error; it wraps orchestrator.ErrHumanTakeover, so its class is held.
+type HeldError struct {
+	// Hold is the task's active drive hold; nil when there is none to
+	// name (the task was taken before holds existed, or was just given
+	// back).
+	Hold *registry.TaskHold
+	err  error
+}
+
+func (e *HeldError) Error() string {
+	const next = "; take it back, or wait until it is given back, then send the message again"
+	if e.Hold == nil {
+		return "a person has taken over this conversation's task" + next
+	}
+	holder := "a client"
+	switch e.Hold.ClientKind {
+	case registry.SessionKindTUI:
+		holder = "the terminal"
+	case "web":
+		holder = "the web"
+	case "app":
+		holder = "the app"
+	}
+	if e.Hold.ClientLabel != "" {
+		holder += " on " + e.Hold.ClientLabel
+	}
+	return "this conversation's task is being driven from " + holder +
+		" since " + e.Hold.AcquiredAt.UTC().Format("2006-01-02 15:04 UTC") + next
+}
+
+func (e *HeldError) Unwrap() error { return e.err }
+
+// heldError is err, a dispatch on conversationID refused because a
+// person holds its task, as a HeldError naming who: the active drive
+// hold on one of the conversation's tasks taken over. A hold that can't
+// be read leaves it unnamed; the refusal stands either way.
+func (r *Router) heldError(ctx context.Context, conversationID string, err error) error {
+	held := &HeldError{err: err}
+	tasks, lerr := r.store.ListTasksByConversation(ctx, conversationID)
+	if lerr != nil {
+		return held
+	}
+	for _, t := range tasks {
+		if t.Status != registry.TaskStatusHumanTakeover {
+			continue
+		}
+		if h, herr := r.store.GetActiveDriveHold(ctx, t.ID); herr == nil {
+			held.Hold = h
+			break
+		}
+	}
+	return held
+}

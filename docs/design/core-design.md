@@ -434,6 +434,10 @@ gives every hold a fresh lease first. Since LOOM-266 a takeover of a
 `running` task ends its turn's wait at once: the dispatch fails with error
 class `taken_over`, no keys are sent, the task stays `human-takeover`, and
 what the agent finishes is relayed as late output once it is handed back.
+Since LOOM-267 holds are shown on a conversation's tasks, attach-info,
+conversation list rows (`held_by`) and the stream (`task_hold`), and a
+message to a held conversation fails with dispatch error class `held`,
+its error naming the holder.
 The full model, expiry and watching are in `tui-client-design.md`, "Server
 awareness: holds" and "Taking over a running turn".
 

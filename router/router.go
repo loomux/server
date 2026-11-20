@@ -213,6 +213,17 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 // decision, provisioning, and the agent turn, with any failure at error
 // level. The message body itself is never logged — only its length.
 func (r *Router) Dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
+	reply, err := r.dispatch(ctx, conversationID, message, opts...)
+	// Refused because a person holds the task (LOOM-267): say who. A turn
+	// a takeover ended is taken_over, which says so already.
+	if errors.Is(err, orchestrator.ErrHumanTakeover) && !errors.Is(err, orchestrator.ErrTakenOver) {
+		err = r.heldError(ctx, conversationID, err)
+	}
+	return reply, err
+}
+
+// dispatch is Dispatch, before a refusal names who holds the task.
+func (r *Router) dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
 	unlock, err := r.conversations.lock(ctx, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("router: waiting for the conversation's previous turn: %w", err)
