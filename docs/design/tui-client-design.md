@@ -303,6 +303,69 @@ without pausing it.
   `laptop`"). The `task_hold` event covers both modes, and list rows carry
   `watchers` (a count) beside `held_by`.
 
+As built (S10, LOOM-271):
+
+- **`hold` stays the drive hold; watch holds are `watch_holds` beside
+  it.** Wherever S6 put `hold` (a conversation's tasks, attach-info, a
+  takeover's `attach`), there is now also `watch_holds`: the task's
+  active watch holds, oldest first, in the hold's own shape, `[]` when
+  nobody watches. A watch hold is never in `hold`, and a watcher is never
+  `held_by`. So "is somebody in the pane" stays one null check, and a
+  client written before watch can't mistake a watcher for the driver (or
+  offer Take back for one). List rows carry `watchers`, the number of
+  watch holds on the conversation's tasks, left out when zero like
+  `held_by`.
+- **`task_hold` carries the task's holds as they now are:**
+  `{task_id, hold, watch_holds, ended_reason?}`, sent when the drive hold
+  changes (as in S6) or the set of watch holds does. `hold` and
+  `ended_reason` keep S6's meaning (the drive hold; why the one before it
+  ended), so a watcher coming or going changes only `watch_holds` and
+  never sets `ended_reason`. Why a watch hold ended isn't on the stream:
+  its own client learns it from its heartbeat's `410`, and nobody else
+  shows it. Same per-poll comparison and baseline as S6.
+- **A session has one watch hold per task.** A second `mode: "watch"`
+  takeover by the same session renews and returns the first, as a drive
+  takeover returns the session's own drive hold. So a retried request
+  doesn't leave a second hold behind, and `watchers` counts sessions. The
+  cost, for T13: two `loomux attach --watch` on the same task from one
+  session share the hold, and the first to exit releases it for both (the
+  other's next heartbeat is `410 hold_ended`, `released`; it can take a
+  new one). A session's drive hold and its watch hold on a task are two
+  holds: upgrading takes the drive hold, then releases the watch.
+- **What can be watched:** any task that could be held (`running`,
+  `awaiting_input`, `needs_attention`, `human_takeover`, or `failed` with
+  its pane kept), whoever holds it. Never `409 task_held`. Any other
+  ended task is `409 task_inactive`. Nothing of the task is written, so
+  there is no compare-and-set: a task that ends as the watch is taken is
+  watched until the sweeper ends the hold as `task_ended`, within 5 s.
+- **`force` with `watch` is `400`,** not ignored: it detaches a pane's
+  holder, which a request to look is never read as asking for.
+- **A watch is never handed a writable command.** Until S11 builds the
+  read-only forms, every command the server has is writable (attach-info's
+  `attach_command`, the ssh form, a plugin's). So a watch takeover's
+  `attach` has an empty `attach_command` and no `attach_commands`: they
+  aren't built for it, and the plugin isn't asked. The answer's
+  `hold.mode` is `watch`, which T13 checks before running anything; an
+  S10-only server then gives it nothing to run, rather than something
+  that can type. The handler also refuses to answer with a hold of
+  another mode than the one asked for (`500`, and that hold is given
+  back), whatever the hold service did. S11 puts the read-only commands
+  in the same two fields and adds `409 watch_unsupported`.
+- **Ending a watch hold is only that.** Release, expiry, revocation and
+  `task_ended` end the hold and touch nothing else: no detach, no status
+  change, and the driver's hold stays. A Take back ends the drive hold
+  and leaves the watch holds. Because it needs nothing from the target, a
+  watch hold also ends while the target doesn't answer: the sweeper skips
+  only the drive holds of a target it found down in that pass.
+- **Detaching is still per tmux session.** A Take back, a forced
+  takeover and a drive hold's expiry run `detach-client -s`, which closes
+  the watchers' read-only clients too (tmux can't tell them apart from
+  here). Their watch holds aren't ended by the server: each watcher's
+  client releases when its attach exits, or the lease runs out.
+- `400 unsupported_mode` is no longer answered by this server. It stays
+  in the error table for clients that may meet a server between S3 and
+  S10.
+
 ### API (additions within v1)
 
 - `POST /api/v1/tasks/{id}/takeover` `{mode?, client_label?, ttl_seconds?,
@@ -366,7 +429,8 @@ without pausing it.
   client can't tell from a real fault. S6 gives it its own class, `held`, and
   the reply text names the holder.
 - As built (S6, LOOM-267):
-  - `hold` is the task's active **drive** hold (watch holds come with S10),
+  - `hold` is the task's active **drive** hold (watch holds, since S10,
+    are `watch_holds` beside it: see "Watching", As built),
     read through `TaskHolds` (`ActiveHolds`, `GetHold`), so a server
     without holds shows `null` everywhere. Takeover's `attach.hold` is the
     hold just taken (the attach-info is read before it is taken).
@@ -847,7 +911,10 @@ to watch. Two guards close that:
 
 - **Server (S3):** the takeover route defines `mode` from its first release.
   It accepts only `drive` and answers `400 unsupported_mode` for `watch`
-  until S10 enables it. So no released server ignores the field.
+  until S10 enables it. So no released server ignores the field. Since
+  S10 the handler also checks that the hold it answers with has the mode
+  asked for, and a watch's `attach` carries no command that can type
+  (none at all until S11).
 - **Client (T13):** after a `mode: "watch"` takeover, the client checks
   that the returned `hold.mode` is `watch` before running any command.
   Anything else, or `400 unsupported_mode`, makes it release the hold it got
