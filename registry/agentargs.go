@@ -45,11 +45,11 @@ func ValidateAgentModel(model string) error {
 	return nil
 }
 
-// validateAgentArgs is Target.Validate's check of AgentArgs: agent type
+// ValidateAgentArgs is Target.Validate's check of AgentArgs: agent type
 // names unpadded, each entry pinning something, each value well-formed.
 // Whether an agent type exists and takes that effort is for the caller
 // that knows the agent types (the API, and the launch itself).
-func validateAgentArgs(args map[string]AgentArgs) error {
+func ValidateAgentArgs(args map[string]AgentArgs) error {
 	names := make([]string, 0, len(args))
 	for name := range args {
 		if strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {

@@ -140,6 +140,7 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithTaskCanceller(loomux),
 		api.WithTaskHolds(loomux.TaskHolds()),
 		api.WithAgentTypes(loomux.AgentTypeNames()),
+		api.WithAgentArgsCheck(loomux.CheckAgentArgs),
 		api.WithTaskTurns(loomux.Store()),
 		api.WithEvents(loomux.Store()),
 		api.WithHostKeyPinning(loomux.ScanHostKey, loomux.Store()),

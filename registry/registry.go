@@ -285,7 +285,7 @@ func (t *Target) Validate() error {
 	default:
 		return fmt.Errorf("permission_mode must be empty, %q, %q or %q", PermissionModeAuto, "accept_edits", PermissionModeManual)
 	}
-	if err := validateAgentArgs(t.AgentArgs); err != nil {
+	if err := ValidateAgentArgs(t.AgentArgs); err != nil {
 		return err
 	}
 	switch t.Policy.Relay {
