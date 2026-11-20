@@ -24,11 +24,6 @@ const (
 // or its hold changed between its read and its write.
 const takeoverAttempts = 4
 
-// ErrUnsupportedHoldMode is returned by Takeover for a mode this server
-// knows but doesn't serve yet: watch, until watch holds exist. Nothing
-// was taken, so a client never mistakes the answer for a drive hold.
-var ErrUnsupportedHoldMode = errors.New("orchestrator: hold mode not supported")
-
 // ErrHoldNotOwned is returned by Heartbeat when the hold belongs to
 // another session: only its holder keeps a lease alive.
 var ErrHoldNotOwned = errors.New("orchestrator: hold belongs to another session")
@@ -64,12 +59,13 @@ type TakeoverRequest struct {
 	// ClientKind and ClientLabel describe the holder to other clients.
 	ClientKind  string
 	ClientLabel string
-	// Mode is drive, or empty for drive.
+	// Mode is drive, watch, or empty for drive.
 	Mode registry.HoldMode
 	// TTL is the lease's length, MinHoldTTL to MaxHoldTTL; zero is
 	// DefaultHoldTTL.
 	TTL time.Duration
-	// Force takes the task from another session that holds it.
+	// Force takes the task from another session that holds it. It is for
+	// a drive takeover only.
 	Force bool
 }
 
@@ -78,18 +74,22 @@ type TakeoverResult struct {
 	Hold *registry.TaskHold
 	// Task is the task as it stands with the hold.
 	Task *registry.Task
-	// Renewed: the session already held the task, and its hold was
-	// renewed and returned rather than a new one made.
+	// Renewed: the session already had this hold (its drive hold, or its
+	// watch hold, on the task), and it was renewed and returned rather
+	// than a new one made.
 	Renewed bool
 	// Replaced is the other session's hold a forced takeover ended.
 	Replaced *registry.TaskHold
 }
 
-// Takeover gives req's session the drive hold on a task: the task
-// becomes human-takeover, which pauses automated dispatch into its pane
-// until the hold is released, and the hold records who has it.
+// Takeover gives req's session a hold on a task. A drive hold (the
+// default) is the pane itself: the task becomes human-takeover, which
+// pauses automated dispatch into its pane until the hold is released,
+// and the hold records who has it. A watch hold (req.Mode watch) only
+// records who is looking: see watchLocked.
 //
-// The task's active drive hold is looked at before its status:
+// For a drive hold, the task's active drive hold is looked at before its
+// status:
 //
 //   - Held by this session: the hold is renewed and returned. This is
 //     idempotent, and how a restarted client gets its own hold back.
@@ -115,14 +115,11 @@ type TakeoverResult struct {
 // its agent isn't interrupted, and any status write the turn still makes
 // loses its compare-and-set, leaving the task human-takeover.
 //
-// registry.ErrNotFound for an unknown task, ErrUnsupportedHoldMode for
-// watch, *InvalidTakeoverError for an unknown mode or a TTL out of
-// bounds.
+// registry.ErrNotFound for an unknown task, *InvalidTakeoverError for an
+// unknown mode, a TTL out of bounds, or force with watch.
 func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*TakeoverResult, error) {
 	switch req.Mode {
-	case "", registry.HoldModeDrive:
-	case registry.HoldModeWatch:
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedHoldMode, req.Mode)
+	case "", registry.HoldModeDrive, registry.HoldModeWatch:
 	default:
 		return nil, &InvalidTakeoverError{Reason: fmt.Sprintf("mode must be %q or %q", registry.HoldModeDrive, registry.HoldModeWatch)}
 	}
@@ -137,12 +134,20 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 	if req.SessionID == "" {
 		return nil, &InvalidTakeoverError{Reason: "a hold needs a session"}
 	}
+	if req.Mode == registry.HoldModeWatch && req.Force {
+		// Refused rather than ignored: force detaches a pane's holder,
+		// which a request to look must never be read as asking for.
+		return nil, &InvalidTakeoverError{Reason: "force takes a task from the session driving it; it can't be used with watch"}
+	}
 
 	unlock, err := o.holds.lock(ctx, req.TaskID)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	if req.Mode == registry.HoldModeWatch {
+		return o.watchLocked(ctx, req, ttl)
+	}
 	for range takeoverAttempts {
 		task, err := o.store.GetTask(ctx, req.TaskID)
 		if err != nil {
@@ -233,8 +238,78 @@ func (o *Orchestrator) Takeover(ctx context.Context, req TakeoverRequest) (*Take
 	return nil, fmt.Errorf("orchestrator: takeover: %w: task %q kept changing", ErrStatusChanged, req.TaskID)
 }
 
+// watchLocked gives req's session a watch hold on the task (LOOM-271,
+// docs/design/tui-client-design.md "Watching"): a record that the
+// session is attached read-only to the task's pane, and nothing more.
+// The task's status isn't written, so automation keeps typing; a turn in
+// flight keeps its wait; no tmux client is detached; and whoever drives
+// the task keeps it, since a watch is never refused as held. Any number
+// of sessions may watch a task, beside the one that drives it.
+//
+// A task can be watched when it could be held: it has a pane to look at
+// (heldStatus), whoever holds it. Otherwise ErrTaskInactive. A session
+// has one watch hold per task: asking again renews and returns it, as a
+// drive takeover returns the session's drive hold. Its drive hold on the
+// task, if it has one, is another hold and is left alone.
+//
+// Nothing is compared and set here, as nothing of the task is written: a
+// task that ends between the read and the hold's insert is watched for
+// the moment until the hold sweeper ends the hold as task_ended.
+//
+// The caller holds the task's hold lock.
+func (o *Orchestrator) watchLocked(ctx context.Context, req TakeoverRequest, ttl time.Duration) (*TakeoverResult, error) {
+	task, err := o.store.GetTask(ctx, req.TaskID)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: takeover: %w", err)
+	}
+	if _, err := heldStatus(task); err != nil {
+		return nil, err
+	}
+	holds, err := o.store.ListActiveTaskHolds(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: takeover: %w", err)
+	}
+	for _, h := range holds {
+		if h.TaskID != task.ID || h.SessionID != req.SessionID || h.Mode != registry.HoldModeWatch {
+			continue
+		}
+		renewed, err := o.store.RenewTaskHold(ctx, h.ID, o.now().UTC())
+		if errors.Is(err, registry.ErrHoldEnded) {
+			break // ended since the list was read: a new one, below
+		}
+		if err != nil {
+			return nil, fmt.Errorf("orchestrator: takeover: %w", err)
+		}
+		return &TakeoverResult{Hold: renewed, Task: task, Renewed: true}, nil
+	}
+	hold := &registry.TaskHold{
+		ID:          uuid.NewString(),
+		TaskID:      task.ID,
+		SessionID:   req.SessionID,
+		ClientKind:  req.ClientKind,
+		ClientLabel: req.ClientLabel,
+		Mode:        registry.HoldModeWatch,
+		PrevStatus:  task.Status,
+		TTL:         ttl,
+		AcquiredAt:  o.now().UTC(),
+	}
+	err = o.store.CreateTaskHold(ctx, hold)
+	if errors.Is(err, registry.ErrConflict) {
+		// The hold's id is new, so it is the task that is gone, since it
+		// was read.
+		return nil, fmt.Errorf("orchestrator: takeover: %w: task %q", registry.ErrNotFound, task.ID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: takeover: %w", err)
+	}
+	o.logger.Info("task watched", "task_id", task.ID, "hold_id", hold.ID, "session_id", hold.SessionID,
+		"client_label", hold.ClientLabel, "status", string(task.Status))
+	return &TakeoverResult{Hold: hold, Task: task}, nil
+}
+
 // heldStatus is the status task has once a drive hold is taken on it,
-// or ErrTaskInactive if it can't be held.
+// or ErrTaskInactive if it can't be held (or watched: it has no pane
+// kept for a person).
 func heldStatus(task *registry.Task) (registry.TaskStatus, error) {
 	switch task.Status {
 	case registry.TaskStatusRunning, registry.TaskStatusAwaitingInput, registry.TaskStatusNeedsAttention,

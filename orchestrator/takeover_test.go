@@ -295,17 +295,13 @@ func TestTakeover_EndedTasks(t *testing.T) {
 	}
 }
 
-// Watch isn't served yet and must never come back as a drive hold; an
-// unknown mode, a TTL out of bounds and an unknown task are refused too.
-// None of them writes anything.
+// An unknown mode, a TTL out of bounds and an unknown task are refused.
+// None of them writes anything. (Watch has its own: watchhold_test.go.)
 func TestTakeover_Refusals(t *testing.T) {
 	store, ws, _, o, _ := holdSetup(t)
 	ctx := context.Background()
 	task := taskIn(t, store, o, ws, "conv-1", registry.TaskStatusAwaitingInput, "")
 
-	if _, err := o.Takeover(ctx, orchestrator.TakeoverRequest{TaskID: task.ID, SessionID: "sess-1", Mode: registry.HoldModeWatch}); !errors.Is(err, orchestrator.ErrUnsupportedHoldMode) {
-		t.Errorf("watch = %v, want ErrUnsupportedHoldMode", err)
-	}
 	var invalid *orchestrator.InvalidTakeoverError
 	for name, req := range map[string]orchestrator.TakeoverRequest{
 		"unknown mode":  {TaskID: task.ID, SessionID: "sess-1", Mode: "steer"},
