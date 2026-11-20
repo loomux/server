@@ -612,6 +612,30 @@ type TargetAgent struct {
 	// (LOOM-86): one of the AgentAuth* values, empty when not checked.
 	AuthStatus string
 	CheckedAt  time.Time
+	// AuthMethod, AuthPlan and AuthExpiresAt are how the same auth check
+	// said the CLI is signed in (LOOM-316): its method ("claude.ai",
+	// "api_key", "chatgpt"), the account's plan ("max") and when the
+	// sign-in ends. Short allow-listed words only; empty or nil when the
+	// CLI doesn't say. Written by SetTargetAgent.
+	AuthMethod    string
+	AuthPlan      string
+	AuthExpiresAt *time.Time
+
+	// What turns saw (LOOM-316), which SetTargetAgent never touches:
+	// SignInProblem (an AgentSignIn* value) is the sign-in screen a turn
+	// last stopped at, LimitedAt and LimitResets the usage limit it last
+	// hit and when the agent said it resets. Cleared when a later turn
+	// finishes normally.
+	SignInProblem   string
+	SignInProblemAt *time.Time
+	LimitedAt       *time.Time
+	LimitResets     string
+
+	// SignInSession is the tmux session Loomux opened for a person to
+	// sign the CLI in (LOOM-316), and SignInStartedAt when; empty and nil
+	// when none is open. Written by SetAgentSignInSession only.
+	SignInSession   string
+	SignInStartedAt *time.Time
 }
 
 // TargetAgent.AuthStatus values (LOOM-86).
@@ -621,6 +645,19 @@ const (
 	// AgentAuthUnknown: the CLI was asked but its answer wasn't
 	// recognised.
 	AgentAuthUnknown = "unknown"
+)
+
+// TargetAgent.SignInProblem values (LOOM-316): which sign-in screen a
+// turn stopped at, as a fixed word — never the screen's text.
+const (
+	// AgentSignInExpired: the sign-in had expired ("OAuth token has
+	// expired").
+	AgentSignInExpired = "expired"
+	// AgentSignInInvalid: the credential was refused ("Invalid API key").
+	AgentSignInInvalid = "invalid_credentials"
+	// AgentSignInSignedOut: the CLI isn't signed in at all (its login or
+	// onboarding screen).
+	AgentSignInSignedOut = "signed_out"
 )
 
 // TargetHealth is a target's latest health probe (LOOM-86), refreshed

@@ -2,11 +2,14 @@ package agents_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Loomux/server/agents"
 	"github.com/Loomux/server/completion"
@@ -399,6 +402,82 @@ func TestAdapters_AuthCheckClassifiesRealOutput(t *testing.T) {
 		}
 		if got := tc.agent.AuthCheck.Status(tc.output); got != tc.want {
 			t.Errorf("%s auth check on %q = %q, want %q", tc.agent.LaunchTemplate, tc.output, got, tc.want)
+		}
+	}
+}
+
+// LOOM-316: the auth check's details come from an allow-list of fields
+// of what each CLI really prints (Claude Code 2.1.329, Codex 0.163.0) —
+// never the email, organisation or a key fragment.
+func TestAdapters_AuthDetailsFromRealOutput(t *testing.T) {
+	claudeSignedIn := `{
+  "loggedIn": true,
+  "authMethod": "claude.ai",
+  "apiProvider": "firstParty",
+  "email": "someone@example.com",
+  "orgId": "0f6c7c8e-1111-2222-3333-444455556666",
+  "orgName": "someone@example.com's Organization",
+  "subscriptionType": "max",
+  "planTier": "default_claude_max_20x",
+  "loginExpiresAt": "2026-12-11T01:04:18.729Z"
+}`
+	expires := time.Date(2026, 12, 11, 1, 4, 18, 729000000, time.UTC)
+	cases := []struct {
+		name   string
+		agent  router.AgentType
+		output string
+		want   router.AuthDetails
+	}{
+		{"claude signed in", agents.ClaudeCode(), claudeSignedIn,
+			router.AuthDetails{Method: "claude.ai", Plan: "max", ExpiresAt: expires}},
+		{"claude signed out", agents.ClaudeCode(), `{"loggedIn": false, "authMethod": "none", "loginExpiresAt": null}`,
+			router.AuthDetails{Method: "none"}},
+		{"claude api key", agents.ClaudeCode(), `{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"}`,
+			router.AuthDetails{Method: "api_key"}},
+		{"claude noise around the JSON", agents.ClaudeCode(), "warning: x\n" + claudeSignedIn + "\n",
+			router.AuthDetails{Method: "claude.ai", Plan: "max", ExpiresAt: expires}},
+		{"claude not JSON", agents.ClaudeCode(), "error: unknown command 'auth'", router.AuthDetails{}},
+		{"codex chatgpt", agents.Codex(), "Logged in using ChatGPT", router.AuthDetails{Method: "chatgpt"}},
+		{"codex api key", agents.Codex(), "Logged in using an API key - sk-proj-***ABCDE", router.AuthDetails{Method: "api_key"}},
+		{"codex access token", agents.Codex(), "Logged in using an access token", router.AuthDetails{Method: "access_token"}},
+		{"codex signed out", agents.Codex(), "Not logged in", router.AuthDetails{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.agent.AuthCheck == nil || tc.agent.AuthCheck.Details == nil {
+				t.Fatalf("%s has no auth details", tc.agent.LaunchTemplate)
+			}
+			got := tc.agent.AuthCheck.Details(tc.output)
+			if got.Method != tc.want.Method || got.Plan != tc.want.Plan || !got.ExpiresAt.Equal(tc.want.ExpiresAt) {
+				t.Errorf("details = %+v, want %+v", got, tc.want)
+			}
+			if s := fmt.Sprintf("%+v", got); strings.Contains(s, "@") || strings.Contains(s, "sk-") || strings.Contains(s, "Organization") {
+				t.Errorf("details carry account data: %s", s)
+			}
+		})
+	}
+}
+
+// LOOM-316: each adapter's sign-in runs the CLI's own login command, and
+// names the vault variables that sign it in without one.
+func TestAdapters_SignIn(t *testing.T) {
+	cases := []struct {
+		agent    router.AgentType
+		args     []string
+		envNames []string
+	}{
+		{agents.ClaudeCode(), []string{"auth", "login"}, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}},
+		{agents.Codex(), []string{"login", "--device-auth"}, []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+	}
+	for _, tc := range cases {
+		if tc.agent.SignIn == nil {
+			t.Fatalf("%s has no sign-in", tc.agent.LaunchTemplate)
+		}
+		if !slices.Equal(tc.agent.SignIn.Args, tc.args) {
+			t.Errorf("%s sign-in args = %q, want %q", tc.agent.LaunchTemplate, tc.agent.SignIn.Args, tc.args)
+		}
+		if !slices.Equal(tc.agent.SignIn.CredentialEnv, tc.envNames) {
+			t.Errorf("%s credential env = %q, want %q", tc.agent.LaunchTemplate, tc.agent.SignIn.CredentialEnv, tc.envNames)
 		}
 	}
 }

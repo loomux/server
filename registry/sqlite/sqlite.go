@@ -267,18 +267,24 @@ func (s *Store) DeleteTarget(ctx context.Context, id string) error {
 	return requireRowAffected(res, "target", id)
 }
 
-// SetTargetAgent upserts one agent CLI probe result (LOOM-71).
+// SetTargetAgent upserts one agent CLI probe result (LOOM-71), with the
+// auth check's details (LOOM-316). The turn and sign-in columns are only
+// ever written by their own setters, never here.
 func (s *Store) SetTargetAgent(ctx context.Context, a *registry.TargetAgent) error {
 	if a.CheckedAt.IsZero() {
 		a.CheckedAt = time.Now().UTC()
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO target_agents (target_id, agent_type, available, path, version, auth_status, checked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO target_agents (target_id, agent_type, available, path, version, auth_status, checked_at,
+			auth_method, auth_plan, auth_expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (target_id, agent_type) DO UPDATE SET
 			available = excluded.available, path = excluded.path, version = excluded.version,
-			auth_status = excluded.auth_status, checked_at = excluded.checked_at`,
+			auth_status = excluded.auth_status, checked_at = excluded.checked_at,
+			auth_method = excluded.auth_method, auth_plan = excluded.auth_plan,
+			auth_expires_at = excluded.auth_expires_at`,
 		a.TargetID, a.AgentType, a.Available, a.Path, a.Version, a.AuthStatus, a.CheckedAt,
+		a.AuthMethod, a.AuthPlan, a.AuthExpiresAt,
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: target %q does not exist", registry.ErrConflict, a.TargetID)
@@ -289,9 +295,22 @@ func (s *Store) SetTargetAgent(ctx context.Context, a *registry.TargetAgent) err
 	return nil
 }
 
+const targetAgentColumns = `target_id, agent_type, available, path, version, auth_status, checked_at,
+	auth_method, auth_plan, auth_expires_at, sign_in_problem, sign_in_problem_at, limited_at, limit_resets,
+	sign_in_session, sign_in_started_at`
+
+func scanTargetAgent(row interface{ Scan(...any) error }) (*registry.TargetAgent, error) {
+	var a registry.TargetAgent
+	if err := row.Scan(&a.TargetID, &a.AgentType, &a.Available, &a.Path, &a.Version, &a.AuthStatus, &a.CheckedAt,
+		&a.AuthMethod, &a.AuthPlan, &a.AuthExpiresAt, &a.SignInProblem, &a.SignInProblemAt, &a.LimitedAt, &a.LimitResets,
+		&a.SignInSession, &a.SignInStartedAt); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
 func (s *Store) ListTargetAgents(ctx context.Context, targetID string) ([]*registry.TargetAgent, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT target_id, agent_type, available, path, version, auth_status, checked_at FROM target_agents
+	rows, err := s.db.QueryContext(ctx, `SELECT `+targetAgentColumns+` FROM target_agents
 		WHERE target_id = ? ORDER BY agent_type`, targetID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list target agents: %w", err)
@@ -300,16 +319,92 @@ func (s *Store) ListTargetAgents(ctx context.Context, targetID string) ([]*regis
 
 	out := []*registry.TargetAgent{}
 	for rows.Next() {
-		var a registry.TargetAgent
-		if err := rows.Scan(&a.TargetID, &a.AgentType, &a.Available, &a.Path, &a.Version, &a.AuthStatus, &a.CheckedAt); err != nil {
+		a, err := scanTargetAgent(rows)
+		if err != nil {
 			return nil, fmt.Errorf("sqlite: list target agents: %w", err)
 		}
-		out = append(out, &a)
+		out = append(out, a)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: list target agents: %w", err)
 	}
 	return out, nil
+}
+
+// GetTargetAgent returns one probe result (LOOM-316).
+func (s *Store) GetTargetAgent(ctx context.Context, targetID, agentType string) (*registry.TargetAgent, error) {
+	a, err := scanTargetAgent(s.db.QueryRowContext(ctx, `SELECT `+targetAgentColumns+` FROM target_agents
+		WHERE target_id = ? AND agent_type = ?`, targetID, agentType))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: agent %q on target %q", registry.ErrNotFound, agentType, targetID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get target agent: %w", err)
+	}
+	return a, nil
+}
+
+// nullTime is t, or NULL for the zero time.
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC()
+}
+
+// updateTargetAgent runs an UPDATE of one target_agents row (LOOM-316):
+// no such row is ErrNotFound.
+func (s *Store) updateTargetAgent(ctx context.Context, op, set, targetID, agentType string, args ...any) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE target_agents SET `+set+` WHERE target_id = ? AND agent_type = ?`,
+		append(args, targetID, agentType)...)
+	if err != nil {
+		return fmt.Errorf("sqlite: %s: %w", op, err)
+	}
+	return requireRowAffected(res, "target agent", agentType+" on "+targetID)
+}
+
+// SetAgentSignInProblem records (or, with "", clears) the sign-in screen
+// a turn stopped at (LOOM-316).
+func (s *Store) SetAgentSignInProblem(ctx context.Context, targetID, agentType, problem string, at time.Time) error {
+	if problem == "" {
+		at = time.Time{}
+	}
+	return s.updateTargetAgent(ctx, "set agent sign-in problem", `sign_in_problem = ?, sign_in_problem_at = ?`,
+		targetID, agentType, problem, nullTime(at))
+}
+
+// SetAgentRateLimit records (or, with a zero at, clears) the usage limit
+// a turn hit (LOOM-316).
+func (s *Store) SetAgentRateLimit(ctx context.Context, targetID, agentType string, at time.Time, resets string) error {
+	if at.IsZero() {
+		resets = ""
+	}
+	return s.updateTargetAgent(ctx, "set agent rate limit", `limited_at = ?, limit_resets = ?`,
+		targetID, agentType, nullTime(at), resets)
+}
+
+// ClearAgentTurnIssues clears what turns saw (LOOM-316); a row with
+// nothing set, or none at all, is left as it is. One statement, run after
+// every finished turn, that writes only when there is something to clear.
+func (s *Store) ClearAgentTurnIssues(ctx context.Context, targetID, agentType string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE target_agents SET sign_in_problem = '', sign_in_problem_at = NULL, limited_at = NULL, limit_resets = ''
+		WHERE target_id = ? AND agent_type = ? AND (sign_in_problem != '' OR limited_at IS NOT NULL)`,
+		targetID, agentType)
+	if err != nil {
+		return fmt.Errorf("sqlite: clear agent turn issues: %w", err)
+	}
+	return nil
+}
+
+// SetAgentSignInSession records (or, with "", clears) the sign-in session
+// opened for the agent (LOOM-316).
+func (s *Store) SetAgentSignInSession(ctx context.Context, targetID, agentType, session string, startedAt time.Time) error {
+	if session == "" {
+		startedAt = time.Time{}
+	}
+	return s.updateTargetAgent(ctx, "set agent sign-in session", `sign_in_session = ?, sign_in_started_at = ?`,
+		targetID, agentType, session, nullTime(startedAt))
 }
 
 // SetTargetHealth upserts a target's latest health probe (LOOM-86).

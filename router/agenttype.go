@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/registry"
@@ -69,6 +70,10 @@ type AgentType struct {
 	// AuthCheck, if set, is how the probe asks the CLI whether it is
 	// signed in (LOOM-86). Only meaningful with Binary.
 	AuthCheck *AuthCheck
+	// SignIn, if set, is how a person signs the CLI in (LOOM-316): the
+	// command Loomux opens in a tmux session for them to attach to. Only
+	// meaningful with Binary.
+	SignIn *SignIn
 	// Description is one line telling the routing model what this agent
 	// is and when to choose it (LOOM-88), by the name a user would use.
 	Description string
@@ -90,6 +95,35 @@ type AuthCheck struct {
 	Args      []string
 	LoggedIn  *regexp.Regexp
 	LoggedOut *regexp.Regexp
+	// Details, if set, reads how the CLI is signed in out of the same
+	// output (LOOM-316). It must pick named fields only, never the
+	// account's email, organisation or a key fragment; the probe further
+	// keeps a method or plan only if it is a short word (authWord).
+	Details func(output string) AuthDetails
+}
+
+// AuthDetails is what an auth check says about how the CLI is signed in
+// (LOOM-316). Any field may be empty.
+type AuthDetails struct {
+	// Method is how it is signed in, as the CLI names it ("claude.ai",
+	// "api_key", "chatgpt").
+	Method string
+	// Plan is the subscription the account is on ("max", "pro").
+	Plan string
+	// ExpiresAt is when the sign-in ends; zero when the CLI doesn't say.
+	ExpiresAt time.Time
+}
+
+// SignIn is how a person signs an agent CLI in (LOOM-316). Both fields
+// are fixed configuration: no caller or model supplies or alters them.
+type SignIn struct {
+	// Args are run with the probed binary in the sign-in session: the
+	// CLI's own login command ("auth login", "login --device-auth").
+	Args []string
+	// CredentialEnv are the environment variables that sign the CLI in
+	// without a login (an API key). A launch that would inject one of
+	// them from the vault is not stopped for a signed-out CLI.
+	CredentialEnv []string
 }
 
 // Status classifies what the auth command printed.
