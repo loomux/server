@@ -1209,13 +1209,13 @@ type attachInfoResponse struct {
 	TmuxSocket    string           `json:"tmux_socket"`
 	AttachCommand string           `json:"attach_command"`
 	Target        attachTargetInfo `json:"target"`
+	// AgentArgs are the model and effort the task was launched with
+	// (LOOM-307): its target's pin then, "" for what wasn't pinned.
+	AgentArgs agentArgsJSON `json:"agent_args"`
 	// AttachCommands are the ways a person attaches from their own
 	// machine (LOOM-178): a plugin's (kubectl, docker) for a machine it
 	// made, and the plain ssh form for every remote target.
 	AttachCommands []attachCommandResponse `json:"attach_commands"`
-	// AgentArgs are the model and effort the task was launched with
-	// (LOOM-307): its target's pin then, "" for what wasn't pinned.
-	AgentArgs agentArgsJSON `json:"agent_args"`
 }
 
 // handleAttachInfo resolves a task down to the target+session a human
@@ -1266,7 +1266,6 @@ func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string
 		TmuxSocket:     s.tmuxSocketName(),
 		AttachCommand:  targets.AttachCommand(s.tmuxSocketName(), task.TmuxSession),
 		AttachCommands: s.attachCommandsFor(r.Context(), target, task.TmuxSession),
-		AgentArgs:      newAgentArgsJSON(task.AgentArgs),
 		Target: attachTargetInfo{
 			ID:   target.ID,
 			Name: target.Name,
@@ -1274,6 +1273,7 @@ func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string
 			Host: target.Host,
 			User: target.User,
 		},
+		AgentArgs: newAgentArgsJSON(task.AgentArgs),
 	}, true
 }
 
