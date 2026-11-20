@@ -75,13 +75,19 @@ its `PermissionModes`:
 | codex       | `-m <m>`          | `-c model_reasoning_effort="<e>"` (TOML) | minimal, low, medium, high, xhigh  |
 
 (Claude Code 2.1.329 `--help`; Codex 0.163.0 `-m`, `-c` parses TOML.) An agent
-type whose adapter has no mapping refuses any pin for it.
+type whose adapter has no mapping refuses any pin for it. Codex 0.163.0's
+binary also names `none`, `max` and `ultra` among its effort strings; they
+aren't offered until checked against a real launch (a one-line change in
+`agents.Codex`).
 
 ## Validation (strict, fail closed)
 
 - Agent type key: a registered agent type (API: 400 otherwise). The registry
-  checks only that keys are non-blank and unpadded; the API and the launch
-  check them against the agent registry.
+  checks only that keys are non-blank and unpadded; the API
+  (`api.WithAgentArgsCheck` → `app.CheckAgentArgs` →
+  `router.AgentTypeRegistry.CheckAgentArgs`) and the launch check them
+  against the agent types. An entry is `{"model", "effort"}` and nothing
+  else: an unknown field is a 400, not silently dropped.
 - `model`: 1-64 chars, `^[A-Za-z0-9][A-Za-z0-9._:-]*$`, optionally followed by
   Claude Code's `[1m]` context suffix (`sonnet[1m]`). No spaces, no leading
   `-` (it would read as a flag), no `=`, quotes, `$`, `;`, `|`, `&`, backticks,
@@ -93,6 +99,13 @@ type whose adapter has no mapping refuses any pin for it.
   whose allowed efforts shrank after an upgrade) **fails the launch** with a
   clear error. It never falls back to the account's defaults, since running
   unpinned is exactly what the pin exists to stop.
+
+## Where the flags go
+
+`template, permission args, pinned args, trust args, StartupArgs,
+CompletionHookArgs, "--", prompt`, each element shell-quoted as one word.
+The pin is read from the same target row as `permission_mode`, just before
+the launch; the task row gets `orchestrator.WithAgentArgs(pin)`.
 
 ## Who can set it
 

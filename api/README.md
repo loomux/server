@@ -544,7 +544,10 @@ or gave one the server refused.
   - `GET /api/v1/tasks/{id}/attach-info` — auth-gated (LOOM-20), resolves
     a task down to the target+session a human would SSH into to attach
     (design spec §4): `{task_id, tmux_session, target: {id, name, kind,
-    host, user}}`; `404` if the task doesn't exist. Returns stored data
+    host, user}, agent_args: {model, effort}}`; `404` if the task doesn't
+    exist. `agent_args` (LOOM-307) is what the task was launched with,
+    `""` for what its target didn't pin; a pin changed later doesn't
+    change it. Returns stored data
     as-is — no live probe of whether the tmux session is actually still
     up (matching this API's other endpoints' thin-passthrough style); a
     dead session is discovered the same way a human always would, by
@@ -752,6 +755,22 @@ or gave one the server refused.
     part of the API (removed before 1.0, freeze review item 1); a client
     that still sends it has it ignored. A target's key is set with
     `ssh_key_id` instead (below).
+
+    `agent_args` (LOOM-307, `docs/design/agent-launch-args.md`) pins the
+    model and effort each agent type is launched with on the target:
+    `{"claude-code": {"model": "opus", "effort": "high"}}`. Optional; on
+    a `PUT` an omitted `agent_args` keeps what's stored and a given one
+    replaces the whole map (an agent type left out is unpinned, an entry
+    with both fields `""` pins nothing). Every target response carries
+    it, `{}` when nothing is pinned, each entry with both fields. A
+    model is 1-64 letters, digits, `.`, `_`, `:` or `-`, starting with
+    a letter or digit, optionally ending in `[1m]`; an effort must be
+    one its agent type's CLI takes (`claude-code`: `low`, `medium`,
+    `high`, `xhigh`, `max`; `codex`: `minimal`, `low`, `medium`, `high`,
+    `xhigh`). An unknown agent type, effort or field in an entry is
+    `400`. Only this API sets them: the router models and prompts
+    can't, and a launch whose stored pin its CLI can't take fails
+    rather than run on the account's defaults.
 
     `GET /api/v1/targets` also answers `local_targets` (LOOM-183):
     whether this server allows targets of kind `local`. It is `false`
