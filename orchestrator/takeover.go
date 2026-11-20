@@ -334,3 +334,16 @@ func (o *Orchestrator) Release(ctx context.Context, taskID, holdID string) (*reg
 	}
 	return res, nil
 }
+
+// ActiveHolds returns every hold that hasn't ended, for showing who
+// holds what (LOOM-267). Read without the per-task locks: it is a
+// snapshot, as any read of a task's status is.
+func (o *Orchestrator) ActiveHolds(ctx context.Context) ([]*registry.TaskHold, error) {
+	return o.store.ListActiveTaskHolds(ctx)
+}
+
+// GetHold returns a hold, active or ended (registry.ErrNotFound if
+// unknown): an ended one says why it ended (LOOM-267).
+func (o *Orchestrator) GetHold(ctx context.Context, id string) (*registry.TaskHold, error) {
+	return o.store.GetTaskHold(ctx, id)
+}
