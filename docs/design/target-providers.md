@@ -160,7 +160,7 @@ Methods the host calls (every one has a per-call deadline, 30 s unless noted):
 | `targets.start(id)`, `targets.stop(id)`, `targets.recreate(id, spec)`, `targets.destroy(id)` | lifecycle; each idempotent and safe to repeat after a crash (2 min) |
 | `targets.health(id)` → `{status, reason, restarts, image_digest}` | the plugin's own view; SSH reachability is the host's probe |
 | `targets.attach_commands(id, session, socket)` → `[{via, command, argv?}]` (`argv`, LOOM-269: the same command as arguments to execute directly, with no shell; absent from an older plugin) | the `kubectl exec` / `docker exec` form of attach for a person, onto `socket`: the instance's tmux socket the host runs the machine's sessions on (LOOM-210; absent from an older host, `loomux`) |
-| `targets.attach_commands(id, session, socket, read_only: true)` → `{commands: [{via, command, argv}], read_only: true}` (LOOM-272; capability `targets.attach_read_only`) | the same forms for a person who only watches: `tmux -L <socket> attach -r -t <session>` inside the exec form, so nothing they type reaches the pane. See "Read-only attach" below |
+| `targets.attach_commands(id, session, socket, read_only: true)` → `{commands: [{via, command, argv}], read_only: true}` (LOOM-272; capability `targets.attach_read_only`) | the same forms for a person who only watches: the exec form ending with exactly `tmux -L <socket> attach -r -t <session>`, so nothing they type reaches the pane. See "Read-only attach" below |
 
 A plugin may send the notification `targets.changed {id, status}` on the same channel; the host treats it as
 a hint to poll sooner and never as the truth. The SDK sends it for a plugin that implements `sdk.Notifying`
@@ -185,12 +185,14 @@ its own enough to keep a writable command from a watcher:
   result without it is used for nothing. In the SDK the read-only commands are a method of their own,
   `sdk.ReadOnlyAttacher.TargetAttachCommandsReadOnly`: a plugin that doesn't implement it fails a `read_only`
   call (`invalid_params`), so it can't answer with its writable commands by default.
-- **The host's check.** Of a confirmed answer, the host keeps only commands with an `argv` in which `-r`
-  follows tmux's `attach` (or `attach-session`) directly, as separate arguments
-  (`protocol.AttachesReadOnly`; the last `attach` in the line, so a wrapper's own verb doesn't count). A
-  command without `argv`, or with tmux's part as one shell line, is dropped. The `command` line a person is
-  shown is made by the host from that `argv`, not taken from the plugin. With nothing left, the answer is
-  `watch_unsupported` and a warning in the log.
+- **The host's check.** Of a confirmed answer, the host keeps only commands whose `argv` ends with exactly
+  `tmux -L <socket> attach -r -t <session>`, as separate arguments, for the socket and session it asked for
+  (`protocol.AttachesReadOnly`; `attach-session` is taken too). A command without `argv`, with the flag
+  elsewhere, for another session, or with tmux's part as one shell line, is dropped. The `command` line a
+  person is shown is made by the host from that `argv`, not taken from the plugin. With nothing left, or when
+  the plugin refuses the request (`invalid_params`, `method_not_found`), the answer is `watch_unsupported`
+  and a warning in the log. The check is of the end of the line, against a plugin's mistakes: what runs
+  before it is the plugin's own exec form, and a plugin is trusted code whose `argv` clients execute as given.
 
 The bundled Kubernetes and Docker plugins declare the capability. `plugintest` checks all three for any plugin.
 Adding the capability is a capability change like any other: a host from before it refuses a manifest that
