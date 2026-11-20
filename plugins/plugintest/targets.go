@@ -240,8 +240,8 @@ func testTargetsLifecycle(t *testing.T, launch Launch, o Options) {
 				t.Errorf("targets.attach_commands, read_only = %+v; want commands, confirmed read_only", watch)
 			}
 			for _, c := range watch.Commands {
-				if !protocol.AttachesReadOnly(c.Argv) {
-					t.Errorf("read-only attach command: argv %q doesn't run tmux attach -r", c.Argv)
+				if !protocol.AttachesReadOnly(c.Argv, "loomux-plugintest-socket", "loomux-plugintest") {
+					t.Errorf("read-only attach command: argv %q doesn't end with tmux -L loomux-plugintest-socket attach -r -t loomux-plugintest", c.Argv)
 				}
 				if c.Via == "" || c.Command == "" || len(c.Command) > 512 || strings.ContainsAny(c.Command, "\r\n\x00") {
 					t.Errorf("read-only attach command outside the grammar: %+v", c)

@@ -74,10 +74,10 @@ type TargetProvider interface {
 // ReadOnlyAttacher is optional beside TargetProvider (LOOM-272): a
 // plugin whose manifest declares targets.attach_read_only answers a
 // read_only targets.attach_commands here, with commands that attach
-// read-only (`tmux -L <socket> attach -r -t <session>` inside its exec
-// form), for a person who only watches. Every command must carry an
-// argv in which -r follows tmux's attach directly: the host checks, and
-// uses none of the answer otherwise.
+// read-only, for a person who only watches. Every command must carry an
+// argv that ends with exactly `tmux -L <socket> attach -r -t <session>`
+// (protocol.AttachesReadOnly), after the plugin's own exec form: the
+// host checks, and drops a command that doesn't.
 //
 // It is a method of its own, not a flag on TargetAttachCommands, so that
 // a plugin written before it can't answer a request to watch with its

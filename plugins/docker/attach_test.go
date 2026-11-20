@@ -109,7 +109,7 @@ func TestAttachCommandReadOnly(t *testing.T) {
 		len(got.Argv) != len(writable.Argv)+1 {
 		t.Errorf("read-only attach = %q (argv %q); want %q", got.Command, got.Argv, want)
 	}
-	if !protocol.AttachesReadOnly(got.Argv) {
+	if !protocol.AttachesReadOnly(got.Argv, "loomux-b", "loomux-x") {
 		t.Errorf("the host wouldn't take %q as read-only", got.Argv)
 	}
 

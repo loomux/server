@@ -112,7 +112,7 @@ func TestAttachCommandReadOnly(t *testing.T) {
 		watch.Commands[0].Command != strings.Join(want, " ") {
 		t.Fatalf("read-only attach = %+v; want %q, confirmed read_only", watch, want)
 	}
-	if !protocol.AttachesReadOnly(watch.Commands[0].Argv) {
+	if !protocol.AttachesReadOnly(watch.Commands[0].Argv, "loomux-b", "loomux-x") {
 		t.Errorf("the host wouldn't take %q as read-only", watch.Commands[0].Argv)
 	}
 
