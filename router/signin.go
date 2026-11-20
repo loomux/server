@@ -256,13 +256,14 @@ func injectsAny(secrets map[string]string, names []string) bool {
 	return false
 }
 
-// apiKeyAlternative is the other way to sign entry in, for a reply: "or
-// store an ANTHROPIC_API_KEY credential for claude-code".
-func apiKeyAlternative(entry AgentType, agentType string) string {
+// signInAlternative is the other way to sign entry in, for a reply:
+// ", or store an ANTHROPIC_API_KEY credential for claude-code" — or ""
+// for an agent no vault credential signs in (Codex).
+func signInAlternative(entry AgentType, agentType string) string {
 	if entry.SignIn == nil || len(entry.SignIn.CredentialEnv) == 0 {
-		return "or store an API key credential for " + agentType
+		return ""
 	}
-	return "or store an " + entry.SignIn.CredentialEnv[0] + " credential for " + agentType
+	return ", or store an " + entry.SignIn.CredentialEnv[0] + " credential for " + agentType
 }
 
 // signInRequired is the dispatch gate's error (LOOM-316): the probe just
@@ -278,15 +279,15 @@ func (r *Router) signInRequired(ctx context.Context, target *registry.Target, ag
 	if err != nil {
 		r.logger.Warn("agent sign-in not opened", "target_id", target.ID, "agent_type", agentType, "error", err)
 		return &classedError{class: registry.ErrorClassLoginRequired, msg: fmt.Sprintf(
-			"router: dispatch: %s, and Loomux couldn't open its sign-in there. Sign it in on %s yourself, %s, "+
-				"then send your message again", reason, target.Name, apiKeyAlternative(entry, agentType))}
+			"router: dispatch: %s, and Loomux couldn't open its sign-in there. Sign it in on %s yourself%s, "+
+				"then send your message again", reason, target.Name, signInAlternative(entry, agentType))}
 	}
 	r.logger.Info("dispatch stopped for an agent sign-in", "target_id", target.ID, "agent_type", agentType,
 		"session", res.Agent.SignInSession)
 	return &classedError{class: registry.ErrorClassLoginRequired, msg: fmt.Sprintf(
-		"router: dispatch: %s. Loomux opened its sign-in there: attach on %s with `%s` and finish the login, "+
-			"%s, then send your message again", reason, target.Name,
-		targets.AttachCommand(r.tmuxSocket, res.Agent.SignInSession), apiKeyAlternative(entry, agentType))}
+		"router: dispatch: %s. Loomux opened its sign-in there: attach on %s with `%s` and finish the login%s, "+
+			"then send your message again", reason, target.Name,
+		targets.AttachCommand(r.tmuxSocket, res.Agent.SignInSession), signInAlternative(entry, agentType))}
 }
 
 // taskAgent is task's agent type entry and target, when it is a probed
@@ -311,33 +312,35 @@ func (r *Router) taskAgent(ctx context.Context, task *registry.Task) (entry Agen
 // signInAfterScreen records the sign-in screen task's turn stopped at
 // against its agent on its target, and opens that agent's sign-in
 // (LOOM-316). It returns the sign-in session's attach command, or "" if
-// none could be opened.
-func (r *Router) signInAfterScreen(ctx context.Context, task *registry.Task, a *registry.Attention) string {
+// none could be opened, and the other way to sign the agent in
+// (signInAlternative).
+func (r *Router) signInAfterScreen(ctx context.Context, task *registry.Task, a *registry.Attention) (attach, alternative string) {
 	entry, target, ok := r.taskAgent(ctx, task)
 	if !ok {
-		return ""
+		return "", ""
 	}
+	alternative = signInAlternative(entry, task.AgentType)
 	log := r.logger.With("task_id", task.ID, "target_id", target.ID, "agent_type", task.AgentType)
 	if err := r.store.SetAgentSignInProblem(ctx, target.ID, task.AgentType, signInProblemFor(a.Detail),
 		time.Now().UTC()); err != nil && !errors.Is(err, registry.ErrNotFound) {
 		log.Warn("agent sign-in problem not recorded", "error", err)
 	}
 	if entry.SignIn == nil {
-		return ""
+		return "", alternative
 	}
 	unlock := r.lockSignIn(target.ID, task.AgentType)
 	defer unlock()
 	rec, err := r.store.GetTargetAgent(ctx, target.ID, task.AgentType)
 	if err != nil {
 		log.Warn("agent sign-in not opened", "error", err)
-		return ""
+		return "", alternative
 	}
 	res, err := r.openSignIn(ctx, target, task.AgentType, entry, rec, false)
 	if err != nil {
 		log.Warn("agent sign-in not opened", "error", err)
-		return ""
+		return "", alternative
 	}
-	return targets.AttachCommand(r.tmuxSocket, res.Agent.SignInSession)
+	return targets.AttachCommand(r.tmuxSocket, res.Agent.SignInSession), alternative
 }
 
 // noteRateLimit records the usage limit task's turn hit against its agent

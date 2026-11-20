@@ -166,10 +166,15 @@ func Codex() router.AgentType {
 		// localhost:1455, which a remote target's browser can't reach
 		// (LOOM-316). An account without device codes enabled gets an
 		// error, and the shell the session drops to can run plain
-		// `codex login` instead.
+		// `codex login`, or `codex login --with-api-key`, instead.
+		//
+		// No CredentialEnv: Codex's TUI doesn't sign in from the
+		// environment. With only OPENAI_API_KEY set, Codex 0.163.0 still
+		// opens at "Sign in with ChatGPT" and `codex login status` says
+		// "Not logged in" (checked 2026-11-20); an API key has to be given
+		// to `codex login --with-api-key`.
 		SignIn: &router.SignIn{
-			Args:          []string{"login", "--device-auth"},
-			CredentialEnv: []string{"OPENAI_API_KEY", "CODEX_API_KEY"},
+			Args: []string{"login", "--device-auth"},
 		},
 		LastMessageKey: "last-assistant-message",
 		InterruptKeys:  []string{"Escape"},
@@ -209,8 +214,8 @@ func Codex() router.AgentType {
 			// Needs Node.js and npm on the target; on a target without
 			// them the install fails and its output says so.
 			Command: "npm install -g @openai/codex",
-			Login: "attach to the target and run `codex login`, or store an OPENAI_API_KEY credential " +
-				"for the codex agent type",
+			Login: "attach to the target and run `codex login` (or `codex login --with-api-key` with an API key on " +
+				"its stdin); Codex doesn't sign in from an OPENAI_API_KEY in its environment",
 		},
 	}
 }

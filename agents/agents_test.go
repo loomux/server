@@ -467,7 +467,7 @@ func TestAdapters_SignIn(t *testing.T) {
 		envNames []string
 	}{
 		{agents.ClaudeCode(), []string{"auth", "login"}, []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}},
-		{agents.Codex(), []string{"login", "--device-auth"}, []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+		{agents.Codex(), []string{"login", "--device-auth"}, nil},
 	}
 	for _, tc := range cases {
 		if tc.agent.SignIn == nil {

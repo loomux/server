@@ -438,3 +438,29 @@ func TestSignInProblemFor(t *testing.T) {
 		}
 	}
 }
+
+// An agent no vault credential signs in (Codex) is gated whatever the
+// vault holds, and its error offers no credential to store.
+func TestDispatch_SignInGateForAnAgentNoKeySignsIn(t *testing.T) {
+	h := newAvailabilityHarnessOpts(t, func(types router.AgentTypeRegistry) {
+		withSignIn(types)
+		at := types["claude-code"]
+		at.SignIn = &router.SignIn{Args: []string{"login", "--device-auth"}}
+		types["claude-code"] = at
+	})
+	h.probes.install("claude")
+	h.probes.setAuth("claude", claudeSignedOut)
+	if err := h.store.CreateCredential(context.Background(), &registry.Credential{
+		ID: uuid.NewString(), Name: "OPENAI_API_KEY", AgentType: "claude-code", Value: "sk-test-000000000000",
+	}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	h.decide(h.provisionDecision("claude-code"))
+	_, err := h.r.Dispatch(context.Background(), "conv-1", "run hostname on jet01")
+	if got := router.ClassifyError(err); got != registry.ErrorClassLoginRequired {
+		t.Fatalf("ClassifyError = %q (err %v), want login_required", got, err)
+	}
+	if strings.Contains(err.Error(), "credential") {
+		t.Errorf("error offers a credential that wouldn't sign the agent in: %v", err)
+	}
+}

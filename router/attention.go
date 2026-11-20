@@ -50,12 +50,12 @@ func (r *Router) needsAttention(ctx context.Context, log *slog.Logger, task *reg
 		pane := targets.AttachCommand(r.tmuxSocket, task.TmuxSession)
 		// The sign-in session (LOOM-316) is at the CLI's login step, where
 		// the task's pane may only show an error ("Please run /login").
-		if signIn := r.signInAfterScreen(cleanupCtx, task, a); signIn != "" {
+		if signIn, alternative := r.signInAfterScreen(cleanupCtx, task, a); signIn != "" {
 			return "", &classedError{class: registry.ErrorClassLoginRequired, msg: fmt.Sprintf(
 				"router: dispatch: %s (it shows %q). Loomux doesn't sign agents in, but it opened the sign-in on %s: "+
-					"attach with `%s` and finish the login there (this task's pane is kept too: `%s`), or store an "+
-					"API key credential for %s, then send your message again",
-				reason, a.Detail, targetName, signIn, pane, task.AgentType)}
+					"attach with `%s` and finish the login there (this task's pane is kept too: `%s`)%s, "+
+					"then send your message again",
+				reason, a.Detail, targetName, signIn, pane, alternative)}
 		}
 		return "", &classedError{class: registry.ErrorClassLoginRequired, msg: fmt.Sprintf(
 			"router: dispatch: %s (it shows %q). Loomux doesn't sign agents in: attach on %s with "+

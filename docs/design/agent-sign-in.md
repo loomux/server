@@ -78,12 +78,21 @@ prepares it for login, we can have methods and functions for agent auth status."
 5. **The dispatch gate.** `launchAgent` already probes right before a fresh launch. When that probe
    says `logged_out`, and the launch would inject none of the agent type's own credential variables
    from the vault (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` for Claude
-   Code; `OPENAI_API_KEY`, `CODEX_API_KEY` for Codex), it does not launch an agent that can only stop
-   at a sign-in screen. It prepares the sign-in and fails the dispatch at once with
-   `login_required`: the message names the target, the attach command for the sign-in session, and
-   the API-key alternative. No task row, no workspace pane. Verified on Claude Code 2.1.329: an
-   `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or Bedrock in the probe's own environment already
-   reads `"loggedIn": true`, so only vault-injected keys need the exception.
+   Code; none for Codex), it does not launch an agent that can only stop at a sign-in screen. It
+   prepares the sign-in and fails the dispatch at once with `login_required`: the message names the
+   target, the attach command for the sign-in session, and, where there is one, the vault-key
+   alternative. No task row, no workspace pane.
+
+   Checked 2026-11-20 against the CLIs themselves, in a throwaway `HOME`:
+   - Claude Code 2.1.329 reads as `"loggedIn": true` with an `ANTHROPIC_API_KEY` or
+     `CLAUDE_CODE_OAUTH_TOKEN` in its environment, an `env` key or `apiKeyHelper` in
+     `~/.claude/settings.json`, or Bedrock (`authMethod` `api_key`, `oauth_token`, `api_key_helper`,
+     `third_party`), so only vault-injected keys need the exception.
+   - Codex 0.163.0 with only `OPENAI_API_KEY` in its environment says `Not logged in` and its TUI
+     opens at "Sign in with ChatGPT": the environment doesn't sign it in, so no vault key is an
+     exception for Codex either (an API key goes to `codex login --with-api-key`, which a person can
+     run in the sign-in session's shell). The LOOM-71 install offer's Codex login step said "or
+     store an OPENAI_API_KEY credential"; it now says this instead.
 
    A turn that still reaches a sign-in screen (the token expired since the probe, an API key was
    rejected) fails as today, records the problem (2), and also prepares the sign-in session, whose
