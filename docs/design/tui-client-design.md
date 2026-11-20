@@ -414,6 +414,9 @@ As built (S11, LOOM-272):
   does the watch, read-only: a registered host, a machine whose plugin
   was uninstalled, and a machine of a plugin with no attach commands at
   all (`targets.attach_commands` undeclared).
+  For T13: show the server's `error` text for `watch_unsupported`
+  rather than a fixed "upgrade the plugin". It is also the answer when
+  the plugin isn't running, where the remedy is to start it.
 - **Deploying it.** `targets.attach_read_only` is a capability change
   for the two plugins. A server from before S11 refuses a manifest that
   declares it, so the server goes first. And an installed plugin
