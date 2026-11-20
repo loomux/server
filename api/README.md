@@ -179,7 +179,7 @@ Specific codes, where a handler tells apart a case a client can act on:
 | `task_inactive` | `POST /api/v1/tasks/{id}/takeover` `409` for a task that has ended and whose pane wasn't kept for a person (LOOM-264) |
 | `unsupported_api_version` | `404` for any `/api` path outside `/api/v1`; the body also carries `supported_versions` |
 | `unsupported_mode` | `POST /api/v1/tasks/{id}/takeover` `400` for `mode: "watch"` from a server older than watch holds (LOOM-264; before LOOM-271): no hold is taken. A server with watch holds never answers it, but a client that may meet an older one still handles it |
-| `watch_unsupported` | `POST /api/v1/tasks/{id}/takeover` `409` for `mode: "watch"` on a machine whose plugin has no read-only attach command (it doesn't declare `targets.attach_read_only`, or answered none): no hold is taken, and no writable command is handed out in its place. The `error` names the plugin; upgrade it, or attach to drive (LOOM-272) |
+| `watch_unsupported` | `POST /api/v1/tasks/{id}/takeover` `409` for `mode: "watch"` on a machine whose plugin has no read-only attach command (it doesn't declare `targets.attach_read_only`, refused the request or answered none; the `error` names the plugin: upgrade it), or isn't running to give it (start it and try again). No hold is taken, and no writable command is handed out in its place; attaching to drive still works (LOOM-272) |
 | `workspace_name_taken` | `POST /api/v1/workspaces` `409` when another workspace has the name (LOOM-215) |
 
 New codes may be added within v1 (a client should treat an unknown code
@@ -667,15 +667,21 @@ or gave one the server refused.
       The server builds the first two. A plugin is asked read-only, only
       when its manifest declares `targets.attach_read_only`, and its
       answer is used only if it confirms read-only and each command's
-      `argv` has `-r` directly after tmux's `attach`; the `command` line
-      of a plugin's entry is then made by the server from that `argv`.
+      `argv` ends with exactly `tmux -L <socket> attach -r -t <session>`
+      for the socket and session asked for; the `command` line of a
+      plugin's entry is then made by the server from that `argv`.
       Nothing is left for the client to add or check, and the writable
-      commands of attach-info are never in a watch's answer. A machine
-      whose plugin has no read-only command (an older plugin) can't be
-      watched: `409` (code `watch_unsupported`) naming the plugin, and
-      no hold is taken, rather than its writable command or the ssh form
-      alone, which doesn't reach a plugin's machine. A plugin that can't
-      be asked just now leaves its entry out, as in attach-info.
+      commands of attach-info are never in a watch's answer. For a
+      plugin's machine the watch gets the plugin's read-only command or
+      is refused, with no hold taken: `409` (code `watch_unsupported`)
+      naming the plugin when it has none (an older plugin), `409` with
+      the same code when the plugin isn't running, and `502` when it
+      didn't answer. It is never given the plugin's writable command, nor
+      the ssh form alone, which doesn't reach a plugin's machine. A
+      target no plugin stands behind (a registered host, or a machine
+      whose plugin was uninstalled) has the ssh form alone, as in
+      attach-info, and so has a machine of a plugin with no attach
+      commands of its own.
       On tmux 3.2 or later `-r` also keeps the watcher's terminal from
       resizing the window (it is `-f read-only,ignore-size`); on an
       older tmux it is read-only only.

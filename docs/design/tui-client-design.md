@@ -376,13 +376,19 @@ As built (S11, LOOM-272):
   (`GET /tasks/{id}/attach-info`) is unchanged and stays writable: the
   read-only commands come only with a watch hold.
 - **What `-r` does** was checked against tmux itself, not read off the
-  command: `targets` has a test that attaches a client with each of the
-  two commands and has it type. tmux refuses the read-only client
-  ("client is read-only"), and the pane gets the driver's keys only. With
-  tmux 3.2 or later `-r` is `-f read-only,ignore-size`, so a watcher's
-  terminal doesn't resize the agent's window either; on an older tmux it
-  is read-only only. A read-only client can still detach and switch
-  session, which is all tmux leaves it.
+  command: `targets` has a test that opens a terminal attached with each
+  of the two commands (a pane of a second tmux server running it) and,
+  at that terminal, types text and asks tmux's command prompt to
+  `send-keys`. Through the read-only command neither reaches the pane;
+  through the writable one both do. The test fails if `-r` is dropped.
+  With tmux 3.2 or later `-r` is `-f read-only,ignore-size`, so a
+  watcher's terminal doesn't resize the agent's window either; on an
+  older tmux it is read-only only. A read-only client can still detach
+  and switch session, which is all tmux leaves it. One thing learned on
+  the way: a read-only *control-mode* client (`tmux -C attach -r`) is
+  refused its commands by tmux 3.8 but not by the tmux on CI's Ubuntu
+  image, so `-r` is a guarantee for the terminal attach these commands
+  start, not for a client someone starts in control mode by hand.
 - **Plugins: three checks,** each enough by itself
   (`target-providers.md` §1.3, "Read-only attach"). The host asks
   `read_only: true` only of a plugin whose manifest declares the new
@@ -390,20 +396,24 @@ As built (S11, LOOM-272):
   `read_only: true` in its answer; in the SDK the read-only commands are
   a method of their own (`sdk.ReadOnlyAttacher`), so a plugin without it
   fails the call instead of answering with its writable commands. And
-  the host keeps only commands whose `argv` has `-r` directly after
-  tmux's `attach`, making the `command` line from that `argv` itself.
-  The Kubernetes and Docker plugins implement it.
-- **`409 watch_unsupported`** when the task's target is a plugin's
-  machine and that plugin has no read-only command: it doesn't declare
-  the capability, or nothing of its answer held. No hold is taken. The
-  message names the plugin and its version ("the kubernetes plugin
+  the host keeps only commands whose `argv` ends with exactly
+  `tmux -L <socket> attach -r -t <session>` for the socket and session
+  it asked for, making the `command` line from that `argv` itself. The
+  Kubernetes and Docker plugins implement it.
+- **A watch offers the ways attach-info offers, each read-only, or it
+  is refused.** For a plugin's machine that means the plugin's own
+  read-only command or no watch, with no hold taken:
+  `409 watch_unsupported` when the plugin has none (it doesn't declare
+  the capability, refused the request, or nothing of its answer held;
+  the message names the plugin and its version: "the kubernetes plugin
   (0.3.9) has no read-only attach command, …; upgrade the plugin, or
-  attach to drive"). The ssh form alone isn't offered instead: it doesn't
-  reach a plugin's machine from a laptop. A plugin with no attach
-  commands at all (`targets.attach_commands` undeclared) has nothing to
-  refuse, and its machines are watched over ssh. A plugin that can't be
-  asked just now (stopped, not answering) leaves its entry out, as it
-  does from attach-info, and the watch gets the read-only ssh form.
+  attach to drive"), `409 watch_unsupported` when the plugin isn't
+  running ("start it and try again"), and `502` when it didn't answer.
+  The ssh form alone isn't offered instead: it doesn't reach a plugin's
+  machine from a laptop. Where attach-info itself offers only ssh, so
+  does the watch, read-only: a registered host, a machine whose plugin
+  was uninstalled, and a machine of a plugin with no attach commands at
+  all (`targets.attach_commands` undeclared).
 - **Deploying it.** `targets.attach_read_only` is a capability change
   for the two plugins. A server from before S11 refuses a manifest that
   declares it, so the server goes first. And an installed plugin
