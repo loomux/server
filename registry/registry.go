@@ -647,6 +647,54 @@ const (
 	AgentAuthUnknown = "unknown"
 )
 
+// SignInState values beyond the AgentAuth* ones (LOOM-316).
+const (
+	// AgentAuthExpired: the sign-in ended, by its own expiry or as a turn
+	// found it (an expired token, a refused key).
+	AgentAuthExpired = "expired"
+	// AgentAuthRateLimited: signed in, but a turn hit the account's usage
+	// limit and none has finished normally since.
+	AgentAuthRateLimited = "rate_limited"
+)
+
+// SignInSessionTTL is how long a sign-in session (LOOM-316) is reported
+// as open: the orphan sweep (LOOM-93) kills a Loomux session no task owns
+// once it is this old.
+const SignInSessionTTL = 24 * time.Hour
+
+// SignInState is the one word a client shows for the agent's sign-in at
+// now (LOOM-316): "" when the CLI isn't installed or wasn't asked; else
+// logged_out if the CLI says so; else what a turn saw (expired for an
+// expired or refused credential, logged_out for a login screen); else
+// expired if the sign-in's own end has passed; else rate_limited after a
+// usage limit; else what the CLI said (logged_in, unknown).
+func (a *TargetAgent) SignInState(now time.Time) string {
+	switch {
+	case !a.Available || a.AuthStatus == "":
+		return ""
+	case a.AuthStatus == AgentAuthLoggedOut:
+		return AgentAuthLoggedOut
+	case a.SignInProblem == AgentSignInExpired || a.SignInProblem == AgentSignInInvalid:
+		return AgentAuthExpired
+	case a.SignInProblem != "":
+		return AgentAuthLoggedOut
+	case a.AuthExpiresAt != nil && !a.AuthExpiresAt.After(now):
+		return AgentAuthExpired
+	case a.LimitedAt != nil:
+		return AgentAuthRateLimited
+	}
+	return a.AuthStatus
+}
+
+// OpenSignInSession is the agent's sign-in session if one is recorded and
+// younger than SignInSessionTTL at now, else "".
+func (a *TargetAgent) OpenSignInSession(now time.Time) string {
+	if a.SignInSession == "" || a.SignInStartedAt == nil || now.Sub(*a.SignInStartedAt) >= SignInSessionTTL {
+		return ""
+	}
+	return a.SignInSession
+}
+
 // TargetAgent.SignInProblem values (LOOM-316): which sign-in screen a
 // turn stopped at, as a fixed word — never the screen's text.
 const (

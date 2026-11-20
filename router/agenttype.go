@@ -176,7 +176,7 @@ func (r AgentTypeRegistry) CompletionConfig() completion.Config {
 func (r AgentTypeRegistry) Get(agentType string) (AgentType, error) {
 	at, ok := r[agentType]
 	if !ok {
-		return AgentType{}, fmt.Errorf("router: unknown agent type %q", agentType)
+		return AgentType{}, fmt.Errorf("%w %q", ErrUnknownAgentType, agentType)
 	}
 	return at, nil
 }

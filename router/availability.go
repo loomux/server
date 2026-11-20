@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -190,15 +191,41 @@ func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentT
 		Path: path, Version: version, CheckedAt: time.Now().UTC(),
 	}
 	// Only what the CLI said is classified, never kept: it can carry the
-	// account's email.
+	// account's email. Its details (LOOM-316) are kept only as short
+	// words and a time.
 	if path != "" && entry.AuthCheck != nil {
 		rec.AuthStatus = entry.AuthCheck.Status(auth)
+		if entry.AuthCheck.Details != nil {
+			d := entry.AuthCheck.Details(auth)
+			rec.AuthMethod, rec.AuthPlan = authWord(d.Method), authWord(d.Plan)
+			if !d.ExpiresAt.IsZero() {
+				expires := d.ExpiresAt.UTC()
+				rec.AuthExpiresAt = &expires
+			}
+		}
+	}
+	// What turns saw and the sign-in session (LOOM-316) aren't the
+	// probe's to change; read them to return the whole record.
+	prev, err := r.store.GetTargetAgent(ctx, target.ID, agentType)
+	if err != nil && !errors.Is(err, registry.ErrNotFound) {
+		return nil, fmt.Errorf("probe agent %q: %w", agentType, err)
 	}
 	if err := r.store.SetTargetAgent(ctx, rec); err != nil {
 		return nil, fmt.Errorf("probe agent %q: record result: %w", agentType, err)
 	}
 	r.logger.Info("agent probed", "target_id", target.ID, "agent_type", agentType, "available", rec.Available,
-		"path", path, "version", version, "auth", rec.AuthStatus)
+		"path", path, "version", version, "auth", rec.AuthStatus, "auth_method", rec.AuthMethod, "auth_plan", rec.AuthPlan)
+	if prev != nil {
+		rec.SignInProblem, rec.SignInProblemAt = prev.SignInProblem, prev.SignInProblemAt
+		rec.LimitedAt, rec.LimitResets = prev.LimitedAt, prev.LimitResets
+		rec.SignInSession, rec.SignInStartedAt = prev.SignInSession, prev.SignInStartedAt
+		// Signed out before, signed in now, with its sign-in session open:
+		// the person finished signing in there.
+		if prev.SignInSession != "" && prev.AuthStatus != registry.AgentAuthLoggedIn &&
+			rec.AuthStatus == registry.AgentAuthLoggedIn {
+			r.signInDone(context.WithoutCancel(ctx), target, rec)
+		}
+	}
 	return rec, nil
 }
 

@@ -23,6 +23,14 @@ const permissionScreen = "PERMISSION PROMPT"
 // as a three-option permission; any other screen as no prompt.
 func attentionHarness(t *testing.T, opts ...router.Option) (registry.Store, *fakeExecutor, *router.Router, *registry.Workspace) {
 	t.Helper()
+	return attentionHarnessWith(t, nil, opts...)
+}
+
+// attentionHarnessWith lets a test adjust the executor and agent types
+// first.
+func attentionHarnessWith(t *testing.T, adjust func(*fakeExecutor, router.AgentTypeRegistry),
+	opts ...router.Option) (registry.Store, *fakeExecutor, *router.Router, *registry.Workspace) {
+	t.Helper()
 	store := newTestStore(t)
 	exec := newFakeExecutor()
 	exec.capture = permissionScreen
@@ -50,6 +58,9 @@ func attentionHarness(t *testing.T, opts ...router.Option) (registry.Store, *fak
 				NoProgressTimeout: time.Minute, DetectPrompt: detect},
 			LaunchTemplate: "claude",
 		},
+	}
+	if adjust != nil {
+		adjust(exec, agentTypes)
 	}
 	markerDir := t.TempDir()
 	detector := completion.NewDetector(store, exec.factory(), agentTypes.CompletionConfig(), markerDir,
