@@ -154,7 +154,14 @@ The signer workflow is `.github/workflows/image.yml` for the server and
 plugin images and `.github/workflows/agent.yml` for the agent, at
 `refs/heads/main` for a patch release (the run is the merge's) and at
 `refs/tags/v0.Y.0` for a hand-pushed MINOR. The provenance names the
-commit; for a release it is the commit `vX.Y.Z` tags.
+commit; for a release it is the commit `vX.Y.Z` tags. One exception:
+the agent image built before `agent.yml` existed
+(`ghcr.io/loomux/agent:sha-2ea73bd`, 2026-10-11), which every release
+pins until `deploy/agent` changes, was signed by
+`.github/workflows/plugins.yml`. `--signer-workflow` compares the
+repository exactly as the certificate spells it, in lower case:
+`loomux/server/.github/workflows/image.yml` verifies,
+`Loomux/server/...` doesn't.
 
 ### The release run (`.github/workflows/image.yml`)
 
