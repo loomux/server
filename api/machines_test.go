@@ -28,6 +28,8 @@ type stubMachines struct {
 	lastReq  providers.CreateRequest
 	lastSize string
 	calls    []string
+	// watchErr, if set, is ReadOnlyAttachCommands' answer for a machine.
+	watchErr error
 }
 
 func (s *stubMachines) view(id string) (*providers.MachineView, error) {
@@ -113,6 +115,19 @@ func (s *stubMachines) AttachCommands(ctx context.Context, id, session string) (
 		// As a plugin from before LOOM-269 answers: no argv.
 		{Via: "legacy", Command: "legacy attach " + session},
 	}, nil
+}
+
+// ReadOnlyAttachCommands is the plugin's command with tmux's -r, as a
+// plugin that declares targets.attach_read_only answers (LOOM-272).
+func (s *stubMachines) ReadOnlyAttachCommands(ctx context.Context, id, session string) ([]protocol.AttachCommand, error) {
+	if _, ok := s.envs[id]; !ok {
+		return nil, providers.ErrNotMachine
+	}
+	if s.watchErr != nil {
+		return nil, s.watchErr
+	}
+	argv := []string{"kubectl", "exec", "-it", "lx-abc", "--", "tmux", "-L", "loomux", "attach", "-r", "-t", session}
+	return []protocol.AttachCommand{{Via: "kubectl", Command: strings.Join(argv, " "), Argv: argv}}, nil
 }
 
 func machineServer(t *testing.T) (base, token string, stub *stubMachines, store registry.Store) {

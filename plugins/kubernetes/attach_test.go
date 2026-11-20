@@ -75,3 +75,60 @@ func attachVia(t *testing.T, handle rpc.Handler, p protocol.AttachParams) []prot
 	}
 	return att.Commands
 }
+
+// LOOM-272: asked read-only, through the SDK as the host asks, the
+// command attaches with tmux's -r, so a person who only watches can't
+// type into the pane, and the answer says it is read-only. The manifest
+// declares the capability the host asks under. A plain request still
+// gets the writable command, unconfirmed.
+func TestAttachCommandReadOnly(t *testing.T) {
+	p := configured(t, fake.NewClientset(), nil)
+	env, err := p.CreateTarget(ctx, spec("abc123"))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if m, err := p.Describe(ctx); err != nil || !m.HasCapability(protocol.CapTargetsAttachReadOnly) || !m.HasCapability(protocol.CapTargetsAttachCommands) {
+		t.Fatalf("manifest = %+v, %v; want it to declare %s", m, err, protocol.CapTargetsAttachReadOnly)
+	}
+	handle := sdk.Handler(p, nil)
+	ask := func(p protocol.AttachParams) protocol.AttachResult {
+		t.Helper()
+		params, _ := json.Marshal(p)
+		res, rerr := handle(ctx, protocol.MethodTargetsAttachCommands, params)
+		if rerr != nil {
+			t.Fatalf("targets.attach_commands %+v: %v", p, rerr)
+		}
+		out, _ := json.Marshal(res)
+		var att protocol.AttachResult
+		if err := json.Unmarshal(out, &att); err != nil {
+			t.Fatal(err)
+		}
+		return att
+	}
+
+	watch := ask(protocol.AttachParams{ID: env.ID, Session: "loomux-x", Socket: "loomux-b", ReadOnly: true})
+	want := []string{"kubectl", "-n", "loomux-agents", "exec", "-it", "lx-abc123", "--", "tmux", "-L", "loomux-b", "attach", "-r", "-t", "loomux-x"}
+	if !watch.ReadOnly || len(watch.Commands) != 1 || watch.Commands[0].Via != "kubectl" || !slices.Equal(watch.Commands[0].Argv, want) ||
+		watch.Commands[0].Command != strings.Join(want, " ") {
+		t.Fatalf("read-only attach = %+v; want %q, confirmed read_only", watch, want)
+	}
+	if !protocol.AttachesReadOnly(watch.Commands[0].Argv) {
+		t.Errorf("the host wouldn't take %q as read-only", watch.Commands[0].Argv)
+	}
+
+	plain := ask(protocol.AttachParams{ID: env.ID, Session: "loomux-x", Socket: "loomux-b"})
+	if plain.ReadOnly || len(plain.Commands) != 1 || slices.Contains(plain.Commands[0].Argv, "-r") {
+		t.Errorf("a plain request = %+v; want the writable command, read_only unset", plain)
+	}
+
+	// The same grammar and the same lookups as the writable form.
+	if _, err := p.TargetAttachCommandsReadOnly(ctx, env.ID, "x; rm -rf /", "loomux"); rpcCode(err) != rpc.CodeInvalidParams {
+		t.Errorf("read-only attach with a bad session: %v", err)
+	}
+	if _, err := p.TargetAttachCommandsReadOnly(ctx, env.ID, "loomux-x", "b; rm -rf /"); rpcCode(err) != rpc.CodeInvalidParams {
+		t.Errorf("read-only attach with a bad socket: %v", err)
+	}
+	if _, err := p.TargetAttachCommandsReadOnly(ctx, "nope", "loomux-x", "loomux"); rpcCode(err) != rpc.CodeNotFound {
+		t.Errorf("read-only attach to an unknown machine: %v", err)
+	}
+}

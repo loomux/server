@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Loomux/server/plugins/protocol"
 )
 
 // LOOM-269: an argv a client may execute as given is passed on; anything
@@ -38,5 +40,54 @@ func TestValidAttachArgv(t *testing.T) {
 	}
 	if got := validAttachArgv(slices.Repeat([]string{"x"}, maxAttachArgs)); len(got) != maxAttachArgs {
 		t.Errorf("an argv of exactly %d arguments was refused", maxAttachArgs)
+	}
+}
+
+// LOOM-272: what of a plugin's answer to a read_only request is handed
+// to a person who only watches: nothing unless the plugin confirmed
+// read_only, and then only commands whose argv attaches read-only.
+func TestReadOnlyAttachAnswer(t *testing.T) {
+	ro := []string{"kubectl", "exec", "-it", "lx-abc", "--", "tmux", "-L", "loomux", "attach", "-r", "-t", "loomux-x"}
+	rw := []string{"kubectl", "exec", "-it", "lx-abc", "--", "tmux", "-L", "loomux", "attach", "-t", "loomux-x"}
+	cmd := func(argv []string) protocol.AttachCommand {
+		return protocol.AttachCommand{Via: "kubectl", Command: strings.Join(argv, " "), Argv: argv}
+	}
+
+	got := readOnlyAttachAnswer(protocol.AttachResult{ReadOnly: true, Commands: []protocol.AttachCommand{cmd(ro)}})
+	if len(got) != 1 || !slices.Equal(got[0].Argv, ro) {
+		t.Errorf("a confirmed read-only answer = %+v; want its command", got)
+	}
+	for name, res := range map[string]protocol.AttachResult{
+		// As a plugin from before LOOM-272 answers: it ignored read_only.
+		"unconfirmed, writable":  {Commands: []protocol.AttachCommand{cmd(rw)}},
+		"unconfirmed, read-only": {Commands: []protocol.AttachCommand{cmd(ro)}},
+		"confirmed, writable":    {ReadOnly: true, Commands: []protocol.AttachCommand{cmd(rw)}},
+		"confirmed, no argv":     {ReadOnly: true, Commands: []protocol.AttachCommand{{Via: "kubectl", Command: strings.Join(ro, " ")}}},
+		"confirmed, bad argv":    {ReadOnly: true, Commands: []protocol.AttachCommand{{Via: "kubectl", Command: "x", Argv: append([]string{"a\nb"}, ro...)}}},
+		"confirmed, no via":      {ReadOnly: true, Commands: []protocol.AttachCommand{{Command: strings.Join(ro, " "), Argv: ro}}},
+		"confirmed, none":        {ReadOnly: true},
+	} {
+		if got := readOnlyAttachAnswer(res); len(got) != 0 {
+			t.Errorf("%s: readOnlyAttachAnswer = %+v, want none", name, got)
+		}
+	}
+	// The line to paste is made from the argv that was checked, not taken
+	// from the plugin: a line that says something else than the argv is
+	// never shown for a watch.
+	lying := readOnlyAttachAnswer(protocol.AttachResult{ReadOnly: true, Commands: []protocol.AttachCommand{
+		{Via: "kubectl", Command: strings.Join(rw, " "), Argv: ro},
+	}})
+	if len(lying) != 1 || lying[0].Command != strings.Join(ro, " ") {
+		t.Errorf("a writable line beside a read-only argv = %+v; want the argv's own line", lying)
+	}
+	spaced := []string{"tool", "--as", "a b", "it's", "tmux", "attach", "-r", "-t", "loomux-x"}
+	quoted := readOnlyAttachAnswer(protocol.AttachResult{ReadOnly: true, Commands: []protocol.AttachCommand{{Via: "tool", Command: "x", Argv: spaced}}})
+	if want := `tool --as 'a b' 'it'\''s' tmux attach -r -t loomux-x`; len(quoted) != 1 || quoted[0].Command != want {
+		t.Errorf("the line for an argv with spaces and a quote = %+v; want %q", quoted, want)
+	}
+	// One good command beside a bad one: the good one alone.
+	mixed := readOnlyAttachAnswer(protocol.AttachResult{ReadOnly: true, Commands: []protocol.AttachCommand{cmd(rw), cmd(ro)}})
+	if len(mixed) != 1 || !slices.Equal(mixed[0].Argv, ro) {
+		t.Errorf("a mixed answer = %+v; want only the read-only command", mixed)
 	}
 }

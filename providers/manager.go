@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1292,7 +1293,7 @@ func (m *Manager) AttachCommands(ctx context.Context, targetID, session string) 
 	}
 	out := make([]protocol.AttachCommand, 0, len(res.Commands))
 	for _, c := range res.Commands {
-		if c.Via == "" || c.Command == "" || len(c.Command) > 512 || strings.ContainsAny(c.Command, "\r\n\x00") {
+		if c.Via == "" || c.Command == "" || len(c.Command) > maxAttachCommand || strings.ContainsAny(c.Command, "\r\n\x00") {
 			continue
 		}
 		out = append(out, protocol.AttachCommand{Via: truncate(c.Via, 32), Command: c.Command, Argv: validAttachArgv(c.Argv)})
@@ -1306,6 +1307,110 @@ const (
 	maxAttachArgs     = 64
 	maxAttachArgvSize = 2048
 )
+
+// maxAttachCommand bounds an attach command's line to paste.
+const maxAttachCommand = 512
+
+// WatchUnsupportedError: the plugin behind a machine has no read-only
+// attach command to give a person who only watches (LOOM-272). Its
+// manifest doesn't declare targets.attach_read_only, or it declares it
+// and didn't answer with one. The writable commands are never the
+// fallback: the caller refuses the watch.
+type WatchUnsupportedError struct {
+	// Plugin and Version are the plugin's name and version, for the
+	// message a person reads.
+	Plugin, Version string
+}
+
+func (e *WatchUnsupportedError) Error() string {
+	return "providers: the " + e.Plugin + " plugin (" + e.Version + ") has no read-only attach command"
+}
+
+// ReadOnlyAttachCommands asks the plugin how a person attaches to
+// session on the machine read-only (`tmux … attach -r`), to watch
+// without being able to type (LOOM-272).
+//
+// The plugin is asked only when its manifest declares
+// targets.attach_read_only: one from before it would ignore read_only
+// and answer with its writable commands. Its answer is used only as far
+// as it holds (readOnlyAttachAnswer). When the plugin doesn't declare
+// the capability, or nothing of its answer holds, the error is a
+// *WatchUnsupportedError. A plugin with no attach commands at all
+// (targets.attach_commands undeclared) has none to refuse: nil, nil, as
+// AttachCommands answers for it.
+func (m *Manager) ReadOnlyAttachCommands(ctx context.Context, targetID, session string) ([]protocol.AttachCommand, error) {
+	env, _, err := m.managed(ctx, targetID)
+	if err != nil {
+		return nil, err
+	}
+	caps, err := m.plugins.Capabilities(ctx, env.PluginID)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.Contains(caps, protocol.CapTargetsAttachCommands) {
+		return nil, nil
+	}
+	unsupported := &WatchUnsupportedError{Plugin: env.PluginName, Version: env.PluginVersion}
+	if !slices.Contains(caps, protocol.CapTargetsAttachReadOnly) {
+		return nil, unsupported
+	}
+	var res protocol.AttachResult
+	params := protocol.AttachParams{ID: env.ID, Session: session, Socket: m.tmuxSocket(), ReadOnly: true}
+	if err := m.plugins.Call(ctx, env.PluginID, protocol.MethodTargetsAttachCommands, params, &res); err != nil {
+		return nil, m.mapPluginErr(err)
+	}
+	out := readOnlyAttachAnswer(res)
+	if len(out) == 0 {
+		m.logger.Warn("plugin declares targets.attach_read_only but answered no usable read-only attach command; the watch is refused",
+			"plugin", env.PluginName, "version", env.PluginVersion, "target_id", targetID,
+			"confirmed_read_only", res.ReadOnly, "commands", len(res.Commands))
+		return nil, unsupported
+	}
+	return out, nil
+}
+
+// readOnlyAttachAnswer is what of a plugin's answer to a read_only
+// targets.attach_commands is handed to a person who only watches. None
+// of it unless the plugin confirmed read_only: a plugin that ignored
+// the parameter answers with commands that can type. Then only the
+// commands inside the usual grammar that carry an argv which attaches
+// read-only (protocol.AttachesReadOnly). The line to paste is made here
+// from that argv, not taken from the plugin, so it can't be another
+// command than the one that was checked.
+func readOnlyAttachAnswer(res protocol.AttachResult) []protocol.AttachCommand {
+	if !res.ReadOnly {
+		return nil
+	}
+	var out []protocol.AttachCommand
+	for _, c := range res.Commands {
+		argv := validAttachArgv(c.Argv)
+		if c.Via == "" || argv == nil || !protocol.AttachesReadOnly(argv) {
+			continue
+		}
+		line := shellJoin(argv)
+		if len(line) > maxAttachCommand {
+			continue
+		}
+		out = append(out, protocol.AttachCommand{Via: truncate(c.Via, 32), Command: line, Argv: argv})
+	}
+	return out
+}
+
+// shellJoin is argv as one line for a POSIX shell: each argument as it
+// is when it is plain, single-quoted otherwise.
+func shellJoin(argv []string) string {
+	parts := make([]string, len(argv))
+	for i, arg := range argv {
+		if arg != "" && strings.IndexFunc(arg, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r))
+		}) < 0 {
+			parts[i] = arg
+			continue
+		}
+		parts[i] = "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+	}
+	return strings.Join(parts, " ")
+}
 
 // validAttachArgv is argv if a client may execute it as given, else nil:
 // the command is then offered without one, as from a plugin that sends

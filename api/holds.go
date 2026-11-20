@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Loomux/server/orchestrator"
 	"github.com/Loomux/server/registry"
+	"github.com/Loomux/server/targets"
 )
 
 // TaskHolds takes, renews and releases holds on tasks (LOOM-264,
@@ -107,6 +109,10 @@ const (
 	// codeTaskInactive: takeover's 409 for a task that has ended and
 	// whose pane wasn't kept for a person.
 	codeTaskInactive = "task_inactive"
+	// codeWatchUnsupported: takeover's 409 for mode watch on a machine
+	// whose plugin has no read-only attach command (LOOM-272): no hold is
+	// taken, and no writable command is handed out in its place.
+	codeWatchUnsupported = "watch_unsupported"
 	// codeHoldEnded: heartbeat's 410 for a hold that has ended (the
 	// body's ended_reason says why).
 	codeHoldEnded = "hold_ended"
@@ -299,9 +305,10 @@ func cleanClientLabel(label string) (string, bool) {
 //
 // A watch hold (mode: "watch", LOOM-271) only says who is looking: the
 // task, its driver and its turn are left as they are, and it is never
-// refused as held. Its attach carries no command to run: every command
-// this server builds today is writable, and a session that asked only to
-// look is never handed a way to type (the read-only forms are LOOM-272).
+// refused as held. Its attach carries read-only commands only
+// (LOOM-272): a session that asked only to look is never handed a way
+// to type. A machine whose plugin has no read-only command is 409
+// watch_unsupported, and no hold is taken.
 //
 // See orchestrator.Takeover.
 func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
@@ -347,9 +354,14 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// Before the hold is taken: an unknown task is a 404 here, and a
 	// takeover never succeeds without its attach-info. A watch's is read
-	// without the commands, so no writable one is ever in hand to send.
+	// without the writable commands, so none is ever in hand to send,
+	// and given the read-only ones; a machine that has none is refused
+	// here, unheld.
 	attach, ok := s.attachInfoFor(w, r, id, !watch)
 	if !ok {
+		return
+	}
+	if watch && !s.setReadOnlyAttach(w, r, &attach) {
 		return
 	}
 	// Who holds it is who the session is (LOOM-268): its client kind,
@@ -415,6 +427,32 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, takeoverResponse{TaskID: id, Hold: hold, Attach: attach})
 	}
+}
+
+// setReadOnlyAttach gives a watch's attach-info, read without commands,
+// the commands to watch with (LOOM-272): attach_command and
+// attach_commands that attach read-only (tmux's -r), so whoever runs one
+// can't type into the pane. The local and ssh forms are built here; a
+// plugin's own are asked of it read-only and checked
+// (readOnlyAttachCommandsFor). On failure it writes the response and
+// reports false: 409 watch_unsupported when the target is a machine
+// whose plugin has no read-only command.
+func (s *Server) setReadOnlyAttach(w http.ResponseWriter, r *http.Request, attach *attachInfoResponse) bool {
+	target, err := s.attachInfo.GetTarget(r.Context(), attach.Target.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not resolve workspace's target")
+		return false
+	}
+	commands, unsupported := s.readOnlyAttachCommandsFor(r.Context(), target, attach.TmuxSession)
+	if unsupported != nil {
+		writeErrorCode(w, http.StatusConflict, codeWatchUnsupported, fmt.Sprintf(
+			"the %s plugin (%s) has no read-only attach command, so this machine can't be watched; upgrade the plugin, or attach to drive",
+			unsupported.Plugin, unsupported.Version))
+		return false
+	}
+	attach.AttachCommand = targets.ReadOnlyAttachCommand(s.tmuxSocketName(), attach.TmuxSession)
+	attach.AttachCommands = commands
+	return true
 }
 
 // withHold is holds with hold in it: in place of the entry with its id
