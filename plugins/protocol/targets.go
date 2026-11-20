@@ -214,11 +214,12 @@ type RecreateParams struct {
 // sends none, which means DefaultTmuxSocket.
 //
 // ReadOnly (LOOM-272) asks for commands that attach read-only, for a
-// person who only watches: `tmux … attach -r`, so nothing they type
-// reaches the pane. The host sets it only for a plugin that declares
-// CapTargetsAttachReadOnly, and takes the answer as read-only only when
-// AttachResult.ReadOnly says so. A plugin that can't must fail the call
-// rather than answer with a command that can type.
+// person who only watches: each must end with exactly
+// `tmux -L <socket> attach -r -t <session>` (AttachesReadOnly), so
+// nothing they type reaches the pane. The host sets it only for a
+// plugin that declares CapTargetsAttachReadOnly, and takes the answer as
+// read-only only when AttachResult.ReadOnly says so. A plugin that can't
+// must fail the call rather than answer with a command that can type.
 type AttachParams struct {
 	ID       string `json:"id"`
 	Session  string `json:"session"`
@@ -268,23 +269,34 @@ func RequiredCapability(method string) string {
 	return ""
 }
 
-// AttachesReadOnly reports whether argv, an AttachCommand's, attaches to
-// a tmux session read-only (LOOM-272): its last `attach` (or
-// `attach-session`) argument is followed directly by `-r`, as in
+// AttachesReadOnly reports whether argv, an AttachCommand's, attaches
+// read-only to session on socket (LOOM-272): it ends with exactly
+//
+//	tmux -L <socket> attach -r -t <session>
+//
+// as separate arguments (attach-session for attach is taken too), which
+// is how a plugin's exec form ends:
 // `kubectl … exec -it <pod> -- tmux -L <socket> attach -r -t <session>`.
-// The last one, so that a wrapper's own `attach` verb earlier in the
-// line doesn't count.
+// So -r is tmux's own flag, on the session and socket the host asked
+// for, and nothing follows it.
 //
 // It is what the host checks of every command a plugin answers a
-// read_only request with: a command without an argv, or whose argv
-// doesn't say so in this form (tmux's part passed as one shell line,
-// say), is not handed to a person who asked only to watch. It is a
-// check of the command's shape, not a proof of what the program does.
-func AttachesReadOnly(argv []string) bool {
-	for i := len(argv) - 1; i >= 0; i-- {
-		if argv[i] == "attach" || argv[i] == "attach-session" {
-			return i+1 < len(argv) && argv[i+1] == "-r"
-		}
+// read_only request with: a command without an argv, or whose argv ends
+// any other way (the flag elsewhere, another session, tmux's part as one
+// shell line), is not handed to a person who asked only to watch.
+//
+// It checks the end of the line, against a plugin's mistakes. What runs
+// before it is the plugin's own exec form, which the host can't judge: a
+// plugin is trusted code (its argv is executed as given), and one that
+// wrapped a different command in a shell to pass this check would be
+// lying on purpose.
+func AttachesReadOnly(argv []string, socket, session string) bool {
+	const n = 7
+	if len(argv) < n || socket == "" || session == "" {
+		return false
 	}
-	return false
+	end := argv[len(argv)-n:]
+	return end[0] == "tmux" && end[1] == "-L" && end[2] == socket &&
+		(end[3] == "attach" || end[3] == "attach-session") && end[4] == "-r" &&
+		end[5] == "-t" && end[6] == session
 }

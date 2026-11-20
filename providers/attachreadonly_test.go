@@ -88,7 +88,8 @@ func TestReadOnlyAttachCommands(t *testing.T) {
 	}
 
 	// A plugin with no attach command of its own at all has none to
-	// refuse: the plain ssh form is all there is, for a watch too.
+	// refuse: its machines are attached to over ssh, so the plain ssh
+	// form is all attach-info offers, and all a watch needs read-only.
 	h.setCapabilities(t, func(c string) bool {
 		return c != protocol.CapTargetsAttachReadOnly && c != protocol.CapTargetsAttachCommands
 	})
@@ -110,5 +111,26 @@ func TestReadOnlyAttachCommands_WritableAnswerIsDropped(t *testing.T) {
 	var unsupported *providers.WatchUnsupportedError
 	if !errors.As(err, &unsupported) || len(cmds) != 0 {
 		t.Fatalf("ReadOnlyAttachCommands from a plugin answering writable = %+v, %v; want a WatchUnsupportedError and no command", cmds, err)
+	}
+}
+
+// A plugin that declares the capability and then refuses a read_only
+// request (as the SDK does for a plugin that has no read-only method)
+// has no read-only command: the same answer as one that never declared
+// it, not a failure that would leave the watch with other commands.
+func TestReadOnlyAttachCommands_RefusalIsUnsupported(t *testing.T) {
+	h := newHarness(t, map[string]any{"targets_mode": fake.TargetsWatchRefused})
+	ctx := context.Background()
+	target, _ := h.create(t, "watched", true)
+	h.waitStatus(t, target.ID, registry.EnvironmentRunning)
+
+	cmds, err := h.m.ReadOnlyAttachCommands(ctx, target.ID, "loomux-x")
+	var unsupported *providers.WatchUnsupportedError
+	if !errors.As(err, &unsupported) || unsupported.Plugin != "fake" || len(cmds) != 0 {
+		t.Fatalf("ReadOnlyAttachCommands from a plugin that refuses = %+v, %v; want a WatchUnsupportedError naming it", cmds, err)
+	}
+	// Its writable command is still there for a driver.
+	if writable, err := h.m.AttachCommands(ctx, target.ID, "loomux-x"); err != nil || len(writable) != 1 {
+		t.Errorf("AttachCommands = %+v, %v", writable, err)
 	}
 }

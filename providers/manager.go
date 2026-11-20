@@ -1333,11 +1333,15 @@ func (e *WatchUnsupportedError) Error() string {
 // The plugin is asked only when its manifest declares
 // targets.attach_read_only: one from before it would ignore read_only
 // and answer with its writable commands. Its answer is used only as far
-// as it holds (readOnlyAttachAnswer). When the plugin doesn't declare
-// the capability, or nothing of its answer holds, the error is a
-// *WatchUnsupportedError. A plugin with no attach commands at all
-// (targets.attach_commands undeclared) has none to refuse: nil, nil, as
-// AttachCommands answers for it.
+// as it holds (readOnlyAttachAnswer). The error is a
+// *WatchUnsupportedError when the plugin has no read-only command: it
+// doesn't declare the capability, it refuses the request, or nothing of
+// its answer holds. Any other error (ErrPluginUnavailable, say) means it
+// couldn't be asked.
+//
+// A plugin with no attach commands at all (targets.attach_commands
+// undeclared) has none to refuse: nil, nil, as AttachCommands answers
+// for it. Its machines are attached to over ssh alone.
 func (m *Manager) ReadOnlyAttachCommands(ctx context.Context, targetID, session string) ([]protocol.AttachCommand, error) {
 	env, _, err := m.managed(ctx, targetID)
 	if err != nil {
@@ -1345,7 +1349,7 @@ func (m *Manager) ReadOnlyAttachCommands(ctx context.Context, targetID, session 
 	}
 	caps, err := m.plugins.Capabilities(ctx, env.PluginID)
 	if err != nil {
-		return nil, err
+		return nil, m.mapPluginErr(err)
 	}
 	if !slices.Contains(caps, protocol.CapTargetsAttachCommands) {
 		return nil, nil
@@ -1354,12 +1358,22 @@ func (m *Manager) ReadOnlyAttachCommands(ctx context.Context, targetID, session 
 	if !slices.Contains(caps, protocol.CapTargetsAttachReadOnly) {
 		return nil, unsupported
 	}
+	socket := m.tmuxSocket()
 	var res protocol.AttachResult
-	params := protocol.AttachParams{ID: env.ID, Session: session, Socket: m.tmuxSocket(), ReadOnly: true}
+	params := protocol.AttachParams{ID: env.ID, Session: session, Socket: socket, ReadOnly: true}
 	if err := m.plugins.Call(ctx, env.PluginID, protocol.MethodTargetsAttachCommands, params, &res); err != nil {
+		// The plugin's own no to the request as asked (the SDK's answer
+		// for a plugin with no read-only method): it has none, whatever
+		// its manifest says.
+		var rpcErr *rpc.Error
+		if errors.As(err, &rpcErr) && (rpcErr.Code == rpc.CodeInvalidParams || rpcErr.Code == rpc.CodeMethodNotFound) {
+			m.logger.Warn("plugin declares targets.attach_read_only but refused a read-only attach request; the watch is refused",
+				"plugin", env.PluginName, "version", env.PluginVersion, "target_id", targetID, "error", rpcErr.Message)
+			return nil, unsupported
+		}
 		return nil, m.mapPluginErr(err)
 	}
-	out := readOnlyAttachAnswer(res)
+	out := readOnlyAttachAnswer(res, socket, session)
 	if len(out) == 0 {
 		m.logger.Warn("plugin declares targets.attach_read_only but answered no usable read-only attach command; the watch is refused",
 			"plugin", env.PluginName, "version", env.PluginVersion, "target_id", targetID,
@@ -1370,21 +1384,22 @@ func (m *Manager) ReadOnlyAttachCommands(ctx context.Context, targetID, session 
 }
 
 // readOnlyAttachAnswer is what of a plugin's answer to a read_only
-// targets.attach_commands is handed to a person who only watches. None
-// of it unless the plugin confirmed read_only: a plugin that ignored
-// the parameter answers with commands that can type. Then only the
-// commands inside the usual grammar that carry an argv which attaches
-// read-only (protocol.AttachesReadOnly). The line to paste is made here
-// from that argv, not taken from the plugin, so it can't be another
-// command than the one that was checked.
-func readOnlyAttachAnswer(res protocol.AttachResult) []protocol.AttachCommand {
+// targets.attach_commands, for session on socket, is handed to a person
+// who only watches. None of it unless the plugin confirmed read_only: a
+// plugin that ignored the parameter answers with commands that can
+// type. Then only the commands inside the usual grammar whose argv ends
+// with tmux's read-only attach to that session on that socket
+// (protocol.AttachesReadOnly). The line to paste is made here from that
+// argv, not taken from the plugin, so it can't be another command than
+// the one that was checked.
+func readOnlyAttachAnswer(res protocol.AttachResult, socket, session string) []protocol.AttachCommand {
 	if !res.ReadOnly {
 		return nil
 	}
 	var out []protocol.AttachCommand
 	for _, c := range res.Commands {
 		argv := validAttachArgv(c.Argv)
-		if c.Via == "" || argv == nil || !protocol.AttachesReadOnly(argv) {
+		if c.Via == "" || argv == nil || !protocol.AttachesReadOnly(argv, socket, session) {
 			continue
 		}
 		line := shellJoin(argv)

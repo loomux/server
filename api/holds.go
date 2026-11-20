@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Loomux/server/orchestrator"
+	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -443,11 +444,20 @@ func (s *Server) setReadOnlyAttach(w http.ResponseWriter, r *http.Request, attac
 		writeError(w, http.StatusInternalServerError, "could not resolve workspace's target")
 		return false
 	}
-	commands, unsupported := s.readOnlyAttachCommandsFor(r.Context(), target, attach.TmuxSession)
-	if unsupported != nil {
+	commands, err := s.readOnlyAttachCommandsFor(r.Context(), target, attach.TmuxSession)
+	var unsupported *providers.WatchUnsupportedError
+	switch {
+	case errors.As(err, &unsupported):
 		writeErrorCode(w, http.StatusConflict, codeWatchUnsupported, fmt.Sprintf(
 			"the %s plugin (%s) has no read-only attach command, so this machine can't be watched; upgrade the plugin, or attach to drive",
 			unsupported.Plugin, unsupported.Version))
+		return false
+	case errors.Is(err, providers.ErrPluginUnavailable):
+		writeErrorCode(w, http.StatusConflict, codeWatchUnsupported,
+			"the plugin that owns this machine isn't running, so its read-only attach command can't be had; start it and try again, or attach to drive")
+		return false
+	case err != nil:
+		writeError(w, http.StatusBadGateway, "the plugin that owns this machine didn't answer for its read-only attach command, so it wasn't watched; try again")
 		return false
 	}
 	attach.AttachCommand = targets.ReadOnlyAttachCommand(s.tmuxSocketName(), attach.TmuxSession)

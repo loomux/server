@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/orchestrator"
-	"github.com/Loomux/server/plugins"
 	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
@@ -350,21 +350,50 @@ func TestTakeover_WatchUnsupported(t *testing.T) {
 	}
 }
 
-// A plugin that can't be asked just now (stopped, not answering) leaves
-// its command out, as it does from attach-info: the watch gets the ssh
-// form, read-only, and never anything writable.
-func TestTakeover_WatchWithThePluginDown(t *testing.T) {
+// For a plugin's machine a watch gets the plugin's own read-only command
+// or is refused: when the plugin can't be asked (it isn't running, it
+// doesn't answer) no hold is taken, rather than the watch be given the
+// ssh form alone, which doesn't reach a plugin's machine. Never anything
+// writable either way.
+func TestTakeover_WatchWithThePluginUnavailable(t *testing.T) {
 	h, stub := watchServer(t)
-	stub.watchErr = plugins.ErrUnavailable
+	for name, tc := range map[string]struct {
+		err    error
+		status int
+		code   string
+		says   string
+	}{
+		"not running":   {providers.ErrPluginUnavailable, http.StatusConflict, "watch_unsupported", "isn't running"},
+		"didn't answer": {errors.New("rpc: deadline exceeded"), http.StatusBadGateway, "bad_gateway", "didn't answer"},
+	} {
+		stub.watchErr = tc.err
+		status, raw := doJSON(t, http.MethodPost, h.base+"/api/v1/tasks/t-machine/takeover", h.tokenA, map[string]any{"mode": "watch"})
+		var out watchAnswer
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatal(err)
+		}
+		if status != tc.status || out.Code != tc.code || !strings.Contains(out.Error, tc.says) || out.Hold != nil || out.Attach != nil {
+			t.Errorf("%s: watch = %d %s; want %d %s saying %q, no hold, no attach", name, status, raw, tc.status, tc.code, tc.says)
+		}
+		if strings.Contains(raw, "tmux") || strings.Contains(raw, "deadline exceeded") {
+			t.Errorf("%s: the refusal carries a command or the plugin's error: %s", name, raw)
+		}
+		if holds, _ := h.store.ListActiveTaskHolds(context.Background()); len(holds) != 0 {
+			t.Errorf("%s: a refused watch left a hold: %+v", name, holds[0])
+		}
+	}
 
+	// A machine whose plugin was uninstalled has no plugin behind it any
+	// more: like a plain target, it is watched over ssh.
+	stub.watchErr = providers.ErrDetached
 	status, out, raw := h.takeover("t-machine", h.tokenA, map[string]any{"mode": "watch"})
 	if status != http.StatusOK || out.Hold == nil || out.Hold.Mode != "watch" {
-		t.Fatalf("watch with the plugin down = %d %s", status, raw)
+		t.Fatalf("watch of a detached machine = %d %s", status, raw)
 	}
 	var got []watchCommand
 	if err := json.Unmarshal(out.Attach.AttachCommands, &got); err != nil || len(got) != 1 || got[0].Via != "ssh" ||
 		!strings.HasSuffix(got[0].Command, "'tmux -L loomux-test attach -r -t loomux-t-machine'") {
-		t.Errorf("watch attach_commands with the plugin down = %s; want the read-only ssh form alone", out.Attach.AttachCommands)
+		t.Errorf("watch attach_commands of a detached machine = %s; want the read-only ssh form alone", out.Attach.AttachCommands)
 	}
 	if strings.Contains(raw, "attach -t") {
 		t.Errorf("watch answer carries a writable attach: %s", raw)

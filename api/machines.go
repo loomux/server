@@ -388,24 +388,26 @@ func (s *Server) attachCommandsFor(ctx context.Context, target *registry.Target,
 // here. A plugin's own come from the plugin, asked read-only and
 // checked (providers.Manager.ReadOnlyAttachCommands).
 //
-// When the target is a plugin's machine and that plugin has no
-// read-only command, it reports the *providers.WatchUnsupportedError and
-// no commands at all: the watch is refused rather than given the
-// plugin's writable command, or the ssh form alone, which doesn't reach
-// a plugin's machine. A plugin that can't be asked just now leaves its
-// command out, as in attachCommandsFor.
-func (s *Server) readOnlyAttachCommandsFor(ctx context.Context, target *registry.Target, session string) ([]attachCommandResponse, *providers.WatchUnsupportedError) {
+// For a plugin's machine the watch gets the plugin's read-only command
+// or none at all: when the plugin has none
+// (*providers.WatchUnsupportedError) or can't be asked (any other
+// error), that error is returned and the caller refuses the watch,
+// rather than give it the plugin's writable command, or the ssh form
+// alone, which doesn't reach a plugin's machine. A target no plugin
+// stands behind (it never did, or the plugin was uninstalled) has the
+// ssh form alone, as from attachCommandsFor.
+func (s *Server) readOnlyAttachCommandsFor(ctx context.Context, target *registry.Target, session string) ([]attachCommandResponse, error) {
 	out := []attachCommandResponse{}
 	if s.machines != nil {
 		cmds, err := s.machines.ReadOnlyAttachCommands(ctx, target.ID, session)
-		var unsupported *providers.WatchUnsupportedError
-		if errors.As(err, &unsupported) {
-			return nil, unsupported
-		}
-		if err == nil {
+		switch {
+		case err == nil:
 			for _, c := range cmds {
 				out = append(out, attachCommandResponse{Via: c.Via, Command: c.Command, Argv: c.Argv})
 			}
+		case errors.Is(err, providers.ErrNotMachine), errors.Is(err, providers.ErrDetached):
+		default:
+			return nil, err
 		}
 	}
 	if target.Kind == registry.TargetKindRemote {
