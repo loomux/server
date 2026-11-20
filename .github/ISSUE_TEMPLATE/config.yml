@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/loomux/server/blob/main/SECURITY.md
+    about: Please don't open a public issue for a vulnerability; follow SECURITY.md.
+  - name: The web client
+    url: https://github.com/loomux/web/issues
+    about: Problems with the browser UI itself go to loomux/web.
+  - name: The terminal client
+    url: https://github.com/loomux/tui/issues
+    about: Problems with the terminal client go to loomux/tui.
