@@ -488,3 +488,39 @@ func TestDispatch_TurnKeepsASignInRestartedDuringIt(t *testing.T) {
 		t.Error("the sign-in restarted during the turn was closed")
 	}
 }
+
+// A sign-in session nearly as old as the orphan sweep's limit, or one
+// Loomux has no record of, is replaced rather than handed back: the sweep
+// would take it, or the API wouldn't report it (codex review).
+func TestPrepareSignIn_ReplacesAnOldOrUnrecordedSession(t *testing.T) {
+	h := signInHarness(t)
+	ctx := context.Background()
+	h.prepare(t, false)
+	old := h.exec.sessionFor(signInSession)
+	if err := h.store.SetAgentSignInSession(ctx, h.target.ID, "claude-code", signInSession,
+		time.Now().Add(-registry.SignInSessionTTL+time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	res := h.prepare(t, false)
+	if !res.Opened || res.Reused {
+		t.Fatalf("result = %+v, want the old session replaced", res)
+	}
+	if fresh := h.exec.sessionFor(signInSession); fresh == old || !fresh.alive || old.alive {
+		t.Error("the old session wasn't replaced by a fresh one")
+	}
+	if rec := h.agentRecord(t, "claude-code"); rec.SignInStartedAt == nil || time.Since(*rec.SignInStartedAt) > time.Minute {
+		t.Errorf("recorded start = %v, want now", rec.SignInStartedAt)
+	}
+
+	// Recorded nowhere (the record was cleared), still running.
+	if err := h.store.SetAgentSignInSession(ctx, h.target.ID, "claude-code", "", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	stray := h.exec.sessionFor(signInSession)
+	if res := h.prepare(t, false); !res.Opened {
+		t.Fatalf("result = %+v, want the unrecorded session replaced", res)
+	}
+	if stray.alive {
+		t.Error("the unrecorded session is still running")
+	}
+}

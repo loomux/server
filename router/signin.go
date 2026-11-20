@@ -22,6 +22,11 @@ var (
 	ErrNoSignIn = errors.New("router: agent type has no sign-in")
 )
 
+// signInReuseFor is how old an open sign-in session may be and still be
+// handed back rather than replaced: under registry.SignInSessionTTL, when
+// the orphan sweep (hourly) kills it, with room for two sweeps.
+const signInReuseFor = registry.SignInSessionTTL - 2*time.Hour
+
 // SignInResult is what PrepareSignIn did (LOOM-316).
 type SignInResult struct {
 	// Agent is the agent's record after the probe, its sign-in session
@@ -144,7 +149,8 @@ func (r *Router) PrepareSignIn(ctx context.Context, targetID, agentType string, 
 
 // openSignIn opens agentType's sign-in session on target, rec being its
 // probed record; the caller holds the sign-in lock. A session already
-// there is reused unless restart.
+// there is reused unless restart, or unless it isn't recorded or is older
+// than signInReuseFor, when it is replaced.
 func (r *Router) openSignIn(ctx context.Context, target *registry.Target, agentType string, entry AgentType,
 	rec *registry.TargetAgent, restart bool) (*SignInResult, error) {
 	if rec.Path == "" {
@@ -159,15 +165,12 @@ func (r *Router) openSignIn(ctx context.Context, target *registry.Target, agentT
 	if err != nil {
 		return nil, fmt.Errorf("router: open sign-in: %w", err)
 	}
-	if alive && !restart {
-		if rec.SignInSession != name || rec.SignInStartedAt == nil {
-			// Open but no longer recorded: record it from now.
-			now := time.Now().UTC()
-			if err := r.store.SetAgentSignInSession(ctx, target.ID, agentType, name, now); err != nil {
-				return nil, fmt.Errorf("router: open sign-in: %w", err)
-			}
-			rec.SignInSession, rec.SignInStartedAt = name, &now
-		}
+	// Only a recorded session young enough to outlive the next orphan
+	// sweeps is handed back; an unrecorded or old one is replaced, so a
+	// caller is never given a session about to be swept, or one the API
+	// no longer reports (codex review).
+	if alive && !restart && rec.SignInSession == name && rec.SignInStartedAt != nil &&
+		time.Since(*rec.SignInStartedAt) < signInReuseFor {
 		return &SignInResult{Agent: rec, Reused: true}, nil
 	}
 	if alive {
