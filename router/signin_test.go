@@ -427,10 +427,10 @@ func TestDispatch_UsageLimitIsRecordedUntilATurnFinishes(t *testing.T) {
 func TestSignInProblemFor(t *testing.T) {
 	cases := map[string]string{
 		"OAuth token has expired. Please obtain a new token or refresh your existing token.": registry.AgentSignInExpired,
-		"Invalid API key · Please run /login":                                               registry.AgentSignInInvalid,
-		"Select login method:":                                                              registry.AgentSignInSignedOut,
-		"Sign in with ChatGPT":                                                              registry.AgentSignInSignedOut,
-		"Please run /login":                                                                 registry.AgentSignInSignedOut,
+		"Invalid API key · Please run /login":                                                registry.AgentSignInInvalid,
+		"Select login method:":                                                               registry.AgentSignInSignedOut,
+		"Sign in with ChatGPT":                                                               registry.AgentSignInSignedOut,
+		"Please run /login":                                                                  registry.AgentSignInSignedOut,
 	}
 	for detail, want := range cases {
 		if got := router.SignInProblemFor(detail); got != want {

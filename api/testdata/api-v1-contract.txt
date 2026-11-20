@@ -80,6 +80,18 @@ DELETE /api/v1/targets/{id} status 409
 DELETE /api/v1/targets/{id} status 500
 DELETE /api/v1/targets/{id} status 502
 DELETE /api/v1/targets/{id} status 503
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in request-header Authorization
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in response - none
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in response-header Content-Type
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 204
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 401
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 404
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 409
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 422
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 500
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 501
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 502
 DELETE /api/v1/targets/{id}/pin
 DELETE /api/v1/targets/{id}/pin request-header Authorization
 DELETE /api/v1/targets/{id}/pin response - object
@@ -687,6 +699,25 @@ GET /api/v1/targets/{id}/agents request-header Authorization
 GET /api/v1/targets/{id}/agents response - object
 GET /api/v1/targets/{id}/agents response .agents []object
 GET /api/v1/targets/{id}/agents response .agents[].agent_type string
+GET /api/v1/targets/{id}/agents response .agents[].auth object omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.expires_at time omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.method string omitempty
+GET /api/v1/targets/{id}/agents response .agents[].auth.plan string omitempty
+GET /api/v1/targets/{id}/agents response .agents[].auth.problem object omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.problem.kind string
+GET /api/v1/targets/{id}/agents response .agents[].auth.problem.observed_at time
+GET /api/v1/targets/{id}/agents response .agents[].auth.rate_limit object omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.rate_limit.observed_at time
+GET /api/v1/targets/{id}/agents response .agents[].auth.rate_limit.resets string omitempty
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in object omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_command string
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_commands []object
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_commands[].argv []string omitempty
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_commands[].command string
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_commands[].via string
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.started_at time
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.tmux_session string
+GET /api/v1/targets/{id}/agents response .agents[].auth.state string
 GET /api/v1/targets/{id}/agents response .agents[].auth_status string omitempty
 GET /api/v1/targets/{id}/agents response .agents[].available boolean
 GET /api/v1/targets/{id}/agents response .agents[].checked_at time
@@ -1300,6 +1331,50 @@ POST /api/v1/targets status 500
 POST /api/v1/targets status 501
 POST /api/v1/targets status 502
 POST /api/v1/targets status 503
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in request - object
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in request .restart boolean
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in request-header Authorization
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response - object
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent object
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.agent_type string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth object omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.expires_at time omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.method string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.plan string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.problem object omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.problem.kind string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.problem.observed_at time
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.rate_limit object omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.rate_limit.observed_at time
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.rate_limit.resets string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in object omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_command string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_commands []object
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_commands[].argv []string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_commands[].command string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_commands[].via string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.started_at time
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.tmux_session string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.state string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth_status string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.available boolean
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.checked_at time
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.path string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.version string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .opened boolean
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .reused boolean
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response-header Content-Type
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 200
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 400
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 401
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 404
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 409
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 413
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 422
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 500
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 501
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 502
 POST /api/v1/targets/{id}/migrate-ssh
 POST /api/v1/targets/{id}/migrate-ssh request - object
 POST /api/v1/targets/{id}/migrate-ssh request .dry_run boolean
@@ -1483,6 +1558,25 @@ POST /api/v1/targets/{id}/probe request-header Authorization
 POST /api/v1/targets/{id}/probe response - object
 POST /api/v1/targets/{id}/probe response .agents []object
 POST /api/v1/targets/{id}/probe response .agents[].agent_type string
+POST /api/v1/targets/{id}/probe response .agents[].auth object omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.expires_at time omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.method string omitempty
+POST /api/v1/targets/{id}/probe response .agents[].auth.plan string omitempty
+POST /api/v1/targets/{id}/probe response .agents[].auth.problem object omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.problem.kind string
+POST /api/v1/targets/{id}/probe response .agents[].auth.problem.observed_at time
+POST /api/v1/targets/{id}/probe response .agents[].auth.rate_limit object omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.rate_limit.observed_at time
+POST /api/v1/targets/{id}/probe response .agents[].auth.rate_limit.resets string omitempty
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in object omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_command string
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_commands []object
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_commands[].argv []string omitempty
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_commands[].command string
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_commands[].via string
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.started_at time
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.tmux_session string
+POST /api/v1/targets/{id}/probe response .agents[].auth.state string
 POST /api/v1/targets/{id}/probe response .agents[].auth_status string omitempty
 POST /api/v1/targets/{id}/probe response .agents[].available boolean
 POST /api/v1/targets/{id}/probe response .agents[].checked_at time
