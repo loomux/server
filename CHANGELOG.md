@@ -31,7 +31,8 @@ lines:
 - **Router models set in the app**, OpenAI-compatible or Anthropic's
   native API, with keys set, tested and rotated from Settings.
 - **The API v1 freeze** (the renames and removals below) and a contract
-  test that keeps `/api/v1` additions-only from here.
+  test that makes any change to `/api/v1`'s routes and fields show in
+  review, ahead of 1.0's additions-only promise.
 - **The server side of the terminal client** (loomux/tui): taking a task
   over while you're attached to its pane, handing it back, and linking a
   terminal to your login.
@@ -172,8 +173,9 @@ lines:
   that machine gets them, below a workspace-scoped credential and above
   an agent-type one.
 - Attach-info lists `attach_commands`: a plugin's ways in (`kubectl
-  exec`, `docker exec`) and plain ssh for every remote target, each also
-  as `argv` for a client to run without a shell (LOOM-269).
+  exec`, `docker exec`) and plain ssh for every remote target. Each also
+  comes as `argv`, for a client to run without a shell, when the plugin
+  supplies one the server accepts (LOOM-269).
 
 #### Targets and SSH
 
@@ -244,9 +246,9 @@ lines:
   automation into its pane. `/release` hands it back; release without a
   `hold_id` is Take back, from any session. Another session gets `409
   task_held` unless it forces. A hold ends by itself when its lease runs
-  out, its session is logged out or revoked, or its task ends: the
-  attached tmux clients are detached first, and if they can't be,
-  nothing changes and the next sweep tries again. A restart gives every
+  out or its session is logged out or revoked: the attached tmux clients
+  are detached first, and if they can't be, nothing changes and the next
+  sweep tries again. A hold whose task ended just ends. A restart gives every
   hold a fresh lease. Ended holds stay as an audit trail (migration
   00036).
 - Linking a terminal to your login (LOOM-268): a session made by a
@@ -587,7 +589,8 @@ lines:
   and of the earlier-conversation note a new agent gets (LOOM-251); the
   longest values go first, so one credential that is part of another
   can't leave the longer one's rest behind (LOOM-156); a secret split by
-  a line wrap or whitespace is caught (LOOM-157); overlapping matches
+  a line wrap is caught, and so is a vault value of 12 bytes or more
+  split by whitespace (LOOM-157); overlapping matches
   are redacted as their union (LOOM-184); and credentials in URLs are
   redacted.
 - Vault credentials are bound to their row and scope (LOOM-175,
