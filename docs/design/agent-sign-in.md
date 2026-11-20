@@ -42,8 +42,9 @@ prepares it for login, we can have methods and functions for agent auth status."
    (`expired` | `invalid_credentials` | `signed_out`, a fixed word chosen from which marker matched,
    never the pane line) with its time; a usage limit records `limited_at` and the reset text the
    detector already extracts. Both are cleared by the next turn of that agent on that target that
-   finishes normally; the problem is also cleared when the sign-in completes (4). Probes never
-   overwrite these columns.
+   finishes normally, each only if it was seen before that turn started (a concurrent turn's newer
+   observation is kept; one conditional `UPDATE`); the problem is also cleared when a probe finds the
+   sign-in completed (4). Probes never overwrite these columns.
 3. **Prepared sign-in.** `Router.PrepareSignIn(target, agent type)`:
    - probes the agent; not installed is an error (the install offer is LOOM-71's);
    - already `logged_in` (and no turn-observed problem): returns the status, opens nothing (unless
@@ -67,14 +68,16 @@ prepares it for login, we can have methods and functions for agent auth status."
 4. **Cleanup.** The sign-in is done, and its session killed and forgotten, when:
    - a probe (any: pre-launch, periodic, on demand) finds the agent `logged_in` where the previous
      probe had not, with a sign-in session recorded (the person signed in there); or
-   - a turn of that agent on that target finishes normally after the session was opened (which
-     covers the case where the CLI's own check said `logged_in` all along, an expired token the
-     check doesn't see).
+   - a turn of that agent on that target that started after the session was opened finishes
+     normally (which covers the case where the CLI's own check said `logged_in` all along, an
+     expired token the check doesn't see).
 
-   A probe that keeps saying `logged_in` doesn't close a session opened with `restart` (signing in
-   to another account): only a finished turn, `DELETE …/sign-in` or the sweep does. An abandoned
-   session is a `loomux-` session no task owns, so the existing orphan sweep (LOOM-93) kills it
-   after 24 h; the API stops reporting a recorded session older than that.
+   Both re-read the record under the per-(target, agent type) lock first and leave a session that
+   was restarted meanwhile alone: it is the person's new attempt. A probe that keeps saying
+   `logged_in` doesn't close a session opened with `restart` (signing in to another account): only
+   a turn that started after it was opened and finished normally, `DELETE …/sign-in` or the sweep
+   does. An abandoned session is a `loomux-` session no task owns, so the existing orphan sweep
+   (LOOM-93) kills it after 24 h; the API stops reporting a recorded session older than that.
 5. **The dispatch gate.** `launchAgent` already probes right before a fresh launch. When that probe
    says `logged_out`, and the launch would inject none of the agent type's own credential variables
    from the vault (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` for Claude
