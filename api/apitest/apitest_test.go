@@ -418,14 +418,35 @@ func TestTakeoverHeartbeatRelease(t *testing.T) {
 		t.Errorf("conversation task = %v", tasks[0])
 	}
 
-	// Another session is told who holds it; watch isn't served yet.
+	// Another session is told who holds it. It may watch (LOOM-271): a
+	// watch hold beside the laptop's, with no command that could type,
+	// and the task still the laptop's.
 	status, out = call(t, srv, phone, "POST", "/tasks/"+task.ID+"/takeover", nil)
 	if status != http.StatusConflict || out["code"] != "task_held" || obj(t, out["hold"])["id"] != holdID {
 		t.Errorf("second session = %d %v", status, out)
 	}
 	status, out = call(t, srv, phone, "POST", "/tasks/"+task.ID+"/takeover", map[string]any{"mode": "watch"})
-	if status != http.StatusBadRequest || out["code"] != "unsupported_mode" {
-		t.Errorf("watch = %d %v", status, out)
+	if status != http.StatusOK || obj(t, out["hold"])["mode"] != "watch" {
+		t.Fatalf("watch = %d %v", status, out)
+	}
+	watchID := obj(t, out["hold"])["id"].(string)
+	attach := obj(t, out["attach"])
+	if attach["attach_command"] != "" || len(list(t, attach["attach_commands"])) != 0 ||
+		obj(t, attach["hold"])["id"] != holdID || obj(t, list(t, attach["watch_holds"])[0])["id"] != watchID {
+		t.Errorf("watch attach = %v; want no command, the laptop's drive hold and the phone's watch hold", attach)
+	}
+	if h := srv.ActiveHold(task.ID); h == nil || h.ID != holdID {
+		t.Errorf("ActiveHold after a watch = %+v, want the laptop's drive hold", h)
+	}
+	if w := srv.WatchHolds(task.ID); len(w) != 1 || w[0].ID != watchID || w[0].Mode != registry.HoldModeWatch {
+		t.Errorf("WatchHolds = %+v, want the phone's watch hold", w)
+	}
+	status, out = call(t, srv, phone, "POST", "/tasks/"+task.ID+"/release", map[string]any{"hold_id": watchID})
+	if status != http.StatusOK || out["status"] != "human_takeover" || obj(t, out["hold"])["ended_reason"] != "released" {
+		t.Errorf("release of the watch hold = %d %v; want the task still human_takeover", status, out)
+	}
+	if w := srv.WatchHolds(task.ID); len(w) != 0 {
+		t.Errorf("WatchHolds after the release = %+v, want none", w)
 	}
 
 	status, out = call(t, srv, laptop, "POST", "/tasks/"+task.ID+"/takeover/heartbeat", map[string]string{"hold_id": holdID})

@@ -41,7 +41,10 @@ var ErrDetachFailed = errors.New("orchestrator: could not detach the clients att
 // (task_ended). Ending a drive hold for the first two detaches the tmux
 // clients attached to the task's session and hands the task back to
 // automation, in that order: if they can't be detached, the hold stays
-// and the next sweep tries again (it fails closed).
+// and the next sweep tries again (it fails closed). Ending a watch hold
+// (LOOM-271) is only the hold's end: nobody is detached, since a
+// read-only client can't collide with automation and the detach would
+// throw the task's driver out with it, and the task is left as it is.
 //
 // On start, Run first gives every active hold a full lease from then
 // (Grace), so a restart or deploy longer than a lease doesn't end the
@@ -182,10 +185,12 @@ func (s *HoldSweeper) Grace(ctx context.Context) (int, error) {
 // Targets are worked on concurrently (up to maxSweepTargets at once), a
 // target's holds one after another, each under its own deadline
 // (endTimeout). A target that times out or can't be reached is skipped
-// for the rest of the pass: its holds stay, as any hold whose clients
-// couldn't be detached does, and the next pass tries again. So a target
-// that stopped answering costs a pass one deadline, not one per hold,
-// and never holds up the holds on the others.
+// for the rest of the pass: its drive holds stay, as any hold whose
+// clients couldn't be detached does, and the next pass tries again. So a
+// target that stopped answering costs a pass one deadline, not one per
+// hold, and never holds up the holds on the others. Its watch holds end
+// all the same: their end detaches nobody (LOOM-271), so it needs
+// nothing from the target.
 func (s *HoldSweeper) Sweep(ctx context.Context) int {
 	holds, err := s.orch.store.ListActiveTaskHolds(ctx)
 	if err != nil {
@@ -220,14 +225,19 @@ func (s *HoldSweeper) Sweep(ctx context.Context) int {
 		go func() {
 			defer wg.Done()
 			defer func() { <-slots }()
+			down := false
 			for _, h := range group {
+				// On a target found down, the rest of its drive holds
+				// wait for the next pass. A watch hold's end asks
+				// nothing of the target (LOOM-271), so it ends anyway.
+				if down && h.Mode != registry.HoldModeWatch {
+					continue
+				}
 				ok, targetDown := s.sweepHold(ctx, h, sessions)
 				if ok {
 					ended.Add(1)
 				}
-				if targetDown {
-					return // the rest of this target's holds wait for the next pass
-				}
+				down = down || targetDown
 			}
 		}()
 	}

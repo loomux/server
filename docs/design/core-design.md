@@ -438,6 +438,13 @@ Since LOOM-267 holds are shown on a conversation's tasks, attach-info,
 conversation list rows (`held_by`) and the stream (`task_hold`), and a
 message to a held conversation fails with dispatch error class `held`,
 its error naming the holder.
+Since LOOM-271 a takeover can ask to **watch** instead (`mode: "watch"`):
+a hold that only records who is attached read-only. The status isn't
+touched, so automation keeps typing; any number of sessions may watch a
+task beside the one that drives it; and a watch hold's end detaches
+nobody. Watch holds are shown beside the drive hold (`watch_holds`, and a
+`watchers` count on list rows). A watch is never handed a writable attach
+command: until the read-only forms exist (LOOM-272) it is handed none.
 The full model, expiry and watching are in `tui-client-design.md`, "Server
 awareness: holds" and "Taking over a running turn".
 

@@ -37,23 +37,38 @@ type TaskHolds interface {
 	GetHold(ctx context.Context, id string) (*registry.TaskHold, error)
 }
 
-// activeDriveHolds returns each task's active drive hold, by task id
-// (LOOM-267): who drives it, which is what a hold shows on a task, its
-// attach-info and its conversation's list row. Empty, not an error, on
-// a server without holds.
-func (s *Server) activeDriveHolds(ctx context.Context) (map[string]*registry.TaskHold, error) {
+// holdsOnTask is what a task shows of its holds (LOOM-267, LOOM-271):
+// the one that drives it, if any, and those that watch it, oldest first.
+// A watch hold is never shown as the drive hold: who is in the pane and
+// who is only looking stay apart everywhere a client reads them.
+type holdsOnTask struct {
+	drive *registry.TaskHold
+	watch []*registry.TaskHold
+}
+
+// activeHoldsByTask returns each task's active holds, by task id: what
+// a hold shows on a task, its attach-info, its conversation's list row
+// and the stream. A task with none isn't in it (its zero value shows
+// nobody). Empty, not an error, on a server without holds.
+func (s *Server) activeHoldsByTask(ctx context.Context) (map[string]holdsOnTask, error) {
 	if s.taskHolds == nil {
-		return map[string]*registry.TaskHold{}, nil
+		return map[string]holdsOnTask{}, nil
 	}
 	holds, err := s.taskHolds.ActiveHolds(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]*registry.TaskHold, len(holds))
+	out := make(map[string]holdsOnTask, len(holds))
+	// Oldest acquired first, so each task's watch holds come in order.
 	for _, h := range holds {
-		if h.Mode == registry.HoldModeDrive {
-			out[h.TaskID] = h
+		of := out[h.TaskID]
+		switch h.Mode {
+		case registry.HoldModeDrive:
+			of.drive = h
+		case registry.HoldModeWatch:
+			of.watch = append(of.watch, h)
 		}
+		out[h.TaskID] = of
 	}
 	return out, nil
 }
@@ -92,9 +107,6 @@ const (
 	// codeTaskInactive: takeover's 409 for a task that has ended and
 	// whose pane wasn't kept for a person.
 	codeTaskInactive = "task_inactive"
-	// codeUnsupportedMode: takeover's 400 for a mode this server doesn't
-	// serve (watch, until watch holds exist).
-	codeUnsupportedMode = "unsupported_mode"
 	// codeHoldEnded: heartbeat's 410 for a hold that has ended (the
 	// body's ended_reason says why).
 	codeHoldEnded = "hold_ended"
@@ -137,6 +149,16 @@ type holdResponse struct {
 	EndedReason string     `json:"ended_reason,omitempty"`
 }
 
+// newHoldResponses is holds as clients see them: an empty list, never
+// null, when there are none.
+func newHoldResponses(holds []*registry.TaskHold) []*holdResponse {
+	out := make([]*holdResponse, 0, len(holds))
+	for _, h := range holds {
+		out = append(out, newHoldResponse(h))
+	}
+	return out
+}
+
 func newHoldResponse(h *registry.TaskHold) *holdResponse {
 	if h == nil {
 		return nil
@@ -165,7 +187,8 @@ type takeoverRequest struct {
 	ClientLabel string `json:"client_label,omitempty"`
 	// TTLSeconds is the lease's length, 15 to 300; 45 when left out.
 	TTLSeconds *int `json:"ttl_seconds,omitempty"`
-	// Force takes the task from another session that holds it.
+	// Force takes the task from another session that holds it. It is for
+	// a drive takeover: with watch it is refused.
 	Force bool `json:"force,omitempty"`
 }
 
@@ -266,11 +289,21 @@ func cleanClientLabel(label string) (string, bool) {
 }
 
 // handleTakeover serves POST /api/v1/tasks/{id}/takeover (LOOM-264): the
-// caller's session takes the drive hold on the task, which pauses
-// automation into its pane, and gets the attach-info with it. The hold is
-// checked before the task's status: the session's own hold is renewed
-// and returned, another session's is a 409 task_held unless force. See
-// orchestrator.Takeover.
+// caller's session takes a hold on the task, and gets the attach-info
+// with it.
+//
+// A drive hold (the default) pauses automation into the task's pane. The
+// hold is checked before the task's status: the session's own hold is
+// renewed and returned, another session's is a 409 task_held unless
+// force.
+//
+// A watch hold (mode: "watch", LOOM-271) only says who is looking: the
+// task, its driver and its turn are left as they are, and it is never
+// refused as held. Its attach carries no command to run: every command
+// this server builds today is writable, and a session that asked only to
+// look is never handed a way to type (the read-only forms are LOOM-272).
+//
+// See orchestrator.Takeover.
 func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	if s.taskHolds == nil {
 		writeError(w, http.StatusNotImplemented, "task takeover is not configured on this server")
@@ -280,15 +313,20 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	if !readOptionalJSON(w, r, &req) {
 		return
 	}
-	switch registry.HoldMode(req.Mode) {
-	case "", registry.HoldModeDrive:
-	case registry.HoldModeWatch:
-		// Refused rather than answered with a drive hold: a client that
-		// asked only to look must never be handed the pane.
-		writeErrorCode(w, http.StatusBadRequest, codeUnsupportedMode, "this server doesn't support watch holds yet")
-		return
+	mode := registry.HoldMode(req.Mode)
+	switch mode {
+	case "":
+		mode = registry.HoldModeDrive
+	case registry.HoldModeDrive, registry.HoldModeWatch:
 	default:
 		writeError(w, http.StatusBadRequest, `mode must be "drive" or "watch"`)
+		return
+	}
+	watch := mode == registry.HoldModeWatch
+	if watch && req.Force {
+		// Refused, not ignored: force detaches a pane's holder, which a
+		// request to look must never be read as asking for.
+		writeError(w, http.StatusBadRequest, "force takes a task from the session driving it; it can't be used with watch")
 		return
 	}
 	var ttl time.Duration
@@ -308,8 +346,9 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 
 	id := r.PathValue("id")
 	// Before the hold is taken: an unknown task is a 404 here, and a
-	// takeover never succeeds without its attach-info.
-	attach, ok := s.attachInfoFor(w, r, id)
+	// takeover never succeeds without its attach-info. A watch's is read
+	// without the commands, so no writable one is ever in hand to send.
+	attach, ok := s.attachInfoFor(w, r, id, !watch)
 	if !ok {
 		return
 	}
@@ -324,7 +363,7 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 		SessionID:   sess.ID,
 		ClientKind:  sess.ClientKind,
 		ClientLabel: label,
-		Mode:        registry.HoldModeDrive,
+		Mode:        mode,
 		TTL:         ttl,
 		Force:       req.Force,
 	})
@@ -342,8 +381,6 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 			"the terminal attached to this task couldn't be detached, so it wasn't taken; try again")
 	case errors.Is(err, orchestrator.ErrTaskInactive):
 		writeErrorCode(w, http.StatusConflict, codeTaskInactive, "the task has ended and its pane wasn't kept for a person")
-	case errors.Is(err, orchestrator.ErrUnsupportedHoldMode):
-		writeErrorCode(w, http.StatusBadRequest, codeUnsupportedMode, "this server doesn't support that hold mode yet")
 	case errors.As(err, &invalid):
 		writeError(w, http.StatusBadRequest, invalid.Reason)
 	case errors.Is(err, registry.ErrNotFound):
@@ -359,12 +396,37 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 		// dispatch's wait checks its session again (LOOM-182).
 		s.endSessionHolds(r.Context(), sess.ID)
 		writeError(w, http.StatusUnauthorized, "invalid or expired session")
+	case res.Hold.Mode != mode:
+		// Never reached: Takeover gives the mode asked for. Checked all
+		// the same, because the other way round is a session that asked
+		// to look being told it holds the pane, or one that took the
+		// pane being told it only looks. The hold nobody is told of is
+		// given back (nobody attached on it, so nobody is detached).
+		_, _ = s.taskHolds.Release(context.WithoutCancel(r.Context()), id, res.Hold.ID)
+		writeError(w, http.StatusInternalServerError, "could not take over task")
 	default:
 		// The attach-info was read before the hold was taken: it carries
 		// the hold just taken, as a read of it now would.
-		attach.Hold = newHoldResponse(res.Hold)
-		writeJSON(w, http.StatusOK, takeoverResponse{TaskID: id, Hold: attach.Hold, Attach: attach})
+		hold := newHoldResponse(res.Hold)
+		if watch {
+			attach.WatchHolds = withHold(attach.WatchHolds, hold)
+		} else {
+			attach.Hold = hold
+		}
+		writeJSON(w, http.StatusOK, takeoverResponse{TaskID: id, Hold: hold, Attach: attach})
 	}
+}
+
+// withHold is holds with hold in it: in place of the entry with its id
+// (a renewal), or else at the end, as the newest.
+func withHold(holds []*holdResponse, hold *holdResponse) []*holdResponse {
+	for i, h := range holds {
+		if h.ID == hold.ID {
+			holds[i] = hold
+			return holds
+		}
+	}
+	return append(holds, hold)
 }
 
 // handleHoldHeartbeat serves POST /api/v1/tasks/{id}/takeover/heartbeat
