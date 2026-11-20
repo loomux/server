@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in the Loomux server doesn't work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please **don't** report a security problem here: follow SECURITY.md instead.
+        Before you paste logs or a pane, take out tokens, passwords, host names and anything else private.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what Loomux did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to make it happen again
+      description: The smallest set of steps you know of. Say if it happens every time.
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Loomux version
+      description: What `GET /api/v1/version` answers, or the image tag and digest you run.
+      placeholder: "server 0.4.0 (web 0.3.39)"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How you run it
+      options:
+        - Container (Docker or compose)
+        - Kubernetes
+        - A binary built from source
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: agents
+    attributes:
+      label: Agents and targets involved
+      description: The agent CLI and its version (Claude Code, Codex, …), and the kind of target (local, SSH host, a Docker or Kubernetes machine), if they matter.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or pane output
+      description: loomuxd's log lines around the problem, or the agent's pane. Redact secrets first.
+      render: text
+    validations:
+      required: false
