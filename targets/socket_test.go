@@ -95,3 +95,11 @@ func TestRemoteExecutor_OwnSocket(t *testing.T) {
 		return newTestRemoteExecutor(t, server, targets.WithTmuxSocket(socket))
 	})
 }
+
+// LOOM-272: the read-only form of the attach command, for a person who
+// only watches: tmux's -r, on the same socket and session.
+func TestReadOnlyAttachCommand(t *testing.T) {
+	if got, want := targets.ReadOnlyAttachCommand("loomux-b", "loomux-x"), "tmux -L loomux-b attach -r -t loomux-x"; got != want {
+		t.Errorf("ReadOnlyAttachCommand = %q, want %q", got, want)
+	}
+}

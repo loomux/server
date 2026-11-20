@@ -30,6 +30,12 @@ const (
 	CapTargetsEphemeral      = "targets.ephemeral"
 	CapTargetsEgressPolicy   = "targets.egress_policy"
 	CapTargetsAttachCommands = "targets.attach_commands"
+	// CapTargetsAttachReadOnly: targets.attach_commands also answers a
+	// read_only request, with commands that attach read-only (LOOM-272).
+	// The host asks read-only only of a plugin that declares it: one from
+	// before it would ignore the parameter and answer with its writable
+	// commands.
+	CapTargetsAttachReadOnly = "targets.attach_read_only"
 )
 
 // Environment statuses (Environment.Status).
@@ -206,10 +212,18 @@ type RecreateParams struct {
 // the host runs the machine's sessions on, its instance's (LOOM-210):
 // the commands must attach to that one. A host from before LOOM-210
 // sends none, which means DefaultTmuxSocket.
+//
+// ReadOnly (LOOM-272) asks for commands that attach read-only, for a
+// person who only watches: `tmux … attach -r`, so nothing they type
+// reaches the pane. The host sets it only for a plugin that declares
+// CapTargetsAttachReadOnly, and takes the answer as read-only only when
+// AttachResult.ReadOnly says so. A plugin that can't must fail the call
+// rather than answer with a command that can type.
 type AttachParams struct {
-	ID      string `json:"id"`
-	Session string `json:"session"`
-	Socket  string `json:"socket,omitempty"`
+	ID       string `json:"id"`
+	Session  string `json:"session"`
+	Socket   string `json:"socket,omitempty"`
+	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
 // DefaultTmuxSocket is the socket an AttachParams without one names:
@@ -228,9 +242,14 @@ type ListResult struct {
 	Environments []Environment `json:"environments"`
 }
 
-// AttachResult is targets.attach_commands' result.
+// AttachResult is targets.attach_commands' result. ReadOnly (LOOM-272)
+// confirms that Commands answer a read_only request: every one of them
+// attaches read-only. It is the plugin's positive answer; a plugin that
+// ignored the parameter leaves it false, and the host then uses none of
+// the commands for a watch.
 type AttachResult struct {
 	Commands []AttachCommand `json:"commands"`
+	ReadOnly bool            `json:"read_only,omitempty"`
 }
 
 // RequiredCapability is the capability a manifest must declare for the
@@ -247,4 +266,25 @@ func RequiredCapability(method string) string {
 		return CapTargetsAttachCommands
 	}
 	return ""
+}
+
+// AttachesReadOnly reports whether argv, an AttachCommand's, attaches to
+// a tmux session read-only (LOOM-272): its last `attach` (or
+// `attach-session`) argument is followed directly by `-r`, as in
+// `kubectl … exec -it <pod> -- tmux -L <socket> attach -r -t <session>`.
+// The last one, so that a wrapper's own `attach` verb earlier in the
+// line doesn't count.
+//
+// It is what the host checks of every command a plugin answers a
+// read_only request with: a command without an argv, or whose argv
+// doesn't say so in this form (tmux's part passed as one shell line,
+// say), is not handed to a person who asked only to watch. It is a
+// check of the command's shape, not a proof of what the program does.
+func AttachesReadOnly(argv []string) bool {
+	for i := len(argv) - 1; i >= 0; i-- {
+		if argv[i] == "attach" || argv[i] == "attach-session" {
+			return i+1 < len(argv) && argv[i+1] == "-r"
+		}
+	}
+	return false
 }

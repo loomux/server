@@ -97,6 +97,13 @@ func AttachCommand(socket, session string) string {
 	return "tmux -L " + socket + " attach -t " + session
 }
 
+// ReadOnlyAttachCommand is AttachCommand for a person who only watches
+// (LOOM-272): tmux's -r makes the client read-only, so nothing typed
+// reaches the pane (the keys that detach still work).
+func ReadOnlyAttachCommand(socket, session string) string {
+	return "tmux -L " + socket + " attach -r -t " + session
+}
+
 // detachClientsScript is DetachClients as one POSIX sh script on the
 // target, run locally or over a single SSH round trip. Sessions are
 // named exactly ("=name"): tmux otherwise takes a session that merely

@@ -6,7 +6,7 @@
   "vendor": "Loomux",
   "homepage": "https://github.com/Loomux/server/tree/main/plugins/kubernetes",
   "description": "Creates a pod per machine in one namespace of the cluster Loomux runs in.",
-  "capabilities": ["targets.create", "targets.stop_start", "targets.recreate", "targets.persistent", "targets.ephemeral", "targets.egress_policy", "targets.attach_commands"],
+  "capabilities": ["targets.create", "targets.stop_start", "targets.recreate", "targets.persistent", "targets.ephemeral", "targets.egress_policy", "targets.attach_commands", "targets.attach_read_only"],
   "permissions": [
     {"scope": "kubernetes", "detail": "create, get, list, watch and delete Pods, PersistentVolumeClaims and Secrets in one namespace; read Pod logs and Events there, and list its NetworkPolicies"},
     {"scope": "network", "detail": "reaches the Kubernetes API server; the cluster pulls the agent image from its registry"}

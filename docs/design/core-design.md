@@ -444,7 +444,10 @@ touched, so automation keeps typing; any number of sessions may watch a
 task beside the one that drives it; and a watch hold's end detaches
 nobody. Watch holds are shown beside the drive hold (`watch_holds`, and a
 `watchers` count on list rows). A watch is never handed a writable attach
-command: until the read-only forms exist (LOOM-272) it is handed none.
+command. Since LOOM-272 it is handed read-only ones (`tmux … attach -r`):
+the local and ssh forms built by the server, and a plugin's own, asked
+for under the capability `targets.attach_read_only` and checked. A
+machine whose plugin has none can't be watched (`409 watch_unsupported`).
 The full model, expiry and watching are in `tui-client-design.md`, "Server
 awareness: holds" and "Taking over a running turn".
 
