@@ -60,7 +60,9 @@ prepares it for login, we can have methods and functions for agent auth status."
 
    It is idempotent: a sign-in session already open is returned as is (`reused: true`), so two
    clients, or a client and a dispatch, never kill each other's half-done login. `restart: true`
-   kills it and opens a fresh one. One lock per (target, agent type) keeps two callers from both
+   kills it and opens a fresh one, and so does a call that finds one Loomux has no record of or
+   one older than 22 h (the orphan sweep would take it within the next two hourly passes, and the
+   API stops reporting it at 24 h). One lock per (target, agent type) keeps two callers from both
    creating it.
 
    Loomux never types into the sign-in session, never captures its pane, never completes the
