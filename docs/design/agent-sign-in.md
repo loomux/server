@@ -1,6 +1,6 @@
 # Agent sign-in: prepared login and auth status (LOOM-316)
 
-**Status:** draft for review · **Ticket:** LOOM-316 (Vikunja Loomux #283 / id 2714, GitHub #555)
+**Status:** implemented in the PR for #555, for review · **Ticket:** LOOM-316 (Vikunja Loomux #283 / id 2714, GitHub #555)
 **Builds on:** LOOM-86 (agent probe with its auth check), LOOM-97/109 (the sign-in and usage-limit
 detectors), LOOM-71 (install offers), LOOM-93 (the orphan sweep).
 
@@ -42,8 +42,8 @@ prepares it for login, we can have methods and functions for agent auth status."
    (`expired` | `invalid_credentials` | `signed_out`, a fixed word chosen from which marker matched,
    never the pane line) with its time; a usage limit records `limited_at` and the reset text the
    detector already extracts. Both are cleared by the next turn of that agent on that target that
-   finishes normally; the problem is also cleared when a probe sees `logged_in` after a prepared
-   sign-in. Probes never overwrite these columns.
+   finishes normally; the problem is also cleared when the sign-in completes (4). Probes never
+   overwrite these columns.
 3. **Prepared sign-in.** `Router.PrepareSignIn(target, agent type)`:
    - probes the agent; not installed is an error (the install offer is LOOM-71's);
    - already `logged_in` (and no turn-observed problem): returns the status, opens nothing (unless
@@ -64,11 +64,17 @@ prepares it for login, we can have methods and functions for agent auth status."
 
    Loomux never types into the sign-in session, never captures its pane, never completes the
    browser or device flow and never sees a credential: the person does all of it by attaching.
-4. **Cleanup.** A probe (any: pre-launch, periodic, on demand) that finds the agent `logged_in`
-   while a sign-in session is recorded kills that session and clears the record: the sign-in is
-   done. `DELETE …/sign-in` closes one explicitly. An abandoned session is a `loomux-` session no
-   task owns, so the existing orphan sweep (LOOM-93) kills it after 24 h; the API stops reporting a
-   recorded session older than that.
+4. **Cleanup.** The sign-in is done, and its session killed and forgotten, when:
+   - a probe (any: pre-launch, periodic, on demand) finds the agent `logged_in` where the previous
+     probe had not, with a sign-in session recorded (the person signed in there); or
+   - a turn of that agent on that target finishes normally after the session was opened (which
+     covers the case where the CLI's own check said `logged_in` all along, an expired token the
+     check doesn't see).
+
+   A probe that keeps saying `logged_in` doesn't close a session opened with `restart` (signing in
+   to another account): only a finished turn, `DELETE …/sign-in` or the sweep does. An abandoned
+   session is a `loomux-` session no task owns, so the existing orphan sweep (LOOM-93) kills it
+   after 24 h; the API stops reporting a recorded session older than that.
 5. **The dispatch gate.** `launchAgent` already probes right before a fresh launch. When that probe
    says `logged_out`, and the launch would inject none of the agent type's own credential variables
    from the vault (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` for Claude
@@ -87,8 +93,9 @@ prepares it for login, we can have methods and functions for agent auth status."
 
 All behind the existing session auth. Additive only (API v1).
 
-- `GET /api/v1/targets/{id}/agents` (existing): each entry gains `auth`, omitted for an agent type
-  whose CLI has no auth check or that isn't installed:
+- `GET /api/v1/targets/{id}/agents` and `POST /api/v1/targets/{id}/probe` (existing): each agent
+  entry gains `auth`, omitted for an agent type whose CLI has no auth check or that isn't
+  installed:
 
   ```json
   {
