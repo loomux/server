@@ -179,6 +179,7 @@ Specific codes, where a handler tells apart a case a client can act on:
 | `task_inactive` | `POST /api/v1/tasks/{id}/takeover` `409` for a task that has ended and whose pane wasn't kept for a person (LOOM-264) |
 | `unsupported_api_version` | `404` for any `/api` path outside `/api/v1`; the body also carries `supported_versions` |
 | `unsupported_mode` | `POST /api/v1/tasks/{id}/takeover` `400` for `mode: "watch"` from a server older than watch holds (LOOM-264; before LOOM-271): no hold is taken. A server with watch holds never answers it, but a client that may meet an older one still handles it |
+| `watch_unsupported` | `POST /api/v1/tasks/{id}/takeover` `409` for `mode: "watch"` on a machine whose plugin has no read-only attach command (it doesn't declare `targets.attach_read_only`, refused the request or answered none; the `error` names the plugin: upgrade it), or isn't running to give it (start it and try again). No hold is taken, and no writable command is handed out in its place; attaching to drive still works (LOOM-272) |
 | `workspace_name_taken` | `POST /api/v1/workspaces` `409` when another workspace has the name (LOOM-215) |
 
 New codes may be added within v1 (a client should treat an unknown code
@@ -590,7 +591,8 @@ or gave one the server refused.
     `hold` too (LOOM-267): the task's active drive hold, or `null`; and
     `watch_holds` (LOOM-271): its active watch holds, `[]` for none. Its
     `attach_command` and `attach_commands` are writable: whoever runs
-    one can type into the pane.
+    one can type into the pane. The read-only ones come only from a
+    `takeover` with `mode: "watch"` (LOOM-272).
   - `POST /api/v1/tasks/{id}/takeover`,
     `POST /api/v1/tasks/{id}/takeover/heartbeat` and
     `POST /api/v1/tasks/{id}/release`: auth-gated holds (LOOM-264,
@@ -654,12 +656,35 @@ or gave one the server refused.
       watcher's own drive takeover is still `409` `task_held` while
       another session drives.
       **A watch is never handed a command that can type.** The
-      response's `hold.mode` is `watch`, and its `attach` has an empty
-      `attach_command` and no `attach_commands`: every command this
-      server builds today is writable, so a watch gets none of them (not
-      the local or ssh form, not a plugin's, which isn't asked). The
-      read-only commands (`tmux … attach -r`) come with LOOM-272; until
-      then a watch hold shows who is looking and gives nothing to run.
+      response's `hold.mode` is `watch`, and every command in its
+      `attach` attaches read-only (LOOM-272), with tmux's `-r`, so
+      nothing typed reaches the pane (the keys that detach still work):
+      `attach_command` is `tmux -L <socket> attach -r -t <session>`,
+      the ssh entry of `attach_commands` runs that same line on the
+      target, and a plugin's entry is its own exec form around it
+      (`kubectl … exec -it <pod> -- tmux -L <socket> attach -r -t
+      <session>`, `docker … exec -it <container> tmux … attach -r …`).
+      The server builds the first two. A plugin is asked read-only, only
+      when its manifest declares `targets.attach_read_only`, and its
+      answer is used only if it confirms read-only and each command's
+      `argv` ends with exactly `tmux -L <socket> attach -r -t <session>`
+      for the socket and session asked for; the `command` line of a
+      plugin's entry is then made by the server from that `argv`.
+      Nothing is left for the client to add or check, and the writable
+      commands of attach-info are never in a watch's answer. For a
+      plugin's machine the watch gets the plugin's read-only command or
+      is refused, with no hold taken: `409` (code `watch_unsupported`)
+      naming the plugin when it has none (an older plugin), `409` with
+      the same code when the plugin isn't running, and `502` when it
+      didn't answer. It is never given the plugin's writable command, nor
+      the ssh form alone, which doesn't reach a plugin's machine. A
+      target no plugin stands behind (a registered host, or a machine
+      whose plugin was uninstalled) has the ssh form alone, as in
+      attach-info, and so has a machine of a plugin with no attach
+      commands of its own.
+      On tmux 3.2 or later `-r` also keeps the watcher's terminal from
+      resizing the window (it is `-f read-only,ignore-size`); on an
+      older tmux it is read-only only.
       `attach.hold` is whoever drives the task (or `null`), and
       `attach.watch_holds` includes the hold just taken. A client must
       check `hold.mode` is `watch` before it treats the answer as one: a

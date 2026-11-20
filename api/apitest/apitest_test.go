@@ -419,8 +419,8 @@ func TestTakeoverHeartbeatRelease(t *testing.T) {
 	}
 
 	// Another session is told who holds it. It may watch (LOOM-271): a
-	// watch hold beside the laptop's, with no command that could type,
-	// and the task still the laptop's.
+	// watch hold beside the laptop's, with commands that attach
+	// read-only (LOOM-272), and the task still the laptop's.
 	status, out = call(t, srv, phone, "POST", "/tasks/"+task.ID+"/takeover", nil)
 	if status != http.StatusConflict || out["code"] != "task_held" || obj(t, out["hold"])["id"] != holdID {
 		t.Errorf("second session = %d %v", status, out)
@@ -431,9 +431,13 @@ func TestTakeoverHeartbeatRelease(t *testing.T) {
 	}
 	watchID := obj(t, out["hold"])["id"].(string)
 	attach := obj(t, out["attach"])
-	if attach["attach_command"] != "" || len(list(t, attach["attach_commands"])) != 0 ||
-		obj(t, attach["hold"])["id"] != holdID || obj(t, list(t, attach["watch_holds"])[0])["id"] != watchID {
-		t.Errorf("watch attach = %v; want no command, the laptop's drive hold and the phone's watch hold", attach)
+	if obj(t, attach["hold"])["id"] != holdID || obj(t, list(t, attach["watch_holds"])[0])["id"] != watchID {
+		t.Errorf("watch attach = %v; want the laptop's drive hold and the phone's watch hold", attach)
+	}
+	watchCmds := list(t, attach["attach_commands"])
+	if attach["attach_command"] != "tmux -L loomux-apitest attach -r -t "+task.TmuxSession || len(watchCmds) != 1 ||
+		obj(t, watchCmds[0])["command"] != "ssh loomux@apitest-target.test -t 'tmux -L loomux-apitest attach -r -t "+task.TmuxSession+"'" {
+		t.Errorf("watch attach commands = %v, %v; want the read-only local and ssh forms", attach["attach_command"], watchCmds)
 	}
 	if h := srv.ActiveHold(task.ID); h == nil || h.ID != holdID {
 		t.Errorf("ActiveHold after a watch = %+v, want the laptop's drive hold", h)

@@ -180,7 +180,7 @@ func TestAttachCommandForSSHEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := attachCommand(cfg, "k7f3q2", "loomux-x", "loomux-b")
+	got := attachCommand(cfg, "k7f3q2", "loomux-x", "loomux-b", false)
 	if strings.Join(got, " ") != "docker -H ssh://docker@jet01.example:2200 exec -it lx-k7f3q2 tmux -L loomux-b attach -t loomux-x" {
 		t.Errorf("attach = %q", got)
 	}

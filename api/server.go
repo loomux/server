@@ -1329,9 +1329,9 @@ func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
 // commands says whether it carries the commands to attach with
 // (attach_command and attach_commands). They are writable: whoever runs
 // one can type into the pane. So a watch takeover asks for none
-// (LOOM-271): the commands are then not built at all, a plugin isn't
-// asked for its own, and the answer has an empty attach_command and no
-// attach_commands.
+// (LOOM-271): the writable commands are then not built at all, and a
+// plugin isn't asked for its own. It gets the read-only ones instead,
+// from setReadOnlyAttach (LOOM-272).
 func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string, commands bool) (attachInfoResponse, bool) {
 	task, err := s.attachInfo.GetTask(r.Context(), id)
 	if errors.Is(err, registry.ErrNotFound) {
