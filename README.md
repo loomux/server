@@ -55,7 +55,7 @@ message to the one already running, and the answer comes back into the conversat
 
 ## Quickstart
 
-One Linux host with Docker, about <MEASURED> minutes. You need a router-model API key (Anthropic, or any
+One Linux host with Docker, about 10 minutes to a signed-in agent on a 50 Mbit/s connection. You need a router-model API key (Anthropic, or any
 OpenAI-compatible endpoint that supports forced tool calls) and a Claude Code or Codex account. The full
 walkthrough, with troubleshooting and how to remove it all, is [docs/quickstart.md](docs/quickstart.md).
 
@@ -89,6 +89,8 @@ Loomux starts at <http://localhost:8080> and creates one machine, `dev`, pulling
 ```sh
 docker exec -it $(docker ps -qf label=loomux.io/target-name=dev) claude auth login
 ```
+
+Open the link, approve, then paste the code once and press Enter: it doesn't show as you paste.
 
 Then start a conversation: *"In a new workspace called hello on dev, create hello.txt containing "hi"."* To
 watch the agent work, `docker exec -it $(docker ps -qf label=loomux.io/target-name=dev) tmux -L loomux attach`.
