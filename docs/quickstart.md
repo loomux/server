@@ -150,8 +150,9 @@ again, empty. Take it out of `LOOMUX_PLUGINS_SEED` first to remove it for good.
 - **The health check gets no answer, and `docker compose ps` shows the server restarting**: `docker compose logs
   loomuxd` says why. `router config: … LOOMUX_ROUTER_PRIMARY_API_KEY is not set` means the key line in `.env`
   is empty: add the key and run `docker compose up -d` again.
-- **`permission denied` on `/var/run/docker.sock`** in `docker compose logs loomuxd`: `DOCKER_GID` in `.env`
-  isn't the socket's group. Check with `stat -c %g /var/run/docker.sock`.
+- **The Docker plugin is in `error`** (on **Plugins**, and in `docker compose logs loomuxd`) with `can't reach
+  the docker engine … connect: permission denied`: `DOCKER_GID` in `.env` isn't the socket's group. Compare it
+  with `stat -c %g /var/run/docker.sock`, fix it, and run `docker compose up -d` again.
 - **The machine stays `error`**: its reason is on the Machines page; `docker compose logs loomuxd` has the
   detail.
 - **macOS or Windows (Docker Desktop):** not tested. The compose file relies on host networking.
