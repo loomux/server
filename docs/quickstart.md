@@ -53,8 +53,8 @@ unset PW KEY HASH
 For an OpenAI-compatible endpoint instead, set `LOOMUX_ROUTER_PRIMARY_PROVIDER=openai`, add
 `LOOMUX_ROUTER_PRIMARY_BASE_URL=https://…/v1`, and put that endpoint's model name in `LOOMUX_ROUTER_PRIMARY_MODEL`.
 
-**Keep a copy of `.env`.** `LOOMUX_MASTER_KEY` encrypts Loomux's credential vault and the machines' SSH keys;
-without it, a restored database can't be read.
+**Keep a copy of `.env`.** `LOOMUX_MASTER_KEY` encrypts Loomux's credential vault, the plugins' secrets and the
+machines' SSH keys; without it, those can't be decrypted from a restored database.
 
 ## 2. Start it
 
@@ -128,9 +128,9 @@ machine any Loomux Docker plugin made on this host, so on a host you share, chec
 
 ```sh
 docker compose down --volumes
-docker rm -f $(docker ps -aqf label=loomux.io/managed-by=loomux-plugin-docker)
-docker volume rm $(docker volume ls -qf label=loomux.io/managed-by=loomux-plugin-docker)
-docker network rm loomux-agents
+docker ps -aqf label=loomux.io/managed-by=loomux-plugin-docker | xargs -r docker rm -f
+docker volume ls -qf label=loomux.io/managed-by=loomux-plugin-docker | xargs -r docker volume rm
+docker network rm loomux-agents 2>/dev/null || true
 ```
 
 Deleting the machine in the web UI alone doesn't last: `compose.yaml` declares it, so the next start makes it
