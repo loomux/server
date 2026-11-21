@@ -58,9 +58,10 @@ What else to know:
   workspace-write`. A machine can be set stricter (`permission_mode`); Loomux never uses a bypass mode.
 - **Machines are not a network sandbox.** A Docker machine reaches whatever its host reaches, LAN and tailnet
   included. A Kubernetes machine gets `internet` egress unless you ask for `none`.
-- **The router model sees what you send.** Every chat message goes to the router-model provider you configure.
-  The agents' output does too, unless the machine's `relay` is `last_message` or `none` (`none` is the default
-  only for a machine whose purpose is `work`). Pick a provider you're comfortable with.
+- **The router model sees what you send.** Every chat message goes to the router-model provider you configure,
+  and so does the agents' output, as the machine's `relay` says: all of it with `full` (the default), only each
+  agent's final message with `last_message`, nothing with `none` (the default only for a machine whose purpose is
+  `work`). Pick a provider you're comfortable with.
 - **Credentials.** API keys and tokens in the vault, plugin secrets and the machines' SSH keys are encrypted with
   AES-256-GCM under `LOOMUX_MASTER_KEY`, each bound to its record and scope (AEAD additional data). A credential
   is handed to the agent's environment at launch, so the agent can read it. Known values are redacted from what
