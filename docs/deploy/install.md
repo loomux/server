@@ -5,8 +5,9 @@ run the server, and how to check it works. The reference behind each
 step is linked; this page is the order to do them in.
 
 **Just trying it?** The [quickstart](../quickstart.md) runs everything on
-one Docker host in about 15 minutes, with a machine Loomux creates for
-you, and needs none of the SSH, TLS or Kubernetes setup below.
+one Docker host, with a machine Loomux creates for you, in about 10
+minutes on a fast connection, and needs none of the SSH, TLS or
+Kubernetes setup below.
 
 Loomux is one process, `loomuxd`, shipped as the image
 `ghcr.io/loomux/server` (public). It serves the web client and the API

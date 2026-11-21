@@ -7,8 +7,8 @@
   Anthropic's API, or any OpenAI-compatible endpoint that supports forced tool calls (`tool_choice`);
 - a **Claude Code or Codex account** to sign the agent in with.
 
-Time: about **<MEASURED> minutes**, most of it downloading the agent image (2 GB). Measured on a clean run; see
-[Timings](#timings).
+Time: about **10 minutes** to a signed-in agent on a 50 Mbit/s connection, most of it the agent image download
+(517 MB, 2 GB unpacked) and the sign-in. A slower connection adds to the download. See [Timings](#timings).
 
 Everything runs on this one machine: `loomuxd` in one container, and the machine your agents work on in another
 container, which Loomux creates through the host's Docker engine.
@@ -89,8 +89,9 @@ The sign-in is kept on the machine's volume, so this is a one-time step. In a te
 docker exec -it $(docker ps -qf label=loomux.io/target-name=dev) claude auth login
 ```
 
-Open the link it prints, approve, and paste the code back at `Paste code here`. For Codex, run
-`codex login --device-auth` instead.
+Open the link it prints, approve, and paste the code back at `Paste code here if prompted >`. **The code doesn't
+show when you paste it**: paste it once and press Enter. `claude auth status` then says `"loggedIn": true`. For
+Codex, run `codex login --device-auth` instead.
 <!-- When loomux/server#558 (agent sign-in by tmux attach) is released, this step becomes:
      `docker compose exec loomuxd loomuxd agents sign-in -target dev -agent claude-code` (with LOOMUX_TOKEN),
      then the docker exec … tmux attach line it prints. Timed in the LOOM-309 run. -->
@@ -159,4 +160,16 @@ again, empty. Take it out of `LOOMUX_PLUGINS_SEED` first to remove it for good.
 
 ## Timings
 
-<MEASURED>
+Measured on 2026-11-21 with release 0.3.155, on a Linux laptop with Docker 29.9, following this page from an empty
+directory:
+
+| Step | Took |
+|---|---|
+| 1. Write the configuration | a few seconds of commands, plus typing a password and a key; the server image is a 38 MB download |
+| 2. Start it | 14 s to a healthy server |
+| 3. The machine | 30 s once the agent image is on the host. The image is a 517 MB download, then about 1.5 min to unpack |
+| 4. Sign the agent in | 4 min, by a person, the browser sign-in included |
+| 5. Ask for something | not measured yet |
+
+That is about 10 minutes to a signed-in agent on a 50 Mbit/s connection. The downloads alone take about
+15 minutes at 5 Mbit/s.
