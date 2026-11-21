@@ -850,6 +850,10 @@ type conversationSummary struct {
 	// HeldBy is who drives the conversation's task from a terminal, and
 	// since when; absent when nobody does (LOOM-267).
 	HeldBy *heldBy `json:"held_by,omitempty"`
+	// Watchers is how many watch holds the conversation's tasks have:
+	// sessions attached read-only, beside whoever drives. Absent when
+	// nobody watches (LOOM-271).
+	Watchers int `json:"watchers,omitempty"`
 	// PendingConfirmationID is the offer the conversation waits on a yes
 	// or no for: its newest one still pending and not past its deadline,
 	// answered by POST /dispatch with confirmation_id. Absent when there
@@ -947,16 +951,20 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "could not list conversations")
 		return
 	}
-	holds, err := s.activeDriveHolds(r.Context())
+	holds, err := s.activeHoldsByTask(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list conversations")
 		return
 	}
 	// Each conversation's holder: the drive hold on one of its tasks (the
-	// newest taken, should there be more than one).
+	// newest taken, should there be more than one). And how many watch
+	// its tasks (LOOM-271).
 	heldConv := make(map[string]*registry.TaskHold)
+	watchers := make(map[string]int)
 	for _, t := range tasks {
-		h := holds[t.ID]
+		of := holds[t.ID]
+		watchers[t.ConversationID] += len(of.watch)
+		h := of.drive
 		if h == nil {
 			continue
 		}
@@ -1021,6 +1029,7 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 		if h := heldConv[out[i].ConversationID]; h != nil {
 			out[i].HeldBy = &heldBy{ClientKind: h.ClientKind, ClientLabel: h.ClientLabel, Since: h.AcquiredAt}
 		}
+		out[i].Watchers = watchers[out[i].ConversationID]
 		pending, err := s.pendingConfirmationID(r.Context(), out[i].ConversationID, now)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not list conversations")
@@ -1075,6 +1084,10 @@ type conversationTask struct {
 	// Hold is who drives the task from a terminal, if anyone: its active
 	// drive hold, or null (LOOM-267).
 	Hold *holdResponse `json:"hold"`
+	// WatchHolds are the sessions attached to the task read-only: its
+	// active watch holds, oldest first; empty when nobody watches
+	// (LOOM-271). Never the drive hold.
+	WatchHolds []*holdResponse `json:"watch_holds"`
 }
 
 type messageSummary struct {
@@ -1157,7 +1170,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not fetch conversation")
 		return
 	}
-	holds, err := s.activeDriveHolds(r.Context())
+	holds, err := s.activeHoldsByTask(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not fetch conversation")
 		return
@@ -1184,7 +1197,8 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 			ErrorClass:    string(t.ErrorClass),
 			OutputTail:    t.OutputTail,
 			Attention:     t.Attention,
-			Hold:          newHoldResponse(holds[t.ID]),
+			Hold:          newHoldResponse(holds[t.ID].drive),
+			WatchHolds:    newHoldResponses(holds[t.ID].watch),
 		})
 	}
 
@@ -1286,6 +1300,10 @@ type attachInfoResponse struct {
 	// Hold is who drives the task from a terminal, if anyone: its active
 	// drive hold, or null (LOOM-267).
 	Hold *holdResponse `json:"hold"`
+	// WatchHolds are the sessions attached to the task read-only: its
+	// active watch holds, oldest first; empty when nobody watches
+	// (LOOM-271).
+	WatchHolds []*holdResponse `json:"watch_holds"`
 }
 
 // handleAttachInfo resolves a task down to the target+session a human
@@ -1298,7 +1316,7 @@ type attachInfoResponse struct {
 // discovers a dead session the same way a human always would — the
 // attach attempt itself.
 func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
-	info, ok := s.attachInfoFor(w, r, r.PathValue("id"))
+	info, ok := s.attachInfoFor(w, r, r.PathValue("id"), true)
 	if !ok {
 		return
 	}
@@ -1307,7 +1325,14 @@ func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
 
 // attachInfoFor resolves task id's attach-info. On failure it writes the
 // response (404 for an unknown task) and reports false.
-func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string) (attachInfoResponse, bool) {
+//
+// commands says whether it carries the commands to attach with
+// (attach_command and attach_commands). They are writable: whoever runs
+// one can type into the pane. So a watch takeover asks for none
+// (LOOM-271): the commands are then not built at all, a plugin isn't
+// asked for its own, and the answer has an empty attach_command and no
+// attach_commands.
+func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string, commands bool) (attachInfoResponse, bool) {
 	task, err := s.attachInfo.GetTask(r.Context(), id)
 	if errors.Is(err, registry.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such task")
@@ -1330,19 +1355,26 @@ func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string
 		return attachInfoResponse{}, false
 	}
 
-	holds, err := s.activeDriveHolds(r.Context())
+	holds, err := s.activeHoldsByTask(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not fetch task's hold")
 		return attachInfoResponse{}, false
+	}
+
+	attachCommand, attachCommands := "", []attachCommandResponse{}
+	if commands {
+		attachCommand = targets.AttachCommand(s.tmuxSocketName(), task.TmuxSession)
+		attachCommands = s.attachCommandsFor(r.Context(), target, task.TmuxSession)
 	}
 
 	return attachInfoResponse{
 		TaskID:         task.ID,
 		TmuxSession:    task.TmuxSession,
 		TmuxSocket:     s.tmuxSocketName(),
-		AttachCommand:  targets.AttachCommand(s.tmuxSocketName(), task.TmuxSession),
-		AttachCommands: s.attachCommandsFor(r.Context(), target, task.TmuxSession),
-		Hold:           newHoldResponse(holds[task.ID]),
+		AttachCommand:  attachCommand,
+		AttachCommands: attachCommands,
+		Hold:           newHoldResponse(holds[task.ID].drive),
+		WatchHolds:     newHoldResponses(holds[task.ID].watch),
 		Target: attachTargetInfo{
 			ID:   target.ID,
 			Name: target.Name,
@@ -1586,42 +1618,68 @@ func latestTaskEvent(tasks []*registry.Task) *taskUpdateEvent {
 	}
 }
 
-// taskHoldEvent is the data of a stream's `event: task_hold` (LOOM-267):
-// a task of the conversation was taken, taken from its holder, or given
-// back. Hold is its drive hold now, or null; EndedReason is why the hold
-// it had before ended, absent when it had none.
+// taskHoldEvent is the data of a stream's `event: task_hold` (LOOM-267,
+// LOOM-271): the holds on a task of the conversation changed. It carries
+// them as they now are.
+//
+// Hold is the task's drive hold, or null, and EndedReason why the drive
+// hold it had before ended (absent when it had none, or still has the
+// same one): the task was taken, taken from its holder, or given back.
+// WatchHolds are its watch holds, oldest first: a watcher came or went.
+// A watcher's coming or going never changes Hold or sets EndedReason.
 type taskHoldEvent struct {
-	TaskID      string        `json:"task_id"`
-	Hold        *holdResponse `json:"hold"`
-	EndedReason string        `json:"ended_reason,omitempty"`
+	TaskID      string          `json:"task_id"`
+	Hold        *holdResponse   `json:"hold"`
+	WatchHolds  []*holdResponse `json:"watch_holds"`
+	EndedReason string          `json:"ended_reason,omitempty"`
 }
 
-// holdCursor is what a stream last saw of its conversation's holds: each
-// task's active drive hold id, by task id; a task with none isn't in it.
-type holdCursor map[string]string
+// holdsSeen is what a stream last saw of one task's holds: its active
+// drive hold's id ("" for none), and its active watch holds' ids, in
+// order and joined.
+type holdsSeen struct {
+	drive string
+	watch string
+}
 
-// sendTaskHolds reports the changes to the drive holds on tasks (one
-// conversation's) since cur, and returns what it saw (LOOM-267). A
-// renewal is no change: the hold is the same. Like task_update, it
-// compares what is there at each poll, so a hold taken and given back
-// between two polls isn't reported: nothing changed in between as far
-// as a client showing who holds what can tell. The first call (cur nil)
-// records what is there unreported. A failed read returns cur
-// unchanged.
+// holdCursor is what a stream last saw of its conversation's holds, by
+// task id; a task with none isn't in it.
+type holdCursor map[string]holdsSeen
+
+// sendTaskHolds reports the changes to the holds on tasks (one
+// conversation's) since cur, and returns what it saw (LOOM-267): a
+// task's drive hold taken, stolen or ended, and (LOOM-271) a watch hold
+// on it taken or ended. A renewal is no change: the hold is the same.
+// Like task_update, it compares what is there at each poll, so a hold
+// taken and given back between two polls isn't reported: nothing changed
+// in between as far as a client showing who holds what can tell. The
+// first call (cur nil) records what is there unreported. A failed read
+// returns cur unchanged.
 func (s *Server) sendTaskHolds(ctx context.Context, w http.ResponseWriter, flusher http.Flusher,
 	tasks []*registry.Task, cur holdCursor) holdCursor {
 	if s.taskHolds == nil {
 		return holdCursor{}
 	}
-	holds, err := s.activeDriveHolds(ctx)
+	holds, err := s.activeHoldsByTask(ctx)
 	if err != nil {
 		return cur
 	}
 	next := make(holdCursor)
 	for _, t := range tasks {
-		if h := holds[t.ID]; h != nil {
-			next[t.ID] = h.ID
+		of := holds[t.ID]
+		if of.drive == nil && len(of.watch) == 0 {
+			continue
 		}
+		var seen holdsSeen
+		if of.drive != nil {
+			seen.drive = of.drive.ID
+		}
+		ids := make([]string, 0, len(of.watch))
+		for _, h := range of.watch {
+			ids = append(ids, h.ID)
+		}
+		seen.watch = strings.Join(ids, ",")
+		next[t.ID] = seen
 	}
 	if cur == nil {
 		return next
@@ -1644,14 +1702,20 @@ func (s *Server) sendTaskHolds(ctx context.Context, w http.ResponseWriter, flush
 		if prev == now {
 			continue
 		}
-		ev := taskHoldEvent{TaskID: taskID, Hold: newHoldResponse(holds[taskID])}
-		if now == "" {
-			ev.Hold = nil
+		// A task no longer listed isn't in next, whatever holds it still
+		// has: it is reported as held and watched by nobody.
+		ev := taskHoldEvent{TaskID: taskID, WatchHolds: []*holdResponse{}}
+		if now.drive != "" {
+			ev.Hold = newHoldResponse(holds[taskID].drive)
 		}
-		if prev != "" {
-			// Why the hold it had ended: released, expired, taken_back,
-			// taken_over (a steal), ... Left out if it can't be read.
-			if ended, err := s.taskHolds.GetHold(ctx, prev); err == nil && !ended.Active() {
+		if now.watch != "" {
+			ev.WatchHolds = newHoldResponses(holds[taskID].watch)
+		}
+		if prev.drive != "" && prev.drive != now.drive {
+			// Why the drive hold it had ended: released, expired,
+			// taken_back, taken_over (a steal), ... Left out if it can't
+			// be read.
+			if ended, err := s.taskHolds.GetHold(ctx, prev.drive); err == nil && !ended.Active() {
 				ev.EndedReason = string(ended.EndedReason)
 			}
 		}

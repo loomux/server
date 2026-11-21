@@ -379,8 +379,9 @@ func TestTakeover_EndedTasks(t *testing.T) {
 	}
 }
 
-// mode: drive is accepted, watch is 400 unsupported_mode (never a drive
-// hold), anything else is a plain 400. So are a bad ttl and label.
+// mode: drive and watch are accepted (watch has its own tests,
+// holds_watch_test.go), anything else is a 400. So are force with watch,
+// a bad ttl and a bad label.
 func TestTakeover_Validation(t *testing.T) {
 	h := newHoldServer(t)
 	h.task("t1", registry.TaskStatusAwaitingInput, "")
@@ -388,8 +389,8 @@ func TestTakeover_Validation(t *testing.T) {
 		body any
 		code string
 	}{
-		"watch":            {map[string]any{"mode": "watch"}, "unsupported_mode"},
-		"watch with force": {map[string]any{"mode": "watch", "force": true}, "unsupported_mode"},
+		"watch with force": {map[string]any{"mode": "watch", "force": true}, "invalid_request"},
+		"watch mode case":  {map[string]any{"mode": "Watch"}, "invalid_request"},
 		"unknown mode":     {map[string]any{"mode": "steer"}, "invalid_request"},
 		"mode case":        {map[string]any{"mode": "Drive"}, "invalid_request"},
 		"ttl too short":    {map[string]any{"ttl_seconds": 14}, "invalid_request"},
