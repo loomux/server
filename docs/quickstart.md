@@ -63,7 +63,7 @@ docker compose up -d
 curl -s http://localhost:8080/api/v1/health
 ```
 
-The health check answers `{"status":"ok",…}` once the server is up. Port 8080 taken? Add `LOOMUX_PORT=8090` to
+The health check answers `{"status":"healthy",…}` within a few seconds. Port 8080 taken? Add `LOOMUX_PORT=8090` to
 `.env` and use that port everywhere below.
 
 At its first start Loomux installs the Docker plugin and creates one machine, `dev` (both are declared in
@@ -89,8 +89,11 @@ The sign-in is kept on the machine's volume, so this is a one-time step. In a te
 docker exec -it $(docker ps -qf label=loomux.io/target-name=dev) claude auth login
 ```
 
-Open the link it prints, approve, and paste the code back if it asks. For Codex, run `codex login --device-auth`
-instead.
+Open the link it prints, approve, and paste the code back at `Paste code here`. For Codex, run
+`codex login --device-auth` instead.
+<!-- When loomux/server#558 (agent sign-in by tmux attach) is released, this step becomes:
+     `docker compose exec loomuxd loomuxd agents sign-in -target dev -agent claude-code` (with LOOMUX_TOKEN),
+     then the docker exec … tmux attach line it prints. Timed in the LOOM-309 run. -->
 
 ## 5. Ask for something
 
@@ -120,7 +123,8 @@ docker compose stop          # stop the server; the machine keeps running until 
 docker compose up -d         # start again, nothing lost
 ```
 
-To remove it all (the server's database, the machine and its data):
+To remove it all (the server's database, the machine and its data). The last three commands remove every
+machine any Loomux Docker plugin made on this host, so on a host you share, check what they list first:
 
 ```sh
 docker compose down --volumes
@@ -143,6 +147,9 @@ again, empty. Take it out of `LOOMUX_PLUGINS_SEED` first to remove it for good.
 
 ## Troubleshooting
 
+- **The health check gets no answer, and `docker compose ps` shows the server restarting**: `docker compose logs
+  loomuxd` says why. `router config: … LOOMUX_ROUTER_PRIMARY_API_KEY is not set` means the key line in `.env`
+  is empty: add the key and run `docker compose up -d` again.
 - **`permission denied` on `/var/run/docker.sock`** in `docker compose logs loomuxd`: `DOCKER_GID` in `.env`
   isn't the socket's group. Check with `stat -c %g /var/run/docker.sock`.
 - **The machine stays `error`**: its reason is on the Machines page; `docker compose logs loomuxd` has the
