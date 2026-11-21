@@ -1117,15 +1117,30 @@ var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 // It is returned as arguments to execute directly (LOOM-269); the line
 // to paste is those joined, every one of them being from a validated
 // grammar with no spaces or shell characters.
-func attachCommand(cfg Config, id, session, socket string) []string {
+func attachCommand(cfg Config, id, session, socket string, readOnly bool) []string {
 	argv := []string{"docker"}
 	if cfg.Engine.Kind == engineSSH {
 		argv = append(argv, "-H", cfg.Engine.String())
 	}
-	return append(argv, "exec", "-it", containerName(id), "tmux", "-L", socket, "attach", "-t", session)
+	argv = append(argv, "exec", "-it", containerName(id), "tmux", "-L", socket, "attach")
+	if readOnly {
+		argv = append(argv, "-r")
+	}
+	return append(argv, "-t", session)
 }
 
 func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
+	return p.attachCommands(ctx, id, session, socket, false)
+}
+
+// TargetAttachCommandsReadOnly is the same attach with tmux's -r
+// (LOOM-272, sdk.ReadOnlyAttacher): for a person who only watches,
+// nothing typed reaches the pane.
+func (p *Plugin) TargetAttachCommandsReadOnly(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
+	return p.attachCommands(ctx, id, session, socket, true)
+}
+
+func (p *Plugin) attachCommands(ctx context.Context, id, session, socket string, readOnly bool) ([]protocol.AttachCommand, error) {
 	cfg, eng, host, err := p.state()
 	if err != nil {
 		return nil, err
@@ -1146,6 +1161,6 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket s
 	if rec == nil {
 		return nil, notFound(id)
 	}
-	argv := attachCommand(cfg, id, session, socket)
+	argv := attachCommand(cfg, id, session, socket, readOnly)
 	return []protocol.AttachCommand{{Via: "docker", Command: strings.Join(argv, " "), Argv: argv}}, nil
 }

@@ -366,6 +366,70 @@ As built (S10, LOOM-271):
   in the error table for clients that may meet a server between S3 and
   S10.
 
+As built (S11, LOOM-272):
+
+- **A watch takeover's `attach` carries read-only commands, and only
+  those.** `attach_command` is `tmux -L <socket> attach -r -t <session>`
+  (`targets.ReadOnlyAttachCommand`), the ssh entry runs that line on the
+  target, and a plugin's entry is its exec form around it. The writable
+  commands aren't built for a watch at all. attach-info
+  (`GET /tasks/{id}/attach-info`) is unchanged and stays writable: the
+  read-only commands come only with a watch hold.
+- **What `-r` does** was checked against tmux itself, not read off the
+  command: `targets` has a test that opens a terminal attached with each
+  of the two commands (a pane of a second tmux server running it) and,
+  at that terminal, types text and asks tmux's command prompt to
+  `send-keys`. Through the read-only command neither reaches the pane;
+  through the writable one both do. The test fails if `-r` is dropped.
+  With tmux 3.2 or later `-r` is `-f read-only,ignore-size`, so a
+  watcher's terminal doesn't resize the agent's window either; on an
+  older tmux it is read-only only. A read-only client can still detach
+  and switch session, which is all tmux leaves it. One thing learned on
+  the way: a read-only *control-mode* client (`tmux -C attach -r`) is
+  refused its commands by tmux 3.8 but not by the tmux on CI's Ubuntu
+  image, so `-r` is a guarantee for the terminal attach these commands
+  start, not for a client someone starts in control mode by hand.
+- **Plugins: three checks,** each enough by itself
+  (`target-providers.md` §1.3, "Read-only attach"). The host asks
+  `read_only: true` only of a plugin whose manifest declares the new
+  capability `targets.attach_read_only`. The plugin confirms with
+  `read_only: true` in its answer; in the SDK the read-only commands are
+  a method of their own (`sdk.ReadOnlyAttacher`), so a plugin without it
+  fails the call instead of answering with its writable commands. And
+  the host keeps only commands whose `argv` ends with exactly
+  `tmux -L <socket> attach -r -t <session>` for the socket and session
+  it asked for, making the `command` line from that `argv` itself. The
+  Kubernetes and Docker plugins implement it.
+- **A watch offers the ways attach-info offers, each read-only, or it
+  is refused.** For a plugin's machine that means the plugin's own
+  read-only command or no watch, with no hold taken:
+  `409 watch_unsupported` when the plugin has none (it doesn't declare
+  the capability, refused the request, or nothing of its answer held;
+  the message names the plugin and its version: "the kubernetes plugin
+  (0.3.9) has no read-only attach command, …; upgrade the plugin, or
+  attach to drive"), `409 watch_unsupported` when the plugin isn't
+  running ("start it and try again"), and `502` when it didn't answer.
+  The ssh form alone isn't offered instead: it doesn't reach a plugin's
+  machine from a laptop. Where attach-info itself offers only ssh, so
+  does the watch, read-only: a registered host, a machine whose plugin
+  was uninstalled, and a machine of a plugin with no attach commands at
+  all (`targets.attach_commands` undeclared).
+  For T13: show the server's `error` text for `watch_unsupported`
+  rather than a fixed "upgrade the plugin". It is also the answer when
+  the plugin isn't running, where the remedy is to start it.
+- **Deploying it.** `targets.attach_read_only` is a capability change
+  for the two plugins. A server from before S11 refuses a manifest that
+  declares it, so the server goes first. And an installed plugin
+  instance isn't adopted to the new version by itself when its
+  capabilities changed (LOOM-194): it goes to `error` ("changed its
+  capabilities or configuration schema; upgrade the plugin") until it is
+  upgraded once (`POST /api/v1/plugins/{id}/upgrade`, or Upgrade in the
+  web). While it is in `error` the plugin doesn't run, so its machines
+  can't be managed until the upgrade.
+- Nothing new in the API's shape: the read-only commands use the fields
+  a watch already had, and takeover already answered `409`. The contract
+  file is unchanged.
+
 ### API (additions within v1)
 
 - `POST /api/v1/tasks/{id}/takeover` `{mode?, client_label?, ttl_seconds?,

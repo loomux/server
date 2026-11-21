@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Loomux/server/api"
 	"github.com/Loomux/server/orchestrator"
+	"github.com/Loomux/server/providers"
 	"github.com/Loomux/server/registry"
 	"github.com/Loomux/server/targets"
 )
@@ -216,30 +219,60 @@ func TestTakeover_WatchBesideADriver(t *testing.T) {
 	}
 }
 
-// A watch must never be handed a way to type into the pane. The commands
-// attach-info and a drive takeover carry are writable, so a watch
-// takeover carries none of them: not the server's own forms (local,
-// ssh), not a plugin's.
-func TestTakeover_WatchGetsNoWritableCommand(t *testing.T) {
+// watchCommand is one of a watch answer's attach_commands.
+type watchCommand struct {
+	Via     string   `json:"via"`
+	Command string   `json:"command"`
+	Argv    []string `json:"argv"`
+}
+
+// watchServer is a hold server with three tasks to watch: t-machine on
+// remote-1, which is a plugin's machine (stub); t-plain on a plain
+// remote target; t-local on a local one.
+func watchServer(t *testing.T) (*holdServer, *stubMachines) {
+	t.Helper()
 	stub := &stubMachines{envs: map[string]*registry.Environment{}}
 	h := newHoldServer(t, api.WithMachines(stub))
 	ctx := context.Background()
-	// remote-1 is a plugin's machine: the plugin's commands, then ssh.
 	stub.envs["remote-1"] = &registry.Environment{ID: "abc", TargetID: "remote-1"}
 	h.task("t-machine", registry.TaskStatusAwaitingInput, "")
-	local := &registry.Target{ID: "local-1", Name: "here", Kind: registry.TargetKindLocal}
-	if err := h.store.CreateTarget(ctx, local); err != nil {
-		t.Fatal(err)
+	for id, target := range map[string]*registry.Target{
+		"plain": {ID: "plain-1", Name: "jet02", Kind: registry.TargetKindRemote, Host: "jet02.example.com", User: "orski", SSHPort: 2222},
+		"local": {ID: "local-1", Name: "here", Kind: registry.TargetKindLocal},
+	} {
+		if err := h.store.CreateTarget(ctx, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.store.CreateWorkspace(ctx, &registry.Workspace{ID: "ws-" + id, Name: "ws-" + id, Path: "/w", TargetID: target.ID, Status: registry.WorkspaceStatusActive}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.store.CreateTask(ctx, &registry.Task{ID: "t-" + id, WorkspaceID: "ws-" + id, Kind: registry.TaskKindAgent, AgentType: "claude-code",
+			TmuxSession: "loomux-t-" + id, Status: registry.TaskStatusAwaitingInput, ConversationID: "conv-t-" + id}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := h.store.CreateWorkspace(ctx, &registry.Workspace{ID: "ws-local", Name: "ws-local", Path: "/w", TargetID: local.ID, Status: registry.WorkspaceStatusActive}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.store.CreateTask(ctx, &registry.Task{ID: "t-local", WorkspaceID: "ws-local", Kind: registry.TaskKindAgent, AgentType: "claude-code",
-		TmuxSession: "loomux-t-local", Status: registry.TaskStatusAwaitingInput, ConversationID: "conv-t-local"}); err != nil {
-		t.Fatal(err)
-	}
+	return h, stub
+}
 
-	for _, taskID := range []string{"t-machine", "t-local"} {
+// A watch is handed only commands that attach read-only (LOOM-272): the
+// local form, the ssh form and a plugin's own, each with tmux's -r. The
+// server builds or checks them; nothing is left for the client to add,
+// and the writable commands attach-info carries are never in the answer.
+func TestTakeover_WatchCommandsAreReadOnly(t *testing.T) {
+	h, _ := watchServer(t)
+	for taskID, want := range map[string][]watchCommand{
+		"t-machine": {
+			{Via: "kubectl", Command: "kubectl exec -it lx-abc -- tmux -L loomux attach -r -t loomux-t-machine",
+				Argv: []string{"kubectl", "exec", "-it", "lx-abc", "--", "tmux", "-L", "loomux", "attach", "-r", "-t", "loomux-t-machine"}},
+			{Via: "ssh", Command: "ssh orski@jet01.example.com -t 'tmux -L loomux-test attach -r -t loomux-t-machine'",
+				Argv: []string{"ssh", "orski@jet01.example.com", "-t", "tmux -L loomux-test attach -r -t loomux-t-machine"}},
+		},
+		"t-plain": {
+			{Via: "ssh", Command: "ssh -p 2222 orski@jet02.example.com -t 'tmux -L loomux-test attach -r -t loomux-t-plain'",
+				Argv: []string{"ssh", "-p", "2222", "orski@jet02.example.com", "-t", "tmux -L loomux-test attach -r -t loomux-t-plain"}},
+		},
+		"t-local": {},
+	} {
 		// What attach-info hands a driver, so the watch has something
 		// not to be given.
 		info := h.get("tasks/"+taskID+"/attach-info", h.tokenA)
@@ -247,30 +280,123 @@ func TestTakeover_WatchGetsNoWritableCommand(t *testing.T) {
 		if err := json.Unmarshal([]byte(info), &driver); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(driver.AttachCommand, "attach -t loomux-"+taskID) {
-			t.Fatalf("%s: attach-info attach_command = %q; the test expects the writable local form", taskID, driver.AttachCommand)
-		}
-		if taskID == "t-machine" && (!strings.Contains(info, "kubectl") || !strings.Contains(info, `"via":"ssh"`)) {
-			t.Fatalf("%s: attach-info = %s; the test expects the plugin's and the ssh commands", taskID, info)
+		if driver.AttachCommand != "tmux -L loomux-test attach -t loomux-"+taskID || strings.Contains(info, "attach -r") {
+			t.Fatalf("%s: attach-info = %s; it stays the writable commands", taskID, info)
 		}
 
 		status, out, raw := h.takeover(taskID, h.tokenA, map[string]any{"mode": "watch"})
 		if status != http.StatusOK || out.Hold == nil || out.Hold.Mode != "watch" {
 			t.Fatalf("%s: watch = %d %s", taskID, status, raw)
 		}
-		if out.Attach.AttachCommand != "" || string(out.Attach.AttachCommands) != "[]" {
-			t.Errorf("%s: watch attach_command = %q, attach_commands = %s; a watch must be handed no writable command",
-				taskID, out.Attach.AttachCommand, out.Attach.AttachCommands)
+		if got, want := out.Attach.AttachCommand, "tmux -L loomux-test attach -r -t loomux-"+taskID; got != want {
+			t.Errorf("%s: watch attach_command = %q, want %q", taskID, got, want)
 		}
-		for _, writable := range []string{"attach -t", "kubectl", "legacy attach", "ssh"} {
-			if strings.Contains(raw, writable) {
-				t.Errorf("%s: watch answer carries %q: %s", taskID, writable, raw)
+		var got []watchCommand
+		if err := json.Unmarshal(out.Attach.AttachCommands, &got); err != nil || got == nil {
+			t.Fatalf("%s: watch attach_commands = %s (%v); want a list", taskID, out.Attach.AttachCommands, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: watch attach_commands = %+v, want %+v", taskID, got, want)
+		}
+		for i := range want {
+			if got[i].Via != want[i].Via || got[i].Command != want[i].Command || !slices.Equal(got[i].Argv, want[i].Argv) {
+				t.Errorf("%s: watch attach_commands[%d] = %+v, want %+v", taskID, i, got[i], want[i])
 			}
 		}
-		// The facts about where the pane is stay.
-		if out.Attach.TmuxSession != "loomux-"+taskID || out.Attach.TmuxSocket != "loomux-test" {
-			t.Errorf("%s: watch attach = %+v", taskID, out.Attach)
+		// Whatever the forms, nothing in the answer attaches writable.
+		if strings.Contains(raw, "attach -t") || strings.Contains(raw, `"attach","-t"`) {
+			t.Errorf("%s: watch answer carries a writable attach: %s", taskID, raw)
 		}
+		// A drive takeover of the same task still gets the writable ones.
+		status, drive, raw := h.takeover(taskID, h.tokenB, nil)
+		if status != http.StatusOK || drive.Attach.AttachCommand != driver.AttachCommand || strings.Contains(raw, "attach -r") {
+			t.Errorf("%s: drive takeover = %d %s; want the writable commands", taskID, status, raw)
+		}
+	}
+}
+
+// A machine whose plugin has no read-only attach command can't be
+// watched: 409 watch_unsupported, naming the plugin, and no hold is
+// taken. It is never answered with the plugin's writable command, nor
+// with the ssh form alone, which doesn't reach a plugin's machine.
+func TestTakeover_WatchUnsupported(t *testing.T) {
+	h, stub := watchServer(t)
+	stub.watchErr = &providers.WatchUnsupportedError{Plugin: "kubernetes", Version: "0.3.9"}
+
+	status, raw := doJSON(t, http.MethodPost, h.base+"/api/v1/tasks/t-machine/takeover", h.tokenA, map[string]any{"mode": "watch"})
+	var out watchAnswer
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusConflict || out.Code != "watch_unsupported" || !strings.Contains(out.Error, "kubernetes") || out.Hold != nil || out.Attach != nil {
+		t.Fatalf("watch of a machine whose plugin can't = %d %s; want 409 watch_unsupported naming the plugin, no hold, no attach", status, raw)
+	}
+	if strings.Contains(raw, "tmux") || strings.Contains(raw, "kubectl") || strings.Contains(raw, "ssh") {
+		t.Errorf("the refusal carries a command: %s", raw)
+	}
+	if holds, _ := h.store.ListActiveTaskHolds(context.Background()); len(holds) != 0 {
+		t.Errorf("a refused watch left a hold: %+v", holds[0])
+	}
+	if got := h.status("t-machine"); got != registry.TaskStatusAwaitingInput {
+		t.Errorf("status after a refused watch = %s", got)
+	}
+	// Other targets are watched as before, and the machine can still be
+	// driven.
+	if status, _, raw := h.takeover("t-plain", h.tokenA, map[string]any{"mode": "watch"}); status != http.StatusOK {
+		t.Errorf("watch of a plain target = %d %s", status, raw)
+	}
+	if status, drive, raw := h.takeover("t-machine", h.tokenA, nil); status != http.StatusOK || drive.Hold.Mode != "drive" || !strings.Contains(raw, "kubectl") {
+		t.Errorf("drive takeover of the machine = %d %s", status, raw)
+	}
+}
+
+// For a plugin's machine a watch gets the plugin's own read-only command
+// or is refused: when the plugin can't be asked (it isn't running, it
+// doesn't answer) no hold is taken, rather than the watch be given the
+// ssh form alone, which doesn't reach a plugin's machine. Never anything
+// writable either way.
+func TestTakeover_WatchWithThePluginUnavailable(t *testing.T) {
+	h, stub := watchServer(t)
+	for name, tc := range map[string]struct {
+		err    error
+		status int
+		code   string
+		says   string
+	}{
+		"not running":   {providers.ErrPluginUnavailable, http.StatusConflict, "watch_unsupported", "isn't running"},
+		"didn't answer": {errors.New("rpc: deadline exceeded"), http.StatusBadGateway, "bad_gateway", "didn't answer"},
+	} {
+		stub.watchErr = tc.err
+		status, raw := doJSON(t, http.MethodPost, h.base+"/api/v1/tasks/t-machine/takeover", h.tokenA, map[string]any{"mode": "watch"})
+		var out watchAnswer
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatal(err)
+		}
+		if status != tc.status || out.Code != tc.code || !strings.Contains(out.Error, tc.says) || out.Hold != nil || out.Attach != nil {
+			t.Errorf("%s: watch = %d %s; want %d %s saying %q, no hold, no attach", name, status, raw, tc.status, tc.code, tc.says)
+		}
+		if strings.Contains(raw, "tmux") || strings.Contains(raw, "deadline exceeded") {
+			t.Errorf("%s: the refusal carries a command or the plugin's error: %s", name, raw)
+		}
+		if holds, _ := h.store.ListActiveTaskHolds(context.Background()); len(holds) != 0 {
+			t.Errorf("%s: a refused watch left a hold: %+v", name, holds[0])
+		}
+	}
+
+	// A machine whose plugin was uninstalled has no plugin behind it any
+	// more: like a plain target, it is watched over ssh.
+	stub.watchErr = providers.ErrDetached
+	status, out, raw := h.takeover("t-machine", h.tokenA, map[string]any{"mode": "watch"})
+	if status != http.StatusOK || out.Hold == nil || out.Hold.Mode != "watch" {
+		t.Fatalf("watch of a detached machine = %d %s", status, raw)
+	}
+	var got []watchCommand
+	if err := json.Unmarshal(out.Attach.AttachCommands, &got); err != nil || len(got) != 1 || got[0].Via != "ssh" ||
+		!strings.HasSuffix(got[0].Command, "'tmux -L loomux-test attach -r -t loomux-t-machine'") {
+		t.Errorf("watch attach_commands of a detached machine = %s; want the read-only ssh form alone", out.Attach.AttachCommands)
+	}
+	if strings.Contains(raw, "attach -t") {
+		t.Errorf("watch answer carries a writable attach: %s", raw)
 	}
 }
 
