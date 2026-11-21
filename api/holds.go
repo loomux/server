@@ -29,6 +29,33 @@ type TaskHolds interface {
 	// session_revoked, detaching their clients (LOOM-265). One it can't
 	// end now is left for the hold sweeper.
 	EndSessionHolds(ctx context.Context, sessionID string) (int, error)
+	// ActiveHolds returns every hold that hasn't ended, and GetHold one
+	// hold, active or ended (registry.ErrNotFound if unknown): what
+	// conversations, attach-info and the stream show of holds
+	// (LOOM-267).
+	ActiveHolds(ctx context.Context) ([]*registry.TaskHold, error)
+	GetHold(ctx context.Context, id string) (*registry.TaskHold, error)
+}
+
+// activeDriveHolds returns each task's active drive hold, by task id
+// (LOOM-267): who drives it, which is what a hold shows on a task, its
+// attach-info and its conversation's list row. Empty, not an error, on
+// a server without holds.
+func (s *Server) activeDriveHolds(ctx context.Context) (map[string]*registry.TaskHold, error) {
+	if s.taskHolds == nil {
+		return map[string]*registry.TaskHold{}, nil
+	}
+	holds, err := s.taskHolds.ActiveHolds(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*registry.TaskHold, len(holds))
+	for _, h := range holds {
+		if h.Mode == registry.HoldModeDrive {
+			out[h.TaskID] = h
+		}
+	}
+	return out, nil
 }
 
 // endSessionHoldsTimeout bounds how long a logout or revoke waits for
@@ -333,7 +360,10 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 		s.endSessionHolds(r.Context(), sess.ID)
 		writeError(w, http.StatusUnauthorized, "invalid or expired session")
 	default:
-		writeJSON(w, http.StatusOK, takeoverResponse{TaskID: id, Hold: newHoldResponse(res.Hold), Attach: attach})
+		// The attach-info was read before the hold was taken: it carries
+		// the hold just taken, as a read of it now would.
+		attach.Hold = newHoldResponse(res.Hold)
+		writeJSON(w, http.StatusOK, takeoverResponse{TaskID: id, Hold: attach.Hold, Attach: attach})
 	}
 }
 

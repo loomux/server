@@ -566,6 +566,12 @@ const (
 	// its agent isn't interrupted, and what it finishes reaches the
 	// conversation later, as late output.
 	ErrorClassTakenOver ErrorClass = "taken_over"
+	// ErrorClassHeld: the message wasn't sent because a person holds the
+	// conversation's task (LOOM-267): it is driven from a terminal, and
+	// automation doesn't type into it until it is given or taken back.
+	// The dispatch's error names the holder. A dispatch's class, never
+	// a task's.
+	ErrorClassHeld ErrorClass = "held"
 	// ErrorClassInternal: anything else.
 	ErrorClassInternal ErrorClass = "internal"
 )
