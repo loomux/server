@@ -418,14 +418,39 @@ func TestTakeoverHeartbeatRelease(t *testing.T) {
 		t.Errorf("conversation task = %v", tasks[0])
 	}
 
-	// Another session is told who holds it; watch isn't served yet.
+	// Another session is told who holds it. It may watch (LOOM-271): a
+	// watch hold beside the laptop's, with commands that attach
+	// read-only (LOOM-272), and the task still the laptop's.
 	status, out = call(t, srv, phone, "POST", "/tasks/"+task.ID+"/takeover", nil)
 	if status != http.StatusConflict || out["code"] != "task_held" || obj(t, out["hold"])["id"] != holdID {
 		t.Errorf("second session = %d %v", status, out)
 	}
 	status, out = call(t, srv, phone, "POST", "/tasks/"+task.ID+"/takeover", map[string]any{"mode": "watch"})
-	if status != http.StatusBadRequest || out["code"] != "unsupported_mode" {
-		t.Errorf("watch = %d %v", status, out)
+	if status != http.StatusOK || obj(t, out["hold"])["mode"] != "watch" {
+		t.Fatalf("watch = %d %v", status, out)
+	}
+	watchID := obj(t, out["hold"])["id"].(string)
+	attach := obj(t, out["attach"])
+	if obj(t, attach["hold"])["id"] != holdID || obj(t, list(t, attach["watch_holds"])[0])["id"] != watchID {
+		t.Errorf("watch attach = %v; want the laptop's drive hold and the phone's watch hold", attach)
+	}
+	watchCmds := list(t, attach["attach_commands"])
+	if attach["attach_command"] != "tmux -L loomux-apitest attach -r -t "+task.TmuxSession || len(watchCmds) != 1 ||
+		obj(t, watchCmds[0])["command"] != "ssh loomux@apitest-target.test -t 'tmux -L loomux-apitest attach -r -t "+task.TmuxSession+"'" {
+		t.Errorf("watch attach commands = %v, %v; want the read-only local and ssh forms", attach["attach_command"], watchCmds)
+	}
+	if h := srv.ActiveHold(task.ID); h == nil || h.ID != holdID {
+		t.Errorf("ActiveHold after a watch = %+v, want the laptop's drive hold", h)
+	}
+	if w := srv.WatchHolds(task.ID); len(w) != 1 || w[0].ID != watchID || w[0].Mode != registry.HoldModeWatch {
+		t.Errorf("WatchHolds = %+v, want the phone's watch hold", w)
+	}
+	status, out = call(t, srv, phone, "POST", "/tasks/"+task.ID+"/release", map[string]any{"hold_id": watchID})
+	if status != http.StatusOK || out["status"] != "human_takeover" || obj(t, out["hold"])["ended_reason"] != "released" {
+		t.Errorf("release of the watch hold = %d %v; want the task still human_takeover", status, out)
+	}
+	if w := srv.WatchHolds(task.ID); len(w) != 0 {
+		t.Errorf("WatchHolds after the release = %+v, want none", w)
 	}
 
 	status, out = call(t, srv, laptop, "POST", "/tasks/"+task.ID+"/takeover/heartbeat", map[string]string{"hold_id": holdID})
@@ -587,10 +612,22 @@ func TestParallelServers(t *testing.T) {
 // A test that ends with a dispatch still blocked (it failed before its
 // release, say) is torn down promptly: neither a job left running nor a
 // request left waiting on it holds the cleanup up.
+//
+// Only the teardown is timed, from the first cleanup to the end of the
+// subtest, not apitest.New: opening the store and migrating it is most of
+// a subtest's time and grows with the runner's load (LOOM-304: over 3 s
+// on a loaded runner, while the teardown stayed under 100 ms). The bound
+// sits well below the 5 s a job that ignores its cancellation would cost
+// (dispatch's cancelGrace, which Shutdown then waits out), and far above
+// a prompt teardown.
 func TestCleanupWithBlockedDispatches(t *testing.T) {
-	start := time.Now()
+	const bound = 2 * time.Second
+	var teardownStart time.Time
 	t.Run("blocked", func(t *testing.T) {
 		srv := apitest.New(t)
+		// Cleanups run last-registered first, so this runs right before
+		// srv's own teardown.
+		t.Cleanup(func() { teardownStart = time.Now() })
 		token := srv.Login()
 		srv.Dispatcher.Block() // never released
 		if status, out := call(t, srv, token, "POST", "/dispatch", map[string]string{"conversation_id": "c1", "message": "async"}, "Prefer", "respond-async"); status != http.StatusAccepted {
@@ -612,8 +649,11 @@ func TestCleanupWithBlockedDispatches(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	})
-	if took := time.Since(start); took > 3*time.Second {
-		t.Errorf("teardown with blocked dispatches took %s", took)
+	if teardownStart.IsZero() {
+		t.Fatal("the teardown never ran")
+	}
+	if took := time.Since(teardownStart); took > bound {
+		t.Errorf("teardown with blocked dispatches took %s, want at most %s", took, bound)
 	}
 }
 

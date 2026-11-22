@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Loomux/server/plugins/protocol"
 )
 
 func okManifest(t *testing.T) *Manifest {
@@ -390,5 +392,22 @@ func TestManifestSameSchemaKeepsAPropertyNamedDefault(t *testing.T) {
 	d.ConfigSchema = json.RawMessage(`{"type":"object","properties":{"default":{"type":"string","default":"y"}}}`)
 	if !a.SameCapabilitiesAndSchema(d) {
 		t.Error("the property's own default keyword is still set aside")
+	}
+}
+
+// LOOM-272: every capability the protocol names is one a manifest may
+// declare, the read-only attach one included. A capability missing from
+// KnownCapabilities would have the host refuse the plugin that declares
+// it.
+func TestKnownCapabilitiesCoverTheProtocol(t *testing.T) {
+	for _, c := range []string{
+		protocol.CapTargetsCreate, protocol.CapTargetsStopStart, protocol.CapTargetsRecreate, protocol.CapTargetsPersistent,
+		protocol.CapTargetsEphemeral, protocol.CapTargetsEgressPolicy, protocol.CapTargetsAttachCommands, protocol.CapTargetsAttachReadOnly,
+	} {
+		m := okManifest(t)
+		m.Capabilities = []string{c}
+		if err := m.Validate(); err != nil {
+			t.Errorf("a manifest declaring %s: %v", c, err)
+		}
 	}
 }

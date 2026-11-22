@@ -71,6 +71,21 @@ type TargetProvider interface {
 	TargetAttachCommands(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error)
 }
 
+// ReadOnlyAttacher is optional beside TargetProvider (LOOM-272): a
+// plugin whose manifest declares targets.attach_read_only answers a
+// read_only targets.attach_commands here, with commands that attach
+// read-only, for a person who only watches. Every command must carry an
+// argv that ends with exactly `tmux -L <socket> attach -r -t <session>`
+// (protocol.AttachesReadOnly), after the plugin's own exec form: the
+// host checks, and drops a command that doesn't.
+//
+// It is a method of its own, not a flag on TargetAttachCommands, so that
+// a plugin written before it can't answer a request to watch with its
+// writable commands: without this method the SDK fails the call.
+type ReadOnlyAttacher interface {
+	TargetAttachCommandsReadOnly(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error)
+}
+
 // Handler returns the rpc.Handler that serves p's plugin.* methods, and
 // targets.* when p implements TargetProvider. Methods of other groups
 // answer method_not_found unless extra serves them (nil for none).
@@ -383,14 +398,25 @@ func targetsHandler(ctx context.Context, t TargetProvider, method string, params
 		if !protocol.ValidTmuxSocket(p.Socket) {
 			return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: "targets.attach_commands: socket must be letters, digits, '-' and '_'"}
 		}
-		cmds, err := t.TargetAttachCommands(ctx, p.ID, p.Session, p.Socket)
+		attach := t.TargetAttachCommands
+		if p.ReadOnly {
+			// Asked to watch: only the plugin's read-only commands will
+			// do. Without them the call fails; the writable ones are
+			// never the answer.
+			ro, ok := t.(ReadOnlyAttacher)
+			if !ok {
+				return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: "targets.attach_commands: this plugin has no read-only attach command"}
+			}
+			attach = ro.TargetAttachCommandsReadOnly
+		}
+		cmds, err := attach(ctx, p.ID, p.Session, p.Socket)
 		if err != nil {
 			return nil, toRPC(err)
 		}
 		if cmds == nil {
 			cmds = []protocol.AttachCommand{}
 		}
-		return protocol.AttachResult{Commands: cmds}, nil
+		return protocol.AttachResult{Commands: cmds, ReadOnly: p.ReadOnly}, nil
 	}
 	return nil, &rpc.Error{Code: rpc.CodeMethodNotFound, Message: "no method " + method}
 }

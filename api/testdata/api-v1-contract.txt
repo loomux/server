@@ -80,9 +80,24 @@ DELETE /api/v1/targets/{id} status 409
 DELETE /api/v1/targets/{id} status 500
 DELETE /api/v1/targets/{id} status 502
 DELETE /api/v1/targets/{id} status 503
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in request-header Authorization
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in response - none
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in response-header Content-Type
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 204
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 401
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 404
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 409
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 422
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 500
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 501
+DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 502
 DELETE /api/v1/targets/{id}/pin
 DELETE /api/v1/targets/{id}/pin request-header Authorization
 DELETE /api/v1/targets/{id}/pin response - object
+DELETE /api/v1/targets/{id}/pin response .agent_args {}object
+DELETE /api/v1/targets/{id}/pin response .agent_args{}.effort string
+DELETE /api/v1/targets/{id}/pin response .agent_args{}.model string
 DELETE /api/v1/targets/{id}/pin response .allow_provision boolean
 DELETE /api/v1/targets/{id}/pin response .allow_shell boolean
 DELETE /api/v1/targets/{id}/pin response .allowed_agent_types []string
@@ -168,9 +183,15 @@ GET /api/v1/conversations request-header Authorization
 GET /api/v1/conversations response - object
 GET /api/v1/conversations response .conversations []object
 GET /api/v1/conversations response .conversations[].conversation_id string
+GET /api/v1/conversations response .conversations[].held_by object omitempty nullable
+GET /api/v1/conversations response .conversations[].held_by.client_kind string
+GET /api/v1/conversations response .conversations[].held_by.client_label string
+GET /api/v1/conversations response .conversations[].held_by.since time
+GET /api/v1/conversations response .conversations[].pending_confirmation_id string omitempty
 GET /api/v1/conversations response .conversations[].preview string
 GET /api/v1/conversations response .conversations[].status string
 GET /api/v1/conversations response .conversations[].updated_at time
+GET /api/v1/conversations response .conversations[].watchers number omitempty
 GET /api/v1/conversations response .conversations[].workspace_id string
 GET /api/v1/conversations response .has_more boolean
 GET /api/v1/conversations response-header Content-Type
@@ -237,12 +258,40 @@ GET /api/v1/conversations/{id} response .tasks[].created_at time
 GET /api/v1/conversations/{id} response .tasks[].error_class string omitempty
 GET /api/v1/conversations/{id} response .tasks[].exit_code number omitempty nullable
 GET /api/v1/conversations/{id} response .tasks[].failure_reason string omitempty
+GET /api/v1/conversations/{id} response .tasks[].hold object nullable
+GET /api/v1/conversations/{id} response .tasks[].hold.acquired_at time
+GET /api/v1/conversations/{id} response .tasks[].hold.client_kind string
+GET /api/v1/conversations/{id} response .tasks[].hold.client_label string
+GET /api/v1/conversations/{id} response .tasks[].hold.ended_at time omitempty nullable
+GET /api/v1/conversations/{id} response .tasks[].hold.ended_reason string omitempty
+GET /api/v1/conversations/{id} response .tasks[].hold.expires_at time
+GET /api/v1/conversations/{id} response .tasks[].hold.id string
+GET /api/v1/conversations/{id} response .tasks[].hold.mode string
+GET /api/v1/conversations/{id} response .tasks[].hold.prev_status string
+GET /api/v1/conversations/{id} response .tasks[].hold.renewed_at time
+GET /api/v1/conversations/{id} response .tasks[].hold.session_id string
+GET /api/v1/conversations/{id} response .tasks[].hold.task_id string
+GET /api/v1/conversations/{id} response .tasks[].hold.ttl_seconds number
 GET /api/v1/conversations/{id} response .tasks[].id string
 GET /api/v1/conversations/{id} response .tasks[].kind string
 GET /api/v1/conversations/{id} response .tasks[].output_tail string omitempty
 GET /api/v1/conversations/{id} response .tasks[].started_at time omitempty nullable
 GET /api/v1/conversations/{id} response .tasks[].status string
 GET /api/v1/conversations/{id} response .tasks[].updated_at time
+GET /api/v1/conversations/{id} response .tasks[].watch_holds []object
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].acquired_at time
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].client_kind string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].client_label string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].ended_at time omitempty nullable
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].ended_reason string omitempty
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].expires_at time
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].id string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].mode string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].prev_status string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].renewed_at time
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].session_id string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].task_id string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].ttl_seconds number
 GET /api/v1/conversations/{id} response .tasks[].workspace_id string
 GET /api/v1/conversations/{id} response-header Content-Type
 GET /api/v1/conversations/{id} status 200
@@ -288,6 +337,37 @@ GET /api/v1/conversations/{id}/stream event:message_added .created_at time
 GET /api/v1/conversations/{id}/stream event:message_added .message_id string
 GET /api/v1/conversations/{id}/stream event:message_added .role string
 GET /api/v1/conversations/{id}/stream event:message_added .task_id string omitempty
+GET /api/v1/conversations/{id}/stream event:task_hold - object
+GET /api/v1/conversations/{id}/stream event:task_hold .ended_reason string omitempty
+GET /api/v1/conversations/{id}/stream event:task_hold .hold object nullable
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.acquired_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.client_kind string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.client_label string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.ended_at time omitempty nullable
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.ended_reason string omitempty
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.expires_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.id string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.mode string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.prev_status string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.renewed_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.session_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.task_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.ttl_seconds number
+GET /api/v1/conversations/{id}/stream event:task_hold .task_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds []object
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].acquired_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].client_kind string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].client_label string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].ended_at time omitempty nullable
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].ended_reason string omitempty
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].expires_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].id string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].mode string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].prev_status string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].renewed_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].session_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].task_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].ttl_seconds number
 GET /api/v1/conversations/{id}/stream event:task_update - object
 GET /api/v1/conversations/{id}/stream event:task_update .error_class string omitempty
 GET /api/v1/conversations/{id}/stream event:task_update .failure_reason string omitempty
@@ -554,6 +634,9 @@ GET /api/v1/targets request-header Authorization
 GET /api/v1/targets response - object
 GET /api/v1/targets response .local_targets boolean
 GET /api/v1/targets response .targets []object
+GET /api/v1/targets response .targets[].agent_args {}object
+GET /api/v1/targets response .targets[].agent_args{}.effort string
+GET /api/v1/targets response .targets[].agent_args{}.model string
 GET /api/v1/targets response .targets[].allow_provision boolean
 GET /api/v1/targets response .targets[].allow_shell boolean
 GET /api/v1/targets response .targets[].allowed_agent_types []string
@@ -619,6 +702,9 @@ GET /api/v1/targets status 500
 GET /api/v1/targets/{id}
 GET /api/v1/targets/{id} request-header Authorization
 GET /api/v1/targets/{id} response - object
+GET /api/v1/targets/{id} response .agent_args {}object
+GET /api/v1/targets/{id} response .agent_args{}.effort string
+GET /api/v1/targets/{id} response .agent_args{}.model string
 GET /api/v1/targets/{id} response .allow_provision boolean
 GET /api/v1/targets/{id} response .allow_shell boolean
 GET /api/v1/targets/{id} response .allowed_agent_types []string
@@ -687,6 +773,25 @@ GET /api/v1/targets/{id}/agents request-header Authorization
 GET /api/v1/targets/{id}/agents response - object
 GET /api/v1/targets/{id}/agents response .agents []object
 GET /api/v1/targets/{id}/agents response .agents[].agent_type string
+GET /api/v1/targets/{id}/agents response .agents[].auth object omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.expires_at time omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.method string omitempty
+GET /api/v1/targets/{id}/agents response .agents[].auth.plan string omitempty
+GET /api/v1/targets/{id}/agents response .agents[].auth.problem object omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.problem.kind string
+GET /api/v1/targets/{id}/agents response .agents[].auth.problem.observed_at time
+GET /api/v1/targets/{id}/agents response .agents[].auth.rate_limit object omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.rate_limit.observed_at time
+GET /api/v1/targets/{id}/agents response .agents[].auth.rate_limit.resets string omitempty
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in object omitempty nullable
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_command string
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_commands []object
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_commands[].argv []string omitempty
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_commands[].command string
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.attach_commands[].via string
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.started_at time
+GET /api/v1/targets/{id}/agents response .agents[].auth.sign_in.tmux_session string
+GET /api/v1/targets/{id}/agents response .agents[].auth.state string
 GET /api/v1/targets/{id}/agents response .agents[].auth_status string omitempty
 GET /api/v1/targets/{id}/agents response .agents[].available boolean
 GET /api/v1/targets/{id}/agents response .agents[].checked_at time
@@ -700,11 +805,28 @@ GET /api/v1/targets/{id}/agents status 500
 GET /api/v1/tasks/{id}/attach-info
 GET /api/v1/tasks/{id}/attach-info request-header Authorization
 GET /api/v1/tasks/{id}/attach-info response - object
+GET /api/v1/tasks/{id}/attach-info response .agent_args object
+GET /api/v1/tasks/{id}/attach-info response .agent_args.effort string
+GET /api/v1/tasks/{id}/attach-info response .agent_args.model string
 GET /api/v1/tasks/{id}/attach-info response .attach_command string
 GET /api/v1/tasks/{id}/attach-info response .attach_commands []object
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].argv []string omitempty
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].command string
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].via string
+GET /api/v1/tasks/{id}/attach-info response .hold object nullable
+GET /api/v1/tasks/{id}/attach-info response .hold.acquired_at time
+GET /api/v1/tasks/{id}/attach-info response .hold.client_kind string
+GET /api/v1/tasks/{id}/attach-info response .hold.client_label string
+GET /api/v1/tasks/{id}/attach-info response .hold.ended_at time omitempty nullable
+GET /api/v1/tasks/{id}/attach-info response .hold.ended_reason string omitempty
+GET /api/v1/tasks/{id}/attach-info response .hold.expires_at time
+GET /api/v1/tasks/{id}/attach-info response .hold.id string
+GET /api/v1/tasks/{id}/attach-info response .hold.mode string
+GET /api/v1/tasks/{id}/attach-info response .hold.prev_status string
+GET /api/v1/tasks/{id}/attach-info response .hold.renewed_at time
+GET /api/v1/tasks/{id}/attach-info response .hold.session_id string
+GET /api/v1/tasks/{id}/attach-info response .hold.task_id string
+GET /api/v1/tasks/{id}/attach-info response .hold.ttl_seconds number
 GET /api/v1/tasks/{id}/attach-info response .target object
 GET /api/v1/tasks/{id}/attach-info response .target.host string
 GET /api/v1/tasks/{id}/attach-info response .target.id string
@@ -714,6 +836,20 @@ GET /api/v1/tasks/{id}/attach-info response .target.user string
 GET /api/v1/tasks/{id}/attach-info response .task_id string
 GET /api/v1/tasks/{id}/attach-info response .tmux_session string
 GET /api/v1/tasks/{id}/attach-info response .tmux_socket string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds []object
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].acquired_at time
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].client_kind string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].client_label string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].ended_at time omitempty nullable
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].ended_reason string omitempty
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].expires_at time
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].id string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].mode string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].prev_status string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].renewed_at time
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].session_id string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].task_id string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].ttl_seconds number
 GET /api/v1/tasks/{id}/attach-info response-header Content-Type
 GET /api/v1/tasks/{id}/attach-info status 200
 GET /api/v1/tasks/{id}/attach-info status 401
@@ -1207,6 +1343,9 @@ POST /api/v1/ssh-keys status 500
 POST /api/v1/ssh-keys status 503
 POST /api/v1/targets
 POST /api/v1/targets request - object
+POST /api/v1/targets request .agent_args {}object nullable
+POST /api/v1/targets request .agent_args{}.effort string
+POST /api/v1/targets request .agent_args{}.model string
 POST /api/v1/targets request .allow_provision boolean nullable
 POST /api/v1/targets request .allow_shell boolean nullable
 POST /api/v1/targets request .allowed_agent_types []string nullable
@@ -1231,6 +1370,9 @@ POST /api/v1/targets request .user string
 POST /api/v1/targets request .workspace_root string nullable
 POST /api/v1/targets request-header Authorization
 POST /api/v1/targets response - object
+POST /api/v1/targets response .agent_args {}object
+POST /api/v1/targets response .agent_args{}.effort string
+POST /api/v1/targets response .agent_args{}.model string
 POST /api/v1/targets response .allow_provision boolean
 POST /api/v1/targets response .allow_shell boolean
 POST /api/v1/targets response .allowed_agent_types []string
@@ -1300,6 +1442,50 @@ POST /api/v1/targets status 500
 POST /api/v1/targets status 501
 POST /api/v1/targets status 502
 POST /api/v1/targets status 503
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in request - object
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in request .restart boolean
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in request-header Authorization
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response - object
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent object
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.agent_type string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth object omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.expires_at time omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.method string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.plan string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.problem object omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.problem.kind string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.problem.observed_at time
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.rate_limit object omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.rate_limit.observed_at time
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.rate_limit.resets string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in object omitempty nullable
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_command string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_commands []object
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_commands[].argv []string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_commands[].command string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.attach_commands[].via string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.started_at time
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.sign_in.tmux_session string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth.state string
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.auth_status string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.available boolean
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.checked_at time
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.path string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .agent.version string omitempty
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .opened boolean
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response .reused boolean
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in response-header Content-Type
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 200
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 400
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 401
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 404
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 409
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 413
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 422
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 500
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 501
+POST /api/v1/targets/{id}/agents/{agent_type}/sign-in status 502
 POST /api/v1/targets/{id}/migrate-ssh
 POST /api/v1/targets/{id}/migrate-ssh request - object
 POST /api/v1/targets/{id}/migrate-ssh request .dry_run boolean
@@ -1325,6 +1511,9 @@ POST /api/v1/targets/{id}/migrate-ssh response .plan.user string
 POST /api/v1/targets/{id}/migrate-ssh response .problems []string
 POST /api/v1/targets/{id}/migrate-ssh response .rolled_back boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.agent_args {}object
+POST /api/v1/targets/{id}/migrate-ssh response .target.agent_args{}.effort string
+POST /api/v1/targets/{id}/migrate-ssh response .target.agent_args{}.model string
 POST /api/v1/targets/{id}/migrate-ssh response .target.allow_provision boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target.allow_shell boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target.allowed_agent_types []string
@@ -1411,6 +1600,9 @@ POST /api/v1/targets/{id}/pin request - object
 POST /api/v1/targets/{id}/pin request .fingerprint string
 POST /api/v1/targets/{id}/pin request-header Authorization
 POST /api/v1/targets/{id}/pin response - object
+POST /api/v1/targets/{id}/pin response .agent_args {}object
+POST /api/v1/targets/{id}/pin response .agent_args{}.effort string
+POST /api/v1/targets/{id}/pin response .agent_args{}.model string
 POST /api/v1/targets/{id}/pin response .allow_provision boolean
 POST /api/v1/targets/{id}/pin response .allow_shell boolean
 POST /api/v1/targets/{id}/pin response .allowed_agent_types []string
@@ -1483,6 +1675,25 @@ POST /api/v1/targets/{id}/probe request-header Authorization
 POST /api/v1/targets/{id}/probe response - object
 POST /api/v1/targets/{id}/probe response .agents []object
 POST /api/v1/targets/{id}/probe response .agents[].agent_type string
+POST /api/v1/targets/{id}/probe response .agents[].auth object omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.expires_at time omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.method string omitempty
+POST /api/v1/targets/{id}/probe response .agents[].auth.plan string omitempty
+POST /api/v1/targets/{id}/probe response .agents[].auth.problem object omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.problem.kind string
+POST /api/v1/targets/{id}/probe response .agents[].auth.problem.observed_at time
+POST /api/v1/targets/{id}/probe response .agents[].auth.rate_limit object omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.rate_limit.observed_at time
+POST /api/v1/targets/{id}/probe response .agents[].auth.rate_limit.resets string omitempty
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in object omitempty nullable
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_command string
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_commands []object
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_commands[].argv []string omitempty
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_commands[].command string
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.attach_commands[].via string
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.started_at time
+POST /api/v1/targets/{id}/probe response .agents[].auth.sign_in.tmux_session string
+POST /api/v1/targets/{id}/probe response .agents[].auth.state string
 POST /api/v1/targets/{id}/probe response .agents[].auth_status string omitempty
 POST /api/v1/targets/{id}/probe response .agents[].available boolean
 POST /api/v1/targets/{id}/probe response .agents[].checked_at time
@@ -1507,6 +1718,9 @@ POST /api/v1/targets/{id}/recreate request - object
 POST /api/v1/targets/{id}/recreate request .size string
 POST /api/v1/targets/{id}/recreate request-header Authorization
 POST /api/v1/targets/{id}/recreate response - object
+POST /api/v1/targets/{id}/recreate response .agent_args {}object
+POST /api/v1/targets/{id}/recreate response .agent_args{}.effort string
+POST /api/v1/targets/{id}/recreate response .agent_args{}.model string
 POST /api/v1/targets/{id}/recreate response .allow_provision boolean
 POST /api/v1/targets/{id}/recreate response .allow_shell boolean
 POST /api/v1/targets/{id}/recreate response .allowed_agent_types []string
@@ -1598,6 +1812,9 @@ POST /api/v1/targets/{id}/scan-host-key status 502
 POST /api/v1/targets/{id}/start
 POST /api/v1/targets/{id}/start request-header Authorization
 POST /api/v1/targets/{id}/start response - object
+POST /api/v1/targets/{id}/start response .agent_args {}object
+POST /api/v1/targets/{id}/start response .agent_args{}.effort string
+POST /api/v1/targets/{id}/start response .agent_args{}.model string
 POST /api/v1/targets/{id}/start response .allow_provision boolean
 POST /api/v1/targets/{id}/start response .allow_shell boolean
 POST /api/v1/targets/{id}/start response .allowed_agent_types []string
@@ -1668,6 +1885,9 @@ POST /api/v1/targets/{id}/start status 503
 POST /api/v1/targets/{id}/stop
 POST /api/v1/targets/{id}/stop request-header Authorization
 POST /api/v1/targets/{id}/stop response - object
+POST /api/v1/targets/{id}/stop response .agent_args {}object
+POST /api/v1/targets/{id}/stop response .agent_args{}.effort string
+POST /api/v1/targets/{id}/stop response .agent_args{}.model string
 POST /api/v1/targets/{id}/stop response .allow_provision boolean
 POST /api/v1/targets/{id}/stop response .allow_shell boolean
 POST /api/v1/targets/{id}/stop response .allowed_agent_types []string
@@ -1805,11 +2025,28 @@ POST /api/v1/tasks/{id}/takeover request .ttl_seconds number omitempty nullable
 POST /api/v1/tasks/{id}/takeover request-header Authorization
 POST /api/v1/tasks/{id}/takeover response - object
 POST /api/v1/tasks/{id}/takeover response .attach object
+POST /api/v1/tasks/{id}/takeover response .attach.agent_args object
+POST /api/v1/tasks/{id}/takeover response .attach.agent_args.effort string
+POST /api/v1/tasks/{id}/takeover response .attach.agent_args.model string
 POST /api/v1/tasks/{id}/takeover response .attach.attach_command string
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands []object
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].argv []string omitempty
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].command string
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].via string
+POST /api/v1/tasks/{id}/takeover response .attach.hold object nullable
+POST /api/v1/tasks/{id}/takeover response .attach.hold.acquired_at time
+POST /api/v1/tasks/{id}/takeover response .attach.hold.client_kind string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.client_label string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/takeover response .attach.hold.ended_reason string omitempty
+POST /api/v1/tasks/{id}/takeover response .attach.hold.expires_at time
+POST /api/v1/tasks/{id}/takeover response .attach.hold.id string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.mode string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.prev_status string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.renewed_at time
+POST /api/v1/tasks/{id}/takeover response .attach.hold.session_id string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.task_id string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.ttl_seconds number
 POST /api/v1/tasks/{id}/takeover response .attach.target object
 POST /api/v1/tasks/{id}/takeover response .attach.target.host string
 POST /api/v1/tasks/{id}/takeover response .attach.target.id string
@@ -1819,6 +2056,20 @@ POST /api/v1/tasks/{id}/takeover response .attach.target.user string
 POST /api/v1/tasks/{id}/takeover response .attach.task_id string
 POST /api/v1/tasks/{id}/takeover response .attach.tmux_session string
 POST /api/v1/tasks/{id}/takeover response .attach.tmux_socket string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds []object
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].acquired_at time
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].client_kind string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].client_label string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].ended_reason string omitempty
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].expires_at time
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].id string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].mode string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].prev_status string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].renewed_at time
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].session_id string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].task_id string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].ttl_seconds number
 POST /api/v1/tasks/{id}/takeover response .hold object nullable
 POST /api/v1/tasks/{id}/takeover response .hold.acquired_at time
 POST /api/v1/tasks/{id}/takeover response .hold.client_kind string
@@ -2109,6 +2360,9 @@ PUT /api/v1/settings/router/{tier} status 500
 PUT /api/v1/settings/router/{tier} status 503
 PUT /api/v1/targets/{id}
 PUT /api/v1/targets/{id} request - object
+PUT /api/v1/targets/{id} request .agent_args {}object nullable
+PUT /api/v1/targets/{id} request .agent_args{}.effort string
+PUT /api/v1/targets/{id} request .agent_args{}.model string
 PUT /api/v1/targets/{id} request .allow_provision boolean nullable
 PUT /api/v1/targets/{id} request .allow_shell boolean nullable
 PUT /api/v1/targets/{id} request .allowed_agent_types []string nullable
@@ -2133,6 +2387,9 @@ PUT /api/v1/targets/{id} request .user string
 PUT /api/v1/targets/{id} request .workspace_root string nullable
 PUT /api/v1/targets/{id} request-header Authorization
 PUT /api/v1/targets/{id} response - object
+PUT /api/v1/targets/{id} response .agent_args {}object
+PUT /api/v1/targets/{id} response .agent_args{}.effort string
+PUT /api/v1/targets/{id} response .agent_args{}.model string
 PUT /api/v1/targets/{id} response .allow_provision boolean
 PUT /api/v1/targets/{id} response .allow_shell boolean
 PUT /api/v1/targets/{id} response .allowed_agent_types []string

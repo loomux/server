@@ -3,6 +3,8 @@ package router
 import (
 	"context"
 	"time"
+
+	"github.com/Loomux/server/registry"
 )
 
 // Test-only exports: what an agent CLI probe prints, so router_test's
@@ -17,6 +19,9 @@ const (
 	HealthProbeDiskPrefix   = healthProbeDiskPrefix
 )
 
+// SignInProblemFor is signInProblemFor (LOOM-316).
+var SignInProblemFor = signInProblemFor
+
 // ProvisioningMarker starts every provisioning recipe; tests use it to
 // recognise one.
 const ProvisioningMarker = provisioningMarker
@@ -24,7 +29,17 @@ const ProvisioningMarker = provisioningMarker
 // LaunchCommandForTest composes the command launchAgent would run, so an
 // adapter's own tests can assert the whole argv.
 func (at AgentType) LaunchCommandForTest(workspaceDir, prompt, permissionMode string) string {
-	return at.launchCommand(workspaceDir, prompt, permissionMode)
+	return at.launchCommand(workspaceDir, prompt, permissionMode, nil)
+}
+
+// LaunchCommandWithArgsForTest is LaunchCommandForTest with a target's
+// pin for agent type name (LOOM-307).
+func (at AgentType) LaunchCommandWithArgsForTest(name, workspaceDir, prompt, permissionMode string, pin registry.AgentArgs) (string, error) {
+	pinned, err := at.pinnedArgs(name, pin)
+	if err != nil {
+		return "", err
+	}
+	return at.launchCommand(workspaceDir, prompt, permissionMode, pinned), nil
 }
 
 // SetBootRetry shortens startup reconciliation's retry pacing for a test.

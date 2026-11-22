@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -166,6 +167,14 @@ func shellQuote(s string) string {
 // no path. A probe that fails to run — the target unreachable, say — is
 // an error and records nothing: "couldn't look" is not "absent".
 func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentType string, entry AgentType) (*registry.TargetAgent, error) {
+	return r.probeAgentWith(ctx, target, agentType, entry, false)
+}
+
+// probeAgentWith is probeAgent; holdingSignIn says the caller already
+// holds target + agentType's sign-in lock (PrepareSignIn), which closing a
+// finished sign-in needs (LOOM-316).
+func (r *Router) probeAgentWith(ctx context.Context, target *registry.Target, agentType string, entry AgentType,
+	holdingSignIn bool) (*registry.TargetAgent, error) {
 	if entry.Binary == "" {
 		return &registry.TargetAgent{TargetID: target.ID, AgentType: agentType, Available: true}, nil
 	}
@@ -190,16 +199,58 @@ func (r *Router) probeAgent(ctx context.Context, target *registry.Target, agentT
 		Path: path, Version: version, CheckedAt: time.Now().UTC(),
 	}
 	// Only what the CLI said is classified, never kept: it can carry the
-	// account's email.
+	// account's email. Its details (LOOM-316) are kept only as short
+	// words and a time.
 	if path != "" && entry.AuthCheck != nil {
 		rec.AuthStatus = entry.AuthCheck.Status(auth)
+		if entry.AuthCheck.Details != nil {
+			d := entry.AuthCheck.Details(auth)
+			rec.AuthMethod, rec.AuthPlan = authWord(d.Method), authWord(d.Plan)
+			if !d.ExpiresAt.IsZero() {
+				expires := d.ExpiresAt.UTC()
+				rec.AuthExpiresAt = &expires
+			}
+		}
+	}
+	// What turns saw and the sign-in session (LOOM-316) aren't the
+	// probe's to change; read them to return the whole record.
+	prev, err := r.store.GetTargetAgent(ctx, target.ID, agentType)
+	if err != nil && !errors.Is(err, registry.ErrNotFound) {
+		return nil, fmt.Errorf("probe agent %q: %w", agentType, err)
 	}
 	if err := r.store.SetTargetAgent(ctx, rec); err != nil {
 		return nil, fmt.Errorf("probe agent %q: record result: %w", agentType, err)
 	}
 	r.logger.Info("agent probed", "target_id", target.ID, "agent_type", agentType, "available", rec.Available,
-		"path", path, "version", version, "auth", rec.AuthStatus)
+		"path", path, "version", version, "auth", rec.AuthStatus, "auth_method", rec.AuthMethod, "auth_plan", rec.AuthPlan)
+	if prev != nil {
+		rec.SignInProblem, rec.SignInProblemAt = prev.SignInProblem, prev.SignInProblemAt
+		rec.LimitedAt, rec.LimitResets = prev.LimitedAt, prev.LimitResets
+		rec.SignInSession, rec.SignInStartedAt = prev.SignInSession, prev.SignInStartedAt
+		// Signed out before, signed in now, with its sign-in session open:
+		// the person finished signing in there.
+		if prev.SignInSession != "" && prev.AuthStatus != registry.AgentAuthLoggedIn &&
+			rec.AuthStatus == registry.AgentAuthLoggedIn {
+			r.finishedSignIn(context.WithoutCancel(ctx), target, rec, prev, holdingSignIn)
+		}
+	}
 	return rec, nil
+}
+
+// finishedSignIn closes rec's sign-in session, which a probe found done,
+// under the sign-in lock and only if it is still the session prev
+// recorded: one restarted meanwhile is the person's new attempt (LOOM-316).
+func (r *Router) finishedSignIn(ctx context.Context, target *registry.Target, rec, prev *registry.TargetAgent, holdingSignIn bool) {
+	if !holdingSignIn {
+		unlock := r.lockSignIn(target.ID, rec.AgentType)
+		defer unlock()
+	}
+	cur, err := r.store.GetTargetAgent(ctx, target.ID, rec.AgentType)
+	if err != nil || cur.SignInSession != prev.SignInSession || cur.SignInStartedAt == nil || prev.SignInStartedAt == nil ||
+		!cur.SignInStartedAt.Equal(*prev.SignInStartedAt) {
+		return
+	}
+	r.signInDone(ctx, target, rec, true)
 }
 
 // requireAgent probes for agentType on target, returning its record, or

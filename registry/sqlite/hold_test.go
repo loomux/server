@@ -94,8 +94,12 @@ func TestMigration36TaskHolds(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name LIKE '%task_holds%'`).Scan(&n); err != nil || n != 0 {
 		t.Errorf("after down: %d task_holds objects left, %v; want none", n, err)
 	}
-	if _, err := store.GetTask(ctx, "k1"); err != nil {
-		t.Errorf("task after down: %v", err)
+	// The row, read with SQL: this binary's GetTask reads columns later
+	// migrations add (LOOM-307's agent_model).
+	var status string
+	if err := store.db.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id = 'k1'`).Scan(&status); err != nil ||
+		status != string(registry.TaskStatusHumanTakeover) {
+		t.Errorf("task after down = %q, %v; want it still human-takeover", status, err)
 	}
 }
 

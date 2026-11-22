@@ -19,7 +19,18 @@ LOOMUX_ROUTER_PRIMARY_BASE_URL=... LOOMUX_ROUTER_PRIMARY_API_KEY=... LOOMUX_ROUT
 
 # debugging only: dispatch one message directly, bypassing HTTP/auth entirely
 loomuxd -message "hello"
+
+# a client of a running server (LOOM-316): which agent CLIs are signed in
+# where, and opening one's sign-in to attach to. LOOMUX_URL (default
+# http://127.0.0.1:8080) and LOOMUX_TOKEN (a session token from
+# POST /api/v1/login)
+loomuxd agents status [-target NAME|ID] [-refresh]
+loomuxd agents sign-in -target NAME|ID -agent TYPE [-restart]
+loomuxd agents sign-in -close -target NAME|ID -agent TYPE
 ```
+
+`loomuxd agents` only calls the HTTP API (`docs/design/agent-sign-in.md`);
+it never opens the database, so it is safe beside a running server.
 
 Build a release with a real version baked in (see `version/README.md`):
 `go build -ldflags "-X github.com/Loomux/server/version.Version=1.2.3" ./cmd/loomuxd`

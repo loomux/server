@@ -22,6 +22,23 @@ type Store interface {
 	// ListTargetAgents returns every recorded probe result for targetID,
 	// ordered by agent type. A target never probed returns an empty slice.
 	ListTargetAgents(ctx context.Context, targetID string) ([]*TargetAgent, error)
+	// GetTargetAgent returns targetID's probe result for agentType, or
+	// ErrNotFound if it was never probed there (LOOM-316).
+	GetTargetAgent(ctx context.Context, targetID, agentType string) (*TargetAgent, error)
+	// SetAgentSignInProblem records the sign-in screen a turn of
+	// agentType on targetID stopped at (an AgentSignIn* value) and when;
+	// "" clears it (LOOM-316). SetAgentRateLimit records the usage limit
+	// a turn hit and its reset text; a zero at clears it.
+	// ClearAgentTurnIssues clears each of those observed before before (a
+	// turn that started then finished normally; one seen since is kept),
+	// and is no error when there is none. SetAgentSignInSession records the sign-in session opened for
+	// it and when; "" clears it. Each updates the probed row only: none
+	// there is ErrNotFound (except ClearAgentTurnIssues), and
+	// SetTargetAgent never changes what they wrote.
+	SetAgentSignInProblem(ctx context.Context, targetID, agentType, problem string, at time.Time) error
+	SetAgentRateLimit(ctx context.Context, targetID, agentType string, at time.Time, resets string) error
+	ClearAgentTurnIssues(ctx context.Context, targetID, agentType string, before time.Time) error
+	SetAgentSignInSession(ctx context.Context, targetID, agentType, session string, startedAt time.Time) error
 	// SetTargetHealth records a target's latest health probe (LOOM-86),
 	// replacing the previous one. A target that doesn't exist is
 	// ErrConflict; deleting a target deletes its record with it.

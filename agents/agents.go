@@ -70,12 +70,28 @@ func ClaudeCode() router.AgentType {
 			Args:      []string{"auth", "status"},
 			LoggedIn:  regexp.MustCompile(`"loggedIn":\s*true`),
 			LoggedOut: regexp.MustCompile(`"loggedIn":\s*false`),
+			Details:   claudeAuthDetails,
+		},
+		// `claude auth login` goes straight to the sign-in: it prints the
+		// URL and waits for the code to be pasted, so it works from a
+		// headless target (LOOM-316). An API key or long-lived token in
+		// the vault signs it in without one.
+		SignIn: &router.SignIn{
+			Args:          []string{"auth", "login"},
+			CredentialEnv: []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"},
 		},
 		LastMessageKey: "last_assistant_message",
 		InterruptKeys:  []string{"Escape"},
 		Description: `Anthropic's Claude Code CLI ("claude"). A general coding agent: reads, edits and runs code ` +
 			`in the workspace. The default when the user doesn't name an agent.`,
 		CompletionHookArgs: []string{"--settings", claudeStopHookSettings()},
+		// A target's pinned model and effort (LOOM-307), for this
+		// process only. Levels from Claude Code 2.1.329's --help.
+		LaunchArgs: &router.LaunchArgs{
+			Model:   func(m string) []string { return []string{"--model", m} },
+			Effort:  func(e string) []string { return []string{"--effort", e} },
+			Efforts: []string{"low", "medium", "high", "xhigh", "max"},
+		},
 		Profile: router.LaunchProfile{
 			// auto: Claude Code's classifier-gated automatic mode — routine
 			// edits and commands go ahead, risky ones still stop for
@@ -150,6 +166,22 @@ func Codex() router.AgentType {
 			Args:      []string{"login", "status"},
 			LoggedIn:  regexp.MustCompile(`(?im)^\s*logged in\b`),
 			LoggedOut: regexp.MustCompile(`(?i)\bnot logged in\b`),
+			Details:   codexAuthDetails,
+		},
+		// --device-auth: a code to enter at a URL on any device, where the
+		// default browser flow needs its callback on the target's own
+		// localhost:1455, which a remote target's browser can't reach
+		// (LOOM-316). An account without device codes enabled gets an
+		// error, and the shell the session drops to can run plain
+		// `codex login`, or `codex login --with-api-key`, instead.
+		//
+		// No CredentialEnv: Codex's TUI doesn't sign in from the
+		// environment. With only OPENAI_API_KEY set, Codex 0.163.0 still
+		// opens at "Sign in with ChatGPT" and `codex login status` says
+		// "Not logged in" (checked 2026-11-20); an API key has to be given
+		// to `codex login --with-api-key`.
+		SignIn: &router.SignIn{
+			Args: []string{"login", "--device-auth"},
 		},
 		LastMessageKey: "last-assistant-message",
 		InterruptKeys:  []string{"Escape"},
@@ -163,6 +195,16 @@ func Codex() router.AgentType {
 		// so nothing is written to ~/.codex/config.toml.
 		StartupArgs:        []string{"-c", "check_for_update_on_startup=false"},
 		CompletionHookArgs: []string{"-c", "notify=" + tomlStringArray(codexNotifyArgv())},
+		// A target's pinned model and effort (LOOM-307), for this
+		// process only: -m, and the model_reasoning_effort key as a TOML
+		// string (-c parses TOML). Levels Codex has taken since
+		// 0.150.0's floor; 0.163.0's binary also names none, max and
+		// ultra, unverified here, so not offered yet.
+		LaunchArgs: &router.LaunchArgs{
+			Model:   func(m string) []string { return []string{"-m", m} },
+			Effort:  func(e string) []string { return []string{"-c", "model_reasoning_effort=" + tomlString(e)} },
+			Efforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+		},
 		Profile: router.LaunchProfile{
 			// workspace-write: commands run in Codex's sandbox and can
 			// write inside the workspace (and temp dirs), with no network.
@@ -189,8 +231,8 @@ func Codex() router.AgentType {
 			// Needs Node.js and npm on the target; on a target without
 			// them the install fails and its output says so.
 			Command: "npm install -g @openai/codex",
-			Login: "attach to the target and run `codex login`, or store an OPENAI_API_KEY credential " +
-				"for the codex agent type",
+			Login: "attach to the target and run `codex login` (or `codex login --with-api-key` with an API key on " +
+				"its stdin); Codex doesn't sign in from an OPENAI_API_KEY in its environment",
 		},
 	}
 }
