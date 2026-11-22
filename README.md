@@ -3,37 +3,111 @@
   <img alt="Loomux" src="docs/brand/banner-light.svg" width="100%">
 </picture>
 
-# Loomux — server
+**One chat for your coding agents, across your own machines.** Loomux starts Claude Code or Codex in tmux on
+your servers, or on machines it creates on your own Docker or Kubernetes. It tells you when an agent is stuck,
+and you can attach to the live session whenever you want.
 
-Chat-driven interface to on-demand, tmux-backed coding agents, with a
-lightweight swappable router model deciding routing/relay between the chat
-and the agent fleet. A human can SSH into wherever an agent is running and
-attach to its tmux session directly, without breaking the automated side.
+Self-hosted and MIT-licensed. Not to be confused with loomux.dev, an unrelated commercial product.
 
-**Status: pre-alpha — domain layer (registry, targets, orchestrator,
-completion detection, credentials, router, LLM-backed routing model,
-task-continuation) plus a client-facing HTTP API with login-gated auth are
-wired into a runnable `cmd/loomuxd` process. Web/Android/iOS clients
-themselves remain future, separate work.**
+<!-- LOOM-310: the demo GIF and screenshots go here (a chat routing a task to a machine, the Approve / Deny /
+Reply card, the same session in tmux). -->
 
-## Design
+## What it is
 
-The core design spec lives at [`docs/design/core-design.md`](docs/design/core-design.md).
-It covers the workspace registry, execution targets (local/remote via SSH),
-the tmux interaction and takeover model, tiered completion detection, the
-hybrid credential model, pluggable storage, client auth, and versioning.
+`loomuxd` is a small server for people who run coding agents in tmux on more than one machine and have too many
+panes to watch. You write in a chat, in any browser. A small router model you choose reads the message and picks
+the machine and the workspace. Loomux starts the agent there in its normal interactive mode, or passes the
+message to the one already running, and the answer comes back into the conversation.
 
-Explicitly deferred to their own future specs: the web/Android/iOS clients,
-the specific router-model vendor, and concrete agent-type adapters beyond
-the interface they implement.
+- **Your machines, or machines it makes.**
+  - Register any host you reach over SSH. Loomux scans and pins its host key and keeps its own key for it.
+  - Or let the bundled Docker or Kubernetes plugin create a container or pod per machine, with a persistent
+    volume.
+- **Real sessions, not a wrapper.** Agents run as the CLI you already use, in tmux, as the machine's user.
+  Attach to any of them and look or type; nothing runs headless.
+- **Blocked prompts reach you.** When an agent stops at a screen Loomux recognises (a permission request, the
+  agent's own question, folder trust, an expired login, a usage limit), you get a card with **Approve / Deny /
+  Reply**, and a push notification through [ntfy](https://ntfy.sh) if you set it up.
+- **Policy per machine:** which agents may run there, whether new work needs your confirmation, the agents'
+  permission mode, and how much of their output the router model sees (`relay: full | last_message | none`).
+- **A credential vault.** API keys and tokens for the agents are stored encrypted and handed to the agent's
+  environment at launch, never on a command line.
+- **Verifiable images.** The server and agent images carry GitHub build-provenance attestations, and each
+  release names its image digests.
 
-## Deployment
+## What it isn't
 
-`loomuxd` ships as a container image, `ghcr.io/loomux/server` — see
-[`docs/deploy/container.md`](docs/deploy/container.md) for how it's built
-(including why the runtime base is not `scratch`/distroless, and how the
-web client's static bundle is sourced), its configuration, and its health
-probe.
+- **Not for teams.** One user, one password, in v1.
+- **Not a hosted service.** You run it; nothing passes through a Loomux service. The router-model provider you
+  pick, and the agents' own providers (Anthropic, OpenAI), still receive what they process.
+- **Not a native mobile app.** The web client works in a phone's browser.
+- **Not headless automation.** Agents run interactively, and some of their prompts wait for you.
+
+## Status
+
+**Pre-alpha.** Expect rough edges:
+
+- every release is a pre-release, and the API may still change before 1.0;
+- the router model is a third-party API unless you run an OpenAI-compatible endpoint that supports forced tool
+  calls (`tool_choice`) yourself;
+- the images are Linux/amd64 only;
+- the terminal client, [loomux/tui](https://github.com/loomux/tui), isn't usable yet.
+
+## Quickstart
+
+One Linux host with Docker, about 10 minutes to a signed-in agent on a 50 Mbit/s connection. You need a router-model API key (Anthropic, or any
+OpenAI-compatible endpoint that supports forced tool calls) and a Claude Code or Codex account. The full
+walkthrough, with troubleshooting and how to remove it all, is [docs/quickstart.md](docs/quickstart.md).
+
+> [!WARNING]
+> This gives Loomux your Docker engine, which is root on that host. Use a machine or VM you don't mind that for.
+
+```sh
+mkdir loomux && cd loomux
+curl -fsSLO https://raw.githubusercontent.com/Loomux/server/main/deploy/quickstart/compose.yaml
+LOOMUX_VERSION=0.3.155    # the newest release
+printf 'Choose a Loomux password: '; stty -echo; read -r PW; stty echo; echo
+printf 'Router model API key: '; stty -echo; read -r KEY; stty echo; echo
+HASH=$(printf '%s\n' "$PW" | docker run --rm -i ghcr.io/loomux/server:$LOOMUX_VERSION -hash-password)
+umask 077
+cat > .env <<EOF
+LOOMUX_VERSION=$LOOMUX_VERSION
+DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+LOOMUX_AUTH_PASSWORD_HASH='$HASH'
+LOOMUX_MASTER_KEY=$(head -c 32 /dev/urandom | base64)
+LOOMUX_ROUTER_PRIMARY_PROVIDER=anthropic
+LOOMUX_ROUTER_PRIMARY_MODEL=claude-haiku-5-5
+LOOMUX_ROUTER_PRIMARY_API_KEY=$KEY
+EOF
+unset PW KEY HASH
+docker compose up -d
+```
+
+Loomux starts at <http://localhost:8080> and creates one machine, `dev`, pulling the 2 GB agent image. Once
+**Machines** shows `dev` running, sign the agent in once:
+
+```sh
+docker exec -it $(docker ps -qf label=loomux.io/target-name=dev) claude auth login
+```
+
+Open the link, approve, then paste the code once and press Enter: it doesn't show as you paste.
+
+Then start a conversation: *"In a new workspace called hello on dev, create hello.txt containing "hi"."* To
+watch the agent work, `docker exec -it $(docker ps -qf label=loomux.io/target-name=dev) tmux -L loomux attach`.
+
+Your own servers over SSH, or Kubernetes: [Installing Loomux](docs/deploy/install.md).
+
+## How it compares
+
+- **Claude Code's Remote Control, the Codex app:** they bring one agent session to the vendor's app, through
+  the vendor's service. Loomux runs on your hardware, routes one conversation across many machines and both
+  CLIs, and can create the machines.
+- **Remote-control wrappers such as Happy:** they wrap the CLI and relay it to a phone app. Loomux leaves the
+  CLI untouched in tmux, and adds deciding where work goes.
+- **tmux dashboards and session managers:** they show and drive the sessions you start. Loomux also starts them,
+  on the machine the conversation calls for, and keeps the conversation's history.
+- **Coder, Codespaces and other dev-environment platforms:** they make the machines. Loomux makes them too, on a
+  much smaller scale, but is mostly about the agents running on them.
 
 ## Security
 
@@ -75,14 +149,25 @@ What else to know:
 
 Report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes; please don't open a public issue.
 
-## Layout
+## Documentation
 
-Each top-level directory corresponds to a component boundary from the
-design spec — see each directory's own README for what belongs there and
-which spec section it implements.
+| | |
+|---|---|
+| [Quickstart](docs/quickstart.md) | one Docker host, a machine Loomux creates |
+| [Installing](docs/deploy/install.md) | a real deployment: secrets, configuration, TLS in front, checks |
+| [Your own hosts](docs/deploy/targets.md), [SSH](docs/deploy/ssh.md) | preparing a machine Loomux reaches over SSH |
+| [Plugins](docs/deploy/plugins.md) | machines on Docker or Kubernetes |
+| [Configuration](docs/deploy/container.md) | every environment variable, the image, health probes, metrics |
+| [Operations](docs/deploy/operations.md), [backup and restore](docs/deploy/backup-restore.md) | upgrades, rotation, restores |
+| [Design](docs/design/core-design.md) | how it works and why, decision by decision |
 
-## Tracking
+## Project
 
-- Vikunja project `Loomux` (command-center instance)
-- Plane project `LOOM` (command-center instance), epic "Loomux — Chat-Driven
-  Multi-Agent Orchestration Platform"
+| Repository | What it is |
+|---|---|
+| [loomux/server](https://github.com/loomux/server) | `loomuxd`: the API, routing, the agents' tmux sessions, plugins, the images |
+| [loomux/web](https://github.com/loomux/web) | the web client, served by `loomuxd` |
+| [loomux/tui](https://github.com/loomux/tui) | `loomux`, the terminal client (in progress, not usable yet) |
+
+Each directory of this repository is a component of the design, with a README saying what belongs there.
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). License: [MIT](LICENSE).
