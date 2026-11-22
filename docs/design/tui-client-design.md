@@ -303,6 +303,133 @@ without pausing it.
   `laptop`"). The `task_hold` event covers both modes, and list rows carry
   `watchers` (a count) beside `held_by`.
 
+As built (S10, LOOM-271):
+
+- **`hold` stays the drive hold; watch holds are `watch_holds` beside
+  it.** Wherever S6 put `hold` (a conversation's tasks, attach-info, a
+  takeover's `attach`), there is now also `watch_holds`: the task's
+  active watch holds, oldest first, in the hold's own shape, `[]` when
+  nobody watches. A watch hold is never in `hold`, and a watcher is never
+  `held_by`. So "is somebody in the pane" stays one null check, and a
+  client written before watch can't mistake a watcher for the driver (or
+  offer Take back for one). List rows carry `watchers`, the number of
+  watch holds on the conversation's tasks, left out when zero like
+  `held_by`.
+- **`task_hold` carries the task's holds as they now are:**
+  `{task_id, hold, watch_holds, ended_reason?}`, sent when the drive hold
+  changes (as in S6) or the set of watch holds does. `hold` and
+  `ended_reason` keep S6's meaning (the drive hold; why the one before it
+  ended), so a watcher coming or going changes only `watch_holds` and
+  never sets `ended_reason`. Why a watch hold ended isn't on the stream:
+  its own client learns it from its heartbeat's `410`, and nobody else
+  shows it. Same per-poll comparison and baseline as S6.
+- **A session has one watch hold per task.** A second `mode: "watch"`
+  takeover by the same session renews and returns the first, as a drive
+  takeover returns the session's own drive hold. So a retried request
+  doesn't leave a second hold behind, and `watchers` counts sessions. The
+  cost, for T13: two `loomux attach --watch` on the same task from one
+  session share the hold, and the first to exit releases it for both (the
+  other's next heartbeat is `410 hold_ended`, `released`; it can take a
+  new one). A session's drive hold and its watch hold on a task are two
+  holds: upgrading takes the drive hold, then releases the watch.
+- **What can be watched:** any task that could be held (`running`,
+  `awaiting_input`, `needs_attention`, `human_takeover`, or `failed` with
+  its pane kept), whoever holds it. Never `409 task_held`. Any other
+  ended task is `409 task_inactive`. Nothing of the task is written, so
+  there is no compare-and-set: a task that ends as the watch is taken is
+  watched until the sweeper ends the hold as `task_ended`, within 5 s.
+- **`force` with `watch` is `400`,** not ignored: it detaches a pane's
+  holder, which a request to look is never read as asking for.
+- **A watch is never handed a writable command.** Until S11 builds the
+  read-only forms, every command the server has is writable (attach-info's
+  `attach_command`, the ssh form, a plugin's). So a watch takeover's
+  `attach` has an empty `attach_command` and no `attach_commands`: they
+  aren't built for it, and the plugin isn't asked. The answer's
+  `hold.mode` is `watch`, which T13 checks before running anything; an
+  S10-only server then gives it nothing to run, rather than something
+  that can type. The handler also refuses to answer with a hold of
+  another mode than the one asked for (`500`, and that hold is given
+  back), whatever the hold service did. S11 puts the read-only commands
+  in the same two fields and adds `409 watch_unsupported`.
+- **Ending a watch hold is only that.** Release, expiry, revocation and
+  `task_ended` end the hold and touch nothing else: no detach, no status
+  change, and the driver's hold stays. A Take back ends the drive hold
+  and leaves the watch holds. Because it needs nothing from the target, a
+  watch hold also ends while the target doesn't answer: the sweeper skips
+  only the drive holds of a target it found down in that pass.
+- **Detaching is still per tmux session.** A Take back, a forced
+  takeover and a drive hold's expiry run `detach-client -s`, which closes
+  the watchers' read-only clients too (tmux can't tell them apart from
+  here). Their watch holds aren't ended by the server: each watcher's
+  client releases when its attach exits, or the lease runs out.
+- `400 unsupported_mode` is no longer answered by this server. It stays
+  in the error table for clients that may meet a server between S3 and
+  S10.
+
+As built (S11, LOOM-272):
+
+- **A watch takeover's `attach` carries read-only commands, and only
+  those.** `attach_command` is `tmux -L <socket> attach -r -t <session>`
+  (`targets.ReadOnlyAttachCommand`), the ssh entry runs that line on the
+  target, and a plugin's entry is its exec form around it. The writable
+  commands aren't built for a watch at all. attach-info
+  (`GET /tasks/{id}/attach-info`) is unchanged and stays writable: the
+  read-only commands come only with a watch hold.
+- **What `-r` does** was checked against tmux itself, not read off the
+  command: `targets` has a test that opens a terminal attached with each
+  of the two commands (a pane of a second tmux server running it) and,
+  at that terminal, types text and asks tmux's command prompt to
+  `send-keys`. Through the read-only command neither reaches the pane;
+  through the writable one both do. The test fails if `-r` is dropped.
+  With tmux 3.2 or later `-r` is `-f read-only,ignore-size`, so a
+  watcher's terminal doesn't resize the agent's window either; on an
+  older tmux it is read-only only. A read-only client can still detach
+  and switch session, which is all tmux leaves it. One thing learned on
+  the way: a read-only *control-mode* client (`tmux -C attach -r`) is
+  refused its commands by tmux 3.8 but not by the tmux on CI's Ubuntu
+  image, so `-r` is a guarantee for the terminal attach these commands
+  start, not for a client someone starts in control mode by hand.
+- **Plugins: three checks,** each enough by itself
+  (`target-providers.md` §1.3, "Read-only attach"). The host asks
+  `read_only: true` only of a plugin whose manifest declares the new
+  capability `targets.attach_read_only`. The plugin confirms with
+  `read_only: true` in its answer; in the SDK the read-only commands are
+  a method of their own (`sdk.ReadOnlyAttacher`), so a plugin without it
+  fails the call instead of answering with its writable commands. And
+  the host keeps only commands whose `argv` ends with exactly
+  `tmux -L <socket> attach -r -t <session>` for the socket and session
+  it asked for, making the `command` line from that `argv` itself. The
+  Kubernetes and Docker plugins implement it.
+- **A watch offers the ways attach-info offers, each read-only, or it
+  is refused.** For a plugin's machine that means the plugin's own
+  read-only command or no watch, with no hold taken:
+  `409 watch_unsupported` when the plugin has none (it doesn't declare
+  the capability, refused the request, or nothing of its answer held;
+  the message names the plugin and its version: "the kubernetes plugin
+  (0.3.9) has no read-only attach command, …; upgrade the plugin, or
+  attach to drive"), `409 watch_unsupported` when the plugin isn't
+  running ("start it and try again"), and `502` when it didn't answer.
+  The ssh form alone isn't offered instead: it doesn't reach a plugin's
+  machine from a laptop. Where attach-info itself offers only ssh, so
+  does the watch, read-only: a registered host, a machine whose plugin
+  was uninstalled, and a machine of a plugin with no attach commands at
+  all (`targets.attach_commands` undeclared).
+  For T13: show the server's `error` text for `watch_unsupported`
+  rather than a fixed "upgrade the plugin". It is also the answer when
+  the plugin isn't running, where the remedy is to start it.
+- **Deploying it.** `targets.attach_read_only` is a capability change
+  for the two plugins. A server from before S11 refuses a manifest that
+  declares it, so the server goes first. And an installed plugin
+  instance isn't adopted to the new version by itself when its
+  capabilities changed (LOOM-194): it goes to `error` ("changed its
+  capabilities or configuration schema; upgrade the plugin") until it is
+  upgraded once (`POST /api/v1/plugins/{id}/upgrade`, or Upgrade in the
+  web). While it is in `error` the plugin doesn't run, so its machines
+  can't be managed until the upgrade.
+- Nothing new in the API's shape: the read-only commands use the fields
+  a watch already had, and takeover already answered `409`. The contract
+  file is unchanged.
+
 ### API (additions within v1)
 
 - `POST /api/v1/tasks/{id}/takeover` `{mode?, client_label?, ttl_seconds?,
@@ -365,6 +492,37 @@ without pausing it.
   internal` (`router/errorclass.go` maps `ErrHumanTakeover` there), which a
   client can't tell from a real fault. S6 gives it its own class, `held`, and
   the reply text names the holder.
+- As built (S6, LOOM-267):
+  - `hold` is the task's active **drive** hold (watch holds, since S10,
+    are `watch_holds` beside it: see "Watching", As built),
+    read through `TaskHolds` (`ActiveHolds`, `GetHold`), so a server
+    without holds shows `null` everywhere. Takeover's `attach.hold` is the
+    hold just taken (the attach-info is read before it is taken).
+  - `held_by` is the drive hold on one of the row's conversation's tasks
+    (the newest taken, should there be two), left out when none.
+    `pending_confirmation_id` is the conversation's newest offer still
+    `pending` and not past `expires_at` (the same test the conversation's
+    `confirmations` use for `expired`), left out when none.
+  - `task_hold` compares each poll's drive holds with the last ones seen,
+    as `task_update` compares statuses, so it needs no new query beyond
+    the active holds. Same hold (a renewal): nothing. None → one: acquire.
+    One → none: end, `ended_reason` read from the ended hold. One →
+    another: steal, the new hold with the old one's `ended_reason`
+    (`taken_over`). Consequence, accepted: a hold taken and given back
+    between two polls (default 500 ms) isn't reported, as nothing a
+    client shows changed. A baseline is taken at connect, as for the
+    other events.
+  - The refusal is wrapped once, in `Router.Dispatch`: any
+    `ErrHumanTakeover` that isn't `ErrTakenOver` (a turn a takeover
+    ended stays `taken_over`) becomes a `router.HeldError` carrying the
+    active drive hold on the conversation's `human_takeover` task. Its
+    text: "this conversation's task is being driven from the terminal
+    on `laptop` since 2026-11-20 13:02 UTC; take it back, or wait until
+    it is given back, then send the message again" (`the web`/`the app`
+    for those client kinds, `a client` otherwise; no hold found: "a
+    person has taken over this conversation's task; …"). The metrics
+    label is `held` too. A push notification for the failed turn is
+    unchanged (as before, when it was `internal`).
 
 New error codes go in `api/README.md`'s table and the contract file is
 regenerated (lines only added).
@@ -817,7 +975,10 @@ to watch. Two guards close that:
 
 - **Server (S3):** the takeover route defines `mode` from its first release.
   It accepts only `drive` and answers `400 unsupported_mode` for `watch`
-  until S10 enables it. So no released server ignores the field.
+  until S10 enables it. So no released server ignores the field. Since
+  S10 the handler also checks that the hold it answers with has the mode
+  asked for, and a watch's `attach` carries no command that can type
+  (none at all until S11).
 - **Client (T13):** after a `mode: "watch"` takeover, the client checks
   that the returned `hold.mode` is `watch` before running any command.
   Anything else, or `400 unsupported_mode`, makes it release the hold it got

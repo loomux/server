@@ -270,6 +270,16 @@ const (
 	// TargetsSlowDescribe: targets.describe answers after DescribeFor,
 	// as a plugin whose cluster is slow to answer (LOOM-216).
 	TargetsSlowDescribe = "slow_describe"
+	// TargetsWatchWritable: a read_only targets.attach_commands is
+	// answered, and confirmed, with the writable command: a plugin that
+	// declares targets.attach_read_only and builds the wrong command
+	// (LOOM-272). The host must not pass it on.
+	TargetsWatchWritable = "watch_writable"
+	// TargetsWatchRefused: a read_only targets.attach_commands is
+	// refused as invalid_params, as the SDK refuses it for a plugin with
+	// no read-only method: a plugin that declares
+	// targets.attach_read_only and can't serve it (LOOM-272).
+	TargetsWatchRefused = "watch_refused"
 )
 
 // FailAfter is how long a machine runs in mode fail_notify.
@@ -536,6 +546,27 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket s
 		return nil, notFound(id)
 	}
 	argv := []string{"fake", "attach", id, "--", "tmux", "-L", socket, "attach", "-t", session}
+	return []protocol.AttachCommand{{Via: "fake", Command: strings.Join(argv, " "), Argv: argv}}, nil
+}
+
+// TargetAttachCommandsReadOnly is the same attach with tmux's -r
+// (LOOM-272); in mode watch_writable, the writable command instead.
+func (p *Plugin) TargetAttachCommandsReadOnly(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
+	mode, _, _ := p.targetsMode()
+	st := p.state()
+	st.mu.Lock()
+	_, ok := st.machines[id]
+	st.mu.Unlock()
+	if !ok {
+		return nil, notFound(id)
+	}
+	switch mode {
+	case TargetsWatchWritable:
+		return p.TargetAttachCommands(ctx, id, session, socket)
+	case TargetsWatchRefused:
+		return nil, &rpc.Error{Code: rpc.CodeInvalidParams, Message: "targets.attach_commands: this plugin has no read-only attach command"}
+	}
+	argv := []string{"fake", "attach", id, "--", "tmux", "-L", socket, "attach", "-r", "-t", session}
 	return []protocol.AttachCommand{{Via: "fake", Command: strings.Join(argv, " "), Argv: argv}}, nil
 }
 

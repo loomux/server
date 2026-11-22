@@ -313,3 +313,75 @@ func TestNotifierSendsTargetsChanged(t *testing.T) {
 	var zero sdk.Notifier
 	zero.TargetsChanged("m2", "") // the zero value is ready
 }
+
+// attachOnly is a target provider as far as targets.attach_commands
+// goes, from before read-only attach (LOOM-272): its one command can
+// type. The embedded interfaces are nil; nothing else is called.
+type attachOnly struct {
+	sdk.Plugin
+	sdk.TargetProvider
+}
+
+func (attachOnly) TargetAttachCommands(_ context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
+	argv := []string{"stub", "exec", id, "--", "tmux", "-L", socket, "attach", "-t", session}
+	return []protocol.AttachCommand{{Via: "stub", Command: "stub attach " + session, Argv: argv}}, nil
+}
+
+// attachBoth also has the read-only form.
+type attachBoth struct{ attachOnly }
+
+func (attachBoth) TargetAttachCommandsReadOnly(_ context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
+	argv := []string{"stub", "exec", id, "--", "tmux", "-L", socket, "attach", "-r", "-t", session}
+	return []protocol.AttachCommand{{Via: "stub", Command: "stub watch " + session, Argv: argv}}, nil
+}
+
+func attachCall(t *testing.T, p sdk.Plugin, params protocol.AttachParams) (protocol.AttachResult, *rpc.Error) {
+	t.Helper()
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, rerr := sdk.Handler(p, nil)(context.Background(), protocol.MethodTargetsAttachCommands, raw)
+	if rerr != nil {
+		return protocol.AttachResult{}, rerr
+	}
+	out, ok := res.(protocol.AttachResult)
+	if !ok {
+		t.Fatalf("targets.attach_commands answered %T", res)
+	}
+	return out, nil
+}
+
+// LOOM-272: a read_only request is answered by the plugin's read-only
+// commands, confirmed with read_only in the result. A plugin without
+// them fails the call: it never answers a request to watch with a
+// command that can type.
+func TestAttachCommandsReadOnly(t *testing.T) {
+	params := protocol.AttachParams{ID: "abc", Session: "loomux-x", Socket: "loomux-b"}
+	watch := params
+	watch.ReadOnly = true
+
+	// The writable form, unconfirmed, as before.
+	for name, p := range map[string]sdk.Plugin{"without read-only": attachOnly{}, "with read-only": attachBoth{}} {
+		res, rerr := attachCall(t, p, params)
+		if rerr != nil || res.ReadOnly || len(res.Commands) != 1 || slices.Contains(res.Commands[0].Argv, "-r") {
+			t.Errorf("%s: a plain request = %+v, %v; want the writable command, read_only unset", name, res, rerr)
+		}
+	}
+
+	res, rerr := attachCall(t, attachBoth{}, watch)
+	if rerr != nil || !res.ReadOnly || len(res.Commands) != 1 {
+		t.Fatalf("read_only request = %+v, %v; want the read-only command, confirmed", res, rerr)
+	}
+	if argv := res.Commands[0].Argv; !slices.Contains(argv, "-r") || !slices.Contains(argv, "loomux-b") {
+		t.Errorf("read_only request: argv = %q; want attach -r on the host's socket", argv)
+	}
+
+	res, rerr = attachCall(t, attachOnly{}, watch)
+	if rerr == nil || rerr.Code != rpc.CodeInvalidParams {
+		t.Fatalf("read_only request to a plugin without it = %+v, %v; want invalid_params", res, rerr)
+	}
+	if len(res.Commands) != 0 || res.ReadOnly {
+		t.Errorf("read_only request to a plugin without it answered commands: %+v", res)
+	}
+}

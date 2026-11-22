@@ -121,6 +121,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("DeleteSessionsExpiredBefore", func(t *testing.T) { testDeleteSessionsExpiredBefore(t, newStore(t)) })
 
 	runHolds(t, newStore)
+	runAgentSignIn(t, newStore)
 }
 
 // createTestWorkspace is a fixture: task tests need a valid workspace to

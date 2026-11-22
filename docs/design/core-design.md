@@ -441,6 +441,20 @@ gives every hold a fresh lease first. Since LOOM-266 a takeover of a
 `running` task ends its turn's wait at once: the dispatch fails with error
 class `taken_over`, no keys are sent, the task stays `human-takeover`, and
 what the agent finishes is relayed as late output once it is handed back.
+Since LOOM-267 holds are shown on a conversation's tasks, attach-info,
+conversation list rows (`held_by`) and the stream (`task_hold`), and a
+message to a held conversation fails with dispatch error class `held`,
+its error naming the holder.
+Since LOOM-271 a takeover can ask to **watch** instead (`mode: "watch"`):
+a hold that only records who is attached read-only. The status isn't
+touched, so automation keeps typing; any number of sessions may watch a
+task beside the one that drives it; and a watch hold's end detaches
+nobody. Watch holds are shown beside the drive hold (`watch_holds`, and a
+`watchers` count on list rows). A watch is never handed a writable attach
+command. Since LOOM-272 it is handed read-only ones (`tmux … attach -r`):
+the local and ssh forms built by the server, and a plugin's own, asked
+for under the capability `targets.attach_read_only` and checked. A
+machine whose plugin has none can't be watched (`409 watch_unsupported`).
 The full model, expiry and watching are in `tui-client-design.md`, "Server
 awareness: holds" and "Taking over a running turn".
 
@@ -622,6 +636,22 @@ work goes ahead; still broken, it fails at once with the probe's reason
 a nearly full disk) instead of a raw error minutes into the turn. A new
 workspace also needs at least 1 GiB free on the root's filesystem.
 
+**Agent sign-in (LOOM-316).** The same auth check also yields the sign-in
+method, plan and expiry (allow-listed short words and a time, never the
+email), and turns record the sign-in screen or usage limit they hit until a
+later turn finishes normally; `GET /api/v1/targets/{id}/agents` sums it up
+as one `state`. Loomux never signs an agent in, but it prepares the
+sign-in: `POST /api/v1/targets/{id}/agents/{agent_type}/sign-in` (and the
+dispatch paths below) opens the CLI's own login (`claude auth login`,
+`codex login --device-auth`) in a `loomux-signin-<agent type>` tmux session
+on the target and returns the attach command; the person attaches and
+finishes it there. A fresh launch whose probe says the CLI is signed out,
+with no API key for it in the vault, isn't launched: the dispatch fails at
+once with `login_required` naming that session. The session closes when a
+probe sees the CLI signed in, when a turn finishes normally after it, on
+`DELETE`, or by the orphan sweep after 24 h. Design:
+`agent-sign-in.md`.
+
 If the turn would also have provisioned a workspace, the offer shows that
 provisioning script in full too: a "yes" runs nothing the offer didn't
 show.
@@ -797,6 +827,8 @@ Four independent axes:
   once, rather than after the no-progress timeout. A sign-in screen
   fails the task with error class `login_required`, the pane kept so a
   human can attach and finish the login; Loomux never signs an agent in.
+  Since LOOM-316 it also opens the CLI's sign-in session (§1, "Agent
+  sign-in") and names it first.
   Anything else makes the task `needs-attention`, with the prompt stored
   on it (`attention`: title, detail, question, options, cursor) and shown
   in chat. The conversation's next message is the answer, read

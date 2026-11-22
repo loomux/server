@@ -330,3 +330,21 @@ func (s *Server) ActiveHold(taskID string) *registry.TaskHold {
 	}
 	return hold
 }
+
+// WatchHolds returns the task's active watch holds, oldest first: the
+// sessions attached to it read-only (LOOM-271). Empty when nobody
+// watches it.
+func (s *Server) WatchHolds(taskID string) []*registry.TaskHold {
+	s.tb.Helper()
+	holds, err := s.Store.ListActiveTaskHolds(context.Background())
+	if err != nil {
+		s.tb.Fatalf("apitest: watch holds of %q: %v", taskID, err)
+	}
+	out := []*registry.TaskHold{}
+	for _, h := range holds {
+		if h.TaskID == taskID && h.Mode == registry.HoldModeWatch {
+			out = append(out, h)
+		}
+	}
+	return out
+}

@@ -223,6 +223,36 @@ func testTargetsLifecycle(t *testing.T, launch Launch, o Options) {
 				t.Errorf("attach command not on the host's socket loomux-plugintest-socket: %+v", c)
 			}
 		}
+		if att.ReadOnly {
+			t.Errorf("targets.attach_commands confirmed read_only for a request that didn't ask: %+v", att)
+		}
+		// A request to watch (LOOM-272) is answered read-only or not at
+		// all: never with a command that can type.
+		var watch protocol.AttachResult
+		err := call(t, conn, o, protocol.MethodTargetsAttachCommands,
+			protocol.AttachParams{ID: id, Session: "loomux-plugintest", Socket: "loomux-plugintest-socket", ReadOnly: true}, &watch)
+		switch {
+		case m.HasCapability(protocol.CapTargetsAttachReadOnly):
+			if err != nil {
+				t.Fatalf("targets.attach_commands, read_only: %v", err)
+			}
+			if !watch.ReadOnly || len(watch.Commands) == 0 {
+				t.Errorf("targets.attach_commands, read_only = %+v; want commands, confirmed read_only", watch)
+			}
+			for _, c := range watch.Commands {
+				if !protocol.AttachesReadOnly(c.Argv, "loomux-plugintest-socket", "loomux-plugintest") {
+					t.Errorf("read-only attach command: argv %q doesn't end with tmux -L loomux-plugintest-socket attach -r -t loomux-plugintest", c.Argv)
+				}
+				if c.Via == "" || c.Command == "" || len(c.Command) > 512 || strings.ContainsAny(c.Command, "\r\n\x00") {
+					t.Errorf("read-only attach command outside the grammar: %+v", c)
+				}
+				if !strings.Contains(c.Command, "tmux -L loomux-plugintest-socket attach -r ") {
+					t.Errorf("read-only attach command isn't tmux attach -r on the host's socket loomux-plugintest-socket: %+v", c)
+				}
+			}
+		case err == nil && watch.ReadOnly:
+			t.Errorf("targets.attach_commands confirmed read_only without declaring %s: %+v", protocol.CapTargetsAttachReadOnly, watch)
+		}
 	}
 
 	if err := call(t, conn, o, protocol.MethodTargetsDestroy, protocol.IDParams{ID: id}, nil); err != nil {

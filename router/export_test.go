@@ -19,6 +19,9 @@ const (
 	HealthProbeDiskPrefix   = healthProbeDiskPrefix
 )
 
+// SignInProblemFor is signInProblemFor (LOOM-316).
+var SignInProblemFor = signInProblemFor
+
 // ProvisioningMarker starts every provisioning recipe; tests use it to
 // recognise one.
 const ProvisioningMarker = provisioningMarker

@@ -578,6 +578,12 @@ const (
 	// its agent isn't interrupted, and what it finishes reaches the
 	// conversation later, as late output.
 	ErrorClassTakenOver ErrorClass = "taken_over"
+	// ErrorClassHeld: the message wasn't sent because a person holds the
+	// conversation's task (LOOM-267): it is driven from a terminal, and
+	// automation doesn't type into it until it is given or taken back.
+	// The dispatch's error names the holder. A dispatch's class, never
+	// a task's.
+	ErrorClassHeld ErrorClass = "held"
 	// ErrorClassInternal: anything else.
 	ErrorClassInternal ErrorClass = "internal"
 )
@@ -624,6 +630,30 @@ type TargetAgent struct {
 	// (LOOM-86): one of the AgentAuth* values, empty when not checked.
 	AuthStatus string
 	CheckedAt  time.Time
+	// AuthMethod, AuthPlan and AuthExpiresAt are how the same auth check
+	// said the CLI is signed in (LOOM-316): its method ("claude.ai",
+	// "api_key", "chatgpt"), the account's plan ("max") and when the
+	// sign-in ends. Short allow-listed words only; empty or nil when the
+	// CLI doesn't say. Written by SetTargetAgent.
+	AuthMethod    string
+	AuthPlan      string
+	AuthExpiresAt *time.Time
+
+	// What turns saw (LOOM-316), which SetTargetAgent never touches:
+	// SignInProblem (an AgentSignIn* value) is the sign-in screen a turn
+	// last stopped at, LimitedAt and LimitResets the usage limit it last
+	// hit and when the agent said it resets. Cleared when a later turn
+	// finishes normally.
+	SignInProblem   string
+	SignInProblemAt *time.Time
+	LimitedAt       *time.Time
+	LimitResets     string
+
+	// SignInSession is the tmux session Loomux opened for a person to
+	// sign the CLI in (LOOM-316), and SignInStartedAt when; empty and nil
+	// when none is open. Written by SetAgentSignInSession only.
+	SignInSession   string
+	SignInStartedAt *time.Time
 }
 
 // TargetAgent.AuthStatus values (LOOM-86).
@@ -633,6 +663,67 @@ const (
 	// AgentAuthUnknown: the CLI was asked but its answer wasn't
 	// recognised.
 	AgentAuthUnknown = "unknown"
+)
+
+// SignInState values beyond the AgentAuth* ones (LOOM-316).
+const (
+	// AgentAuthExpired: the sign-in ended, by its own expiry or as a turn
+	// found it (an expired token, a refused key).
+	AgentAuthExpired = "expired"
+	// AgentAuthRateLimited: signed in, but a turn hit the account's usage
+	// limit and none has finished normally since.
+	AgentAuthRateLimited = "rate_limited"
+)
+
+// SignInSessionTTL is how long a sign-in session (LOOM-316) is reported
+// as open: the orphan sweep (LOOM-93) kills a Loomux session no task owns
+// once it is this old.
+const SignInSessionTTL = 24 * time.Hour
+
+// SignInState is the one word a client shows for the agent's sign-in at
+// now (LOOM-316): "" when the CLI isn't installed or wasn't asked; else
+// logged_out if the CLI says so; else what a turn saw (expired for an
+// expired or refused credential, logged_out for a login screen); else
+// expired if the sign-in's own end has passed; else rate_limited after a
+// usage limit; else what the CLI said (logged_in, unknown).
+func (a *TargetAgent) SignInState(now time.Time) string {
+	switch {
+	case !a.Available || a.AuthStatus == "":
+		return ""
+	case a.AuthStatus == AgentAuthLoggedOut:
+		return AgentAuthLoggedOut
+	case a.SignInProblem == AgentSignInExpired || a.SignInProblem == AgentSignInInvalid:
+		return AgentAuthExpired
+	case a.SignInProblem != "":
+		return AgentAuthLoggedOut
+	case a.AuthExpiresAt != nil && !a.AuthExpiresAt.After(now):
+		return AgentAuthExpired
+	case a.LimitedAt != nil:
+		return AgentAuthRateLimited
+	}
+	return a.AuthStatus
+}
+
+// OpenSignInSession is the agent's sign-in session if one is recorded and
+// younger than SignInSessionTTL at now, else "".
+func (a *TargetAgent) OpenSignInSession(now time.Time) string {
+	if a.SignInSession == "" || a.SignInStartedAt == nil || now.Sub(*a.SignInStartedAt) >= SignInSessionTTL {
+		return ""
+	}
+	return a.SignInSession
+}
+
+// TargetAgent.SignInProblem values (LOOM-316): which sign-in screen a
+// turn stopped at, as a fixed word — never the screen's text.
+const (
+	// AgentSignInExpired: the sign-in had expired ("OAuth token has
+	// expired").
+	AgentSignInExpired = "expired"
+	// AgentSignInInvalid: the credential was refused ("Invalid API key").
+	AgentSignInInvalid = "invalid_credentials"
+	// AgentSignInSignedOut: the CLI isn't signed in at all (its login or
+	// onboarding screen).
+	AgentSignInSignedOut = "signed_out"
 )
 
 // TargetHealth is a target's latest health probe (LOOM-86), refreshed
