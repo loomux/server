@@ -180,9 +180,15 @@ GET /api/v1/conversations request-header Authorization
 GET /api/v1/conversations response - object
 GET /api/v1/conversations response .conversations []object
 GET /api/v1/conversations response .conversations[].conversation_id string
+GET /api/v1/conversations response .conversations[].held_by object omitempty nullable
+GET /api/v1/conversations response .conversations[].held_by.client_kind string
+GET /api/v1/conversations response .conversations[].held_by.client_label string
+GET /api/v1/conversations response .conversations[].held_by.since time
+GET /api/v1/conversations response .conversations[].pending_confirmation_id string omitempty
 GET /api/v1/conversations response .conversations[].preview string
 GET /api/v1/conversations response .conversations[].status string
 GET /api/v1/conversations response .conversations[].updated_at time
+GET /api/v1/conversations response .conversations[].watchers number omitempty
 GET /api/v1/conversations response .conversations[].workspace_id string
 GET /api/v1/conversations response .has_more boolean
 GET /api/v1/conversations response-header Content-Type
@@ -249,12 +255,40 @@ GET /api/v1/conversations/{id} response .tasks[].created_at time
 GET /api/v1/conversations/{id} response .tasks[].error_class string omitempty
 GET /api/v1/conversations/{id} response .tasks[].exit_code number omitempty nullable
 GET /api/v1/conversations/{id} response .tasks[].failure_reason string omitempty
+GET /api/v1/conversations/{id} response .tasks[].hold object nullable
+GET /api/v1/conversations/{id} response .tasks[].hold.acquired_at time
+GET /api/v1/conversations/{id} response .tasks[].hold.client_kind string
+GET /api/v1/conversations/{id} response .tasks[].hold.client_label string
+GET /api/v1/conversations/{id} response .tasks[].hold.ended_at time omitempty nullable
+GET /api/v1/conversations/{id} response .tasks[].hold.ended_reason string omitempty
+GET /api/v1/conversations/{id} response .tasks[].hold.expires_at time
+GET /api/v1/conversations/{id} response .tasks[].hold.id string
+GET /api/v1/conversations/{id} response .tasks[].hold.mode string
+GET /api/v1/conversations/{id} response .tasks[].hold.prev_status string
+GET /api/v1/conversations/{id} response .tasks[].hold.renewed_at time
+GET /api/v1/conversations/{id} response .tasks[].hold.session_id string
+GET /api/v1/conversations/{id} response .tasks[].hold.task_id string
+GET /api/v1/conversations/{id} response .tasks[].hold.ttl_seconds number
 GET /api/v1/conversations/{id} response .tasks[].id string
 GET /api/v1/conversations/{id} response .tasks[].kind string
 GET /api/v1/conversations/{id} response .tasks[].output_tail string omitempty
 GET /api/v1/conversations/{id} response .tasks[].started_at time omitempty nullable
 GET /api/v1/conversations/{id} response .tasks[].status string
 GET /api/v1/conversations/{id} response .tasks[].updated_at time
+GET /api/v1/conversations/{id} response .tasks[].watch_holds []object
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].acquired_at time
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].client_kind string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].client_label string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].ended_at time omitempty nullable
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].ended_reason string omitempty
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].expires_at time
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].id string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].mode string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].prev_status string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].renewed_at time
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].session_id string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].task_id string
+GET /api/v1/conversations/{id} response .tasks[].watch_holds[].ttl_seconds number
 GET /api/v1/conversations/{id} response .tasks[].workspace_id string
 GET /api/v1/conversations/{id} response-header Content-Type
 GET /api/v1/conversations/{id} status 200
@@ -300,6 +334,37 @@ GET /api/v1/conversations/{id}/stream event:message_added .created_at time
 GET /api/v1/conversations/{id}/stream event:message_added .message_id string
 GET /api/v1/conversations/{id}/stream event:message_added .role string
 GET /api/v1/conversations/{id}/stream event:message_added .task_id string omitempty
+GET /api/v1/conversations/{id}/stream event:task_hold - object
+GET /api/v1/conversations/{id}/stream event:task_hold .ended_reason string omitempty
+GET /api/v1/conversations/{id}/stream event:task_hold .hold object nullable
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.acquired_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.client_kind string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.client_label string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.ended_at time omitempty nullable
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.ended_reason string omitempty
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.expires_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.id string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.mode string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.prev_status string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.renewed_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.session_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.task_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .hold.ttl_seconds number
+GET /api/v1/conversations/{id}/stream event:task_hold .task_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds []object
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].acquired_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].client_kind string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].client_label string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].ended_at time omitempty nullable
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].ended_reason string omitempty
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].expires_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].id string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].mode string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].prev_status string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].renewed_at time
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].session_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].task_id string
+GET /api/v1/conversations/{id}/stream event:task_hold .watch_holds[].ttl_seconds number
 GET /api/v1/conversations/{id}/stream event:task_update - object
 GET /api/v1/conversations/{id}/stream event:task_update .error_class string omitempty
 GET /api/v1/conversations/{id}/stream event:task_update .failure_reason string omitempty
@@ -736,6 +801,20 @@ GET /api/v1/tasks/{id}/attach-info response .attach_commands []object
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].argv []string omitempty
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].command string
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].via string
+GET /api/v1/tasks/{id}/attach-info response .hold object nullable
+GET /api/v1/tasks/{id}/attach-info response .hold.acquired_at time
+GET /api/v1/tasks/{id}/attach-info response .hold.client_kind string
+GET /api/v1/tasks/{id}/attach-info response .hold.client_label string
+GET /api/v1/tasks/{id}/attach-info response .hold.ended_at time omitempty nullable
+GET /api/v1/tasks/{id}/attach-info response .hold.ended_reason string omitempty
+GET /api/v1/tasks/{id}/attach-info response .hold.expires_at time
+GET /api/v1/tasks/{id}/attach-info response .hold.id string
+GET /api/v1/tasks/{id}/attach-info response .hold.mode string
+GET /api/v1/tasks/{id}/attach-info response .hold.prev_status string
+GET /api/v1/tasks/{id}/attach-info response .hold.renewed_at time
+GET /api/v1/tasks/{id}/attach-info response .hold.session_id string
+GET /api/v1/tasks/{id}/attach-info response .hold.task_id string
+GET /api/v1/tasks/{id}/attach-info response .hold.ttl_seconds number
 GET /api/v1/tasks/{id}/attach-info response .target object
 GET /api/v1/tasks/{id}/attach-info response .target.host string
 GET /api/v1/tasks/{id}/attach-info response .target.id string
@@ -745,6 +824,20 @@ GET /api/v1/tasks/{id}/attach-info response .target.user string
 GET /api/v1/tasks/{id}/attach-info response .task_id string
 GET /api/v1/tasks/{id}/attach-info response .tmux_session string
 GET /api/v1/tasks/{id}/attach-info response .tmux_socket string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds []object
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].acquired_at time
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].client_kind string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].client_label string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].ended_at time omitempty nullable
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].ended_reason string omitempty
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].expires_at time
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].id string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].mode string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].prev_status string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].renewed_at time
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].session_id string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].task_id string
+GET /api/v1/tasks/{id}/attach-info response .watch_holds[].ttl_seconds number
 GET /api/v1/tasks/{id}/attach-info response-header Content-Type
 GET /api/v1/tasks/{id}/attach-info status 200
 GET /api/v1/tasks/{id}/attach-info status 401
@@ -1904,6 +1997,20 @@ POST /api/v1/tasks/{id}/takeover response .attach.attach_commands []object
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].argv []string omitempty
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].command string
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].via string
+POST /api/v1/tasks/{id}/takeover response .attach.hold object nullable
+POST /api/v1/tasks/{id}/takeover response .attach.hold.acquired_at time
+POST /api/v1/tasks/{id}/takeover response .attach.hold.client_kind string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.client_label string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/takeover response .attach.hold.ended_reason string omitempty
+POST /api/v1/tasks/{id}/takeover response .attach.hold.expires_at time
+POST /api/v1/tasks/{id}/takeover response .attach.hold.id string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.mode string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.prev_status string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.renewed_at time
+POST /api/v1/tasks/{id}/takeover response .attach.hold.session_id string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.task_id string
+POST /api/v1/tasks/{id}/takeover response .attach.hold.ttl_seconds number
 POST /api/v1/tasks/{id}/takeover response .attach.target object
 POST /api/v1/tasks/{id}/takeover response .attach.target.host string
 POST /api/v1/tasks/{id}/takeover response .attach.target.id string
@@ -1913,6 +2020,20 @@ POST /api/v1/tasks/{id}/takeover response .attach.target.user string
 POST /api/v1/tasks/{id}/takeover response .attach.task_id string
 POST /api/v1/tasks/{id}/takeover response .attach.tmux_session string
 POST /api/v1/tasks/{id}/takeover response .attach.tmux_socket string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds []object
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].acquired_at time
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].client_kind string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].client_label string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].ended_at time omitempty nullable
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].ended_reason string omitempty
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].expires_at time
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].id string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].mode string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].prev_status string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].renewed_at time
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].session_id string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].task_id string
+POST /api/v1/tasks/{id}/takeover response .attach.watch_holds[].ttl_seconds number
 POST /api/v1/tasks/{id}/takeover response .hold object nullable
 POST /api/v1/tasks/{id}/takeover response .hold.acquired_at time
 POST /api/v1/tasks/{id}/takeover response .hold.client_kind string

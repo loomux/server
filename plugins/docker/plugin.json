@@ -6,7 +6,7 @@
   "vendor": "Loomux",
   "homepage": "https://github.com/Loomux/server/tree/main/plugins/docker",
   "description": "Creates a container per machine on one Docker host, reached over SSH or its local socket. Docker gives no network isolation: a machine can reach the LAN and the tailnet the host is on, and no egress choice is offered; the docker host's own security is yours.",
-  "capabilities": ["targets.create", "targets.stop_start", "targets.recreate", "targets.persistent", "targets.ephemeral", "targets.attach_commands"],
+  "capabilities": ["targets.create", "targets.stop_start", "targets.recreate", "targets.persistent", "targets.ephemeral", "targets.attach_commands", "targets.attach_read_only"],
   "permissions": [
     {"scope": "docker", "detail": "the Docker engine on the configured host, which is root-equivalent there: creates, starts, stops and removes containers and volumes carrying its labels, creates one network, pulls the agent image and reads engine info; nothing it makes is privileged, mounts the host or shares its namespaces"},
     {"scope": "network", "detail": "reaches the docker host over SSH as the configured user (who must be in the docker group) or through its local socket; the docker host pulls the agent image from its registry"}

@@ -434,6 +434,20 @@ gives every hold a fresh lease first. Since LOOM-266 a takeover of a
 `running` task ends its turn's wait at once: the dispatch fails with error
 class `taken_over`, no keys are sent, the task stays `human-takeover`, and
 what the agent finishes is relayed as late output once it is handed back.
+Since LOOM-267 holds are shown on a conversation's tasks, attach-info,
+conversation list rows (`held_by`) and the stream (`task_hold`), and a
+message to a held conversation fails with dispatch error class `held`,
+its error naming the holder.
+Since LOOM-271 a takeover can ask to **watch** instead (`mode: "watch"`):
+a hold that only records who is attached read-only. The status isn't
+touched, so automation keeps typing; any number of sessions may watch a
+task beside the one that drives it; and a watch hold's end detaches
+nobody. Watch holds are shown beside the drive hold (`watch_holds`, and a
+`watchers` count on list rows). A watch is never handed a writable attach
+command. Since LOOM-272 it is handed read-only ones (`tmux … attach -r`):
+the local and ssh forms built by the server, and a plugin's own, asked
+for under the capability `targets.attach_read_only` and checked. A
+machine whose plugin has none can't be watched (`409 watch_unsupported`).
 The full model, expiry and watching are in `tui-client-design.md`, "Server
 awareness: holds" and "Taking over a running turn".
 

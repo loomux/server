@@ -178,7 +178,8 @@ Specific codes, where a handler tells apart a case a client can act on:
 | `task_held` | `POST /api/v1/tasks/{id}/takeover` `409` when another session holds the task; the body also carries its `hold`. `force` takes it (LOOM-264) |
 | `task_inactive` | `POST /api/v1/tasks/{id}/takeover` `409` for a task that has ended and whose pane wasn't kept for a person (LOOM-264) |
 | `unsupported_api_version` | `404` for any `/api` path outside `/api/v1`; the body also carries `supported_versions` |
-| `unsupported_mode` | `POST /api/v1/tasks/{id}/takeover` `400` for `mode: "watch"` on a server without watch holds: no hold is taken (LOOM-264) |
+| `unsupported_mode` | `POST /api/v1/tasks/{id}/takeover` `400` for `mode: "watch"` from a server older than watch holds (LOOM-264; before LOOM-271): no hold is taken. A server with watch holds never answers it, but a client that may meet an older one still handles it |
+| `watch_unsupported` | `POST /api/v1/tasks/{id}/takeover` `409` for `mode: "watch"` on a machine whose plugin has no read-only attach command (it doesn't declare `targets.attach_read_only`, refused the request or answered none; the `error` names the plugin: upgrade it), or isn't running to give it (start it and try again). No hold is taken, and no writable command is handed out in its place; attaching to drive still works (LOOM-272) |
 | `workspace_name_taken` | `POST /api/v1/workspaces` `409` when another workspace has the name (LOOM-215) |
 
 New codes may be added within v1 (a client should treat an unknown code
@@ -382,6 +383,10 @@ or gave one the server refused.
       4 KiB margin) is `413` (code `too_large`) before anything runs
       (LOOM-155): the router couldn't send it to an agent anyway (error
       class `message_too_large`), and it never reaches the router model.
+    - A message to a conversation whose task a person holds (taken over
+      from a terminal, see the holds below) isn't typed into it: the job
+      fails with `error_class` `held` (LOOM-267), and its `error` names
+      who holds it.
     - `workspace_hint` (LOOM-46) is optional — a client-supplied workspace
       ID (e.g. a chat UI already focused on that workspace's conversation)
       that's folded into the router model's prompt as advisory context
@@ -466,6 +471,18 @@ or gave one the server refused.
     latest (status/updated_at already cover "what's happening now").
     `has_more` is `false` unless `?limit=` cut the list short (see
     "Lists and paging").
+    Since LOOM-267 a row also carries `held_by {client_kind,
+    client_label, since}` when a person drives one of the conversation's
+    tasks from a terminal (its active drive hold: who took it, and when),
+    and `pending_confirmation_id` when the conversation waits on a yes or
+    no to an offer (its newest one still `pending` and not past
+    `expires_at`; answered by `POST /dispatch` with `confirmation_id`).
+    Both are left out when there is none.
+    Since LOOM-271 a row also carries `watchers`: how many watch holds
+    the conversation's tasks have (sessions attached read-only, see
+    `takeover` below), left out when nobody watches. A watcher is never
+    `held_by`: a row that is only watched has `watchers` and no
+    `held_by`.
   - **Enums are snake_case** throughout the API (API v1 freeze review,
     item 9). Two were kebab-case before 1.0, and the store still spells
     them that way: task statuses (`running`, `awaiting_input`,
@@ -494,6 +511,11 @@ or gave one the server refused.
     `has_more` and `next_before` page `messages` with `?limit=` and
     `?before=<message id>`; without them every message comes back and
     `has_more` is `false` (see "Lists and paging").
+    Each task carries `hold` (LOOM-267): its active drive hold, as
+    `takeover` returns it, or `null` when nobody drives it. And
+    `watch_holds` (LOOM-271): its active watch holds, oldest first, in
+    the same shape (`mode` `watch`); `[]` when nobody watches. A watch
+    hold is never in `hold`.
   - `GET /api/v1/conversations/{id}/events` — auth-gated (LOOM-110), the
     conversation's dispatch audit trail, oldest first: `{conversation_id,
     events: [{id, dispatch_id?, created_at, kind, model?, tier?,
@@ -541,6 +563,22 @@ or gave one the server refused.
     left running in the background — and report later; the server relays
     that report as an assistant message no dispatch carries, so this
     event is how a client learns to refetch the conversation.
+
+    Since LOOM-267 it also carries `event: task_hold`,
+    `data: {task_id, hold, watch_holds, ended_reason?}`, when the holds
+    on one of the conversation's tasks change. It carries them as they
+    now are: `hold` is the task's drive hold or `null`, `watch_holds`
+    its watch holds, oldest first (`[]` for none; LOOM-271). The task is
+    taken (`hold` the new hold), taken from its holder with `force`
+    (`hold` the new hold, `ended_reason` `taken_over`), or given back
+    (`hold` `null`, `ended_reason` why the hold ended: `released`,
+    `taken_back`, `expired`, `session_revoked`, `task_ended`); or a
+    watcher comes or goes (`watch_holds` changes, `hold` is whatever it
+    was, and there is no `ended_reason`: that is only ever the drive
+    hold's). A heartbeat's renewal isn't an event. Like `task_update` it
+    compares what each poll finds, so a hold taken and given back
+    between two polls isn't reported; holds there on connect aren't
+    replayed.
   - `GET /api/v1/tasks/{id}/attach-info` — auth-gated (LOOM-20), resolves
     a task down to the target+session a human would SSH into to attach
     (design spec §4): `{task_id, tmux_session, target: {id, name, kind,
@@ -549,15 +587,22 @@ or gave one the server refused.
     up (matching this API's other endpoints' thin-passthrough style); a
     dead session is discovered the same way a human always would, by
     trying to attach. Wraps `AttachInfoStore` (`GetTask` → `GetWorkspace`
-    → `GetTarget`), a narrow seam mirroring the others here.
+    → `GetTarget`), a narrow seam mirroring the others here. It carries
+    `hold` too (LOOM-267): the task's active drive hold, or `null`; and
+    `watch_holds` (LOOM-271): its active watch holds, `[]` for none. Its
+    `attach_command` and `attach_commands` are writable: whoever runs
+    one can type into the pane. The read-only ones come only from a
+    `takeover` with `mode: "watch"` (LOOM-272).
   - `POST /api/v1/tasks/{id}/takeover`,
     `POST /api/v1/tasks/{id}/takeover/heartbeat` and
     `POST /api/v1/tasks/{id}/release`: auth-gated holds (LOOM-264,
     `WithTaskHolds`; `501` without it; design in
     `docs/design/tui-client-design.md`, "Server awareness: holds"). A
     hold is a lease on a task by the caller's session while a person is
-    attached to its pane. Taking one moves the task to `human_takeover`,
-    which pauses automation into the pane; the hold says who has it.
+    attached to its pane. Taking a drive hold (the default) moves the
+    task to `human_takeover`, which pauses automation into the pane; the
+    hold says who has it. A watch hold (LOOM-271) only says who is
+    looking, and changes nothing else.
     - `takeover` takes `{mode?, client_label?, ttl_seconds?, force?}` (the
       body may be left out) and returns `200 {task_id, hold, attach}`:
       `attach` is the attach-info body, `hold` is `{id, task_id,
@@ -565,11 +610,12 @@ or gave one the server refused.
       ttl_seconds, acquired_at, renewed_at, expires_at, ended_at?,
       ended_reason?}`. `ttl_seconds` is 15 to 300, default 45.
       `client_label` is at most 64 characters with no control characters.
-      `mode` is `drive` (the default); `watch` is `400` (code
-      `unsupported_mode`) until watch holds exist, and never answered
-      with a drive hold. `client_kind` is the caller's session's
+      `mode` is `drive` (the default) or `watch` (below); anything else
+      is `400`. The hold answered is always of the mode asked for.
+      `client_kind` is the caller's session's
       (LOOM-268), and so is `client_label` when the takeover sends none.
-      The task's active drive hold is checked before its status. Held by
+      For a drive hold,
+      the task's active drive hold is checked before its status. Held by
       the caller's own session: that hold is renewed and returned
       (idempotent; its lease length and label stay as first taken). Held
       by another session: `409` (code `task_held`) with its `hold`, unless
@@ -593,6 +639,56 @@ or gave one the server refused.
       no keys are sent to the agent, and the task stays `human_takeover`.
       What the agent finishes reaches the conversation as a late reply
       once the task is handed back.
+    - `takeover` with `mode: "watch"` (LOOM-271) takes a watch hold: the
+      caller's session is attached to the pane read-only. The task's
+      status isn't touched, so automation keeps typing and a turn in
+      flight carries on; nobody is detached; and whoever drives the task
+      keeps it. It is never `409` `task_held`: any number of sessions
+      may watch a task, beside the one that drives it. A task can be
+      watched when it could be held (the statuses above, a kept `failed`
+      pane included); any other ended task is `409` `task_inactive`.
+      `prev_status` is the task's status when the watch began. A session
+      has one watch hold per task: asking again renews and returns it,
+      as for a drive hold (two terminals of one session share it, and
+      either one's release ends it for both). `force` is `400` with
+      `watch`: it detaches a pane's holder, which a request to look is
+      never read as asking for. A watch gives no claim on the pane: the
+      watcher's own drive takeover is still `409` `task_held` while
+      another session drives.
+      **A watch is never handed a command that can type.** The
+      response's `hold.mode` is `watch`, and every command in its
+      `attach` attaches read-only (LOOM-272), with tmux's `-r`, so
+      nothing typed reaches the pane (the keys that detach still work):
+      `attach_command` is `tmux -L <socket> attach -r -t <session>`,
+      the ssh entry of `attach_commands` runs that same line on the
+      target, and a plugin's entry is its own exec form around it
+      (`kubectl … exec -it <pod> -- tmux -L <socket> attach -r -t
+      <session>`, `docker … exec -it <container> tmux … attach -r …`).
+      The server builds the first two. A plugin is asked read-only, only
+      when its manifest declares `targets.attach_read_only`, and its
+      answer is used only if it confirms read-only and each command's
+      `argv` ends with exactly `tmux -L <socket> attach -r -t <session>`
+      for the socket and session asked for; the `command` line of a
+      plugin's entry is then made by the server from that `argv`.
+      Nothing is left for the client to add or check, and the writable
+      commands of attach-info are never in a watch's answer. For a
+      plugin's machine the watch gets the plugin's read-only command or
+      is refused, with no hold taken: `409` (code `watch_unsupported`)
+      naming the plugin when it has none (an older plugin), `409` with
+      the same code when the plugin isn't running, and `502` when it
+      didn't answer. It is never given the plugin's writable command, nor
+      the ssh form alone, which doesn't reach a plugin's machine. A
+      target no plugin stands behind (a registered host, or a machine
+      whose plugin was uninstalled) has the ssh form alone, as in
+      attach-info, and so has a machine of a plugin with no attach
+      commands of its own.
+      On tmux 3.2 or later `-r` also keeps the watcher's terminal from
+      resizing the window (it is `-f read-only,ignore-size`); on an
+      older tmux it is read-only only.
+      `attach.hold` is whoever drives the task (or `null`), and
+      `attach.watch_holds` includes the hold just taken. A client must
+      check `hold.mode` is `watch` before it treats the answer as one: a
+      server from before watch holds answers `400` `unsupported_mode`.
     - `heartbeat` takes `{hold_id}` and returns `200 {hold}` with
       `expires_at` moved to `ttl_seconds` from now. An ended hold is `410`
       (code `hold_ended`) with `ended_reason` and the `hold`. Only the
@@ -602,12 +698,19 @@ or gave one the server refused.
       `200 {task_id, status, hold?}`, `status` being the task's status
       afterwards. With `hold_id` it ends that hold as `released`; a hold
       that had already ended comes back as it ended, so it is idempotent.
+      A watch hold's release ends that hold and nothing else: the task
+      keeps its status and its driver.
       Without `hold_id` it is Take back, which any session may do: the
       task's drive hold, if it has one, ends as `taken_back` once the tmux
       clients attached to the task's session are detached. If they can't
       be (the target doesn't answer) it is `502` (code `detach_failed`)
       and nothing changes, so automation never types into a pane its
-      holder may still be in. A release by `hold_id` detaches nobody: the
+      holder may still be in. Watch holds are left as they are by a Take
+      back, but tmux can't tell a read-only client from the driver's: the
+      detach (here, on a forced takeover and when a drive hold expires)
+      closes the watchers' terminals too, and each watcher's client then
+      releases its hold or lets it expire. A release by `hold_id`
+      detaches nobody: the
       holder's own client has let go. Either way a
       task left in `human_takeover` with no drive hold becomes
       `awaiting_input` and its stale `attention` is cleared, in the same
@@ -625,7 +728,12 @@ or gave one the server refused.
       hold within 10 s, and a target that doesn't answer is skipped for
       the rest of a pass, so it never delays holds on other targets. A
       `task_ended` hold detaches nobody and
-      leaves the status. On start the sweeper first gives every active
+      leaves the status. A watch hold ends for the same three reasons,
+      and its end is only that (LOOM-271): nobody is detached (a
+      read-only client can't collide with automation, and the detach
+      would throw the task's driver out too), the task is left as it is,
+      and since it needs nothing from the target it ends even while the
+      target doesn't answer. On start the sweeper first gives every active
       hold a full lease from then, so a restart or deploy longer than a
       lease doesn't end the holds of clients that resume heartbeating.
       Taking, renewing, releasing and ending a task's holds are
@@ -634,9 +742,18 @@ or gave one the server refused.
       detaches a holder who took the task meanwhile. A takeover whose
       session is logged out or revoked while it is being taken ends that
       hold again and answers `401`, with no attach-info.
-    - Not yet (later tickets of the same design): a `running` turn's
-      wait ending at once (S5), and holds shown on conversations,
-      attach-info and the stream (S6).
+    - Holds are shown where clients look (LOOM-267): `hold` on each task
+      of `GET /conversations/{id}`, on attach-info and on `takeover`'s
+      `attach` (the hold just taken); `held_by` on `GET /conversations`
+      rows; and the stream's `task_hold` event. `hold` and `held_by` are
+      the drive hold only. Watch holds are shown beside them (LOOM-271):
+      `watch_holds` wherever `hold` is, and a `watchers` count on rows.
+      A message sent to a
+      conversation whose task is held isn't sent to the agent: its
+      dispatch fails with `error_class` `held` (not `internal`), and its
+      `error` names the holder ("being driven from the terminal on
+      `laptop` since …; take it back, or wait until it is given back,
+      then send the message again").
   - Targets carry `relay` (`full`, `last_message`, `none`, or `""` for
     the purpose's default: `none` for `purpose: work`, else `full`) and
     show `relay_effective`: what the router models may see of the
@@ -898,6 +1015,8 @@ task := srv.SeedPrompt("conv-1", registry.Attention{})
   `SeedMessage`, `SeedPrompt` (a `needs_attention` task), `SeedFailedTask`,
   `SeedOffer` (a pending confirmation), `SeedTurn` (a transcript entry) and
   `SetTaskStatus` (a status change an open stream reports).
+  `ActiveHold` is a task's drive hold and `WatchHolds` its watch holds
+  (LOOM-271), as the store has them.
   `SeedLinkedSession` returns the token of a session as the link flow
   leaves it (a terminal's), and `TokenHash` is the hash `POST
   /api/v1/sessions` takes.

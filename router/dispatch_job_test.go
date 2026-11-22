@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -88,6 +89,10 @@ func TestClassifyError(t *testing.T) {
 		{context.Canceled, registry.ErrorClassWaitFailed},
 		{&orchestrator.TurnTimeoutError{Reason: orchestrator.TimeoutMaxTurnDuration, Limit: time.Hour}, registry.ErrorClassTimeout},
 		{&orchestrator.ProcessExitedError{}, registry.ErrorClassAgentExited},
+		// LOOM-267: a message refused because a person holds the task.
+		{fmt.Errorf("send message: %w", orchestrator.ErrHumanTakeover), registry.ErrorClassHeld},
+		// A turn the takeover ended is taken_over, not held.
+		{fmt.Errorf("%w: %w", orchestrator.ErrTakenOver, orchestrator.ErrHumanTakeover), registry.ErrorClassTakenOver},
 	} {
 		if got := router.ClassifyError(tc.err); got != tc.want {
 			t.Errorf("ClassifyError(%v) = %q, want %q", tc.err, got, tc.want)
