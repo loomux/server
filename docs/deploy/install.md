@@ -4,6 +4,11 @@ A fresh deployment from nothing: what to prepare, how to configure and
 run the server, and how to check it works. The reference behind each
 step is linked; this page is the order to do them in.
 
+**Just trying it?** The [quickstart](../quickstart.md) runs everything on
+one Docker host, with a machine Loomux creates for you, in about 10
+minutes on a fast connection, and needs none of the SSH, TLS or
+Kubernetes setup below.
+
 Loomux is one process, `loomuxd`, shipped as the image
 `ghcr.io/loomux/server` (public). It serves the web client and the API
 on one port, keeps its state in one SQLite file, and reaches the
@@ -11,13 +16,22 @@ machines agents run on over SSH. It's single-user: one password.
 
 ## 1. What you need
 
-- **A host for the server.** Kubernetes is what's tested (manifests
-  below), but any container runtime works. It needs a persistent
-  volume for the database and outbound HTTPS to your router-model API.
-- **At least one target:** a machine where agents run, reachable from
-  the server over SSH, with `tmux` and the agent CLIs (Claude
-  Code ≥ 2.1.0, Codex ≥ 0.150.0) installed **and logged in** as the
-  target user. Prepare it with [`targets.md`](targets.md).
+- **A host for the server.** Any container runtime: Kubernetes (the
+  layout the author runs is below; the manifests themselves aren't
+  published), Docker Compose (the [quickstart](../quickstart.md)'s
+  `deploy/quickstart/compose.yaml`) or plain Docker. It needs a
+  persistent volume for the database and outbound HTTPS to your
+  router-model API.
+- **Somewhere for agents to run**, either or both of:
+  - **your own hosts:** reachable from the server over SSH, with `tmux`
+    and the agent CLIs (Claude Code ≥ 2.1.0, Codex ≥ 0.150.0) installed
+    **and logged in** as the target user. Prepare them with
+    [`targets.md`](targets.md);
+  - **machines Loomux creates:** a container per machine on a Docker
+    host, or a pod per machine on Kubernetes, through the bundled
+    target-provider plugins ([`plugins.md`](plugins.md)). They run
+    `ghcr.io/loomux/agent`, which carries tmux and the agent CLIs; you
+    sign the agents in once per machine.
 - **A router model:** any OpenAI-compatible chat endpoint (base URL,
   API key, model name), plus optionally a second, escalation one. See
   the router section of [`container.md`](container.md#configuration).
@@ -33,8 +47,10 @@ machines agents run on over SSH. It's single-user: one password.
 ## 2. Pick a version
 
 Releases are listed at <https://github.com/loomux/server/releases>.
-Each is an image tag: `ghcr.io/loomux/server:0.1.N`, and the same image
-as `:<commit sha>`. Pin one; don't run `:main`. Versioning is explained
+Each is an image tag, `ghcr.io/loomux/server:X.Y.Z` (for example
+`0.3.155`), and the same image as `:sha-<short commit>`. Every 0.x
+release is a GitHub pre-release. Pin one, by digest if you can; don't
+run `:main`. Versioning is explained
 in [`../release/versioning.md`](../release/versioning.md).
 
 ## 3. Make the secrets
@@ -44,7 +60,7 @@ at rest, e.g. with SOPS). Never put them in a ConfigMap or the image.
 
 | Variable | What it is | How to make it |
 |---|---|---|
-| `LOOMUX_AUTH_PASSWORD_HASH` | bcrypt hash of the one login password | `echo -n 'your password' \| docker run --rm -i ghcr.io/loomux/server:0.1.N -hash-password` |
+| `LOOMUX_AUTH_PASSWORD_HASH` | bcrypt hash of the one login password | `echo -n 'your password' \| docker run --rm -i ghcr.io/loomux/server:X.Y.Z -hash-password` |
 | `LOOMUX_MASTER_KEY` | AES-256 key for the credential vault: 32 random bytes, base64. **Required**: without it every agent dispatch fails ("resolve credentials"), and run_command output and notification summaries are withheld, even with an empty vault (agents mostly use their own logins on the targets; API keys and tokens for them go in through `/api/v1/credentials`) | `head -c 32 /dev/urandom \| base64` |
 | `LOOMUX_ROUTER_PRIMARY_API_KEY` | the router model's API key: the bootstrap; once running, Settings can store another key and model over it, and rotate them, without a redeploy ([`router-settings.md`](../design/router-settings.md)) | from your provider |
 | `LOOMUX_ROUTER_ESCALATION_API_KEY` | (optional) the escalation model's key | from your provider |
@@ -120,7 +136,9 @@ need no sidecar.
 offers awaiting a yes): `replicas: 1`, `strategy: Recreate`. A working
 set of manifests (namespace, PVCs, ConfigMap, Deployment with the
 Tailscale sidecar, Service, backups, ServiceMonitor and alert rules) is
-what the test instance runs; its layout:
+what the author's test instance runs. Those manifests live in a
+private infrastructure repository and aren't published, so write your
+own from this layout:
 
 ```
 00-namespace.yaml          namespace
@@ -137,14 +155,18 @@ what the test instance runs; its layout:
 secrets/                   SOPS-encrypted Secrets (section 3, SSH)
 ```
 
-**Plain Docker**, for a try-out:
+**Docker Compose on one host**, with machines Loomux makes on the same
+Docker engine and no SSH host to prepare: the
+[quickstart](../quickstart.md).
+
+**Plain Docker**, with your own SSH targets:
 
 ```
 docker run -d --name loomuxd -p 8080:8080 \
   -v loomux-data:/var/lib/loomux \
   --env-file loomux.env \
   -v "$PWD/ssh:/etc/loomux/ssh:ro" \
-  ghcr.io/loomux/server:0.1.N
+  ghcr.io/loomux/server:X.Y.Z
 ```
 
 Mount the volume at the image's own `/var/lib/loomux` and keep the
@@ -160,14 +182,15 @@ volume yourself before an upgrade.
 ## 6. Check it
 
 1. `curl https://loomux.example/api/v1/version` →
-   `{"server_version":"0.1.N (web 0.1.M)","api_version":"v1"}`.
+   `{"server_version":"X.Y.Z (web A.B.C)","api_version":"v1"}`.
 2. `curl https://loomux.example/api/v1/health` →
    `{"status":"healthy",…}`.
 3. Open the web UI, log in with the password from section 3.
-4. **Targets → Register target**: name, host, user (and its policy:
-   purpose, allowed agents, whether new work needs a confirmation).
-   The health probe reports whether SSH, tmux and the agent CLIs are
-   there.
+4. **Machines → Register machine** for one of your hosts: name, host,
+   user (and its policy: purpose, allowed agents, whether new work
+   needs a confirmation). The health probe reports whether SSH, tmux
+   and the agent CLIs are there. Or **Plugins**, then **Machines →
+   Create a machine**, for one Loomux makes.
 5. **New conversation**: ask something answerable directly, then
    "run \`hostname\` on <target>" (runs at once and replies with the
    output), then a small agent task ("in a new workspace demo, create
