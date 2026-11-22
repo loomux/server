@@ -37,6 +37,7 @@ var KnownCapabilities = []string{
 	"targets.ephemeral",
 	"targets.egress_policy",
 	"targets.attach_commands",
+	"targets.attach_read_only",
 }
 
 // manifestName is what a plugin's name may be: it names its directory,

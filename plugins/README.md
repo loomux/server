@@ -28,6 +28,12 @@ target-provider group (`targets.*`, machines on demand) is the next PR.
   `Notifier().TargetsChanged(id, status)` when a machine changes on its
   own; the host reconciles it within a moment instead of at its next
   pass (LOOM-213). It's a hint, dropped when no host is connected.
+  A target provider that implements `ReadOnlyAttacher` (and declares
+  `targets.attach_read_only`) answers a `read_only`
+  `targets.attach_commands` with commands that attach read-only
+  (`tmux … attach -r`), for a person who only watches (LOOM-272);
+  without it the SDK fails such a call rather than answer with the
+  writable commands.
 - `fake/` + `cmd/loomux-plugin-fake` — the test plugin: scripted
   behaviour (crash, hang, exit after configure) and a check that reports
   any `LOOMUX_*` variable it can see. Not shipped.

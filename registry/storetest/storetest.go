@@ -33,6 +33,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("TargetNotFound", func(t *testing.T) { testTargetNotFound(t, newStore(t)) })
 	t.Run("TargetDuplicateName", func(t *testing.T) { testTargetDuplicateName(t, newStore(t)) })
 	t.Run("TargetPolicy", func(t *testing.T) { testTargetPolicy(t, newStore(t)) })
+	t.Run("TargetAgentArgs", func(t *testing.T) { testTargetAgentArgs(t, newStore(t)) })
 	t.Run("TargetSSH", func(t *testing.T) { testTargetSSH(t, newStore(t)) })
 
 	t.Run("TargetAgentUpsertAndList", func(t *testing.T) { testTargetAgentUpsertAndList(t, newStore(t)) })
@@ -58,6 +59,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("WorkspaceTagsAndCapabilitiesRoundTrip", func(t *testing.T) { testWorkspaceTagsAndCapabilitiesRoundTrip(t, newStore(t)) })
 
 	t.Run("Task", func(t *testing.T) { testTaskCRUD(t, newStore(t)) })
+	t.Run("TaskAgentArgs", func(t *testing.T) { testTaskAgentArgs(t, newStore(t)) })
 	t.Run("CommandTaskRoundTrip", func(t *testing.T) { testCommandTaskRoundTrip(t, newStore(t)) })
 	t.Run("TaskAttentionRoundTrip", func(t *testing.T) { testTaskAttentionRoundTrip(t, newStore(t)) })
 	t.Run("TaskFailureRoundTrip", func(t *testing.T) { testTaskFailureRoundTrip(t, newStore(t)) })
@@ -119,6 +121,7 @@ func Run(t *testing.T, newStore func(t *testing.T) registry.Store) {
 	t.Run("DeleteSessionsExpiredBefore", func(t *testing.T) { testDeleteSessionsExpiredBefore(t, newStore(t)) })
 
 	runHolds(t, newStore)
+	runAgentSignIn(t, newStore)
 }
 
 // createTestWorkspace is a fixture: task tests need a valid workspace to

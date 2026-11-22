@@ -593,6 +593,17 @@ var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 // machine's sessions on over ssh (its instance's, LOOM-210; the image
 // starts no tmux itself).
 func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
+	return p.attachCommands(ctx, id, session, socket, false)
+}
+
+// TargetAttachCommandsReadOnly is the same attach with tmux's -r
+// (LOOM-272, sdk.ReadOnlyAttacher): for a person who only watches,
+// nothing typed reaches the pane.
+func (p *Plugin) TargetAttachCommandsReadOnly(ctx context.Context, id, session, socket string) ([]protocol.AttachCommand, error) {
+	return p.attachCommands(ctx, id, session, socket, true)
+}
+
+func (p *Plugin) attachCommands(ctx context.Context, id, session, socket string, readOnly bool) ([]protocol.AttachCommand, error) {
 	cfg, client, host, err := p.state()
 	if err != nil {
 		return nil, err
@@ -608,7 +619,11 @@ func (p *Plugin) TargetAttachCommands(ctx context.Context, id, session, socket s
 	}
 	// Every argument is from a validated grammar with no spaces or shell
 	// characters, so the line to paste is the arguments joined.
-	argv := []string{"kubectl", "-n", cfg.Namespace, "exec", "-it", podName(id), "--", "tmux", "-L", socket, "attach", "-t", session}
+	argv := []string{"kubectl", "-n", cfg.Namespace, "exec", "-it", podName(id), "--", "tmux", "-L", socket, "attach"}
+	if readOnly {
+		argv = append(argv, "-r")
+	}
+	argv = append(argv, "-t", session)
 	return []protocol.AttachCommand{{Via: "kubectl", Command: strings.Join(argv, " "), Argv: argv}}, nil
 }
 

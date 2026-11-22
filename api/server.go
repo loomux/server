@@ -241,6 +241,7 @@ type Server struct {
 	attachInfo           AttachInfoStore
 	targets              TargetStore
 	targetProber         TargetProber
+	agentSignIns         AgentSignIns
 	taskTurns            TaskTurnStore
 	events               EventStore
 	scanHostKey          HostKeyScanner
@@ -259,6 +260,7 @@ type Server struct {
 	// migrating is held while a migrate-ssh is applied (LOOM-138).
 	migrating          sync.Mutex
 	agentTypes         []string
+	agentArgsCheck     AgentArgsCheck
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
@@ -362,6 +364,12 @@ func WithStreamHeartbeat(d time.Duration) Option {
 // request still 404s, unchanged from before this option existed.
 func WithStaticDir(dir string) Option {
 	return func(s *Server) { s.staticDir = dir }
+}
+
+// WithAgentSignIns enables POST and DELETE
+// /api/v1/targets/{id}/agents/{agent_type}/sign-in (LOOM-316).
+func WithAgentSignIns(a AgentSignIns) Option {
+	return func(s *Server) { s.agentSignIns = a }
 }
 
 // WithTargetProber enables POST /api/v1/targets/{id}/probe (LOOM-86).
@@ -468,6 +476,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/probe", s.requireAuth(s.handleProbeTarget))
+	mux.HandleFunc("POST /api/v1/targets/{id}/agents/{agent_type}/sign-in", s.requireAuth(s.handleAgentSignIn))
+	mux.HandleFunc("DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in", s.requireAuth(s.handleCloseAgentSignIn))
 	mux.HandleFunc("POST /api/v1/targets/{id}/test", s.requireAuth(s.handleTestTarget))
 	mux.HandleFunc("POST /api/v1/targets/{id}/scan-host-key", s.requireAuth(s.handleScanHostKey))
 	mux.HandleFunc("POST /api/v1/targets/{id}/pin", s.requireAuth(s.handlePinHostKey))
@@ -847,6 +857,26 @@ type conversationSummary struct {
 	// tasks but no logged message yet (a turn is logged — see logTurn —
 	// once its reply exists, so a first turn still in flight has none).
 	Preview string `json:"preview"`
+	// HeldBy is who drives the conversation's task from a terminal, and
+	// since when; absent when nobody does (LOOM-267).
+	HeldBy *heldBy `json:"held_by,omitempty"`
+	// Watchers is how many watch holds the conversation's tasks have:
+	// sessions attached read-only, beside whoever drives. Absent when
+	// nobody watches (LOOM-271).
+	Watchers int `json:"watchers,omitempty"`
+	// PendingConfirmationID is the offer the conversation waits on a yes
+	// or no for: its newest one still pending and not past its deadline,
+	// answered by POST /dispatch with confirmation_id. Absent when there
+	// is none (LOOM-267).
+	PendingConfirmationID string `json:"pending_confirmation_id,omitempty"`
+}
+
+// heldBy is a list row's holder: the hold's client and when it was
+// taken.
+type heldBy struct {
+	ClientKind  string    `json:"client_kind"`
+	ClientLabel string    `json:"client_label"`
+	Since       time.Time `json:"since"`
 }
 
 type listConversationsResponse struct {
@@ -931,6 +961,27 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "could not list conversations")
 		return
 	}
+	holds, err := s.activeHoldsByTask(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list conversations")
+		return
+	}
+	// Each conversation's holder: the drive hold on one of its tasks (the
+	// newest taken, should there be more than one). And how many watch
+	// its tasks (LOOM-271).
+	heldConv := make(map[string]*registry.TaskHold)
+	watchers := make(map[string]int)
+	for _, t := range tasks {
+		of := holds[t.ID]
+		watchers[t.ConversationID] += len(of.watch)
+		h := of.drive
+		if h == nil {
+			continue
+		}
+		if cur := heldConv[t.ConversationID]; cur == nil || h.AcquiredAt.After(cur.AcquiredAt) {
+			heldConv[t.ConversationID] = h
+		}
+	}
 
 	summaries := make(map[string]*conversationSummary, len(activity))
 	for _, t := range tasks {
@@ -975,6 +1026,7 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 	if limit > 0 && len(out) > limit {
 		out, more = out[:limit], true
 	}
+	now := time.Now()
 	for i := range out {
 		messages, err := s.messages.ListMessagesByConversation(r.Context(), out[i].ConversationID)
 		if err != nil {
@@ -984,9 +1036,38 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 		if len(messages) > 0 {
 			out[i].Preview = firstMessagePreview(messages[0].Content)
 		}
+		if h := heldConv[out[i].ConversationID]; h != nil {
+			out[i].HeldBy = &heldBy{ClientKind: h.ClientKind, ClientLabel: h.ClientLabel, Since: h.AcquiredAt}
+		}
+		out[i].Watchers = watchers[out[i].ConversationID]
+		pending, err := s.pendingConfirmationID(r.Context(), out[i].ConversationID, now)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not list conversations")
+			return
+		}
+		out[i].PendingConfirmationID = pending
 	}
 
 	writeJSON(w, http.StatusOK, listConversationsResponse{Conversations: out, HasMore: more})
+}
+
+// pendingConfirmationID returns the id of conversationID's newest offer
+// still pending and not past its deadline at now, or "" (LOOM-267): one
+// past its deadline no longer runs on a yes, though its row is only
+// settled by the next message.
+func (s *Server) pendingConfirmationID(ctx context.Context, conversationID string, now time.Time) (string, error) {
+	confirmations, err := s.messages.ListConfirmationsByConversation(ctx, conversationID)
+	if err != nil {
+		return "", err
+	}
+	// Oldest first: the last match is the newest.
+	id := ""
+	for _, c := range confirmations {
+		if c.Status == registry.ConfirmationPending && !now.After(c.ExpiresAt) {
+			id = c.ID
+		}
+	}
+	return id, nil
 }
 
 type conversationTask struct {
@@ -1010,6 +1091,13 @@ type conversationTask struct {
 	// Attention is the prompt a needs-attention task is stopped at
 	// (LOOM-97), for a client to show with its options.
 	Attention *registry.Attention `json:"attention,omitempty"`
+	// Hold is who drives the task from a terminal, if anyone: its active
+	// drive hold, or null (LOOM-267).
+	Hold *holdResponse `json:"hold"`
+	// WatchHolds are the sessions attached to the task read-only: its
+	// active watch holds, oldest first; empty when nobody watches
+	// (LOOM-271). Never the drive hold.
+	WatchHolds []*holdResponse `json:"watch_holds"`
 }
 
 type messageSummary struct {
@@ -1092,6 +1180,11 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not fetch conversation")
 		return
 	}
+	holds, err := s.activeHoldsByTask(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not fetch conversation")
+		return
+	}
 
 	out := make([]conversationTask, 0)
 	for _, t := range tasks {
@@ -1114,6 +1207,8 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 			ErrorClass:    string(t.ErrorClass),
 			OutputTail:    t.OutputTail,
 			Attention:     t.Attention,
+			Hold:          newHoldResponse(holds[t.ID].drive),
+			WatchHolds:    newHoldResponses(holds[t.ID].watch),
 		})
 	}
 
@@ -1208,10 +1303,20 @@ type attachInfoResponse struct {
 	TmuxSocket    string           `json:"tmux_socket"`
 	AttachCommand string           `json:"attach_command"`
 	Target        attachTargetInfo `json:"target"`
+	// AgentArgs are the model and effort the task was launched with
+	// (LOOM-307): its target's pin then, "" for what wasn't pinned.
+	AgentArgs agentArgsJSON `json:"agent_args"`
 	// AttachCommands are the ways a person attaches from their own
 	// machine (LOOM-178): a plugin's (kubectl, docker) for a machine it
 	// made, and the plain ssh form for every remote target.
 	AttachCommands []attachCommandResponse `json:"attach_commands"`
+	// Hold is who drives the task from a terminal, if anyone: its active
+	// drive hold, or null (LOOM-267).
+	Hold *holdResponse `json:"hold"`
+	// WatchHolds are the sessions attached to the task read-only: its
+	// active watch holds, oldest first; empty when nobody watches
+	// (LOOM-271).
+	WatchHolds []*holdResponse `json:"watch_holds"`
 }
 
 // handleAttachInfo resolves a task down to the target+session a human
@@ -1224,7 +1329,7 @@ type attachInfoResponse struct {
 // discovers a dead session the same way a human always would — the
 // attach attempt itself.
 func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
-	info, ok := s.attachInfoFor(w, r, r.PathValue("id"))
+	info, ok := s.attachInfoFor(w, r, r.PathValue("id"), true)
 	if !ok {
 		return
 	}
@@ -1233,7 +1338,14 @@ func (s *Server) handleAttachInfo(w http.ResponseWriter, r *http.Request) {
 
 // attachInfoFor resolves task id's attach-info. On failure it writes the
 // response (404 for an unknown task) and reports false.
-func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string) (attachInfoResponse, bool) {
+//
+// commands says whether it carries the commands to attach with
+// (attach_command and attach_commands). They are writable: whoever runs
+// one can type into the pane. So a watch takeover asks for none
+// (LOOM-271): the writable commands are then not built at all, and a
+// plugin isn't asked for its own. It gets the read-only ones instead,
+// from setReadOnlyAttach (LOOM-272).
+func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string, commands bool) (attachInfoResponse, bool) {
 	task, err := s.attachInfo.GetTask(r.Context(), id)
 	if errors.Is(err, registry.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such task")
@@ -1256,12 +1368,26 @@ func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string
 		return attachInfoResponse{}, false
 	}
 
+	holds, err := s.activeHoldsByTask(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not fetch task's hold")
+		return attachInfoResponse{}, false
+	}
+
+	attachCommand, attachCommands := "", []attachCommandResponse{}
+	if commands {
+		attachCommand = targets.AttachCommand(s.tmuxSocketName(), task.TmuxSession)
+		attachCommands = s.attachCommandsFor(r.Context(), target, task.TmuxSession)
+	}
+
 	return attachInfoResponse{
 		TaskID:         task.ID,
 		TmuxSession:    task.TmuxSession,
 		TmuxSocket:     s.tmuxSocketName(),
-		AttachCommand:  targets.AttachCommand(s.tmuxSocketName(), task.TmuxSession),
-		AttachCommands: s.attachCommandsFor(r.Context(), target, task.TmuxSession),
+		AttachCommand:  attachCommand,
+		AttachCommands: attachCommands,
+		Hold:           newHoldResponse(holds[task.ID].drive),
+		WatchHolds:     newHoldResponses(holds[task.ID].watch),
 		Target: attachTargetInfo{
 			ID:   target.ID,
 			Name: target.Name,
@@ -1269,6 +1395,7 @@ func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string
 			Host: target.Host,
 			User: target.User,
 		},
+		AgentArgs: newAgentArgsJSON(task.AgentArgs),
 	}, true
 }
 
@@ -1335,6 +1462,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if dispatchSeen == nil {
 		dispatchSeen = s.sendDispatchUpdates(ctx, w, flusher, id, nil)
 	}
+	// The holds there at connect (LOOM-267), reported only as they change.
+	holdsSeen := s.holdsBaseline(ctx, w, flusher, id)
+	if holdsSeen == nil {
+		holdsSeen = s.holdsBaseline(ctx, w, flusher, id)
+	}
 	flusher.Flush()
 
 	poll := time.NewTicker(s.streamPollInterval)
@@ -1362,8 +1494,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		case <-poll.C:
 			dispatchSeen = s.sendDispatchUpdates(ctx, w, flusher, id, dispatchSeen)
 			messagesSeen = s.sendMessagesAdded(ctx, w, flusher, id, messagesSeen)
-			ev, err := s.latestConversationTaskEvent(ctx, id)
-			if err != nil || ev == nil {
+			tasks, err := s.conversationTasks(ctx, id)
+			if err != nil {
+				continue
+			}
+			holdsSeen = s.sendTaskHolds(ctx, w, flusher, tasks, holdsSeen)
+			ev := latestTaskEvent(tasks)
+			if ev == nil {
 				continue
 			}
 			if lastSent != nil && *lastSent == *ev {
@@ -1443,32 +1580,47 @@ func (s *Server) sendMessagesAdded(ctx context.Context, w http.ResponseWriter, f
 	return cur
 }
 
-// latestConversationTaskEvent finds conversationID's most-recently-
-// updated task (mirroring handleListConversations' own grouping logic,
-// scoped to one conversation) and reports it as a taskUpdateEvent. nil,
-// nil means no task exists yet for this conversation.
-func (s *Server) latestConversationTaskEvent(ctx context.Context, conversationID string) (*taskUpdateEvent, error) {
-	var tasks []*registry.Task
-	var err error
-	if s.streamQ != nil {
-		tasks, err = s.streamQ.ListTasksByConversation(ctx, conversationID)
-	} else {
-		tasks, err = s.tasks.ListTasks(ctx)
+// holdsBaseline is a stream's first sendTaskHolds: what conversationID's
+// tasks are held by at connect, unreported; nil if it couldn't be read.
+func (s *Server) holdsBaseline(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, conversationID string) holdCursor {
+	tasks, err := s.conversationTasks(ctx, conversationID)
+	if err != nil {
+		return nil
 	}
+	return s.sendTaskHolds(ctx, w, flusher, tasks, nil)
+}
+
+// conversationTasks returns conversationID's tasks, for a stream's poll.
+func (s *Server) conversationTasks(ctx context.Context, conversationID string) ([]*registry.Task, error) {
+	if s.streamQ != nil {
+		return s.streamQ.ListTasksByConversation(ctx, conversationID)
+	}
+	all, err := s.tasks.ListTasks(ctx)
 	if err != nil {
 		return nil, err
 	}
+	var tasks []*registry.Task
+	for _, t := range all {
+		if t.ConversationID == conversationID {
+			tasks = append(tasks, t)
+		}
+	}
+	return tasks, nil
+}
+
+// latestTaskEvent finds the most-recently-updated of a conversation's
+// tasks (mirroring handleListConversations' own grouping logic, scoped
+// to one conversation) and reports it as a taskUpdateEvent; nil when the
+// conversation has no task yet.
+func latestTaskEvent(tasks []*registry.Task) *taskUpdateEvent {
 	var latest *registry.Task
 	for _, t := range tasks {
-		if t.ConversationID != conversationID {
-			continue
-		}
 		if latest == nil || t.UpdatedAt.After(latest.UpdatedAt) {
 			latest = t
 		}
 	}
 	if latest == nil {
-		return nil, nil
+		return nil
 	}
 	return &taskUpdateEvent{
 		TaskID:        latest.ID,
@@ -1477,7 +1629,118 @@ func (s *Server) latestConversationTaskEvent(ctx context.Context, conversationID
 		UpdatedAt:     latest.UpdatedAt,
 		FailureReason: latest.FailureReason,
 		ErrorClass:    string(latest.ErrorClass),
-	}, nil
+	}
+}
+
+// taskHoldEvent is the data of a stream's `event: task_hold` (LOOM-267,
+// LOOM-271): the holds on a task of the conversation changed. It carries
+// them as they now are.
+//
+// Hold is the task's drive hold, or null, and EndedReason why the drive
+// hold it had before ended (absent when it had none, or still has the
+// same one): the task was taken, taken from its holder, or given back.
+// WatchHolds are its watch holds, oldest first: a watcher came or went.
+// A watcher's coming or going never changes Hold or sets EndedReason.
+type taskHoldEvent struct {
+	TaskID      string          `json:"task_id"`
+	Hold        *holdResponse   `json:"hold"`
+	WatchHolds  []*holdResponse `json:"watch_holds"`
+	EndedReason string          `json:"ended_reason,omitempty"`
+}
+
+// holdsSeen is what a stream last saw of one task's holds: its active
+// drive hold's id ("" for none), and its active watch holds' ids, in
+// order and joined.
+type holdsSeen struct {
+	drive string
+	watch string
+}
+
+// holdCursor is what a stream last saw of its conversation's holds, by
+// task id; a task with none isn't in it.
+type holdCursor map[string]holdsSeen
+
+// sendTaskHolds reports the changes to the holds on tasks (one
+// conversation's) since cur, and returns what it saw (LOOM-267): a
+// task's drive hold taken, stolen or ended, and (LOOM-271) a watch hold
+// on it taken or ended. A renewal is no change: the hold is the same.
+// Like task_update, it compares what is there at each poll, so a hold
+// taken and given back between two polls isn't reported: nothing changed
+// in between as far as a client showing who holds what can tell. The
+// first call (cur nil) records what is there unreported. A failed read
+// returns cur unchanged.
+func (s *Server) sendTaskHolds(ctx context.Context, w http.ResponseWriter, flusher http.Flusher,
+	tasks []*registry.Task, cur holdCursor) holdCursor {
+	if s.taskHolds == nil {
+		return holdCursor{}
+	}
+	holds, err := s.activeHoldsByTask(ctx)
+	if err != nil {
+		return cur
+	}
+	next := make(holdCursor)
+	for _, t := range tasks {
+		of := holds[t.ID]
+		if of.drive == nil && len(of.watch) == 0 {
+			continue
+		}
+		var seen holdsSeen
+		if of.drive != nil {
+			seen.drive = of.drive.ID
+		}
+		ids := make([]string, 0, len(of.watch))
+		for _, h := range of.watch {
+			ids = append(ids, h.ID)
+		}
+		seen.watch = strings.Join(ids, ",")
+		next[t.ID] = seen
+	}
+	if cur == nil {
+		return next
+	}
+	// The conversation's tasks in order, then any task seen before that
+	// isn't listed now.
+	ids := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		ids = append(ids, t.ID)
+	}
+	var gone []string
+	for id := range cur {
+		if !slices.Contains(ids, id) {
+			gone = append(gone, id)
+		}
+	}
+	sort.Strings(gone)
+	for _, taskID := range append(ids, gone...) {
+		prev, now := cur[taskID], next[taskID]
+		if prev == now {
+			continue
+		}
+		// A task no longer listed isn't in next, whatever holds it still
+		// has: it is reported as held and watched by nobody.
+		ev := taskHoldEvent{TaskID: taskID, WatchHolds: []*holdResponse{}}
+		if now.drive != "" {
+			ev.Hold = newHoldResponse(holds[taskID].drive)
+		}
+		if now.watch != "" {
+			ev.WatchHolds = newHoldResponses(holds[taskID].watch)
+		}
+		if prev.drive != "" && prev.drive != now.drive {
+			// Why the drive hold it had ended: released, expired,
+			// taken_back, taken_over (a steal), ... Left out if it can't
+			// be read.
+			if ended, err := s.taskHolds.GetHold(ctx, prev.drive); err == nil && !ended.Active() {
+				ev.EndedReason = string(ended.EndedReason)
+			}
+		}
+		data, err := json.Marshal(ev)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(w, "event: task_hold\ndata: %s\n\n", data)
+		flusher.Flush()
+	}
+	return next
 }
 
 type versionResponse struct {
@@ -1725,6 +1988,9 @@ type targetResponse struct {
 	// PermissionMode: empty (each agent-type's default), auto,
 	// accept_edits or manual (accept-edits before 1.0; still accepted).
 	PermissionMode string `json:"permission_mode"`
+	// AgentArgs are the model and effort each agent type is launched with
+	// here (LOOM-307), keyed by agent type; {} when none is pinned.
+	AgentArgs map[string]agentArgsJSON `json:"agent_args"`
 	// The target's policy (LOOM-89): purpose (personal, work or empty),
 	// the only agent types allowed there (empty: all), and whether new
 	// workspaces, shell commands and unconfirmed new work are allowed.
@@ -1809,6 +2075,7 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		User:                t.User,
 		WorkspaceRoot:       t.WorkspaceRoot,
 		PermissionMode:      apiEnum(t.PermissionMode),
+		AgentArgs:           agentArgsResponse(t.AgentArgs),
 		Purpose:             t.Policy.Purpose,
 		AllowedAgentTypes:   append([]string{}, t.Policy.AllowedAgentTypes...),
 		AllowProvision:      !t.Policy.NoProvision,
@@ -1842,6 +2109,11 @@ type targetRequest struct {
 	WorkspaceRoot *string `json:"workspace_root"`
 	// PermissionMode is optional the same way.
 	PermissionMode *string `json:"permission_mode"`
+	// AgentArgs pin each agent type's model and effort (LOOM-307).
+	// Optional the same way; given, it replaces the whole map, so an
+	// agent type left out is unpinned. An entry with both fields empty
+	// pins nothing.
+	AgentArgs *map[string]agentArgsJSON `json:"agent_args"`
 	// The policy fields (LOOM-89) are optional the same way; on a create,
 	// omitted means allowed.
 	Purpose             *string   `json:"purpose"`
@@ -1933,6 +2205,7 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	if base != nil {
 		target.Name, target.Kind, target.Host, target.User = base.Name, base.Kind, base.Host, base.User
 		target.SSHKeyRef, target.WorkspaceRoot, target.PermissionMode = base.SSHKeyRef, base.WorkspaceRoot, base.PermissionMode
+		target.AgentArgs = base.AgentArgs
 		target.Policy = base.Policy
 		target.SSHPort = base.SSHPort
 		target.SSHProxy = base.SSHProxy
@@ -2006,6 +2279,12 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 		// accept_edits in the API; the legacy accept-edits is still taken
 		// for 1.x. The store keeps its spelling.
 		target.PermissionMode = strings.ReplaceAll(*req.PermissionMode, "_", "-")
+	}
+	if req.AgentArgs != nil {
+		target.AgentArgs = agentArgsFromRequest(*req.AgentArgs)
+	}
+	if !s.checkAgentArgs(w, target) {
+		return nil, false, nil, false
 	}
 	if req.Plugin != nil {
 		// The plugin fills the connection; only the name is checked here.
@@ -2199,19 +2478,93 @@ type targetAgentResponse struct {
 	// when the CLI wasn't asked.
 	AuthStatus string    `json:"auth_status,omitempty"`
 	CheckedAt  time.Time `json:"checked_at"`
+	// Auth is the agent's sign-in as a whole (LOOM-316); omitted when
+	// the CLI isn't installed or has no auth check.
+	Auth *agentAuthResponse `json:"auth,omitempty"`
+}
+
+// agentAuthResponse is an agent's sign-in on a target (LOOM-316): only
+// fixed words, short allow-listed words, times, the reset text the agent
+// showed, and how to attach to its sign-in session. Never the auth
+// check's output, the account's email or the sign-in pane.
+type agentAuthResponse struct {
+	// State is the one word to show (registry.TargetAgent.SignInState):
+	// logged_in, logged_out, expired, rate_limited or unknown.
+	State string `json:"state"`
+	// Method, Plan and ExpiresAt are what the CLI's own check said: how
+	// it is signed in ("claude.ai", "api_key", "chatgpt"), the account's
+	// plan ("max") and when the sign-in ends.
+	Method    string     `json:"method,omitempty"`
+	Plan      string     `json:"plan,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Problem is the sign-in screen a turn last stopped at, RateLimit the
+	// usage limit one last hit; each until a turn finishes normally.
+	Problem   *agentSignInProblemResponse `json:"problem,omitempty"`
+	RateLimit *agentRateLimitResponse     `json:"rate_limit,omitempty"`
+	// SignIn is the session Loomux opened for a person to sign the CLI
+	// in, while it is open.
+	SignIn *agentSignInSessionResponse `json:"sign_in,omitempty"`
+}
+
+type agentSignInProblemResponse struct {
+	// Kind is expired, invalid_credentials or signed_out.
+	Kind       string    `json:"kind"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+type agentRateLimitResponse struct {
+	ObservedAt time.Time `json:"observed_at"`
+	// Resets is when the agent said the limit resets, as it put it.
+	Resets string `json:"resets,omitempty"`
+}
+
+type agentSignInSessionResponse struct {
+	TmuxSession string    `json:"tmux_session"`
+	StartedAt   time.Time `json:"started_at"`
+	// AttachCommand is the tmux command to run on the target;
+	// AttachCommands the ways to get there and run it, as attach-info's.
+	AttachCommand  string                  `json:"attach_command"`
+	AttachCommands []attachCommandResponse `json:"attach_commands"`
 }
 
 type listTargetAgentsResponse struct {
 	Agents []targetAgentResponse `json:"agents"`
 }
 
-func newListTargetAgentsResponse(agents []*registry.TargetAgent) listTargetAgentsResponse {
+// targetAgentView is one agent's probe result on target, with its sign-in
+// (LOOM-316).
+func (s *Server) targetAgentView(ctx context.Context, target *registry.Target, a *registry.TargetAgent, now time.Time) targetAgentResponse {
+	resp := targetAgentResponse{
+		AgentType: a.AgentType, Available: a.Available, Path: a.Path, Version: a.Version,
+		AuthStatus: a.AuthStatus, CheckedAt: a.CheckedAt,
+	}
+	state, session := a.SignInState(now), a.OpenSignInSession(now)
+	if state == "" && session == "" {
+		return resp
+	}
+	auth := &agentAuthResponse{State: state, Method: a.AuthMethod, Plan: a.AuthPlan, ExpiresAt: a.AuthExpiresAt}
+	if a.SignInProblem != "" && a.SignInProblemAt != nil {
+		auth.Problem = &agentSignInProblemResponse{Kind: a.SignInProblem, ObservedAt: *a.SignInProblemAt}
+	}
+	if a.LimitedAt != nil {
+		auth.RateLimit = &agentRateLimitResponse{ObservedAt: *a.LimitedAt, Resets: a.LimitResets}
+	}
+	if session != "" && target != nil {
+		auth.SignIn = &agentSignInSessionResponse{
+			TmuxSession: session, StartedAt: *a.SignInStartedAt,
+			AttachCommand:  targets.AttachCommand(s.tmuxSocketName(), session),
+			AttachCommands: s.attachCommandsFor(ctx, target, session),
+		}
+	}
+	resp.Auth = auth
+	return resp
+}
+
+func (s *Server) targetAgentsView(ctx context.Context, target *registry.Target, agents []*registry.TargetAgent) listTargetAgentsResponse {
+	now := time.Now()
 	out := make([]targetAgentResponse, 0, len(agents))
 	for _, a := range agents {
-		out = append(out, targetAgentResponse{
-			AgentType: a.AgentType, Available: a.Available, Path: a.Path, Version: a.Version,
-			AuthStatus: a.AuthStatus, CheckedAt: a.CheckedAt,
-		})
+		out = append(out, s.targetAgentView(ctx, target, a, now))
 	}
 	return listTargetAgentsResponse{Agents: out}
 }
@@ -2221,7 +2574,8 @@ func newListTargetAgentsResponse(agents []*registry.TargetAgent) listTargetAgent
 // simply absent from the list.
 func (s *Server) handleListTargetAgents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.targets.GetTarget(r.Context(), id); err != nil {
+	target, err := s.targets.GetTarget(r.Context(), id)
+	if err != nil {
 		if errors.Is(err, registry.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "no such target")
 			return
@@ -2234,7 +2588,7 @@ func (s *Server) handleListTargetAgents(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not list target agents")
 		return
 	}
-	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))
+	writeJSON(w, http.StatusOK, s.targetAgentsView(r.Context(), target, agents))
 }
 
 // handleProbeTarget probes the target now — health, then its agent CLIs
@@ -2254,9 +2608,10 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not probe target")
 		return
 	}
+	target, _ := s.targets.GetTarget(r.Context(), r.PathValue("id"))
 	writeJSON(w, http.StatusOK, probeTargetResponse{
 		Health: newTargetHealthResponse(h),
-		Agents: newListTargetAgentsResponse(agents).Agents,
+		Agents: s.targetAgentsView(r.Context(), target, agents).Agents,
 	})
 }
 

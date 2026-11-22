@@ -31,6 +31,11 @@ type Machines interface {
 	Recreate(ctx context.Context, targetID, size string) error
 	DeleteTarget(ctx context.Context, targetID string) error
 	AttachCommands(ctx context.Context, targetID, session string) ([]protocol.AttachCommand, error)
+	// ReadOnlyAttachCommands is the plugin's commands for a person who
+	// only watches (LOOM-272): each attaches read-only. A
+	// *providers.WatchUnsupportedError when the machine's plugin has
+	// none; never the writable ones.
+	ReadOnlyAttachCommands(ctx context.Context, targetID, session string) ([]protocol.AttachCommand, error)
 }
 
 // WithMachines enables machines on /api/v1/targets (LOOM-178).
@@ -371,10 +376,45 @@ func (s *Server) attachCommandsFor(ctx context.Context, target *registry.Target,
 		}
 	}
 	if target.Kind == registry.TargetKindRemote {
-		argv := sshAttachArgv(target, s.tmuxSocketName(), session)
+		argv := sshAttachArgv(target, targets.AttachCommand(s.tmuxSocketName(), session))
 		out = append(out, attachCommandResponse{Via: "ssh", Command: sshAttachCommand(argv), Argv: argv})
 	}
 	return out
+}
+
+// readOnlyAttachCommandsFor is attachCommandsFor for a watch (LOOM-272):
+// the same ways to attach, each read-only (tmux's -r), so a person who
+// asked only to look can't type into the pane. The ssh form is built
+// here. A plugin's own come from the plugin, asked read-only and
+// checked (providers.Manager.ReadOnlyAttachCommands).
+//
+// For a plugin's machine the watch gets the plugin's read-only command
+// or none at all: when the plugin has none
+// (*providers.WatchUnsupportedError) or can't be asked (any other
+// error), that error is returned and the caller refuses the watch,
+// rather than give it the plugin's writable command, or the ssh form
+// alone, which doesn't reach a plugin's machine. A target no plugin
+// stands behind (it never did, or the plugin was uninstalled) has the
+// ssh form alone, as from attachCommandsFor.
+func (s *Server) readOnlyAttachCommandsFor(ctx context.Context, target *registry.Target, session string) ([]attachCommandResponse, error) {
+	out := []attachCommandResponse{}
+	if s.machines != nil {
+		cmds, err := s.machines.ReadOnlyAttachCommands(ctx, target.ID, session)
+		switch {
+		case err == nil:
+			for _, c := range cmds {
+				out = append(out, attachCommandResponse{Via: c.Via, Command: c.Command, Argv: c.Argv})
+			}
+		case errors.Is(err, providers.ErrNotMachine), errors.Is(err, providers.ErrDetached):
+		default:
+			return nil, err
+		}
+	}
+	if target.Kind == registry.TargetKindRemote {
+		argv := sshAttachArgv(target, targets.ReadOnlyAttachCommand(s.tmuxSocketName(), session))
+		out = append(out, attachCommandResponse{Via: "ssh", Command: sshAttachCommand(argv), Argv: argv})
+	}
+	return out, nil
 }
 
 // targetView is one target as the API shows it, with everything a list
@@ -389,16 +429,18 @@ func (s *Server) targetView(ctx context.Context, t *registry.Target) targetRespo
 	return views[0]
 }
 
-// sshAttachArgv is the plain ssh form of attaching to session, on tmux
-// socket, on a remote target, as arguments to execute directly
-// (LOOM-269). The last one is the whole remote command: ssh hands it to
-// the remote shell as one line.
-func sshAttachArgv(t *registry.Target, socket, session string) []string {
+// sshAttachArgv is the plain ssh form of attaching on a remote target,
+// as arguments to execute directly (LOOM-269). The last one is the
+// whole remote command, attach: the target's own attach command,
+// writable (targets.AttachCommand) or read-only
+// (targets.ReadOnlyAttachCommand). ssh hands it to the remote shell as
+// one line.
+func sshAttachArgv(t *registry.Target, attach string) []string {
 	argv := []string{"ssh"}
 	if t.SSHPort != 0 && t.SSHPort != 22 {
 		argv = append(argv, "-p", strconv.Itoa(t.SSHPort))
 	}
-	return append(argv, t.User+"@"+t.Host, "-t", targets.AttachCommand(socket, session))
+	return append(argv, t.User+"@"+t.Host, "-t", attach)
 }
 
 // sshAttachCommand is argv as the line to paste into a shell: the same
