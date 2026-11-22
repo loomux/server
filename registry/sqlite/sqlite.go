@@ -149,6 +149,10 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	if err != nil {
 		return err
 	}
+	agentArgs, err := marshalAgentArgs(t.AgentArgs)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	t.CreatedAt = now
 	t.UpdatedAt = now
@@ -156,12 +160,12 @@ func (s *Store) CreateTarget(ctx context.Context, t *registry.Target) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO targets (id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
 			purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, keep_idle_sessions, ssh_port, host_keys,
-			ssh_proxy, created_at, updated_at, connection_changed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ssh_proxy, created_at, updated_at, connection_changed_at, agent_args)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
 		t.Policy.KeepIdleSessions, t.SSHPort, t.HostKeys,
-		t.SSHProxy, t.CreatedAt, t.UpdatedAt, t.ConnectionChangedAt,
+		t.SSHProxy, t.CreatedAt, t.UpdatedAt, t.ConnectionChangedAt, agentArgs,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -217,6 +221,10 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 	if err != nil {
 		return err
 	}
+	agentArgs, err := marshalAgentArgs(t.AgentArgs)
+	if err != nil {
+		return err
+	}
 	t.UpdatedAt = time.Now().UTC()
 	// connection_changed_at moves only with what reaches the target
 	// (LOOM-256); SET reads the row as it was.
@@ -226,13 +234,13 @@ func (s *Store) UpdateTarget(ctx context.Context, t *registry.Target) error {
 				THEN ? ELSE connection_changed_at END,
 			name = ?, kind = ?, host = ?, user = ?, ssh_key_ref = ?, workspace_root = ?, permission_mode = ?,
 			purpose = ?, allowed_agent_types = ?, no_provision = ?, no_shell = ?, require_confirmation = ?, relay = ?,
-			keep_idle_sessions = ?, ssh_port = ?, ssh_proxy = ?, updated_at = ?
+			keep_idle_sessions = ?, ssh_port = ?, ssh_proxy = ?, agent_args = ?, updated_at = ?
 		WHERE id = ?`,
 		string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.SSHPort, t.SSHProxy, t.UpdatedAt,
 		t.Name, string(t.Kind), t.Host, t.User, t.SSHKeyRef, t.WorkspaceRoot, t.PermissionMode,
 		t.Policy.Purpose, allowed, t.Policy.NoProvision, t.Policy.NoShell, t.Policy.RequireConfirmation, t.Policy.Relay,
 		t.Policy.KeepIdleSessions, t.SSHPort,
-		t.SSHProxy, t.UpdatedAt, t.ID,
+		t.SSHProxy, agentArgs, t.UpdatedAt, t.ID,
 	)
 	if isUniqueConstraintErr(err) {
 		return fmt.Errorf("%w: target name %q already exists", registry.ErrConflict, t.Name)
@@ -670,11 +678,11 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 		INSERT INTO tasks (
 			id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
 			created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code,
-			failure_reason, error_class, output_tail, attention
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			failure_reason, error_class, output_tail, attention, agent_model, agent_effort
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.WorkspaceID, string(t.Kind), t.AgentType, t.TmuxSession, string(t.Status), t.ConversationID,
 		t.CreatedAt, t.UpdatedAt, t.StartedAt, t.CompletedAt, t.ReapedAt, t.Command, t.ExitCode,
-		t.FailureReason, string(t.ErrorClass), t.OutputTail, attentionJSON(t.Attention),
+		t.FailureReason, string(t.ErrorClass), t.OutputTail, attentionJSON(t.Attention), t.AgentArgs.Model, t.AgentArgs.Effort,
 	)
 	if isForeignKeyConstraintErr(err) {
 		return fmt.Errorf("%w: workspace %q does not exist", registry.ErrConflict, t.WorkspaceID)
@@ -688,7 +696,7 @@ func (s *Store) CreateTask(ctx context.Context, t *registry.Task) error {
 const taskColumns = `
 	id, workspace_id, kind, agent_type, tmux_session, status, conversation_id,
 	created_at, updated_at, started_at, completed_at, reaped_at, command, exit_code,
-	failure_reason, error_class, output_tail, attention`
+	failure_reason, error_class, output_tail, attention, agent_model, agent_effort`
 
 func (s *Store) GetTask(ctx context.Context, id string) (*registry.Task, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = ?`, id)
@@ -946,7 +954,7 @@ func scanTask(row rowScanner) (*registry.Task, error) {
 	if err := row.Scan(
 		&t.ID, &t.WorkspaceID, &kind, &t.AgentType, &t.TmuxSession, &status, &t.ConversationID,
 		&t.CreatedAt, &t.UpdatedAt, &t.StartedAt, &t.CompletedAt, &t.ReapedAt, &t.Command, &t.ExitCode,
-		&t.FailureReason, &errorClass, &t.OutputTail, &attention,
+		&t.FailureReason, &errorClass, &t.OutputTail, &attention, &t.AgentArgs.Model, &t.AgentArgs.Effort,
 	); err != nil {
 		return nil, err
 	}
@@ -1517,17 +1525,23 @@ type rowScanner interface {
 // targetColumns is what scanTarget reads, in order.
 const targetColumns = `id, name, kind, host, user, ssh_key_ref, workspace_root, permission_mode,
 	purpose, allowed_agent_types, no_provision, no_shell, require_confirmation, relay, keep_idle_sessions, ssh_port, host_keys,
-	ssh_proxy, created_at, updated_at, connection_changed_at`
+	ssh_proxy, created_at, updated_at, connection_changed_at, agent_args`
 
 func scanTarget(row rowScanner) (*registry.Target, error) {
 	var t registry.Target
-	var kind, allowed string
+	var kind, allowed, agentArgs string
 	var connectionChanged sql.NullTime
 	if err := row.Scan(&t.ID, &t.Name, &kind, &t.Host, &t.User, &t.SSHKeyRef, &t.WorkspaceRoot, &t.PermissionMode,
 		&t.Policy.Purpose, &allowed, &t.Policy.NoProvision, &t.Policy.NoShell, &t.Policy.RequireConfirmation,
 		&t.Policy.Relay, &t.Policy.KeepIdleSessions, &t.SSHPort, &t.HostKeys, &t.SSHProxy, &t.CreatedAt, &t.UpdatedAt,
-		&connectionChanged); err != nil {
+		&connectionChanged, &agentArgs); err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal([]byte(agentArgs), &t.AgentArgs); err != nil {
+		return nil, fmt.Errorf("unmarshal agent args: %w", err)
+	}
+	if len(t.AgentArgs) == 0 {
+		t.AgentArgs = nil
 	}
 	// NULL only on a row an older binary wrote after migration 35 ran (a
 	// rollback): its last update is the best guess.
@@ -1543,6 +1557,19 @@ func scanTarget(row rowScanner) (*registry.Target, error) {
 		t.Policy.AllowedAgentTypes = nil
 	}
 	return &t, nil
+}
+
+// marshalAgentArgs stores a target's pinned launch args (LOOM-307):
+// JSON keyed by agent type, "{}" for none.
+func marshalAgentArgs(args map[string]registry.AgentArgs) (string, error) {
+	if args == nil {
+		args = map[string]registry.AgentArgs{}
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return "", fmt.Errorf("sqlite: marshal agent args: %w", err)
+	}
+	return string(b), nil
 }
 
 // marshalAllowedAgents stores a policy's agent-type list (LOOM-89).

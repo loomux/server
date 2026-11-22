@@ -41,6 +41,11 @@ type Target struct {
 	// each agent-type's own default. Per-target, so policy (LOOM-89) can
 	// tighten it on, say, a work-only host.
 	PermissionMode string
+	// AgentArgs pin the model and effort each agent type is launched
+	// with on this target (LOOM-307), keyed by agent type; an agent type
+	// with no entry runs on its CLI's own defaults. Per-target, like
+	// PermissionMode: a shared work host's owner can require them.
+	AgentArgs map[string]AgentArgs
 	// Policy is what Loomux may do on this target (LOOM-89). The zero
 	// value allows everything, as before policies existed.
 	Policy TargetPolicy
@@ -280,6 +285,9 @@ func (t *Target) Validate() error {
 	default:
 		return fmt.Errorf("permission_mode must be empty, %q, %q or %q", PermissionModeAuto, "accept_edits", PermissionModeManual)
 	}
+	if err := ValidateAgentArgs(t.AgentArgs); err != nil {
+		return err
+	}
 	switch t.Policy.Relay {
 	case "", RelayFull, RelayLastMessage, RelayNone:
 	default:
@@ -413,6 +421,10 @@ type Task struct {
 	// falls back to a fresh task (a new row, ReapedAt naturally nil)
 	// rather than clearing this one's marker in place.
 	ReapedAt *time.Time
+	// AgentArgs are the model and effort an agent task was launched
+	// with (LOOM-307): its target's pin for the agent type at launch,
+	// zero when nothing was pinned. Written at creation only.
+	AgentArgs AgentArgs
 	// Command is what a TaskKindCommand task ran, verbatim. Empty for
 	// every other kind: an agent's launch command carries injected
 	// credentials (credentials.ShellEnvPrefix) and is never stored.

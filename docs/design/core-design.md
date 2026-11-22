@@ -120,6 +120,13 @@ own — Loomux doesn't push those sessions over SSH. API-key-style secrets are
 injected as env vars via the SSH exec at launch time (see §7, Credential
 Model).
 
+**Pinned launch args (LOOM-307).** A target can pin the model and effort
+each agent type is launched with there (`agent_args`, set only through the
+target API; `docs/design/agent-launch-args.md`). The adapter maps them to
+its CLI's own flags; neither the routing model nor a prompt can set or
+override them, and a pin the CLI can't take fails the launch rather than
+run on the account's defaults. The task records what it was launched with.
+
 **Target policy (LOOM-89).** Each target carries a policy saying what
 Loomux may do there: `purpose` (personal or work), `allowed_agent_types`
 (empty: all), `allow_provision`, `allow_shell` and `require_confirmation`.

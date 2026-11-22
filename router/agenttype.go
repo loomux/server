@@ -58,6 +58,10 @@ type AgentType struct {
 	// (LOOM-91): what is relayed, when present, instead of the pane's
 	// screen. Empty means the pane is always captured.
 	LastMessageKey string
+	// LaunchArgs, if set, is how the CLI takes the model and effort a
+	// target pins (LOOM-307). nil: a pin for this agent type fails the
+	// launch rather than run unpinned.
+	LaunchArgs *LaunchArgs
 	// Profile is how the CLI is started unattended: permission/sandbox
 	// flags, workspace pre-trust, first prompt as an argument (LOOM-78).
 	// The zero value adds nothing to the command.
@@ -203,12 +207,14 @@ func (at AgentType) permissionArgs(mode string) []string {
 
 // launchCommand is the agent CLI invocation launchAgent runs (before any
 // env prefix), each argument shell-quoted: LaunchTemplate, the profile's
-// permission args, its trust args for workspaceDir, StartupArgs,
+// permission args, the target's pinned args (pinnedArgs, LOOM-307), its
+// trust args for workspaceDir, StartupArgs,
 // CompletionHookArgs, then — when the profile passes the first prompt as
 // an argument and there is one — "--" and the prompt. "--" keeps a
 // message that starts with "-" from being read as a flag.
-func (at AgentType) launchCommand(workspaceDir, prompt, permissionMode string) string {
+func (at AgentType) launchCommand(workspaceDir, prompt, permissionMode string, pinned []string) string {
 	args := append([]string{}, at.permissionArgs(permissionMode)...)
+	args = append(args, pinned...)
 	if at.Profile.TrustArgs != nil {
 		args = append(args, at.Profile.TrustArgs(workspaceDir)...)
 	}

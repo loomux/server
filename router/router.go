@@ -1565,13 +1565,23 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: %w", err)
 	}
+	// The target's pin for this agent type (LOOM-307), read with the
+	// permission mode from the same row. One the CLI can't take fails
+	// the launch: running on the account's defaults is what it prevents.
+	pin := target.AgentArgs[agentType]
+	pinned, err := entry.pinnedArgs(agentType, pin)
+	if err != nil {
+		return nil, false, fmt.Errorf("router: dispatch: target %q pins agent_args[%q]: %w", target.Name, agentType, err)
+	}
 	r.trustWorkspace(ctx, target, ws, entry)
 
 	prompt := ""
 	if entry.Profile.PromptAsArg {
 		prompt = message
 	}
-	task, err = r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID, prefix+envPrefix+withResolvedBinary(entry.launchCommand(ws.Path, prompt, target.PermissionMode), entry.Binary, resolvedPath))
+	launch := withResolvedBinary(entry.launchCommand(ws.Path, prompt, target.PermissionMode, pinned), entry.Binary, resolvedPath)
+	task, err = r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID,
+		prefix+envPrefix+launch, orchestrator.WithAgentArgs(pin))
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: launch: %w", err)
 	}

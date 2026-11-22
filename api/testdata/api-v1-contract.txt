@@ -95,6 +95,9 @@ DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in status 502
 DELETE /api/v1/targets/{id}/pin
 DELETE /api/v1/targets/{id}/pin request-header Authorization
 DELETE /api/v1/targets/{id}/pin response - object
+DELETE /api/v1/targets/{id}/pin response .agent_args {}object
+DELETE /api/v1/targets/{id}/pin response .agent_args{}.effort string
+DELETE /api/v1/targets/{id}/pin response .agent_args{}.model string
 DELETE /api/v1/targets/{id}/pin response .allow_provision boolean
 DELETE /api/v1/targets/{id}/pin response .allow_shell boolean
 DELETE /api/v1/targets/{id}/pin response .allowed_agent_types []string
@@ -631,6 +634,9 @@ GET /api/v1/targets request-header Authorization
 GET /api/v1/targets response - object
 GET /api/v1/targets response .local_targets boolean
 GET /api/v1/targets response .targets []object
+GET /api/v1/targets response .targets[].agent_args {}object
+GET /api/v1/targets response .targets[].agent_args{}.effort string
+GET /api/v1/targets response .targets[].agent_args{}.model string
 GET /api/v1/targets response .targets[].allow_provision boolean
 GET /api/v1/targets response .targets[].allow_shell boolean
 GET /api/v1/targets response .targets[].allowed_agent_types []string
@@ -696,6 +702,9 @@ GET /api/v1/targets status 500
 GET /api/v1/targets/{id}
 GET /api/v1/targets/{id} request-header Authorization
 GET /api/v1/targets/{id} response - object
+GET /api/v1/targets/{id} response .agent_args {}object
+GET /api/v1/targets/{id} response .agent_args{}.effort string
+GET /api/v1/targets/{id} response .agent_args{}.model string
 GET /api/v1/targets/{id} response .allow_provision boolean
 GET /api/v1/targets/{id} response .allow_shell boolean
 GET /api/v1/targets/{id} response .allowed_agent_types []string
@@ -796,6 +805,9 @@ GET /api/v1/targets/{id}/agents status 500
 GET /api/v1/tasks/{id}/attach-info
 GET /api/v1/tasks/{id}/attach-info request-header Authorization
 GET /api/v1/tasks/{id}/attach-info response - object
+GET /api/v1/tasks/{id}/attach-info response .agent_args object
+GET /api/v1/tasks/{id}/attach-info response .agent_args.effort string
+GET /api/v1/tasks/{id}/attach-info response .agent_args.model string
 GET /api/v1/tasks/{id}/attach-info response .attach_command string
 GET /api/v1/tasks/{id}/attach-info response .attach_commands []object
 GET /api/v1/tasks/{id}/attach-info response .attach_commands[].argv []string omitempty
@@ -1331,6 +1343,9 @@ POST /api/v1/ssh-keys status 500
 POST /api/v1/ssh-keys status 503
 POST /api/v1/targets
 POST /api/v1/targets request - object
+POST /api/v1/targets request .agent_args {}object nullable
+POST /api/v1/targets request .agent_args{}.effort string
+POST /api/v1/targets request .agent_args{}.model string
 POST /api/v1/targets request .allow_provision boolean nullable
 POST /api/v1/targets request .allow_shell boolean nullable
 POST /api/v1/targets request .allowed_agent_types []string nullable
@@ -1355,6 +1370,9 @@ POST /api/v1/targets request .user string
 POST /api/v1/targets request .workspace_root string nullable
 POST /api/v1/targets request-header Authorization
 POST /api/v1/targets response - object
+POST /api/v1/targets response .agent_args {}object
+POST /api/v1/targets response .agent_args{}.effort string
+POST /api/v1/targets response .agent_args{}.model string
 POST /api/v1/targets response .allow_provision boolean
 POST /api/v1/targets response .allow_shell boolean
 POST /api/v1/targets response .allowed_agent_types []string
@@ -1493,6 +1511,9 @@ POST /api/v1/targets/{id}/migrate-ssh response .plan.user string
 POST /api/v1/targets/{id}/migrate-ssh response .problems []string
 POST /api/v1/targets/{id}/migrate-ssh response .rolled_back boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target object nullable
+POST /api/v1/targets/{id}/migrate-ssh response .target.agent_args {}object
+POST /api/v1/targets/{id}/migrate-ssh response .target.agent_args{}.effort string
+POST /api/v1/targets/{id}/migrate-ssh response .target.agent_args{}.model string
 POST /api/v1/targets/{id}/migrate-ssh response .target.allow_provision boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target.allow_shell boolean
 POST /api/v1/targets/{id}/migrate-ssh response .target.allowed_agent_types []string
@@ -1579,6 +1600,9 @@ POST /api/v1/targets/{id}/pin request - object
 POST /api/v1/targets/{id}/pin request .fingerprint string
 POST /api/v1/targets/{id}/pin request-header Authorization
 POST /api/v1/targets/{id}/pin response - object
+POST /api/v1/targets/{id}/pin response .agent_args {}object
+POST /api/v1/targets/{id}/pin response .agent_args{}.effort string
+POST /api/v1/targets/{id}/pin response .agent_args{}.model string
 POST /api/v1/targets/{id}/pin response .allow_provision boolean
 POST /api/v1/targets/{id}/pin response .allow_shell boolean
 POST /api/v1/targets/{id}/pin response .allowed_agent_types []string
@@ -1694,6 +1718,9 @@ POST /api/v1/targets/{id}/recreate request - object
 POST /api/v1/targets/{id}/recreate request .size string
 POST /api/v1/targets/{id}/recreate request-header Authorization
 POST /api/v1/targets/{id}/recreate response - object
+POST /api/v1/targets/{id}/recreate response .agent_args {}object
+POST /api/v1/targets/{id}/recreate response .agent_args{}.effort string
+POST /api/v1/targets/{id}/recreate response .agent_args{}.model string
 POST /api/v1/targets/{id}/recreate response .allow_provision boolean
 POST /api/v1/targets/{id}/recreate response .allow_shell boolean
 POST /api/v1/targets/{id}/recreate response .allowed_agent_types []string
@@ -1785,6 +1812,9 @@ POST /api/v1/targets/{id}/scan-host-key status 502
 POST /api/v1/targets/{id}/start
 POST /api/v1/targets/{id}/start request-header Authorization
 POST /api/v1/targets/{id}/start response - object
+POST /api/v1/targets/{id}/start response .agent_args {}object
+POST /api/v1/targets/{id}/start response .agent_args{}.effort string
+POST /api/v1/targets/{id}/start response .agent_args{}.model string
 POST /api/v1/targets/{id}/start response .allow_provision boolean
 POST /api/v1/targets/{id}/start response .allow_shell boolean
 POST /api/v1/targets/{id}/start response .allowed_agent_types []string
@@ -1855,6 +1885,9 @@ POST /api/v1/targets/{id}/start status 503
 POST /api/v1/targets/{id}/stop
 POST /api/v1/targets/{id}/stop request-header Authorization
 POST /api/v1/targets/{id}/stop response - object
+POST /api/v1/targets/{id}/stop response .agent_args {}object
+POST /api/v1/targets/{id}/stop response .agent_args{}.effort string
+POST /api/v1/targets/{id}/stop response .agent_args{}.model string
 POST /api/v1/targets/{id}/stop response .allow_provision boolean
 POST /api/v1/targets/{id}/stop response .allow_shell boolean
 POST /api/v1/targets/{id}/stop response .allowed_agent_types []string
@@ -1992,6 +2025,9 @@ POST /api/v1/tasks/{id}/takeover request .ttl_seconds number omitempty nullable
 POST /api/v1/tasks/{id}/takeover request-header Authorization
 POST /api/v1/tasks/{id}/takeover response - object
 POST /api/v1/tasks/{id}/takeover response .attach object
+POST /api/v1/tasks/{id}/takeover response .attach.agent_args object
+POST /api/v1/tasks/{id}/takeover response .attach.agent_args.effort string
+POST /api/v1/tasks/{id}/takeover response .attach.agent_args.model string
 POST /api/v1/tasks/{id}/takeover response .attach.attach_command string
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands []object
 POST /api/v1/tasks/{id}/takeover response .attach.attach_commands[].argv []string omitempty
@@ -2324,6 +2360,9 @@ PUT /api/v1/settings/router/{tier} status 500
 PUT /api/v1/settings/router/{tier} status 503
 PUT /api/v1/targets/{id}
 PUT /api/v1/targets/{id} request - object
+PUT /api/v1/targets/{id} request .agent_args {}object nullable
+PUT /api/v1/targets/{id} request .agent_args{}.effort string
+PUT /api/v1/targets/{id} request .agent_args{}.model string
 PUT /api/v1/targets/{id} request .allow_provision boolean nullable
 PUT /api/v1/targets/{id} request .allow_shell boolean nullable
 PUT /api/v1/targets/{id} request .allowed_agent_types []string nullable
@@ -2348,6 +2387,9 @@ PUT /api/v1/targets/{id} request .user string
 PUT /api/v1/targets/{id} request .workspace_root string nullable
 PUT /api/v1/targets/{id} request-header Authorization
 PUT /api/v1/targets/{id} response - object
+PUT /api/v1/targets/{id} response .agent_args {}object
+PUT /api/v1/targets/{id} response .agent_args{}.effort string
+PUT /api/v1/targets/{id} response .agent_args{}.model string
 PUT /api/v1/targets/{id} response .allow_provision boolean
 PUT /api/v1/targets/{id} response .allow_shell boolean
 PUT /api/v1/targets/{id} response .allowed_agent_types []string

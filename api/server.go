@@ -260,6 +260,7 @@ type Server struct {
 	// migrating is held while a migrate-ssh is applied (LOOM-138).
 	migrating          sync.Mutex
 	agentTypes         []string
+	agentArgsCheck     AgentArgsCheck
 	health             HealthChecker
 	passwordHash       []byte
 	sessionTTL         time.Duration
@@ -1302,6 +1303,9 @@ type attachInfoResponse struct {
 	TmuxSocket    string           `json:"tmux_socket"`
 	AttachCommand string           `json:"attach_command"`
 	Target        attachTargetInfo `json:"target"`
+	// AgentArgs are the model and effort the task was launched with
+	// (LOOM-307): its target's pin then, "" for what wasn't pinned.
+	AgentArgs agentArgsJSON `json:"agent_args"`
 	// AttachCommands are the ways a person attaches from their own
 	// machine (LOOM-178): a plugin's (kubectl, docker) for a machine it
 	// made, and the plain ssh form for every remote target.
@@ -1391,6 +1395,7 @@ func (s *Server) attachInfoFor(w http.ResponseWriter, r *http.Request, id string
 			Host: target.Host,
 			User: target.User,
 		},
+		AgentArgs: newAgentArgsJSON(task.AgentArgs),
 	}, true
 }
 
@@ -1983,6 +1988,9 @@ type targetResponse struct {
 	// PermissionMode: empty (each agent-type's default), auto,
 	// accept_edits or manual (accept-edits before 1.0; still accepted).
 	PermissionMode string `json:"permission_mode"`
+	// AgentArgs are the model and effort each agent type is launched with
+	// here (LOOM-307), keyed by agent type; {} when none is pinned.
+	AgentArgs map[string]agentArgsJSON `json:"agent_args"`
 	// The target's policy (LOOM-89): purpose (personal, work or empty),
 	// the only agent types allowed there (empty: all), and whether new
 	// workspaces, shell commands and unconfirmed new work are allowed.
@@ -2067,6 +2075,7 @@ func newTargetResponse(t *registry.Target) targetResponse {
 		User:                t.User,
 		WorkspaceRoot:       t.WorkspaceRoot,
 		PermissionMode:      apiEnum(t.PermissionMode),
+		AgentArgs:           agentArgsResponse(t.AgentArgs),
 		Purpose:             t.Policy.Purpose,
 		AllowedAgentTypes:   append([]string{}, t.Policy.AllowedAgentTypes...),
 		AllowProvision:      !t.Policy.NoProvision,
@@ -2100,6 +2109,11 @@ type targetRequest struct {
 	WorkspaceRoot *string `json:"workspace_root"`
 	// PermissionMode is optional the same way.
 	PermissionMode *string `json:"permission_mode"`
+	// AgentArgs pin each agent type's model and effort (LOOM-307).
+	// Optional the same way; given, it replaces the whole map, so an
+	// agent type left out is unpinned. An entry with both fields empty
+	// pins nothing.
+	AgentArgs *map[string]agentArgsJSON `json:"agent_args"`
 	// The policy fields (LOOM-89) are optional the same way; on a create,
 	// omitted means allowed.
 	Purpose             *string   `json:"purpose"`
@@ -2191,6 +2205,7 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 	if base != nil {
 		target.Name, target.Kind, target.Host, target.User = base.Name, base.Kind, base.Host, base.User
 		target.SSHKeyRef, target.WorkspaceRoot, target.PermissionMode = base.SSHKeyRef, base.WorkspaceRoot, base.PermissionMode
+		target.AgentArgs = base.AgentArgs
 		target.Policy = base.Policy
 		target.SSHPort = base.SSHPort
 		target.SSHProxy = base.SSHProxy
@@ -2264,6 +2279,12 @@ func (s *Server) decodeTargetRequest(w http.ResponseWriter, r *http.Request, bas
 		// accept_edits in the API; the legacy accept-edits is still taken
 		// for 1.x. The store keeps its spelling.
 		target.PermissionMode = strings.ReplaceAll(*req.PermissionMode, "_", "-")
+	}
+	if req.AgentArgs != nil {
+		target.AgentArgs = agentArgsFromRequest(*req.AgentArgs)
+	}
+	if !s.checkAgentArgs(w, target) {
+		return nil, false, nil, false
 	}
 	if req.Plugin != nil {
 		// The plugin fills the connection; only the name is checked here.
