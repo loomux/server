@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Loomux/server/completion"
 	"github.com/Loomux/server/registry"
@@ -57,6 +58,10 @@ type AgentType struct {
 	// (LOOM-91): what is relayed, when present, instead of the pane's
 	// screen. Empty means the pane is always captured.
 	LastMessageKey string
+	// LaunchArgs, if set, is how the CLI takes the model and effort a
+	// target pins (LOOM-307). nil: a pin for this agent type fails the
+	// launch rather than run unpinned.
+	LaunchArgs *LaunchArgs
 	// Profile is how the CLI is started unattended: permission/sandbox
 	// flags, workspace pre-trust, first prompt as an argument (LOOM-78).
 	// The zero value adds nothing to the command.
@@ -69,6 +74,10 @@ type AgentType struct {
 	// AuthCheck, if set, is how the probe asks the CLI whether it is
 	// signed in (LOOM-86). Only meaningful with Binary.
 	AuthCheck *AuthCheck
+	// SignIn, if set, is how a person signs the CLI in (LOOM-316): the
+	// command Loomux opens in a tmux session for them to attach to. Only
+	// meaningful with Binary.
+	SignIn *SignIn
 	// Description is one line telling the routing model what this agent
 	// is and when to choose it (LOOM-88), by the name a user would use.
 	Description string
@@ -90,6 +99,35 @@ type AuthCheck struct {
 	Args      []string
 	LoggedIn  *regexp.Regexp
 	LoggedOut *regexp.Regexp
+	// Details, if set, reads how the CLI is signed in out of the same
+	// output (LOOM-316). It must pick named fields only, never the
+	// account's email, organisation or a key fragment; the probe further
+	// keeps a method or plan only if it is a short word (authWord).
+	Details func(output string) AuthDetails
+}
+
+// AuthDetails is what an auth check says about how the CLI is signed in
+// (LOOM-316). Any field may be empty.
+type AuthDetails struct {
+	// Method is how it is signed in, as the CLI names it ("claude.ai",
+	// "api_key", "chatgpt").
+	Method string
+	// Plan is the subscription the account is on ("max", "pro").
+	Plan string
+	// ExpiresAt is when the sign-in ends; zero when the CLI doesn't say.
+	ExpiresAt time.Time
+}
+
+// SignIn is how a person signs an agent CLI in (LOOM-316). Both fields
+// are fixed configuration: no caller or model supplies or alters them.
+type SignIn struct {
+	// Args are run with the probed binary in the sign-in session: the
+	// CLI's own login command ("auth login", "login --device-auth").
+	Args []string
+	// CredentialEnv are the environment variables that sign the CLI in
+	// without a login (an API key). A launch that would inject one of
+	// them from the vault is not stopped for a signed-out CLI.
+	CredentialEnv []string
 }
 
 // Status classifies what the auth command printed.
@@ -142,7 +180,7 @@ func (r AgentTypeRegistry) CompletionConfig() completion.Config {
 func (r AgentTypeRegistry) Get(agentType string) (AgentType, error) {
 	at, ok := r[agentType]
 	if !ok {
-		return AgentType{}, fmt.Errorf("router: unknown agent type %q", agentType)
+		return AgentType{}, fmt.Errorf("%w %q", ErrUnknownAgentType, agentType)
 	}
 	return at, nil
 }
@@ -169,12 +207,14 @@ func (at AgentType) permissionArgs(mode string) []string {
 
 // launchCommand is the agent CLI invocation launchAgent runs (before any
 // env prefix), each argument shell-quoted: LaunchTemplate, the profile's
-// permission args, its trust args for workspaceDir, StartupArgs,
+// permission args, the target's pinned args (pinnedArgs, LOOM-307), its
+// trust args for workspaceDir, StartupArgs,
 // CompletionHookArgs, then — when the profile passes the first prompt as
 // an argument and there is one — "--" and the prompt. "--" keeps a
 // message that starts with "-" from being read as a flag.
-func (at AgentType) launchCommand(workspaceDir, prompt, permissionMode string) string {
+func (at AgentType) launchCommand(workspaceDir, prompt, permissionMode string, pinned []string) string {
 	args := append([]string{}, at.permissionArgs(permissionMode)...)
+	args = append(args, pinned...)
 	if at.Profile.TrustArgs != nil {
 		args = append(args, at.Profile.TrustArgs(workspaceDir)...)
 	}

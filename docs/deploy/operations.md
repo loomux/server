@@ -6,15 +6,15 @@ back, rotating secrets, and what to watch. Installation is
 
 ## Upgrading
 
-Every merge to `main` is a patch release (`0.1.N`); see
+Every merge to `main` is a patch release (`0.Y.Z`); see
 [`../release/versioning.md`](../release/versioning.md). To upgrade:
 
 1. Read the release notes between your version and the new one
    (<https://github.com/loomux/server/releases>). The notes don't flag
    schema changes; to see whether the upgrade migrates the database,
    compare `registry/sqlite/migrations/` between the two tags
-   (`git diff --stat v0.1.A v0.1.B -- registry/sqlite/migrations/`).
-2. Change the image tag (`ghcr.io/loomux/server:0.1.N`) and roll the
+   (`git diff --stat vX.Y.A vX.Y.B -- registry/sqlite/migrations/`).
+2. Change the image tag (`ghcr.io/loomux/server:X.Y.Z`) and roll the
    Deployment. With `strategy: Recreate` the old pod stops first.
 3. On start, `loomuxd` applies any new migrations. On the test
    instance an init container first copies the database to

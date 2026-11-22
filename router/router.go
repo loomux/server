@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,6 +85,9 @@ type Router struct {
 	// machineMaker creates machines a chat asks for (LOOM-216); nil
 	// offers none.
 	machineMaker MachineMaker
+	// signInLocks holds one *sync.Mutex per target + agent type, so two
+	// callers never both open its sign-in session (LOOM-316).
+	signInLocks sync.Map
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -213,6 +217,17 @@ func New(store registry.Store, orch *orchestrator.Orchestrator, newExecutor orch
 // decision, provisioning, and the agent turn, with any failure at error
 // level. The message body itself is never logged — only its length.
 func (r *Router) Dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
+	reply, err := r.dispatch(ctx, conversationID, message, opts...)
+	// Refused because a person holds the task (LOOM-267): say who. A turn
+	// a takeover ended is taken_over, which says so already.
+	if errors.Is(err, orchestrator.ErrHumanTakeover) && !errors.Is(err, orchestrator.ErrTakenOver) {
+		err = r.heldError(ctx, conversationID, err)
+	}
+	return reply, err
+}
+
+// dispatch is Dispatch, before a refusal names who holds the task.
+func (r *Router) dispatch(ctx context.Context, conversationID, message string, opts ...DispatchOption) (string, error) {
 	unlock, err := r.conversations.lock(ctx, conversationID)
 	if err != nil {
 		return "", fmt.Errorf("router: waiting for the conversation's previous turn: %w", err)
@@ -1116,6 +1131,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 			return r.needsAttention(ctx, log, task, registry.TaskStatusAwaitingInput, message, a)
 		}
 	}
+	r.noteTurnFinished(ctx, task, start)
 
 	result, relayPolicy, err := r.relayTurn(ctx, task, message, captured, agentMessage)
 	if err != nil {
@@ -1460,6 +1476,8 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	// so the version checked is the version that runs, whatever PATH the
 	// tmux session would have had.
 	var resolvedPath string
+	var probed *registry.TargetAgent
+	var probedOn *registry.Target
 	if entry.Binary != "" {
 		target, err := r.store.GetTarget(ctx, ws.TargetID)
 		if err != nil {
@@ -1469,7 +1487,19 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		if err != nil {
 			return nil, false, fmt.Errorf("router: dispatch: %w", err)
 		}
-		resolvedPath = rec.Path
+		resolvedPath, probed, probedOn = rec.Path, rec, target
+	}
+
+	secrets, err := r.resolveSecrets(ctx, workspaceID, agentType)
+	if err != nil {
+		return nil, false, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
+	}
+	// The CLI says it isn't signed in and the vault has no key to sign it
+	// in with: a launch could only stop at its sign-in screen. Open its
+	// sign-in for a person instead (LOOM-316).
+	if probed != nil && entry.SignIn != nil && probed.AuthStatus == registry.AgentAuthLoggedOut &&
+		!injectsAny(secrets, entry.SignIn.CredentialEnv) {
+		return nil, false, r.signInRequired(ctx, probedOn, agentType, entry, probed)
 	}
 
 	if entry.VersionCheck != nil {
@@ -1481,10 +1511,6 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	}
 
 	taskID := uuid.NewString()
-	secrets, err := r.resolveSecrets(ctx, workspaceID, agentType)
-	if err != nil {
-		return nil, false, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
-	}
 	// Secrets go through a file the launch command sources and deletes,
 	// never onto the command line (LOOM-113).
 	var prefix string
@@ -1539,13 +1565,23 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: %w", err)
 	}
+	// The target's pin for this agent type (LOOM-307), read with the
+	// permission mode from the same row. One the CLI can't take fails
+	// the launch: running on the account's defaults is what it prevents.
+	pin := target.AgentArgs[agentType]
+	pinned, err := entry.pinnedArgs(agentType, pin)
+	if err != nil {
+		return nil, false, fmt.Errorf("router: dispatch: target %q pins agent_args[%q]: %w", target.Name, agentType, err)
+	}
 	r.trustWorkspace(ctx, target, ws, entry)
 
 	prompt := ""
 	if entry.Profile.PromptAsArg {
 		prompt = message
 	}
-	task, err = r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID, prefix+envPrefix+withResolvedBinary(entry.launchCommand(ws.Path, prompt, target.PermissionMode), entry.Binary, resolvedPath))
+	launch := withResolvedBinary(entry.launchCommand(ws.Path, prompt, target.PermissionMode, pinned), entry.Binary, resolvedPath)
+	task, err = r.orch.LaunchWithID(ctx, workspaceID, conversationID, registry.TaskKindAgent, agentType, taskID,
+		prefix+envPrefix+launch, orchestrator.WithAgentArgs(pin))
 	if err != nil {
 		return nil, false, fmt.Errorf("router: dispatch: launch: %w", err)
 	}

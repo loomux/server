@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -416,5 +417,41 @@ func TestDispatch_AgentDiedBetweenTurns_FallsBackToFreshLaunch(t *testing.T) {
 		if tk.ID == dead.ID && tk.Status != registry.TaskStatusFailed {
 			t.Errorf("dead task status = %q, want failed", tk.Status)
 		}
+	}
+}
+
+// LOOM-267: the refusal names who holds the task, so a client can show
+// it (the dispatch job's error is its text), and is classed held.
+func TestDispatch_HeldTaskRefusalNamesTheHolder(t *testing.T) {
+	store, exec, r, model := setup(t)
+	ws := createFixtureWorkspace(t, store)
+	model.DecideFunc = func(ctx context.Context, message string, workspaces []router.WorkspaceSnapshot) (router.Decision, error) {
+		return router.Decision{Action: router.ActionUseWorkspace, WorkspaceID: ws.ID, AgentType: "claude-code"}, nil
+	}
+	model.RelayFunc = func(ctx context.Context, captured string) (router.RelayResult, error) {
+		return router.RelayResult{Reply: "still working", Done: false}, nil
+	}
+	if _, err := r.Dispatch(context.Background(), "conv-1", "start the task"); err != nil {
+		t.Fatalf("Dispatch (turn 1): %v", err)
+	}
+	tasks, err := store.ListTasksByWorkspace(context.Background(), ws.ID)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("ListTasksByWorkspace = %v, %v", tasks, err)
+	}
+	orch := orchestrator.New(store, exec.factory(), noopDetector{})
+	if _, err := orch.Takeover(context.Background(), orchestrator.TakeoverRequest{TaskID: tasks[0].ID, SessionID: "sess-1",
+		ClientKind: "tui", ClientLabel: "laptop"}); err != nil {
+		t.Fatalf("Takeover: %v", err)
+	}
+
+	_, err = r.Dispatch(context.Background(), "conv-1", "keep going")
+	if !errors.Is(err, orchestrator.ErrHumanTakeover) {
+		t.Fatalf("Dispatch err = %v, want it to wrap orchestrator.ErrHumanTakeover", err)
+	}
+	if got := router.ClassifyError(err); got != registry.ErrorClassHeld {
+		t.Fatalf("ClassifyError = %q, want held", got)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "laptop") || !strings.Contains(msg, "terminal") {
+		t.Fatalf("error = %q, want it to name the holder (the terminal on laptop)", msg)
 	}
 }

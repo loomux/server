@@ -42,6 +42,11 @@ func main() {
 		return
 	}
 
+	// A client of a running server's agent sign-in API (LOOM-316).
+	if len(os.Args) > 1 && os.Args[1] == "agents" {
+		os.Exit(runAgents(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
+
 	showVersion := flag.Bool("version", false, "print the server version and exit")
 	hashPassword := flag.Bool("hash-password", false, "read a password from stdin, print its bcrypt hash (for LOOMUX_AUTH_PASSWORD_HASH), and exit")
 	message := flag.String("message", "", "dispatch a single message directly (bypassing HTTP/auth) and exit, for local debugging")
@@ -135,11 +140,13 @@ func runServer(ctx context.Context, loomux *app.App) {
 		api.WithLocalTargets(loomux.LocalTargets()),
 		api.WithTmuxSocket(loomux.TmuxSocket()),
 		api.WithTargetProber(loomux),
+		api.WithAgentSignIns(loomux),
 		api.WithWorkspaceManager(loomux),
 		api.WithWorkspaceProvisioner(loomux),
 		api.WithTaskCanceller(loomux),
 		api.WithTaskHolds(loomux.TaskHolds()),
 		api.WithAgentTypes(loomux.AgentTypeNames()),
+		api.WithAgentArgsCheck(loomux.CheckAgentArgs),
 		api.WithTaskTurns(loomux.Store()),
 		api.WithEvents(loomux.Store()),
 		api.WithHostKeyPinning(loomux.ScanHostKey, loomux.Store()),

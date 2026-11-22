@@ -42,7 +42,11 @@ func (o *Orchestrator) Launch(ctx context.Context, workspaceID, conversationID s
 // which case the returned task is already Failed and the error
 // describes why) — the row stays visible/auditable rather than
 // vanishing on failure.
-func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversationID string, kind registry.TaskKind, agentType, taskID, command string) (*registry.Task, error) {
+func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversationID string, kind registry.TaskKind, agentType, taskID, command string, opts ...LaunchOption) (*registry.Task, error) {
+	var lo launchOptions
+	for _, opt := range opts {
+		opt(&lo)
+	}
 	ws, err := o.store.GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: launch: %w", err)
@@ -69,6 +73,7 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 	switch kind {
 	case registry.TaskKindAgent:
 		task.AgentType = agentType
+		task.AgentArgs = lo.agentArgs
 	case registry.TaskKindCommand:
 		// Only a command task records what it ran (LOOM-71): an agent's
 		// launch command carries injected credentials and is never stored.
@@ -105,6 +110,20 @@ func (o *Orchestrator) LaunchWithID(ctx context.Context, workspaceID, conversati
 	}
 
 	return task, nil
+}
+
+// LaunchOption adds to what LaunchWithID records about a task.
+type LaunchOption func(*launchOptions)
+
+type launchOptions struct {
+	agentArgs registry.AgentArgs
+}
+
+// WithAgentArgs records the model and effort an agent task's command was
+// built with (LOOM-307), for attach-info. It only records them: the
+// caller has already put them in the command. Ignored for other kinds.
+func WithAgentArgs(a registry.AgentArgs) LaunchOption {
+	return func(o *launchOptions) { o.agentArgs = a }
 }
 
 // SendMessage sends message as the next turn's input into a running
