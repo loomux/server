@@ -13,16 +13,13 @@ milestones.
 What's coming waits in [`changes/`](changes/), one file per pull
 request, until the next milestone folds it in here.
 
-## [0.4.0] - Unreleased
-
-> **TODO(0.4.0):** replace "Unreleased" in the heading above with the
-> release date (YYYY-MM-DD), and confirm the web pin (0.3.39 here and
-> under Changed, "Web client"; or cut web 0.4.0 first and pin that).
-> Remove this note before merging.
+## [0.4.0] - 2026-11-22
 
 Everything merged since 0.3.0 (the patch releases from 0.3.1 on), with
-web client 0.3.39 (TODO(0.4.0): web pin). Loomux is still pre-alpha and
-single-user. The main lines:
+web client 0.3.39. Loomux is still pre-alpha and single-user. How to
+try it and how to verify its images:
+[`docs/release/v0.4.0.md`](https://github.com/loomux/server/blob/main/docs/release/v0.4.0.md).
+The main lines:
 
 - **Machines on demand.** Target-provider plugins make a machine per
   target and register it as an ordinary SSH target: a Kubernetes plugin
@@ -46,8 +43,8 @@ single-user. The main lines:
   over while you're attached to its pane, or watching it read-only,
   handing it back, seeing who holds or watches a task, and linking a
   terminal to your login.
-- **A one-machine quickstart** (Docker) and a security policy
-  (`SECURITY.md`).
+- **A one-machine quickstart** (Docker), a security policy
+  (`SECURITY.md`), a rewritten README and a contributing guide.
 - A round of security hardening, much of it from an audit (LOOM-139 to
   LOOM-175).
 
@@ -419,8 +416,19 @@ single-user. The main lines:
   every machine, the agents' default permission modes, machines aren't a
   network sandbox, what the router model sees, and what is encrypted,
   pinned and attested.
+- A rewritten README (LOOM-312): what Loomux is and isn't, its status,
+  a short quickstart (the full one is `docs/quickstart.md`), how it
+  compares with vendor remote control, CLI wrappers, tmux dashboards and
+  dev-environment platforms, and where the documentation is.
 
 #### For contributors
+
+- `CONTRIBUTING.md` (LOOM-314): what's welcome before 1.0, an issue
+  first for features and for anything touching `/api/v1`, the schema or
+  the design spec, the checks CI runs, `changes/` fragments and the API
+  v1 contract; MIT, no CLA. Issue forms for bugs and features (blank
+  issues are off, and the chooser links `SECURITY.md`, loomux/web and
+  loomux/tui), and a pull-request template with the CI checklist.
 
 - An API v1 contract test (`TestAPIv1Contract`,
   `api/testdata/api-v1-contract.txt`): every `/api/v1` route with its
@@ -541,9 +549,6 @@ single-user. The main lines:
 
 #### Web client
 
-- TODO(0.4.0): web pin. 0.3.39 as below, or web 0.4.0 if it's cut
-  first (pinned by its own server pull request before this one; then
-  this entry changes with it). Remove this line before merging.
 - The image serves loomux/web 0.3.39 (`web-1035795`; 0.3.0 before): the
   finished redesign (the conversation screen, Today, Machines, Vault,
   Settings, the decision card and the Inbox, PWA polish and
@@ -552,6 +557,10 @@ single-user. The main lines:
   router settings with a model picker (LOOM-185, LOOM-189, LOOM-191),
   the targets UI (LOOM-138), the brand identity (LOOM-176), and the
   audit fixes (LOOM-139 to LOOM-175, LOOM-183).
+- The web client in 0.4.0 is 0.3.39. Its pages for the terminal
+  client's server side, `/link` to approve a terminal's session
+  (LOOM-273) and the holder banner with Take back (LOOM-274), come with
+  the next release's web pin; until then that's API only.
 
 ### Removed
 
