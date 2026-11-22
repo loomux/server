@@ -629,6 +629,22 @@ work goes ahead; still broken, it fails at once with the probe's reason
 a nearly full disk) instead of a raw error minutes into the turn. A new
 workspace also needs at least 1 GiB free on the root's filesystem.
 
+**Agent sign-in (LOOM-316).** The same auth check also yields the sign-in
+method, plan and expiry (allow-listed short words and a time, never the
+email), and turns record the sign-in screen or usage limit they hit until a
+later turn finishes normally; `GET /api/v1/targets/{id}/agents` sums it up
+as one `state`. Loomux never signs an agent in, but it prepares the
+sign-in: `POST /api/v1/targets/{id}/agents/{agent_type}/sign-in` (and the
+dispatch paths below) opens the CLI's own login (`claude auth login`,
+`codex login --device-auth`) in a `loomux-signin-<agent type>` tmux session
+on the target and returns the attach command; the person attaches and
+finishes it there. A fresh launch whose probe says the CLI is signed out,
+with no API key for it in the vault, isn't launched: the dispatch fails at
+once with `login_required` naming that session. The session closes when a
+probe sees the CLI signed in, when a turn finishes normally after it, on
+`DELETE`, or by the orphan sweep after 24 h. Design:
+`agent-sign-in.md`.
+
 If the turn would also have provisioned a workspace, the offer shows that
 provisioning script in full too: a "yes" runs nothing the offer didn't
 show.
@@ -804,6 +820,8 @@ Four independent axes:
   once, rather than after the no-progress timeout. A sign-in screen
   fails the task with error class `login_required`, the pane kept so a
   human can attach and finish the login; Loomux never signs an agent in.
+  Since LOOM-316 it also opens the CLI's sign-in session (§1, "Agent
+  sign-in") and names it first.
   Anything else makes the task `needs-attention`, with the prompt stored
   on it (`attention`: title, detail, question, options, cursor) and shown
   in chat. The conversation's next message is the answer, read

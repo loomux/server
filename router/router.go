@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,6 +85,9 @@ type Router struct {
 	// machineMaker creates machines a chat asks for (LOOM-216); nil
 	// offers none.
 	machineMaker MachineMaker
+	// signInLocks holds one *sync.Mutex per target + agent type, so two
+	// callers never both open its sign-in session (LOOM-316).
+	signInLocks sync.Map
 }
 
 // Option configures optional Router behaviour (functional options, as
@@ -1127,6 +1131,7 @@ func (r *Router) awaitTurn(ctx context.Context, log *slog.Logger, task *registry
 			return r.needsAttention(ctx, log, task, registry.TaskStatusAwaitingInput, message, a)
 		}
 	}
+	r.noteTurnFinished(ctx, task, start)
 
 	result, relayPolicy, err := r.relayTurn(ctx, task, message, captured, agentMessage)
 	if err != nil {
@@ -1471,6 +1476,8 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	// so the version checked is the version that runs, whatever PATH the
 	// tmux session would have had.
 	var resolvedPath string
+	var probed *registry.TargetAgent
+	var probedOn *registry.Target
 	if entry.Binary != "" {
 		target, err := r.store.GetTarget(ctx, ws.TargetID)
 		if err != nil {
@@ -1480,7 +1487,19 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 		if err != nil {
 			return nil, false, fmt.Errorf("router: dispatch: %w", err)
 		}
-		resolvedPath = rec.Path
+		resolvedPath, probed, probedOn = rec.Path, rec, target
+	}
+
+	secrets, err := r.resolveSecrets(ctx, workspaceID, agentType)
+	if err != nil {
+		return nil, false, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
+	}
+	// The CLI says it isn't signed in and the vault has no key to sign it
+	// in with: a launch could only stop at its sign-in screen. Open its
+	// sign-in for a person instead (LOOM-316).
+	if probed != nil && entry.SignIn != nil && probed.AuthStatus == registry.AgentAuthLoggedOut &&
+		!injectsAny(secrets, entry.SignIn.CredentialEnv) {
+		return nil, false, r.signInRequired(ctx, probedOn, agentType, entry, probed)
 	}
 
 	if entry.VersionCheck != nil {
@@ -1492,10 +1511,6 @@ func (r *Router) launchAgent(ctx context.Context, workspaceID, conversationID, a
 	}
 
 	taskID := uuid.NewString()
-	secrets, err := r.resolveSecrets(ctx, workspaceID, agentType)
-	if err != nil {
-		return nil, false, fmt.Errorf("router: dispatch: resolve credentials: %w", err)
-	}
 	// Secrets go through a file the launch command sources and deletes,
 	// never onto the command line (LOOM-113).
 	var prefix string

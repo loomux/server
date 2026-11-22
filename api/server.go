@@ -241,6 +241,7 @@ type Server struct {
 	attachInfo           AttachInfoStore
 	targets              TargetStore
 	targetProber         TargetProber
+	agentSignIns         AgentSignIns
 	taskTurns            TaskTurnStore
 	events               EventStore
 	scanHostKey          HostKeyScanner
@@ -364,6 +365,12 @@ func WithStaticDir(dir string) Option {
 	return func(s *Server) { s.staticDir = dir }
 }
 
+// WithAgentSignIns enables POST and DELETE
+// /api/v1/targets/{id}/agents/{agent_type}/sign-in (LOOM-316).
+func WithAgentSignIns(a AgentSignIns) Option {
+	return func(s *Server) { s.agentSignIns = a }
+}
+
 // WithTargetProber enables POST /api/v1/targets/{id}/probe (LOOM-86).
 func WithTargetProber(p TargetProber) Option {
 	return func(s *Server) { s.targetProber = p }
@@ -468,6 +475,8 @@ func NewServer(dispatcher Dispatcher, sessions SessionStore, workspaces Workspac
 	mux.HandleFunc("DELETE /api/v1/targets/{id}", s.requireAuth(s.handleDeleteTarget))
 	mux.HandleFunc("GET /api/v1/targets/{id}/agents", s.requireAuth(s.handleListTargetAgents))
 	mux.HandleFunc("POST /api/v1/targets/{id}/probe", s.requireAuth(s.handleProbeTarget))
+	mux.HandleFunc("POST /api/v1/targets/{id}/agents/{agent_type}/sign-in", s.requireAuth(s.handleAgentSignIn))
+	mux.HandleFunc("DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in", s.requireAuth(s.handleCloseAgentSignIn))
 	mux.HandleFunc("POST /api/v1/targets/{id}/test", s.requireAuth(s.handleTestTarget))
 	mux.HandleFunc("POST /api/v1/targets/{id}/scan-host-key", s.requireAuth(s.handleScanHostKey))
 	mux.HandleFunc("POST /api/v1/targets/{id}/pin", s.requireAuth(s.handlePinHostKey))
@@ -2448,19 +2457,93 @@ type targetAgentResponse struct {
 	// when the CLI wasn't asked.
 	AuthStatus string    `json:"auth_status,omitempty"`
 	CheckedAt  time.Time `json:"checked_at"`
+	// Auth is the agent's sign-in as a whole (LOOM-316); omitted when
+	// the CLI isn't installed or has no auth check.
+	Auth *agentAuthResponse `json:"auth,omitempty"`
+}
+
+// agentAuthResponse is an agent's sign-in on a target (LOOM-316): only
+// fixed words, short allow-listed words, times, the reset text the agent
+// showed, and how to attach to its sign-in session. Never the auth
+// check's output, the account's email or the sign-in pane.
+type agentAuthResponse struct {
+	// State is the one word to show (registry.TargetAgent.SignInState):
+	// logged_in, logged_out, expired, rate_limited or unknown.
+	State string `json:"state"`
+	// Method, Plan and ExpiresAt are what the CLI's own check said: how
+	// it is signed in ("claude.ai", "api_key", "chatgpt"), the account's
+	// plan ("max") and when the sign-in ends.
+	Method    string     `json:"method,omitempty"`
+	Plan      string     `json:"plan,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Problem is the sign-in screen a turn last stopped at, RateLimit the
+	// usage limit one last hit; each until a turn finishes normally.
+	Problem   *agentSignInProblemResponse `json:"problem,omitempty"`
+	RateLimit *agentRateLimitResponse     `json:"rate_limit,omitempty"`
+	// SignIn is the session Loomux opened for a person to sign the CLI
+	// in, while it is open.
+	SignIn *agentSignInSessionResponse `json:"sign_in,omitempty"`
+}
+
+type agentSignInProblemResponse struct {
+	// Kind is expired, invalid_credentials or signed_out.
+	Kind       string    `json:"kind"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+type agentRateLimitResponse struct {
+	ObservedAt time.Time `json:"observed_at"`
+	// Resets is when the agent said the limit resets, as it put it.
+	Resets string `json:"resets,omitempty"`
+}
+
+type agentSignInSessionResponse struct {
+	TmuxSession string    `json:"tmux_session"`
+	StartedAt   time.Time `json:"started_at"`
+	// AttachCommand is the tmux command to run on the target;
+	// AttachCommands the ways to get there and run it, as attach-info's.
+	AttachCommand  string                  `json:"attach_command"`
+	AttachCommands []attachCommandResponse `json:"attach_commands"`
 }
 
 type listTargetAgentsResponse struct {
 	Agents []targetAgentResponse `json:"agents"`
 }
 
-func newListTargetAgentsResponse(agents []*registry.TargetAgent) listTargetAgentsResponse {
+// targetAgentView is one agent's probe result on target, with its sign-in
+// (LOOM-316).
+func (s *Server) targetAgentView(ctx context.Context, target *registry.Target, a *registry.TargetAgent, now time.Time) targetAgentResponse {
+	resp := targetAgentResponse{
+		AgentType: a.AgentType, Available: a.Available, Path: a.Path, Version: a.Version,
+		AuthStatus: a.AuthStatus, CheckedAt: a.CheckedAt,
+	}
+	state, session := a.SignInState(now), a.OpenSignInSession(now)
+	if state == "" && session == "" {
+		return resp
+	}
+	auth := &agentAuthResponse{State: state, Method: a.AuthMethod, Plan: a.AuthPlan, ExpiresAt: a.AuthExpiresAt}
+	if a.SignInProblem != "" && a.SignInProblemAt != nil {
+		auth.Problem = &agentSignInProblemResponse{Kind: a.SignInProblem, ObservedAt: *a.SignInProblemAt}
+	}
+	if a.LimitedAt != nil {
+		auth.RateLimit = &agentRateLimitResponse{ObservedAt: *a.LimitedAt, Resets: a.LimitResets}
+	}
+	if session != "" && target != nil {
+		auth.SignIn = &agentSignInSessionResponse{
+			TmuxSession: session, StartedAt: *a.SignInStartedAt,
+			AttachCommand:  targets.AttachCommand(s.tmuxSocketName(), session),
+			AttachCommands: s.attachCommandsFor(ctx, target, session),
+		}
+	}
+	resp.Auth = auth
+	return resp
+}
+
+func (s *Server) targetAgentsView(ctx context.Context, target *registry.Target, agents []*registry.TargetAgent) listTargetAgentsResponse {
+	now := time.Now()
 	out := make([]targetAgentResponse, 0, len(agents))
 	for _, a := range agents {
-		out = append(out, targetAgentResponse{
-			AgentType: a.AgentType, Available: a.Available, Path: a.Path, Version: a.Version,
-			AuthStatus: a.AuthStatus, CheckedAt: a.CheckedAt,
-		})
+		out = append(out, s.targetAgentView(ctx, target, a, now))
 	}
 	return listTargetAgentsResponse{Agents: out}
 }
@@ -2470,7 +2553,8 @@ func newListTargetAgentsResponse(agents []*registry.TargetAgent) listTargetAgent
 // simply absent from the list.
 func (s *Server) handleListTargetAgents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.targets.GetTarget(r.Context(), id); err != nil {
+	target, err := s.targets.GetTarget(r.Context(), id)
+	if err != nil {
 		if errors.Is(err, registry.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "no such target")
 			return
@@ -2483,7 +2567,7 @@ func (s *Server) handleListTargetAgents(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not list target agents")
 		return
 	}
-	writeJSON(w, http.StatusOK, newListTargetAgentsResponse(agents))
+	writeJSON(w, http.StatusOK, s.targetAgentsView(r.Context(), target, agents))
 }
 
 // handleProbeTarget probes the target now — health, then its agent CLIs
@@ -2503,9 +2587,10 @@ func (s *Server) handleProbeTarget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not probe target")
 		return
 	}
+	target, _ := s.targets.GetTarget(r.Context(), r.PathValue("id"))
 	writeJSON(w, http.StatusOK, probeTargetResponse{
 		Health: newTargetHealthResponse(h),
-		Agents: newListTargetAgentsResponse(agents).Agents,
+		Agents: s.targetAgentsView(r.Context(), target, agents).Agents,
 	})
 }
 
