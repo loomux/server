@@ -15,9 +15,14 @@ request, until the next milestone folds it in here.
 
 ## [0.4.0] - Unreleased
 
+> **TODO(0.4.0):** replace "Unreleased" in the heading above with the
+> release date (YYYY-MM-DD), and confirm the web pin (0.3.39 here and
+> under Changed, "Web client"; or cut web 0.4.0 first and pin that).
+> Remove this note before merging.
+
 Everything merged since 0.3.0 (the patch releases from 0.3.1 on), with
-web client 0.3.39. Loomux is still pre-alpha and single-user. The main
-lines:
+web client 0.3.39 (TODO(0.4.0): web pin). Loomux is still pre-alpha and
+single-user. The main lines:
 
 - **Machines on demand.** Target-provider plugins make a machine per
   target and register it as an ordinary SSH target: a Kubernetes plugin
@@ -28,20 +33,27 @@ lines:
 - **Targets without hand-written SSH config.** Loomux generates and
   holds SSH keys, scans and pins host keys, tests a target step by step,
   and moves existing targets to its own keys.
+- **Agent sign-in from Loomux.** When an agent CLI on a target isn't
+  signed in, Loomux opens the CLI's own login in tmux for you to attach
+  to, and reports each agent's sign-in status. A target can also pin the
+  model and effort each agent type launches with.
 - **Router models set in the app**, OpenAI-compatible or Anthropic's
   native API, with keys set, tested and rotated from Settings.
 - **The API v1 freeze** (the renames and removals below) and a contract
   test that makes any change to `/api/v1`'s routes and fields show in
   review, ahead of 1.0's additions-only promise.
 - **The server side of the terminal client** (loomux/tui): taking a task
-  over while you're attached to its pane, handing it back, and linking a
+  over while you're attached to its pane, or watching it read-only,
+  handing it back, seeing who holds or watches a task, and linking a
   terminal to your login.
+- **A one-machine quickstart** (Docker) and a security policy
+  (`SECURITY.md`).
 - A round of security hardening, much of it from an audit (LOOM-139 to
   LOOM-175).
 
 ### Before you upgrade
 
-- 18 database migrations (00020 to 00037) run at the first start. Keep
+- 20 database migrations (00020 to 00039) run at the first start. Keep
   the pre-migration snapshot: the first start with `LOOMUX_MASTER_KEY`
   re-seals vault credentials and router keys, which an older release
   can't read, so a rollback means restoring that snapshot (router tiers
@@ -66,6 +78,12 @@ lines:
   `confirmations[].workspace` is `workspace_name`, and some fields and
   one route are gone (see Changed and Removed). The bundled web client
   handles all of it.
+- A dispatch to an agent CLI that isn't signed in on its target (with no
+  API key for it in the vault) now fails at once with `error_class`
+  `login_required`, naming the sign-in session to attach to, instead of
+  launching an agent that can only stop at its login screen (LOOM-316).
+- A message to a conversation whose task a person holds fails with
+  `error_class` `held`, no longer `internal` (LOOM-267).
 - Old rows are deleted by default now: sessions 7 days after they
   expire, finished dispatches and audit events after 90 days, answered
   or expired confirmations after 30 (LOOM-110, LOOM-193; set a retention
@@ -83,6 +101,14 @@ lines:
 - The Kubernetes plugin's Role needs `list` on `networkpolicies` in the
   agents namespace for egress `none` (LOOM-201);
   `deploy/test/kind/10-rbac.yaml` shows the rule.
+- If you run the Kubernetes or Docker plugin: update the server first,
+  then any sidecar plugin image (an older server refuses a manifest that
+  declares a capability it doesn't know). Then upgrade each installed
+  instance of the two plugins once (`POST
+  /api/v1/plugins/{id}/upgrade`, or Upgrade in the web client): their
+  manifests now declare `targets.attach_read_only` (LOOM-272), and a
+  plugin whose capabilities changed isn't moved to the new version by
+  itself. It shows `error` until it's upgraded.
 
 ### Added
 
@@ -176,6 +202,15 @@ lines:
   exec`, `docker exec`) and plain ssh for every remote target. Each also
   comes as `argv`, for a client to run without a shell, when the plugin
   supplies one the server accepts (LOOM-269).
+- Read-only attach commands from plugins (LOOM-272): under the manifest
+  capability `targets.attach_read_only`, `targets.attach_commands` takes
+  `read_only` and its result confirms it. The host asks only a plugin
+  that declares it, uses only a confirmed answer, and keeps only commands
+  whose `argv` ends with exactly `tmux -L <socket> attach -r -t
+  <session>` for the socket and session it asked for. In the SDK this is
+  `sdk.ReadOnlyAttacher`; a plugin without it fails a `read_only` call
+  rather than answer with its writable commands. The Kubernetes and
+  Docker plugins implement it.
 
 #### Targets and SSH
 
@@ -207,6 +242,35 @@ lines:
   for a hub machine whose conversation waits days for its next message.
 - `GET /api/v1/targets` says whether this server allows `local` targets
   (`local_targets`, LOOM-183).
+
+#### Agents
+
+- Agent sign-in (LOOM-316, #555): when an agent CLI on a target isn't
+  signed in, Loomux opens the CLI's own login (`claude auth login`,
+  `codex login --device-auth`) in a tmux session there and gives the
+  exact attach command; you sign in by attaching, and Loomux never types
+  into, reads or completes that session. A dispatch whose pre-launch
+  probe finds the agent signed out (and no API key for it in the vault)
+  fails at once with `login_required` naming that session. `POST` and
+  `DELETE /api/v1/targets/{id}/agents/{agent_type}/sign-in` open and
+  close it (migration 00038).
+- Agent sign-in status (LOOM-316): `GET /api/v1/targets/{id}/agents`
+  (and the probe's response) gives each agent an `auth` block: `state`
+  (`logged_in`, `logged_out`, `expired`, `rate_limited`, `unknown`), the
+  sign-in method, plan and expiry the CLI reports (allow-listed words
+  only, never the account's email), the sign-in problem or usage limit a
+  turn last hit, and the open sign-in session with its attach commands.
+  `loomuxd agents status` and `loomuxd agents sign-in` are a
+  command-line client of these routes.
+- A target can pin the model and effort each agent type is launched with
+  (LOOM-307): `agent_args` on the target API, e.g. `{"claude-code":
+  {"model": "opus", "effort": "high"}}`. Claude Code gets
+  `--model`/`--effort`, Codex `-m` and `-c model_reasoning_effort`.
+  Values are checked strictly (a model name, an effort its CLI takes);
+  the router and prompts can't change them, and a pin the CLI can't take
+  fails the launch instead of running on the account's defaults.
+  attach-info shows the `agent_args` a task was launched with (migration
+  00039).
 
 #### Workspaces
 
@@ -240,13 +304,15 @@ lines:
 #### Terminal client (the server side of loomux/tui)
 
 - Taking a task over (LOOM-263, LOOM-264, LOOM-265): `POST
-  /api/v1/tasks/{id}/takeover` gives your session a hold on the task (a
+  /api/v1/tasks/{id}/takeover` (`mode: "drive"`, the default) gives your
+  session a drive hold on the task (a
   lease of 15 to 300 seconds, renewed by `/takeover/heartbeat`) with its
   attach-info, and moves the task to `human_takeover`, which pauses
   automation into its pane. `/release` hands it back; release without a
-  `hold_id` is Take back, from any session. Another session gets `409
-  task_held` unless it forces. A hold ends by itself when its lease runs
-  out or its session is logged out or revoked: the attached tmux clients
+  `hold_id` is Take back, from any session. Another session asking to
+  drive gets `409 task_held` unless it forces. A drive hold ends by
+  itself when its lease runs out or its session is logged out or
+  revoked: the attached tmux clients
   are detached first, and if they can't be, nothing changes and the next
   sweep tries again. A hold whose task ended just ends. A restart gives every
   hold a fresh lease. Ended holds stay as an audit trail (migration
@@ -256,8 +322,47 @@ lines:
   hash (`POST /api/v1/sessions`), so the token never leaves the
   terminal. Sessions carry a `label` and a `client_kind` (`web`, `tui`,
   `app`).
-- Not yet: watch-only holds (`mode: watch` answers `400
-  unsupported_mode`), and holds shown on conversations and the stream.
+- Holds are shown where clients look (LOOM-267). Each task of `GET
+  /api/v1/conversations/{id}`, attach-info and a takeover's `attach`
+  carry `hold`, the task's active drive hold or `null`. A row of `GET
+  /api/v1/conversations` carries `held_by {client_kind, client_label,
+  since}` while one of its tasks is held, and `pending_confirmation_id`
+  while the conversation waits on a yes or no to an offer (its newest one
+  still pending and not past its deadline); both are left out when there
+  is none. The conversation stream sends `event:
+  task_hold`, `data: {task_id, hold, ended_reason?}`, when a task is
+  taken, taken from its holder (`ended_reason` `taken_over`) or given
+  back (`hold` `null`, with why), but not when a hold is renewed.
+- Watch holds (LOOM-271): `POST /api/v1/tasks/{id}/takeover` with `mode:
+  "watch"` takes a hold that only says who is attached to the task's
+  pane read-only. The task's status isn't touched, so automation keeps
+  typing and a running turn carries on. Any number of sessions may watch
+  a task beside the one that drives it, so a watch is never `409`
+  `task_held`, and nobody is detached when a watch hold is taken,
+  released, expires or ends with its session (it ends even while its
+  target doesn't answer). A session has one watch hold per task (asking
+  again renews it), and `force` with `watch` is `400`.
+- Watch holds are shown beside the drive hold (LOOM-271): tasks,
+  attach-info and a takeover's `attach` carry `watch_holds` (oldest
+  first, `[]` when nobody watches), a conversation row carries
+  `watchers`, the number of watch holds on its tasks (left out when
+  nobody watches), and the stream's
+  `task_hold` event carries `watch_holds` and is also sent when a
+  watcher comes or goes. `hold` and `ended_reason` still speak of the
+  drive hold only.
+- Read-only attach for a watch (LOOM-272): a watch takeover answers with
+  commands that attach with tmux's `-r`, so a person who only watches
+  can't type into the pane: `attach_command` is `tmux -L <socket> attach
+  -r -t <session>`, the ssh entry of `attach_commands` runs that line on
+  the target, and a Kubernetes or Docker machine's entry is the plugin's
+  `kubectl exec` / `docker exec` form around it. The server builds or
+  checks every one; the writable commands of attach-info are never in a
+  watch's answer. On tmux 3.2 or later `-r` also keeps the watcher's
+  terminal from resizing the window. A machine whose plugin has no
+  read-only attach command (the message names the plugin), or isn't
+  running to give one, answers `409` `watch_unsupported` (`502` when the
+  plugin didn't answer); no hold is
+  taken and no writable command is handed out instead.
 
 #### API and operations
 
@@ -296,6 +401,24 @@ lines:
   (LOOM-254).
 - At startup the server warns about each task in `human_takeover` with
   no active hold (LOOM-263).
+
+#### Install and security policy
+
+- A one-machine quickstart (LOOM-309): `docs/quickstart.md` and
+  `deploy/quickstart/compose.yaml` run Loomux on one Linux Docker host,
+  with the bundled Docker plugin on the host's own engine and one
+  persistent machine, `dev`, declared in the plugins seed, so there is
+  no SSH host to prepare. `docs/deploy/install.md` now points at it,
+  shows current `X.Y.Z` tags instead of `0.1.N`, and says the Kubernetes
+  manifests it describes aren't published.
+- `SECURITY.md` (LOOM-311): which versions get security fixes, how to
+  report a vulnerability privately (GitHub private vulnerability
+  reporting on each repository), what to expect and what's in scope. The
+  README's new Security section states the trust model plainly: one
+  password and no MFA of its own, a session token means commands on
+  every machine, the agents' default permission modes, machines aren't a
+  network sandbox, what the router model sees, and what is encrypted,
+  pinned and attested.
 
 #### For contributors
 
@@ -378,9 +501,22 @@ lines:
 - A plugin size whose name is longer than 64 characters is left out,
   with a logged warning, instead of being offered truncated (LOOM-216,
   LOOM-247).
+- The Kubernetes and Docker plugins' manifests declare
+  `targets.attach_read_only` (LOOM-272). This is a capability change:
+  update the server before the plugins, and upgrade each installed
+  instance of the two plugins once afterwards (see "Before you
+  upgrade").
 
 #### Terminal client
 
+- A message sent to a conversation whose task a person holds fails with
+  the new `error_class` `held` instead of `internal`, and the dispatch's
+  `error` names the holder ("being driven from the terminal on `laptop`
+  since …"), so a client can tell it from a fault and show who has it
+  (LOOM-267).
+- `POST /api/v1/tasks/{id}/takeover` no longer answers `400`
+  `unsupported_mode` for `mode: "watch"`: it takes a watch hold
+  (LOOM-271). The hold in the answer always has the mode asked for.
 - Taking over a running task ends the wait on its turn at once
   (LOOM-266): the dispatch ends `failed` as `taken_over`, no keys reach
   the agent, no notification is sent, and what the agent finishes
@@ -405,6 +541,9 @@ lines:
 
 #### Web client
 
+- TODO(0.4.0): web pin. 0.3.39 as below, or web 0.4.0 if it's cut
+  first (pinned by its own server pull request before this one; then
+  this entry changes with it). Remove this line before merging.
 - The image serves loomux/web 0.3.39 (`web-1035795`; 0.3.0 before): the
   finished redesign (the conversation screen, Today, Machines, Vault,
   Settings, the decision card and the Inbox, PWA polish and
