@@ -1,0 +1,42 @@
+# Loomux on one Docker host: the quickstart (docs/quickstart.md).
+#
+# One container runs loomuxd. Its bundled Docker plugin uses this host's
+# Docker engine to make one persistent machine, "dev": a container from
+# ghcr.io/loomux/agent with Claude Code, Codex, tmux and sshd, where the
+# agents run. loomuxd reaches the machine over SSH at 127.0.0.1.
+#
+# Linux only. It needs a .env file beside it (docs/quickstart.md, step 1).
+#
+# WARNING: mounting the Docker socket gives loomuxd root on this host.
+# Use a machine or VM you don't mind that for.
+name: loomux
+
+services:
+  loomuxd:
+    image: ghcr.io/loomux/server:${LOOMUX_VERSION:?set LOOMUX_VERSION in .env}
+    # Host networking: each machine publishes its sshd on 127.0.0.1 of
+    # this host, and loomuxd connects to it there. LOOMUX_HTTP_ADDR keeps
+    # the web UI on loopback only.
+    network_mode: host
+    # The Docker socket's group, so loomuxd (uid 10001) can use it.
+    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env}"]
+    env_file: .env
+    environment:
+      LOOMUX_HTTP_ADDR: 127.0.0.1:${LOOMUX_PORT:-8080}
+      LOOMUX_PUBLIC_URL: http://localhost:${LOOMUX_PORT:-8080}
+      # Off: with host networking the default (127.0.0.1:9090) could
+      # collide with a local Prometheus.
+      LOOMUX_METRICS_ADDR: ""
+      # The Docker plugin on this host's engine, and one machine made with
+      # it. The seed is applied at every start; see docs/deploy/plugins.md.
+      LOOMUX_PLUGINS_SEED: >-
+        {"plugins": [{"label": "docker", "plugin": "docker", "source": "bundled",
+        "config": {"engine": "unix:///var/run/docker.sock", "bind_address": "127.0.0.1"}}],
+        "machines": [{"name": "dev", "plugin": "docker", "persistent": true}]}
+    volumes:
+      - loomux-data:/var/lib/loomux
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  loomux-data:
