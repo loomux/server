@@ -86,5 +86,8 @@ env -i HOME="$HOME" PATH="$PATH" GOTMPDIR="$HOME/.cache/gotmp" TMPDIR="$HOME/.lt
 
 - Keep `TMPDIR` short: SSH sockets live under `$TMPDIR/loomux/`, and a long
   one fails `TestManaged_ControlPathBoundedForLongHosts` (`targets`).
+- `env -i` drops every other variable, so an opt-in live test is skipped unless you name its
+  variables in the list (for example `LOOMUX_LIVE="$LOOMUX_LIVE" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"`);
+  check the run's output says the test ran, not that it was skipped.
 - The full `go test -race ./...` only at the baseline and at the end;
   never two full suites at once.
