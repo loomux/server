@@ -81,7 +81,7 @@ swap), so run every `go` command there bounded, in a clean env:
 ```sh
 mkdir -p "$HOME/.cache/gotmp" "$HOME/.lt"
 env -i HOME="$HOME" PATH="$PATH" GOTMPDIR="$HOME/.cache/gotmp" TMPDIR="$HOME/.lt" \
-    GOTOOLCHAIN=local GOWORK=off GOFLAGS=-p=2 GOMAXPROCS=4 go test -race ./...
+    GOENV=off GOTOOLCHAIN=local GOWORK=off GOFLAGS=-p=2 GOMAXPROCS=4 go test -race ./...
 ```
 
 - Keep `TMPDIR` short: SSH sockets live under `$TMPDIR/loomux/`, and a long
