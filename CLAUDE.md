@@ -87,7 +87,8 @@ env -i HOME="$HOME" PATH="$PATH" GOTMPDIR="$HOME/.cache/gotmp" TMPDIR="$HOME/.lt
 - Keep `TMPDIR` short: SSH sockets live under `$TMPDIR/loomux/`, and a long
   one fails `TestManaged_ControlPathBoundedForLongHosts` (`targets`).
 - `env -i` drops every other variable, so an opt-in live test is skipped unless you pass the
-  variables it reads, by name, in the list (read the test's `os.Getenv` calls for them). Run just
+  variables it needs, by name, in the list (look for `os.Getenv` in the test and in the helpers it
+  calls, such as `ConfigFromEnv`). Run just
   that test with `-v -count=1`, so the output shows it ran: a plain run hides a skip.
 - The full `go test -race ./...` only at the baseline and at the end;
   never two full suites at once.
