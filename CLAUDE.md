@@ -72,3 +72,23 @@ Orchestration Platform" (sub-issues LOOM-2…LOOM-10).
   decisions without a concrete reason surfaced during implementation.
 - Standard engineering workflow applies once code starts (TDD, etc.) — no
   Loomux-specific process rules beyond what's already in the design spec.
+
+## Go on the shared laptop
+
+Several agent sessions share the development laptop (2026-11-19: 27/29 GiB
+swap), so run every `go` command there bounded, in a clean env:
+
+```sh
+mkdir -p "$HOME/.cache/gotmp" "$HOME/.lt"
+env -i HOME="$HOME" PATH="$PATH" GOTMPDIR="$HOME/.cache/gotmp" TMPDIR="$HOME/.lt" \
+    GOENV=off GOTOOLCHAIN=local GOWORK=off GOFLAGS=-p=2 GOMAXPROCS=4 go test -race ./...
+```
+
+- Keep `TMPDIR` short: SSH sockets live under `$TMPDIR/loomux/`, and a long
+  one fails `TestManaged_ControlPathBoundedForLongHosts` (`targets`).
+- `env -i` drops every other variable, so an opt-in live test is skipped unless you pass the
+  variables it needs, by name, in the list (look for `os.Getenv` in the test and in the helpers it
+  calls, such as `ConfigFromEnv`). Run just
+  that test with `-v -count=1`, so the output shows it ran: a plain run hides a skip.
+- The full `go test -race ./...` only at the baseline and at the end;
+  never two full suites at once.
