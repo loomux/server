@@ -48,9 +48,9 @@ machines agents run on over SSH. It's single-user: one password.
 
 Releases are listed at <https://github.com/loomux/server/releases>.
 Each is an image tag, `ghcr.io/loomux/server:X.Y.Z` (for example
-`0.4.0`); `:sha-<short commit>` names the commit's patch build (a
-hand-pushed MINOR is a separate build of the same commit). From 0.4.0
-on, each curated minor release is a full GitHub release marked latest;
+`0.4.0`); `:sha-<short commit>` names the commit's first published
+build, which can be a patch build distinct from a later MINOR build.
+From 0.4.0 on, each curated minor release is a full GitHub release marked latest;
 patches are pre-releases. Pin one, by digest if you can; don't run
 `:main`. Versioning is explained
 in [`../release/versioning.md`](../release/versioning.md).
