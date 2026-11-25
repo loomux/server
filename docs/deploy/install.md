@@ -48,9 +48,10 @@ machines agents run on over SSH. It's single-user: one password.
 
 Releases are listed at <https://github.com/loomux/server/releases>.
 Each is an image tag, `ghcr.io/loomux/server:X.Y.Z` (for example
-`0.3.155`), and the same image as `:sha-<short commit>`. Every 0.x
-release is a GitHub pre-release. Pin one, by digest if you can; don't
-run `:main`. Versioning is explained
+`0.4.0`), and the same image as `:sha-<short commit>`. From 0.4.0 on,
+each curated minor release is a full GitHub release marked latest;
+patches are pre-releases. Pin one, by digest if you can; don't run
+`:main`. Versioning is explained
 in [`../release/versioning.md`](../release/versioning.md).
 
 ## 3. Make the secrets

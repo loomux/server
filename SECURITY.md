@@ -12,7 +12,8 @@ documented model of a single-user v1.
 
 ## Supported versions
 
-Loomux is pre-1.0 and every release is a GitHub pre-release. Only the **newest release** gets security fixes.
+Loomux is pre-1.0: from 0.4.0 on, each curated minor release is a full GitHub release marked latest, and patches
+are pre-releases. Only the **newest release** gets security fixes.
 A fix lands on `main` and ships as the next patch release; there are no backports to older versions, so
 upgrade to get it.
 

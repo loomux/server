@@ -28,12 +28,12 @@ mkdir loomux && cd loomux
 curl -fsSLO https://raw.githubusercontent.com/Loomux/server/main/deploy/quickstart/compose.yaml
 ```
 
-Pick the newest version from [Releases](https://github.com/Loomux/server/releases), then make the `.env` file
-beside `compose.yaml`. It asks for the password you'll log in with and for your router API key, and prints
-neither:
+Pick the latest full release (0.4.0) from [Releases](https://github.com/Loomux/server/releases); patches are
+pre-releases. Then make the `.env` file beside `compose.yaml`. It asks for the password you'll log in with and
+for your router API key, and prints neither:
 
 ```sh
-LOOMUX_VERSION=0.3.155
+LOOMUX_VERSION=0.4.0
 printf 'Choose a Loomux password: '; stty -echo; read -r PW; stty echo; echo
 printf 'Router model API key: '; stty -echo; read -r KEY; stty echo; echo
 HASH=$(printf '%s\n' "$PW" | docker run --rm -i ghcr.io/loomux/server:$LOOMUX_VERSION -hash-password)
@@ -92,7 +92,8 @@ docker exec -it $(docker ps -qf label=loomux.io/target-name=dev) claude auth log
 Open the link it prints, approve, and paste the code back at `Paste code here if prompted >`. **The code doesn't
 show when you paste it**: paste it once and press Enter. `claude auth status` then says `"loggedIn": true`. For
 Codex, run `codex login --device-auth` instead.
-<!-- When loomux/server#558 (agent sign-in by tmux attach) is released, this step becomes:
+<!-- loomux/server#558 (agent sign-in by tmux attach) is in 0.4.0; this page keeps the direct
+     `claude auth login` because it needs no token. The alternative is
      `docker compose exec loomuxd loomuxd agents sign-in -target dev -agent claude-code` (with LOOMUX_TOKEN),
      then the docker exec … tmux attach line it prints. Timed in the LOOM-309 run. -->
 
@@ -160,8 +161,7 @@ again, empty. Take it out of `LOOMUX_PLUGINS_SEED` first to remove it for good.
 
 ## Timings
 
-Measured on 2026-11-21 with release 0.3.155, on a Linux laptop with Docker 29.9, following this page from an empty
-directory:
+Measured with release 0.3.155, on a Linux laptop with Docker 29.9, following this page from an empty directory:
 
 | Step | Took |
 |---|---|

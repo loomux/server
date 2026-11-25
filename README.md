@@ -47,7 +47,8 @@ message to the one already running, and the answer comes back into the conversat
 
 **Pre-alpha.** Expect rough edges:
 
-- every release is a pre-release, and the API may still change before 1.0;
+- from 0.4.0 on, each curated minor release is a full release marked latest, patches are pre-releases, and the
+  API may still change before 1.0;
 - the router model is a third-party API unless you run an OpenAI-compatible endpoint that supports forced tool
   calls (`tool_choice`) yourself;
 - the images are Linux/amd64 only;
@@ -65,7 +66,7 @@ walkthrough, with troubleshooting and how to remove it all, is [docs/quickstart.
 ```sh
 mkdir loomux && cd loomux
 curl -fsSLO https://raw.githubusercontent.com/Loomux/server/main/deploy/quickstart/compose.yaml
-LOOMUX_VERSION=0.3.155    # the newest release
+LOOMUX_VERSION=0.4.0      # the latest full release
 printf 'Choose a Loomux password: '; stty -echo; read -r PW; stty echo; echo
 printf 'Router model API key: '; stty -echo; read -r KEY; stty echo; echo
 HASH=$(printf '%s\n' "$PW" | docker run --rm -i ghcr.io/loomux/server:$LOOMUX_VERSION -hash-password)
